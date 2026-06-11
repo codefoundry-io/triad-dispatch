@@ -1,0 +1,15 @@
+{
+  "name": "triad-internal-tools",
+  "description": "Internal Triad dispatch toolkit.",
+  "owner": {
+    "name": "Triad"
+  },
+  "plugins": [
+    {
+      "name": "triad-dispatch",
+      "description": "Triad cross-CLI dispatch: single-shot codex/gemini/antigravity dispatch + self-improving classifier + cross-family review.",
+      "version": "0.1.0",
+      "source": "./"
+    }
+  ]
+}

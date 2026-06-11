@@ -1,0 +1,16 @@
+{
+  "name": "triad-dispatch",
+  "version": "0.1.0",
+  "description": "Triad cross-CLI dispatch: single-shot codex/gemini/antigravity dispatch + self-improving classifier + cross-family review.",
+  "author": {
+    "name": "Triad"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dispatch",
+    "codex",
+    "gemini",
+    "antigravity",
+    "review"
+  ]
+}
