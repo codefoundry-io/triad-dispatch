@@ -1,7 +1,7 @@
 ---
 name: triad-cross-family-review
 description: Use for the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by self-rule #6 — dispatch INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frame the suspect/omitted/simplified decisions as QUESTIONS, consolidate their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then run a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.5.0
+version: 0.6.0
 ---
 
 # triad-cross-family-review
@@ -96,6 +96,30 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    vendor legs. Clean up the context file after the review (it is itself an IPC
    artifact). Origin: 2026-06-12 IPC-cleanup review — a `/tmp` brief was invisible
    to gemini/agy until moved under `_shared/`.
+9. **codex leg: INLINE the packet into `--prompt`; never hand it only a file
+   path.** Rule 8 places a context FILE for legs that `Read` one, but a codex leg
+   under `--sandbox read-only` + the rule-7 no-exec directive may be unable to
+   open a handed-over file AT ALL (it has no shell to `cat` and its file-read
+   route can silently come back empty — "non-CLI file access routes did not
+   expose the files"), returning no verdict. The robust path for codex is to
+   **embed the full diff + suspect questions directly in the prompt string**.
+   Mechanically: assemble the entire prompt BODY into a file, then pass it with
+   command substitution AT THE CALL SITE —
+
+   ```bash
+   # build the full review body (diff + questions) in a file, then:
+   codex_wrapper.py --sandbox read-only \
+     --reasoning high --timeout 900 \
+     --prompt "$(cat /path/to/review-body.txt)"     # <-- substitution fires here
+   ```
+
+   NEVER nest `$(cat ...)` inside a **single-quoted heredoc** (`--prompt "$(cat <<'PROMPT' ... PROMPT)"`):
+   a single-quoted heredoc is literal, so `$(...)` is NOT expanded and codex
+   receives the uninterpreted string `$(cat ...)`. (gemini / agy are
+   workspace-sandboxed and DO read a repo-relative `_shared/` file per rule 8, so
+   inlining is a codex-leg requirement, not a universal one — though inlining a
+   small packet works for every leg.) Origin: 2026-06-11 slice-1 cross-family gate;
+   see leader memory `feedback_vendor_review_leg_readonly_no_exec_2026_06_11.md` (Pitfall 3).
 
 ## Flow
 
@@ -119,6 +143,7 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
 | Merged on 2-of-3 SAFE | Averaged instead of consolidated | ANY Critical/DO-NOT-MERGE blocks (rule 4) |
 | First-pass fixes assumed sufficient | No re-confirm | Re-run the 3-way on the fixed branch (rule 5) |
 | Vendor leg times out with no verdict | Reviewer live-ran the code → hung on a real vendor call, sandbox couldn't reap it | Add "READ-only, do NOT execute" + generous timeout to the leg prompt (rule 7) |
+| codex leg returns no verdict / "couldn't access the files" / reviews the literal string `$(cat ...)` | codex handed a file PATH under read-only+no-exec (file-read route empty), or `$(cat ...)` nested in a single-quoted heredoc (literal, unexpanded) | Inline the diff+questions into `--prompt` via call-site `"$(cat body.txt)"`, not a quoted-heredoc and not a file path (rule 9) |
 | Dispatched as a fact-check | Wrong SKILL | This is verdict+fix-loop review; `triad-3way-question` (RETIRED 2026-05-31) is single-shot fact-check |
 
 ## Why this exists

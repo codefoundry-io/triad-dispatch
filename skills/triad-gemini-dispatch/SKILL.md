@@ -33,6 +33,7 @@ makes the `unknown`-classification path correctly route to the repair sub-agent.
 4. **Repair agent ONLY on `unknown`.** Other classifications carry actionable meaning at the wrapper layer — dispatching the agent on them wastes its 3-attempt budget.
 5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. See leader memory `feedback_dispatch_prompt_hygiene.md` for the full reasoning + fake run-log realistic-format guide.
 6. **No model name pinning.** Gemini model names rot every few weeks. Use vendor's Auto router by default; `--approval-mode plan` for read-only deep reasoning (auto-upgrades to Pro); `--model <name>` only when the user explicitly named the model. Date-anchor any pinned model usage.
+7. **Repair dispatch is MANDATORY and non-deferrable — spawn it in PARALLEL, never skip it.** When Step 4 routes a failure to repair (`unknown` / `extraction-error` / `timeout`), you MUST spawn the `gemini-wrapper-repair` sub-agent. Surfacing the failure to the user does NOT discharge this — *surfacing* and *repairing* are SEPARATE obligations; doing one is not doing the other. "I have other / more important work", "the call already failed", "this looks like a one-off" are NEVER valid reasons to skip or defer the spawn. Remove the temptation to defer by dispatching with the `Agent` tool's **`run_in_background: true`** so it runs CONCURRENTLY with your foreground work; parse its output (Step 5c) + clean up (Step 5d) when it completes. Why non-skippable: the repair agent's payoff is FUTURE routing — framework completeness, NOT the immediate call — so it is a fire-in-parallel task, and skipping it is a silent regression that lets the same vendor error keep failing un-routed on every later call (origin: 2026-06-12 — a freshly-installed company plugin leader hit an HTTP 403 → `unknown`, reported only "failed", and skipped the spawn citing "other work"). Complements rule 4: rule 4 = dispatch ONLY for these classes; rule 7 = you MUST, in parallel, for these classes.
 
 ## Flow
 
@@ -89,8 +90,8 @@ Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) / `4` (bin
 | `ok` (0) | Return wrapper stdout (Gemini's `response` field text or pydantic-validated JSON). |
 | terminal (65) — cli-subscription-cap / token-limit / oauth-env | Surface to user with cause (re-login / Pro 200 or Flash 1800 daily reset / prompt size). **NOT** repair-agent territory. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper retried per backoff (plus Gemini's own internal retries). |
-| `unknown` (1) | **Step 5 — repair agent dispatch.** |
-| `extraction-error` (1) | **Step 5 — repair agent dispatch.** Vendor returned rc=0 but extractor found no answer (empty `response` field, unparseable JSON, vendor refusal text). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
+| `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 7). Spawn it even when you are busy or also surfacing the failure — never skip.** |
+| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 7).** Vendor returned rc=0 but extractor found no answer (empty `response` field, unparseable JSON, vendor refusal text). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
 | `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since hang is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
 | arg (3) / binary missing (4) / schema fail (66) | Surface to user with cause. |
 
@@ -109,7 +110,7 @@ OUTPUT_PATH="${RUN_LOG_PATH}.repair.json"
 
 #### 5b. Dispatch the repair sub-agent
 
-Use the `Agent` tool with `subagent_type` set exactly to `gemini-wrapper-repair`. **Use the prompt body below VERBATIM** — substitute only the `<RUN_LOG_PATH>` and `<OUTPUT_PATH>` placeholders. Hard rule 5: no meta-context, no test framing, no "note that..." lines.
+Use the `Agent` tool with `subagent_type` set exactly to `gemini-wrapper-repair`, **`run_in_background: true`** (Hard rule 7 — parallel, non-skippable; the `done`/`error` token + `output_path` arrive on completion, at which point you run Step 5c/5d). **Use the prompt body below VERBATIM** — substitute only the `<RUN_LOG_PATH>` and `<OUTPUT_PATH>` placeholders. Hard rule 5: no meta-context, no test framing, no "note that..." lines.
 
 The dispatch prompt is JSON-shaped: `run_log_path` + `output_path` (input) + `output_schema` (output contract). The agent reads the run-log via `Read`, builds the response object, **writes it to `output_path` using the `Write` tool**, and returns only `done` or `error: <reason>` in chat.
 
