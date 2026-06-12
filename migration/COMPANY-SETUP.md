@@ -117,6 +117,51 @@ Bash(codex_wrapper.py:*)
 Bash(gemini_wrapper.py:*)
 ```
 
+### 2d. Updating to a new plugin version (closed network)
+
+An *already-installed* plugin does not update itself in a closed network. When a
+new build is published you re-sync the source, then refresh + update.
+
+> **Version gotcha (read first):** Claude Code gates updates on the plugin
+> `version` string — **if the new build's version equals the one you already
+> have, `/plugin update` and auto-update silently SKIP it** and you keep the old
+> code. Our builds bump `version` in `.claude-plugin/plugin.json` +
+> `marketplace.json` every release; confirm the version actually changed
+> (`/plugin` shows the installed version) before/after updating.
+
+**Path A — internal GHE mirror** (marketplace was added from a GHE URL):
+
+1. Re-mirror the new build into your GHE (push the updated repo).
+2. In Claude Code:
+   ```
+   /plugin marketplace update triad-internal-tools   # pull the new marketplace.json + version
+   /plugin update triad-dispatch                      # fetch the new plugin build
+   /reload-plugins                                    # apply without restarting Claude Code
+   ```
+
+**Path B — local folder** (marketplace was added from a directory path):
+
+1. Overwrite the local folder's contents with the new build (or copy the build
+   to a folder and re-add it — re-adding the SAME marketplace name replaces the
+   old registration).
+   ```
+   /plugin marketplace update triad-internal-tools    # refresh from the folder path
+   # — or, if you copied the build to a new path —
+   /plugin marketplace add /abs/path/to/new/folder    # same name replaces the old one
+   /plugin update triad-dispatch
+   /reload-plugins
+   ```
+
+**Verify:** `/plugin` lists `triad-dispatch` at the new version; spot-check a
+changed behavior.
+
+> **Admin-seeded / managed installs:** if your org distributes via a seed image
+> (`CLAUDE_CODE_PLUGIN_CACHE_DIR`) or `managed-settings.json`
+> (`extraKnownMarketplaces` / `strictKnownMarketplaces`), `/plugin marketplace
+> update` is blocked for individual users — the administrator updates the seed
+> image / managed settings instead. See the GitHub Enterprise Server section of
+> the Claude Code plugin docs.
+
 ---
 
 ## 3. Drop in the working-practices CLAUDE.md

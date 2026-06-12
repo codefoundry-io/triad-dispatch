@@ -112,6 +112,49 @@ Bash(codex_wrapper.py:*)
 Bash(gemini_wrapper.py:*)
 ```
 
+### 2d. 새 플러그인 버전으로 업데이트 (폐쇄망)
+
+이미 설치된 플러그인은 폐쇄망에서 저절로 갱신되지 않는다. 새 빌드가 나오면
+소스를 재-동기화한 뒤 refresh + update 한다.
+
+> **버전 함정 (먼저 읽을 것):** Claude Code 는 플러그인 `version` 문자열로
+> 업데이트를 게이트한다 — **새 빌드의 버전이 기존과 같으면 `/plugin update` 와
+> 자동 업데이트가 조용히 SKIP** 하고 옛 코드가 그대로 남는다. 본 빌드는 매
+> 릴리스마다 `.claude-plugin/plugin.json` + `marketplace.json` 의 `version` 을
+> 올린다; 업데이트 전후로 버전이 실제로 바뀌었는지 확인할 것(`/plugin` 이 설치된
+> 버전을 보여줌).
+
+**경로 A — 사내 GHE 미러** (마켓플레이스를 GHE URL 로 add 한 경우):
+
+1. 새 빌드를 사내 GHE 에 재-미러(갱신된 repo push).
+2. Claude Code 에서:
+   ```
+   /plugin marketplace update triad-internal-tools   # 새 marketplace.json + version 당겨오기
+   /plugin update triad-dispatch                      # 새 플러그인 빌드 fetch
+   /reload-plugins                                    # 재시작 없이 적용
+   ```
+
+**경로 B — 로컬 폴더** (마켓플레이스를 디렉터리 경로로 add 한 경우):
+
+1. 로컬 폴더 내용을 새 빌드로 덮어쓰거나, 새 폴더에 복사 후 재-add(같은
+   마켓플레이스 이름으로 add 하면 기존 등록을 대체).
+   ```
+   /plugin marketplace update triad-internal-tools    # 폴더 경로에서 refresh
+   # — 또는 새 경로에 복사했다면 —
+   /plugin marketplace add /절대/경로/새-폴더          # 같은 이름이 기존 것을 대체
+   /plugin update triad-dispatch
+   /reload-plugins
+   ```
+
+**검증:** `/plugin` 이 `triad-dispatch` 를 새 버전으로 표시; 바뀐 동작을 spot-check.
+
+> **관리자 seed / managed 설치:** 조직이 seed 이미지
+> (`CLAUDE_CODE_PLUGIN_CACHE_DIR`) 나 `managed-settings.json`
+> (`extraKnownMarketplaces` / `strictKnownMarketplaces`) 로 배포하면, `/plugin
+> marketplace update` 가 일반 사용자에게 차단된다 — 관리자가 seed 이미지 /
+> managed 설정을 갱신해야 한다. Claude Code 플러그인 문서의 GitHub Enterprise
+> Server 섹션 참고.
+
 ---
 
 ## 3. working-practices CLAUDE.md 적용
