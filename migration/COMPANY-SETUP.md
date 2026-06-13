@@ -66,6 +66,11 @@ reachable. Use one of:
 - **Local folder** (no git, no token, no network): copy the built plugin
   directory onto the machine, then `/plugin marketplace add /abs/path/to/folder`.
 
+> **Enterprise (recommended):** the `https URL` form above often FAILS behind a
+> corporate proxy / GHES auth. The reliable path is a **local git clone** added
+> as a directory marketplace — see **§ 2d**, which covers both first install and
+> later updates (`git pull` → refresh → update).
+
 ### 2a. Superpowers (Anthropic methodology skills) — STRONGLY recommended
 
 This is the backbone of how we work. Mirror `obra/superpowers` internally (or
@@ -117,43 +122,46 @@ Bash(codex_wrapper.py:*)
 Bash(gemini_wrapper.py:*)
 ```
 
-### 2d. Updating to a new plugin version (closed network)
+### 2d. Install + update via a LOCAL GIT CLONE (the enterprise-reliable path)
 
-An *already-installed* plugin does not update itself in a closed network. When a
-new build is published you re-sync the source, then refresh + update.
+`/plugin marketplace add <https URL>` frequently FAILS behind an enterprise
+proxy / GHES auth — confirmed in the field. The path that actually works is a
+**local git clone** of the source repo, added as a directory marketplace; you
+update it later with `git pull` (or by re-transferring the clone in a fully
+air-gapped setup). Use this, not the URL form.
 
 > **Version gotcha (read first):** Claude Code gates updates on the plugin
 > `version` string — **if the new build's version equals the one you already
 > have, `/plugin update` and auto-update silently SKIP it** and you keep the old
 > code. Our builds bump `version` in `.claude-plugin/plugin.json` +
-> `marketplace.json` every release; confirm the version actually changed
-> (`/plugin` shows the installed version) before/after updating.
+> `marketplace.json` every release; confirm it changed (`/plugin` shows the
+> installed version) before/after updating.
 
-**Path A — internal GHE mirror** (marketplace was added from a GHE URL):
+**Set up once (clone → add → install):**
+```
+# clone where the source is reachable, or clone elsewhere and transfer the folder in:
+git clone <source-repo-url> /abs/path/triad-dispatch
+/plugin marketplace add /abs/path/triad-dispatch          # directory source = local path (no URL)
+/plugin install triad-dispatch@triad-internal-tools
+```
 
-1. Re-mirror the new build into your GHE (push the updated repo).
-2. In Claude Code:
-   ```
-   /plugin marketplace update triad-internal-tools   # pull the new marketplace.json + version
-   /plugin update triad-dispatch                      # fetch the new plugin build
-   /reload-plugins                                    # apply without restarting Claude Code
-   ```
-
-**Path B — local folder** (marketplace was added from a directory path):
-
-1. Overwrite the local folder's contents with the new build (or copy the build
-   to a folder and re-add it — re-adding the SAME marketplace name replaces the
-   old registration).
-   ```
-   /plugin marketplace update triad-internal-tools    # refresh from the folder path
-   # — or, if you copied the build to a new path —
-   /plugin marketplace add /abs/path/to/new/folder    # same name replaces the old one
-   /plugin update triad-dispatch
-   /reload-plugins
-   ```
+**Update to a new version (pull → refresh → update → reload):**
+```
+git -C /abs/path/triad-dispatch pull                      # refresh the local clone
+                                                          #   (air-gapped: re-transfer the clone over the old folder instead)
+/plugin marketplace update triad-internal-tools           # re-read marketplace.json + version FROM the local folder
+/plugin update triad-dispatch                             # fetch the new build (SKIPPED if version unchanged — see gotcha)
+/reload-plugins                                           # apply without restarting Claude Code
+```
 
 **Verify:** `/plugin` lists `triad-dispatch` at the new version; spot-check a
 changed behavior.
+
+> **URL marketplace (only if your env actually allows it):** `/plugin marketplace
+> add https://<ghe-host>/<org>/triad-dispatch.git` then `/plugin marketplace
+> update` — needs a working git credential helper (PAT) or an SSH key in the
+> agent. Many enterprises block this (the field case did); the local clone above
+> is the fallback that always works.
 
 > **Admin-seeded / managed installs:** if your org distributes via a seed image
 > (`CLAUDE_CODE_PLUGIN_CACHE_DIR`) or `managed-settings.json`
