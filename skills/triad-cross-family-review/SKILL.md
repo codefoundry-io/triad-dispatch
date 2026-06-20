@@ -1,7 +1,7 @@
 ---
 name: triad-cross-family-review
 description: Use for the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by self-rule #6 — dispatch INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frame the suspect/omitted/simplified decisions as QUESTIONS, consolidate their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then run a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.6.0
+version: 0.7.0
 ---
 
 # triad-cross-family-review
@@ -21,7 +21,6 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
 
 ## Skip when
 
-- A single factual question fanned to 3 CLIs → `triad-3way-question` (RETIRED 2026-05-31).
 - A single-shot codex / gemini / agy / claude call → the per-CLI dispatch SKILLs (the `Agent` tool for claude).
 - Trivial / mechanical change with no correctness or security surface.
 
@@ -41,6 +40,21 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
      elif command -v gemini >/dev/null 2>&1; then GOOGLE_CLI=gemini # fallback
      else GOOGLE_CLI=""; fi                                         # neither
    fi
+   # REASONING TIER (review-only override of the no-model-pin rule, owner directive
+   # 2026-06-14): the agy/gemini DEFAULT is a fast shallow model (Gemini 3.5 Flash)
+   # — empirically USELESS for adversarial review. Measured 2026-06-14 on the
+   # IngenuityPrint B5 diff: agy on the Flash default found 0 real issues across 4
+   # rounds, while the SAME diff at the Pro tier surfaced 3 real findings (a dead-code
+   # path + 2 wrong-descriptor edges) that even codex+claude had missed. agy encodes
+   # reasoning in the MODEL VARIANT (there is NO --reasoning flag; the separate
+   # thinkingLevel param is stripped/buggy — antigravity issue #1675), so force the
+   # Pro/High variant via --model. Env-overridable; verify it still exists (Google
+   # renames tiers) and fall back to the default + log if absent.
+   GOOGLE_REVIEW_MODEL="${TRIAD_GOOGLE_REVIEW_MODEL:-Gemini 3.1 Pro (High)}"
+   if [ "$GOOGLE_CLI" = agy ] && ! agy models 2>/dev/null | grep -qxF "$GOOGLE_REVIEW_MODEL"; then
+     echo "[review] '$GOOGLE_REVIEW_MODEL' not in 'agy models' — falling back to agy default (Flash); log + proceed" >&2
+     GOOGLE_REVIEW_MODEL=""
+   fi
    ```
 
    `agy` → `triad-antigravity-dispatch`; `gemini` → `triad-gemini-dispatch`;
@@ -50,6 +64,15 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    installed (e.g. 사내 after the gemini sunset). Same-family-only reviewers
    inherit the leader's framing; cross-family + fresh-eye is what breaks the
    monoculture.
+
+   **Pass the Pro tier to the Google leg.** When `GOOGLE_REVIEW_MODEL` is
+   non-empty, the agy review dispatch MUST pass `--model "$GOOGLE_REVIEW_MODEL"`
+   to `antigravity_wrapper.py` (the wrapper has a `--model` passthrough; it pins
+   nothing by default). The codex leg already runs at `--reasoning high` and the
+   claude `Agent` leg at opus, so only the Google leg needed this. Cost note: the
+   Pro/thinking tier is API-billed (not subscription-covered) — acceptable for the
+   high-stakes pre-merge gate by owner directive; do NOT use it for cheap
+   single-shot dispatches (those stay on the default per the no-model-pin rule).
 2. **Frame suspect decisions as QUESTIONS, not settled facts.** "Is X actually
    safe to omit?" — never "X is a no-op." A biased framing propagates into the
    reviewers and defeats the purpose (2026-05-24 IngenuityPrint incident).
@@ -89,8 +112,8 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    diff / context file handed to them at `/tmp/...` is unreadable (gemini errors
    `Path not in workspace: "/tmp" resolves outside the allowed workspace`; agy
    the same). Put any review-context file at a repo-relative gitignored location
-   — the existing `_shared/` heavy-input IPC channel (`triad_shared_input_create`,
-   or a plain `_shared/<name>.md`; `_shared/` `_runs/` `_logs/` are gitignored) —
+   — a repo-relative gitignored path, e.g. a plain `_shared/<name>.md`
+   (`_shared/` `_runs/` `_logs/` are gitignored) —
    so every leg (codex reads it fine too) can `Read` it. The claude `Agent` leg is
    NOT workspace-sandboxed, so it can read `/tmp`; do not rely on that for the
    vendor legs. Clean up the context file after the review (it is itself an IPC
@@ -144,7 +167,6 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
 | First-pass fixes assumed sufficient | No re-confirm | Re-run the 3-way on the fixed branch (rule 5) |
 | Vendor leg times out with no verdict | Reviewer live-ran the code → hung on a real vendor call, sandbox couldn't reap it | Add "READ-only, do NOT execute" + generous timeout to the leg prompt (rule 7) |
 | codex leg returns no verdict / "couldn't access the files" / reviews the literal string `$(cat ...)` | codex handed a file PATH under read-only+no-exec (file-read route empty), or `$(cat ...)` nested in a single-quoted heredoc (literal, unexpanded) | Inline the diff+questions into `--prompt` via call-site `"$(cat body.txt)"`, not a quoted-heredoc and not a file path (rule 9) |
-| Dispatched as a fact-check | Wrong SKILL | This is verdict+fix-loop review; `triad-3way-question` (RETIRED 2026-05-31) is single-shot fact-check |
 
 ## Why this exists
 
@@ -162,6 +184,5 @@ review is necessary but not sufficient; the final cross-family pass is the gate.
 - leader memory `feedback_three_way_fresh_eye_cross_check.md` — origin narrative + 2026-05-30 re-validation.
 - leader memory `feedback_vendor_review_leg_readonly_no_exec_2026_06_11.md` — Hard rule 7 origin (codex live-run hang).
 - `triad-codex-dispatch` (codex leg) / `triad-antigravity-dispatch` + `triad-gemini-dispatch` (the runtime-selected Google-family leg).
-- `triad-3way-question` (RETIRED 2026-05-31) — the SINGLE-ROUND fact-check fan-out (distinct; file kept for revival but auto-invoke disabled).
 - `superpowers:subagent-driven-development` — the per-task (same-family) review this final pass backstops.
 - `superpowers:requesting-code-review` / `superpowers:receiving-code-review` — single-reviewer code-review conventions.

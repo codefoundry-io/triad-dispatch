@@ -1,6 +1,6 @@
 ---
 name: triad-gemini-dispatch
-description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Gemini CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 gemini_wrapper.py` raw; user said "gemini 한 번 불러줘" / "gemini로 X 처리" / "gemini CLI 단발 실행" / "제미나이 호출"; a higher-level orchestration SKILL needs the Gemini leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), multi-turn dialogue / pair-coding (use `triad-pair-brainstorm` or `triad-pair-plan`), or 3-CLI fact-check fan-out (use `triad-3way-question`).
+description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Gemini CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 gemini_wrapper.py` raw; user said "gemini 한 번 불러줘" / "gemini로 X 처리" / "gemini CLI 단발 실행" / "제미나이 호출"; a higher-level orchestration SKILL needs the Gemini leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`).
 version: 0.3.1
 ---
 
@@ -12,7 +12,7 @@ self-improving repair loop. The leader's standard "call gemini once" path.
 ## Use when
 
 - Leader has a discrete prompt and needs Gemini's answer (or a structured failure signal). Gemini is preferred for Android domain (XML / Compose / Material), vision tasks, Google-ecosystem queries.
-- A higher-level SKILL (e.g. `triad-3way-question`) wants the Gemini leg of a fan-out.
+- A higher-level SKILL (e.g. `triad-cross-family-review`) wants the Gemini leg of a fan-out.
 - User said "gemini 한 번 불러서 X" / "gemini CLI 로 단발 실행" / "제미나이 호출".
 
 Going through this SKILL (instead of raw `python3 gemini_wrapper.py`) is what
@@ -20,10 +20,7 @@ makes the `unknown`-classification path correctly route to the repair sub-agent.
 
 ## Skip when
 
-- Multi-turn dialogue / pair-coding → `triad-pair-brainstorm` / `triad-pair-plan`.
-- 3-CLI fact-check fan-out → `triad-3way-question`.
 - Codex-side calls → `triad-codex-dispatch`.
-- Live tmux observation → `triad-orchestrate` + tmux session.
 
 ## Hard rules
 
@@ -198,6 +195,4 @@ Does NOT edit `_common.py` (repair agent's territory) or read `_logs/gemini/audi
 - `3rd-Agent/wrappers/README.md` — wrapper contract + run-log schema.
 - `.claude/agents/gemini-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
 - `triad-codex-dispatch` — parallel SKILL for Codex.
-- `triad-orchestrate` — sibling SKILL (tmux base infra). 본 SKILL = wrapper subprocess only (tmux 미사용) — boundary 명확.
-- `triad-observe` — sibling SKILL (`HEADLESS=0` 자동 trigger only). 본 SKILL = subprocess wrapper — observe 미적용.
 - Leader memory `feedback_dispatch_prompt_hygiene.md` — dispatch prompt hygiene + test isolation rationale.

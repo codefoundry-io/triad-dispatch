@@ -1,6 +1,6 @@
 ---
 name: triad-codex-dispatch
-description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Codex CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 codex_wrapper.py` raw; user said "codex 한 번 불러줘" / "codex로 X 처리" / "codex CLI 단발 실행" / "코덱스 호출"; a higher-level orchestration SKILL needs the Codex leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Gemini (use `triad-gemini-dispatch`), multi-turn dialogue / pair-coding (use `triad-pair-brainstorm` or `triad-pair-plan`), or 3-CLI fact-check fan-out (use `triad-3way-question`).
+description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Codex CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 codex_wrapper.py` raw; user said "codex 한 번 불러줘" / "codex로 X 처리" / "codex CLI 단발 실행" / "코덱스 호출"; a higher-level orchestration SKILL needs the Codex leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Gemini (use `triad-gemini-dispatch`).
 version: 0.5.0
 ---
 
@@ -12,7 +12,7 @@ self-improving repair loop. The leader's standard "call codex once" path.
 ## Use when
 
 - Leader has a discrete prompt and needs Codex's answer (or a structured failure signal).
-- A higher-level SKILL (e.g. `triad-3way-question`) wants the Codex leg of a fan-out.
+- A higher-level SKILL (e.g. `triad-cross-family-review`) wants the Codex leg of a fan-out.
 - User said "codex 한 번 불러서 X" / "codex로 단발 실행".
 
 Going through this SKILL (instead of raw `python3 codex_wrapper.py`) is what
@@ -20,10 +20,7 @@ makes the `unknown`-classification path correctly route to the repair sub-agent.
 
 ## Skip when
 
-- Multi-turn dialogue / pair-coding → `triad-pair-brainstorm` / `triad-pair-plan`.
-- 3-CLI fact-check fan-out → `triad-3way-question`.
 - Gemini-side calls → `triad-gemini-dispatch`.
-- Live tmux observation → `triad-orchestrate` + tmux session.
 
 ## Hard rules
 
@@ -346,6 +343,4 @@ Keep these facts straight instead of re-deriving them from memory:
 - `.claude/agents/codex-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
 - `triad-codex-reference` — codex CLI flag / sub-command lookup (raw `--help` dumps; this SKILL's § Direct `codex exec` knowledge carries the curated facts).
 - `triad-gemini-dispatch` — parallel SKILL for Gemini.
-- `triad-orchestrate` — sibling SKILL (tmux base infra). 본 SKILL = wrapper subprocess only (tmux 미사용) — boundary 명확.
-- `triad-observe` — sibling SKILL (`HEADLESS=0` 자동 trigger only). 본 SKILL = subprocess wrapper — observe 미적용.
 - Leader memory `feedback_dispatch_prompt_hygiene.md` — dispatch prompt hygiene + test isolation rationale.

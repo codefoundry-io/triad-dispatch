@@ -148,8 +148,8 @@ leader 와 오너가 실제로 사용하는 방식:
 
 ## 구성 (What's inside)
 
-- **skills** (5): `triad-codex-dispatch`, `triad-gemini-dispatch`,
-  `triad-antigravity-dispatch`, `triad-3way-question`, `triad-cross-family-review`.
+- **skills** (4): `triad-codex-dispatch`, `triad-gemini-dispatch`,
+  `triad-antigravity-dispatch`, `triad-cross-family-review`.
 - **agents** (3): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`.
 - **bin**: Python wrapper 들 (codex / gemini / agy) + `agy-daily-check.sh` +
   `gemini-daily-check.sh`.

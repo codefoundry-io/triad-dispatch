@@ -1,6 +1,6 @@
 {
   "name": "triad-dispatch",
-  "version": "0.1.401",
+  "version": "0.1.414",
   "description": "Triad cross-CLI dispatch: single-shot codex/gemini/antigravity dispatch + self-improving classifier + cross-family review.",
   "author": {
     "name": "Triad"

@@ -146,8 +146,8 @@ runtime. It is portable — a team can curate and share it.
 
 ## What's inside
 
-- **skills** (5): `triad-codex-dispatch`, `triad-gemini-dispatch`,
-  `triad-antigravity-dispatch`, `triad-3way-question`, `triad-cross-family-review`.
+- **skills** (4): `triad-codex-dispatch`, `triad-gemini-dispatch`,
+  `triad-antigravity-dispatch`, `triad-cross-family-review`.
 - **agents** (3): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`.
 - **bin**: the Python wrappers (codex / gemini / agy) + `agy-daily-check.sh` +
   `gemini-daily-check.sh`.

@@ -1,6 +1,6 @@
 ---
 name: triad-antigravity-dispatch
-description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; user said "agy 한 번 불러줘" / "antigravity로 X 처리" / "agy CLI 단발 실행" / "안티그래비티 호출"; a higher-level orchestration SKILL needs the agy leg of a fan-out (gemini CLI successor; gemini public EOL 2026-06-18, but 사내 keeps gemini until ~2026-07-31 so both ship in the interim); classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`), multi-turn dialogue / pair-coding (use `triad-pair-brainstorm` or `triad-pair-plan`), or 3-CLI fact-check fan-out (use `triad-3way-question`).
+description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; user said "agy 한 번 불러줘" / "antigravity로 X 처리" / "agy CLI 단발 실행" / "안티그래비티 호출"; a higher-level orchestration SKILL needs the agy leg of a fan-out (gemini CLI successor; gemini public EOL 2026-06-18, but 사내 keeps gemini until ~2026-07-31 so both ship in the interim); classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`),.
 version: 0.2.0
 ---
 
@@ -43,9 +43,7 @@ baseline), and `read_url` stays allowed in every mode.
 
 ## Skip when
 
-- Multi-turn dialogue / pair-coding → `triad-pair-brainstorm` / `triad-pair-plan`.
-- 3-CLI fact-check fan-out → `triad-3way-question`; final cross-family review → `triad-cross-family-review`.
-- Live tmux observation → `triad-orchestrate` + tmux session.
+- Final cross-family review → `triad-cross-family-review`.
 
 ## Isolation — per-call deny transaction (codex parity)
 
@@ -370,5 +368,4 @@ Does NOT edit `_common.py` (repair agent's territory) or read
 - `triad-codex-dispatch` — parallel SKILL for Codex.
 - `triad-gemini-dispatch` — parallel SKILL for Gemini (agy's predecessor; gemini CLI public EOL 2026-06-18, but retained 사내 until ~2026-07-31 — both ship in the plugin until the 사내 sunset).
 - `triad-cross-family-review` — final pre-merge cross-family review (the agy leg here is best-effort non-write, not enforced — see § Isolation HARD WARNING).
-- `triad-orchestrate` — sibling SKILL (tmux base infra). 본 SKILL = wrapper subprocess only (tmux 미사용) — boundary 명확.
 - Leader memory `feedback_dispatch_prompt_hygiene.md` — dispatch prompt hygiene + test isolation rationale.
