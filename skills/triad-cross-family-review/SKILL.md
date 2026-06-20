@@ -1,7 +1,7 @@
 ---
 name: triad-cross-family-review
 description: Use for the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by self-rule #6 — dispatch INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frame the suspect/omitted/simplified decisions as QUESTIONS, consolidate their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then run a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.7.0
+version: 0.7.1
 ---
 
 # triad-cross-family-review
@@ -68,7 +68,8 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    **Pass the Pro tier to the Google leg.** When `GOOGLE_REVIEW_MODEL` is
    non-empty, the agy review dispatch MUST pass `--model "$GOOGLE_REVIEW_MODEL"`
    to `antigravity_wrapper.py` (the wrapper has a `--model` passthrough; it pins
-   nothing by default). The codex leg already runs at `--reasoning high` and the
+   nothing by default). The codex leg already runs at `--reasoning high` + `--search`
+   (live web-grounding for the review — see rule 9 example) and the
    claude `Agent` leg at opus, so only the Google leg needed this. Cost note: the
    Pro/thinking tier is API-billed (not subscription-covered) — acceptable for the
    high-stakes pre-merge gate by owner directive; do NOT use it for cheap
@@ -132,7 +133,7 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    ```bash
    # build the full review body (diff + questions) in a file, then:
    codex_wrapper.py --sandbox read-only \
-     --reasoning high --timeout 900 \
+     --reasoning high --search --timeout 900 \
      --prompt "$(cat /path/to/review-body.txt)"     # <-- substitution fires here
    ```
 

@@ -84,6 +84,15 @@ def fanout_is_partial(complete: bool, agents: list, fanout) -> bool:
     return False
 
 
+def codex_invocation(search: bool) -> list[str]:
+    """Leading `codex [--search] exec` argv. codex's `--search` (live web search via
+    the native Responses web_search tool) is a TOP-LEVEL flag — it MUST precede the
+    `exec` subcommand (`codex --search exec ...`; `codex exec --search` errors with
+    "unexpected argument"). Emitted ONLY when search=True, so the default stays the
+    cheap no-search path."""
+    return ["codex"] + (["--search"] if search else []) + ["exec"]
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Codex CLI single-shot wrapper")
     p.add_argument("--prompt", required=True, help="User prompt")
@@ -100,6 +109,12 @@ def main() -> int:
         default=None,
         choices=REASONING_CHOICES,
         help="Override model_reasoning_effort (default: vendor default)",
+    )
+    p.add_argument(
+        "--search",
+        action="store_true",
+        help="Enable codex live web search (codex's top-level --search, inserted before "
+             "exec; default OFF — opt in for research/consult/review legs)",
     )
     p.add_argument(
         "--pydantic",
@@ -271,17 +286,16 @@ def main() -> int:
     os.close(fd)
 
     def build_cmd(effective_prompt: str) -> list[str]:
-        cmd = [
-            "codex", "exec",
+        cmd = codex_invocation(args.search) + [
             "--sandbox", args.sandbox,
             "--skip-git-repo-check",
             "--json",
             "-o", last_msg_path,
             "--ephemeral",
             # config-alive (global config inherited, no hermetic flag): pin approval=never
-            # so inherited config can't auto-approve an escalation. read-only sandbox +
-            # never = read-only tools (incl. web-search MCP) still run; nothing escalates.
-            # (3-way review A, owner decision)
+            # so inherited config can't auto-approve an escalation. Live web search is
+            # controlled by --search (codex's native Responses web_search tool, enabled via
+            # the top-level flag in codex_invocation); default OFF. (3-way review A, owner)
             "-c", "approval_policy=never",
         ]
         if args.reasoning:

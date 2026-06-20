@@ -1,7 +1,7 @@
 ---
 name: triad-codex-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Codex CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 codex_wrapper.py` raw; user said "codex 한 번 불러줘" / "codex로 X 처리" / "codex CLI 단발 실행" / "코덱스 호출"; a higher-level orchestration SKILL needs the Codex leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Gemini (use `triad-gemini-dispatch`).
-version: 0.5.0
+version: 0.5.1
 ---
 
 # triad-codex-dispatch
@@ -46,6 +46,7 @@ PROMPT
   [--cwd /absolute/path] \
   [--sandbox read-only|workspace-write] \
   [--reasoning low|medium|high|xhigh] \
+  [--search] \
   [--timeout <seconds>] \
   [--pydantic module:Class] \
   [--image /absolute/path.png ...] \
@@ -56,6 +57,10 @@ PROMPT
 ```
 
 Defaults: `--sandbox read-only`. Triad policy disallows `danger-full-access` — argparse rejects it at parse time.
+
+**`--search`** enables codex's live web search (codex's top-level `--search`, inserted
+before `exec`; default OFF). Opt in for **research / consult / review** dispatches where
+current web grounding matters; leave OFF for routine calls (API-billed + slower).
 
 **Reasoning-effort guideline.** `--reasoning` overrides `model_reasoning_effort` for this dispatch; omit it to inherit the config-alive value (the user's `~/.codex/config.toml`, currently `medium`). Set it by intent, not by default: `high` for **review / planning / non-trivial `code` or `analyze` tasks** (bug-hunting, design/spec review, multi-file reasoning); `xhigh` only for **deep architecture review or long refactors**; `low` for trivial/mechanical work where speed matters. Leave it unset for routine dispatches — config-alive already supplies a sensible default, and over-setting `xhigh` burns latency/quota. (`minimal` is intentionally not exposed — no leader/user use case.)
 
