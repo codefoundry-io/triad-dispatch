@@ -1,7 +1,7 @@
 ---
 name: triad-cross-family-review
 description: Use for the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by self-rule #6 — dispatch INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frame the suspect/omitted/simplified decisions as QUESTIONS, consolidate their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then run a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.7.1
+version: 0.8.0
 ---
 
 # triad-cross-family-review
@@ -65,15 +65,26 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    inherit the leader's framing; cross-family + fresh-eye is what breaks the
    monoculture.
 
-   **Pass the Pro tier to the Google leg.** When `GOOGLE_REVIEW_MODEL` is
-   non-empty, the agy review dispatch MUST pass `--model "$GOOGLE_REVIEW_MODEL"`
-   to `antigravity_wrapper.py` (the wrapper has a `--model` passthrough; it pins
-   nothing by default). The codex leg already runs at `--reasoning high` + `--search`
-   (live web-grounding for the review — see rule 9 example) and the
-   claude `Agent` leg at opus, so only the Google leg needed this. Cost note: the
-   Pro/thinking tier is API-billed (not subscription-covered) — acceptable for the
-   high-stakes pre-merge gate by owner directive; do NOT use it for cheap
-   single-shot dispatches (those stay on the default per the no-model-pin rule).
+   **MAX reasoning on EVERY leg (owner directive 2026-06-22).** The pre-merge
+   gate is high-stakes, so each reviewer runs at its family's TOP reasoning tier
+   — a shallow reviewer rubber-stamps:
+   - **agy (Google leg):** when `GOOGLE_REVIEW_MODEL` is non-empty, the dispatch
+     MUST pass `--model "$GOOGLE_REVIEW_MODEL"` to `antigravity_wrapper.py` (the
+     Pro/High variant — agy encodes reasoning in the model variant, no `--reasoning`
+     flag; the wrapper pins nothing by default).
+   - **codex:** `--reasoning xhigh` — the wrapper's MAX tier (`codex_wrapper.py
+     --help` lists `{low,medium,high,xhigh}`; was `high`, bumped 2026-06-22 so codex
+     matches agy-Pro depth) — plus `--search` (live web-grounding; see rule 9
+     example). If a future codex CLI rejects `xhigh`, fall back to `high` + log.
+   - **claude fresh-eye `Agent`:** opus + an explicit **max-thinking** directive in
+     the prompt ("Think as hard as you can / ultrathink before answering"). The
+     `Agent` tool exposes no effort flag, so the ONLY depth lever is the PROMPT —
+     instruct deep, adversarial reasoning (rule 10). Without it the claude leg
+     under-reasons and rubber-stamps (owner 2026-06-22: "요즘 잡아내는 게 없다").
+   Cost note: the Pro / xhigh / max-thinking tiers are API-billed (not
+   subscription-covered) — acceptable for the high-stakes pre-merge gate by owner
+   directive; do NOT use them for cheap single-shot dispatches (those stay on the
+   default per the no-model-pin rule).
 2. **Frame suspect decisions as QUESTIONS, not settled facts.** "Is X actually
    safe to omit?" — never "X is a no-op." A biased framing propagates into the
    reviewers and defeats the purpose (2026-05-24 IngenuityPrint incident).
@@ -133,7 +144,7 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    ```bash
    # build the full review body (diff + questions) in a file, then:
    codex_wrapper.py --sandbox read-only \
-     --reasoning high --search --timeout 900 \
+     --reasoning xhigh --search --timeout 900 \
      --prompt "$(cat /path/to/review-body.txt)"     # <-- substitution fires here
    ```
 
@@ -144,14 +155,32 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    inlining is a codex-leg requirement, not a universal one — though inlining a
    small packet works for every leg.) Origin: 2026-06-11 slice-1 cross-family gate;
    see leader memory `feedback_vendor_review_leg_readonly_no_exec_2026_06_11.md` (Pitfall 3).
+10. **claude fresh-eye leg = a TRUE fresh-eye Agent, MAX thinking, adversarial
+    (owner directive 2026-06-22).** The claude leg MUST be a separate `Agent`
+    (isolated context) — NEVER the leader reasoning inline (the leader holds the
+    originating framing and shares its blind spot). Because it is the SAME family
+    as a claude leader, its marginal value is CONTEXT-freshness, NOT family
+    diversity (codex/agy carry that) — so it must reason MAXIMALLY to earn its
+    place. Its prompt MUST: (a) tell it to think as hard as possible before
+    answering (ultrathink); (b) frame it adversarially — "a subtle defect is
+    PRESENT; find what the same-family leader AND the per-task review missed",
+    not "check if this looks fine"; (c) forbid severity-deflation — do NOT
+    downgrade a real correctness/robustness issue to Minor/benign to dodge a fix
+    loop; rate by impact. Origin: owner observed the claude leg "lately catches
+    nothing" while codex/agy escalated residuals claude had rated Minor — the fix
+    is depth + adversarial framing, not replacing the leg. Cross-check: if claude
+    returns SAFE but a vendor leg returns must-fix, treat it as a signal the claude
+    prompt under-reasoned, and sharpen it next round.
 
 ## Flow
 
 1. Scope the review: branch ref + base SHA + the list of suspect/omitted/
    simplified decisions (phrased as questions).
 2. Resolve the Google-family leg (Hard rule 1 snippet), then dispatch the
-   reviewers in parallel — `Agent` (claude fresh-eye, opus for high-stakes) +
-   `triad-codex-dispatch` + the resolved Google leg (`triad-antigravity-dispatch`
+   reviewers in parallel, each at its family's MAX reasoning (rule 1) — `Agent`
+   (claude fresh-eye, opus + max-thinking/adversarial prompt per rule 10) +
+   `triad-codex-dispatch` (codex `--reasoning xhigh --search`) + the resolved
+   Google leg (`triad-antigravity-dispatch` at `--model "$GOOGLE_REVIEW_MODEL"`
    or `triad-gemini-dispatch`; skip+log if none) — each with the same
    suspect-question list and the diff scope.
 3. Collect the three verdicts + findings.
@@ -164,6 +193,7 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
 | Symptom | Cause | Fix |
 |---|---|---|
 | Reviewers all pass a leader blind-spot | claude leg was leader-inline, or suspect framed as fact | Use a fresh-eye Agent; frame as questions (rules 1-2) |
+| claude leg keeps returning SAFE while codex/agy escalate residuals | claude prompt under-reasoned / not adversarial / shallow tier | Max-thinking + adversarial prompt + no severity-deflation (rule 10); legs at family-MAX reasoning (rule 1) |
 | Merged on 2-of-3 SAFE | Averaged instead of consolidated | ANY Critical/DO-NOT-MERGE blocks (rule 4) |
 | First-pass fixes assumed sufficient | No re-confirm | Re-run the 3-way on the fixed branch (rule 5) |
 | Vendor leg times out with no verdict | Reviewer live-ran the code → hung on a real vendor call, sandbox couldn't reap it | Add "READ-only, do NOT execute" + generous timeout to the leg prompt (rule 7) |
