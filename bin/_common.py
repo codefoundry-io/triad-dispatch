@@ -201,7 +201,13 @@ CLAUDE_VENDOR_EXIT_MAP: dict[int, str] = {
     # extract_claude_answer 가 본 envelope 분석 → extraction-error 전파.
 }
 
-ANTIGRAVITY_VENDOR_EXIT_MAP: dict[int, str] = {}
+ANTIGRAVITY_VENDOR_EXIT_MAP: dict[int, str] = {
+    0: "extraction-error",  # 2026-06-25: agy rc=0 + no-sentinel (answer present, sentinel not emitted);
+                            # classify() is called ONLY on the no-answer path so rc=0 + no-sentinel
+                            # → extraction-error is safe (answer-present path returns "ok" before calling classify).
+                            # Source: run-log 20260625T082029Z-98429-e4610255.json (vendor_exit_code=0,
+                            # extraction_error=no-sentinel, full Korean answer in stdout, classification=unknown).
+}
 # populated empirically by the agy-wrapper-repair sub-agent
 
 # Matched ONLY in the antigravity classify arm, only on the no-answer path;
