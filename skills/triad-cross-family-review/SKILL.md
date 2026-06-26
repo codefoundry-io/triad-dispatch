@@ -1,7 +1,14 @@
 ---
 name: triad-cross-family-review
 description: Use for the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by self-rule #6 — dispatch INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frame the suspect/omitted/simplified decisions as QUESTIONS, consolidate their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then run a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.8.0
+version: 0.9.0
+# changelog:
+#   0.9.0 (2026-06-26): large-packet file-IPC rule — for a LARGE diff/multi-doc
+#     review the leader PRE-ASSEMBLES a focused packet file; the agy/gemini leg
+#     reads only that (never self-assembles git-diff + N files → wall-time timeout);
+#     codex inlines the same focused subset. Rules 3/8/9 + Flow + Failure-modes row.
+#     Origin: 2026-06-26 large-packet-timeout (3 reviews, agy timed out ~790s
+#     self-assembling; same content pre-assembled completed ~190-250s).
 ---
 
 # triad-cross-family-review
@@ -91,6 +98,10 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
 3. **Each reviewer gets the diff scope + reads it themselves.** Give the branch
    ref / SHA range + the list of suspect decisions; let each reviewer run
    `git diff` and read files with its OWN tools (keeps leader context lean).
+   EXCEPTION for a LARGE packet (rule 8): a workspace-sandboxed vendor leg must
+   NOT self-assemble a large diff / multi-file packet — the leader pre-assembles
+   a focused packet file and the leg reads only that. Self-read-themselves applies
+   to small/focused reviews; large ones are leader-pre-assembled.
 4. **Consolidate, don't average.** ANY reviewer's Critical / must-fix or a
    DO-NOT-MERGE verdict blocks merge. Cross-family complementarity is the
    point: one may catch what the others miss (validated 2026-05-30 — codex
@@ -131,6 +142,27 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    vendor legs. Clean up the context file after the review (it is itself an IPC
    artifact). Origin: 2026-06-12 IPC-cleanup review — a `/tmp` brief was invisible
    to gemini/agy until moved under `_shared/`.
+
+   **LARGE packet → PRE-ASSEMBLE one focused file; the vendor leg reads ONLY
+   that, never self-assembles (owner directive, 2026-06-26 large-packet-timeout
+   origin).** When the review's expected packet is LARGE — a big diff (e.g.
+   >~1000 changed lines or many files) or a multi-document review (an ADS + a
+   big JSON + a design doc) — the leader MUST PRE-ASSEMBLE the packet into ONE
+   focused file and instruct the agy/gemini leg to read THAT ONE file (its
+   `view_file` on the repo-relative gitignored path) and NOTHING else. NEVER tell
+   the vendor leg to self-assemble — i.e. to run `git diff <range>` on a large
+   diff itself, or to read N context/interface/mock files itself. A
+   workspace-sandboxed leg that self-assembles spends its whole wall-time budget
+   reading + stitching the packet and hits its print-timeout → timeout /
+   extraction-error with NO verdict (pair this with the rule-7 generous timeout,
+   not instead of it). The pre-assembled packet = the rule-2 framing + the
+   FOCUSED / high-risk subset of the diff — NOT the whole tree: sample the
+   repetitive parts, keep the high-risk files whole. Origin: 2026-06-26, three
+   large reviews where agy was told to self-assemble (a 53KB ADS packet read of
+   ADS.md + interfaces.json + SYSTEM-DESIGN; a 5400-line agents-layer diff via
+   `git diff main..HEAD` + 12 interface/mock pairs) timed agy out at ~790s; the
+   SAME content as a small pre-assembled packet file completed in ~190-250s —
+   matching codex.
 9. **codex leg: INLINE the packet into `--prompt`; never hand it only a file
    path.** Rule 8 places a context FILE for legs that `Read` one, but a codex leg
    under `--sandbox read-only` + the rule-7 no-exec directive may be unable to
@@ -153,8 +185,12 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    receives the uninterpreted string `$(cat ...)`. (gemini / agy are
    workspace-sandboxed and DO read a repo-relative `_shared/` file per rule 8, so
    inlining is a codex-leg requirement, not a universal one — though inlining a
-   small packet works for every leg.) Origin: 2026-06-11 slice-1 cross-family gate;
-   see leader memory `feedback_vendor_review_leg_readonly_no_exec_2026_06_11.md` (Pitfall 3).
+   small packet works for every leg.) For a LARGE diff (rule 8's large-packet
+   case) the INLINED body must ALSO be the FOCUSED / high-risk subset, not the
+   whole diff — codex inlines what agy/gemini get as the pre-assembled file; same
+   focused content, different transport. Origin: 2026-06-11 slice-1 cross-family
+   gate; see leader memory
+   `feedback_vendor_review_leg_readonly_no_exec_2026_06_11.md` (Pitfall 3).
 10. **claude fresh-eye leg = a TRUE fresh-eye Agent, MAX thinking, adversarial
     (owner directive 2026-06-22).** The claude leg MUST be a separate `Agent`
     (isolated context) — NEVER the leader reasoning inline (the leader holds the
@@ -175,7 +211,10 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
 ## Flow
 
 1. Scope the review: branch ref + base SHA + the list of suspect/omitted/
-   simplified decisions (phrased as questions).
+   simplified decisions (phrased as questions). If the packet is LARGE (rule 8),
+   PRE-ASSEMBLE the focused packet file (framing + high-risk diff subset) at a
+   repo-relative gitignored path, e.g. `_runs/review/<date>/packet.md`; the
+   agy/gemini leg reads only that, codex inlines the same focused body.
 2. Resolve the Google-family leg (Hard rule 1 snippet), then dispatch the
    reviewers in parallel, each at its family's MAX reasoning (rule 1) — `Agent`
    (claude fresh-eye, opus + max-thinking/adversarial prompt per rule 10) +
@@ -197,6 +236,7 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
 | Merged on 2-of-3 SAFE | Averaged instead of consolidated | ANY Critical/DO-NOT-MERGE blocks (rule 4) |
 | First-pass fixes assumed sufficient | No re-confirm | Re-run the 3-way on the fixed branch (rule 5) |
 | Vendor leg times out with no verdict | Reviewer live-ran the code → hung on a real vendor call, sandbox couldn't reap it | Add "READ-only, do NOT execute" + generous timeout to the leg prompt (rule 7) |
+| agy/gemini leg times out / extraction-error with no verdict on a LARGE review | The leg was told to self-assemble a large diff/packet (`git diff` + read N files itself) and ran out the wall-time budget reading + stitching it | Pre-assemble a focused packet file; the leg reads ONLY that one file (rule 8 large-packet sub-rule); codex inlines the same focused subset (rule 9) |
 | codex leg returns no verdict / "couldn't access the files" / reviews the literal string `$(cat ...)` | codex handed a file PATH under read-only+no-exec (file-read route empty), or `$(cat ...)` nested in a single-quoted heredoc (literal, unexpanded) | Inline the diff+questions into `--prompt` via call-site `"$(cat body.txt)"`, not a quoted-heredoc and not a file path (rule 9) |
 
 ## Why this exists
