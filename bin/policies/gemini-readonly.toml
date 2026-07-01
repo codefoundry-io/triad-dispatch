@@ -1,0 +1,57 @@
+# Gemini CLI Policy Engine — per-call READ-ONLY policy for the gemini leg.
+# Attached via `--policy <this file>` when the wrapper is run with
+# `--sandbox read-only`. Allows read tools, denies mutation + shell tools.
+# Used INSTEAD of `--approval-mode plan` (plan mode crashes the Node/V8 heap on
+# heavy files — gemini-cli issues #11321 / #18331 / #26588). It is per-call, so
+# the same leg still does code work under `--sandbox workspace-write`.
+#
+# ⚠️ NOT e2e-VERIFIED (2026-07-01): the exact tool identifiers and the
+# toolName/decision/priority schema are per the Policy Engine docs
+# (geminicli.com/docs/reference/policy-engine), but could NOT be run here —
+# individual-tier gemini auth is deprecated (IneligibleTierError → Antigravity).
+# VERIFY at the company (business/Vertex/API-key tier): run a write-attempt
+# under `--sandbox read-only` and confirm NO file is created / the write tool is
+# denied. Adjust tool names / keys here if the schema differs. Highest priority
+# wins, so the deny rules (200) override the allow rules (100).
+
+# --- allow read tools ---
+[[rule]]
+toolName = "read_file"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "read_many_files"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "glob"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "search_file_content"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "list_directory"
+decision = "allow"
+priority = 100
+
+# --- deny mutation + shell tools (higher priority) ---
+[[rule]]
+toolName = "write_file"
+decision = "deny"
+priority = 200
+
+[[rule]]
+toolName = "replace"
+decision = "deny"
+priority = 200
+
+[[rule]]
+toolName = "run_shell_command"
+decision = "deny"
+priority = 200

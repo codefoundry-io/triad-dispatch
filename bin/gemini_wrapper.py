@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from _common import (
     EXIT_ARG_ERROR,
@@ -40,6 +41,16 @@ from _common import (
 
 
 APPROVAL_CHOICES = ("default", "auto_edit", "plan", "yolo")
+SANDBOX_CHOICES = ("read-only", "workspace-write")
+
+# Per-call READ-ONLY via the Gemini CLI Policy Engine (--policy) instead of the
+# crashy `--approval-mode plan` (plan mode OOMs the Node/V8 heap on heavy files
+# — gemini-cli issues #11321 / #18331 / #26588). The policy denies mutation +
+# shell tools for THIS call only, so the same leg still does code work under
+# `--sandbox workspace-write` (per-call, mirrors codex/agy). The exact policy
+# tool identifiers are per the Policy Engine docs but NOT e2e-verified here
+# (individual-tier gemini auth is deprecated) — see the policy file header.
+_READONLY_POLICY = Path(__file__).resolve().parent / "policies" / "gemini-readonly.toml"
 
 
 def main() -> int:
@@ -57,6 +68,14 @@ def main() -> int:
         "--skip-trust",
         action="store_true",
         help="Skip workspace trust dialog",
+    )
+    p.add_argument(
+        "--sandbox",
+        choices=SANDBOX_CHOICES,
+        default=None,
+        help="read-only -> attach a per-call Policy Engine deny (write_file/replace/"
+             "run_shell_command) INSTEAD of the crashy plan mode; workspace-write -> "
+             "write-enabled (code-agent). Default: unset (no policy attached).",
     )
     p.add_argument(
         "--model",
@@ -85,6 +104,14 @@ def main() -> int:
         log("empty prompt")
         return EXIT_ARG_ERROR
 
+    if args.sandbox == "read-only" and args.approval_mode in ("yolo", "auto_edit"):
+        log(f"--sandbox read-only conflicts with --approval-mode {args.approval_mode} "
+            "(a write-auto-approving mode). Use --approval-mode default with read-only.")
+        return EXIT_ARG_ERROR
+    if args.sandbox == "read-only" and not _READONLY_POLICY.is_file():
+        log(f"read-only policy file missing: {_READONLY_POLICY}")
+        return EXIT_ARG_ERROR
+
     require_binary("gemini")
 
     pydantic_cls = None
@@ -106,6 +133,8 @@ def main() -> int:
             cmd += ["-m", args.model]
         if args.skip_trust:
             cmd.append("--skip-trust")
+        if args.sandbox == "read-only":
+            cmd += ["--policy", str(_READONLY_POLICY)]
         return cmd
 
     result = run_cli_with_retry(
