@@ -11,10 +11,11 @@ pre-merge review.
 
 - **Vendor CLIs installed + authenticated** — the wrappers never manage auth:
   - `codex` installed, then `codex login`.
-  - `gemini` (Gemini CLI) installed, then its sign-in. **사내: available through
-    2026-07-31; after that the Google-family review leg degrades to claude+codex
-    (logged, not an error).**
-  - `agy` (Antigravity) installed, then its OAuth sign-in. **Not used 사내.**
+  - `gemini` (Gemini CLI) installed, then its sign-in. **Company-internal:
+    available through 2026-07-31; after that the Google-family review leg
+    degrades to claude+codex (logged, not an error).**
+  - `agy` (Antigravity) installed, then its OAuth sign-in. **Company-internal:
+    not used.**
   - The claude leg of a review is an in-session `Agent` subagent — no separate install.
 - **`python3 >= 3.12`** on PATH (the `bin/` wrappers run via `#!/usr/bin/env python3`).
 

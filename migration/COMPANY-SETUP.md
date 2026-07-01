@@ -2,8 +2,9 @@
 
 > 🌐 **한국어: [COMPANY-SETUP.ko.md](./COMPANY-SETUP.ko.md)**
 >
-> 사내 (closed-network, limited-proxy) Claude Code 환경을 우리가 함께 일하던 방식으로
-> 최적화하기 위한 설치/구성 가이드. 동봉된 `CLAUDE.recommended.md` 와 짝.
+> Install / configuration guide for optimizing a **company-internal**
+> (closed-network, limited-proxy) Claude Code environment the way we paired.
+> Companion to the bundled `CLAUDE.recommended.md`.
 
 This guide bootstraps a company Claude Code environment with the tools and
 working practices that make the human↔Claude pair effective. It targets:
