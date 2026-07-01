@@ -40,7 +40,7 @@ from _common import (
 )
 
 
-APPROVAL_CHOICES = ("default", "auto_edit", "plan", "yolo")
+APPROVAL_CHOICES = ("default", "auto_edit")
 SANDBOX_CHOICES = ("read-only", "workspace-write")
 
 # Per-call READ-ONLY via the Gemini CLI Policy Engine (--policy) instead of the
@@ -104,7 +104,7 @@ def main() -> int:
         log("empty prompt")
         return EXIT_ARG_ERROR
 
-    if args.sandbox == "read-only" and args.approval_mode in ("yolo", "auto_edit"):
+    if args.sandbox == "read-only" and args.approval_mode == "auto_edit":
         log(f"--sandbox read-only conflicts with --approval-mode {args.approval_mode} "
             "(a write-auto-approving mode). Use --approval-mode default with read-only.")
         return EXIT_ARG_ERROR

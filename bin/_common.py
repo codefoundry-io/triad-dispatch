@@ -220,11 +220,14 @@ SERVER_CAP_BACKOFF_S: tuple[int, ...] = (15, 45)
 SERVER_CAP_MAX_RETRIES = len(SERVER_CAP_BACKOFF_S)
 
 
-# ─── Audit oversize alert policy ──────────────────────────────────────────
-# 매 audit() append 후 size check. 임계치 초과 시 1줄 stderr alert (deterministic).
-# Auto-archive / rotation 미적용 — 10 MB 면 이미 통계 분석 충분 분량,
-# 사용자가 maintenance SKILL (jq cross-tab) 호출 후 직접 rm 으로 처리.
-AUDIT_OVERSIZE_ALERT_BYTES = 10 * 1024 * 1024  # 10 MB
+# ─── Audit rotation policy ────────────────────────────────────────────────
+# audit.jsonl is append-only operational telemetry, so it must be bounded too.
+# Rotate the active file after append once it crosses 10 MB, then keep at most
+# five archives / 50 MB per CLI. The per-call run-log remains the detailed IPC
+# artifact; audit is durable routing telemetry, not an unbounded datastore.
+AUDIT_ROTATE_BYTES = 10 * 1024 * 1024  # 10 MB
+AUDIT_MAX_ARCHIVES = 5
+AUDIT_ARCHIVE_MAX_BYTES = AUDIT_ROTATE_BYTES * AUDIT_MAX_ARCHIVES
 
 
 # ─── Run-log policy (per-execution artifact, dispatch-SKILL input) ────────
@@ -1171,8 +1174,9 @@ _DEBUG_DIR = Path(__file__).resolve().parent / "_debug"
 def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
     """Append one JSONL record per invocation to _logs/<cli>/audit.jsonl.
 
-    flock(LOCK_EX) for cross-process append safety. `final_answer_head` cap
-    at 500 chars; full answer flows to caller via `result.final_answer`.
+    A per-CLI lock file serializes append + rotation across processes.
+    `final_answer_head` caps at 500 chars; full answer flows to caller via
+    `result.final_answer`.
     """
     log_dir = _LOG_DIR / cli
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1203,39 +1207,71 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
     else:
         rec["stdout"] = result.stdout
     path = log_dir / "audit.jsonl"
-    with path.open("a", encoding="utf-8") as f:
+    lock_path = log_dir / ".audit.lock"
+    with lock_path.open("a", encoding="utf-8") as lock:
         try:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            # Flush the record under the lock so the write() that appends it
-            # happens while the lock is held — making the flock the thing that
-            # serializes the append, not an implicit reliance on O_APPEND. A
-            # small record (< the ~8 KiB buffer) would otherwise stay buffered
-            # past LOCK_UN and its write() would only fire at close (outside
-            # the lock; flush makes the bytes kernel-visible, not durable);
-            # large records already flush mid-write under the lock. Measured:
-            # the unflushed path does NOT corrupt the JSONL (each record is one
-            # atomic O_APPEND write), so this is a lock-coverage/uniformity
-            # hardening (mirrors debug_log), not a fix for a present bug.
-            f.flush()
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                # Flush the record while the audit lock is held so append and
+                # possible rotation are one serialized critical section.
+                f.flush()
+            _rotate_audit_if_needed(log_dir, path, cli)
         finally:
             try:
-                fcntl.flock(f, fcntl.LOCK_UN)
+                fcntl.flock(lock, fcntl.LOCK_UN)
             except Exception:
                 pass
 
-    # Oversize alert (deterministic, no archive — user runs maintenance SKILL).
+
+def _rotate_audit_if_needed(log_dir: Path, path: Path, cli: str) -> None:
+    """Rotate active audit log and cap archives.
+
+    Called under `.audit.lock`. Best-effort: audit must never fail the wrapper
+    call path.
+    """
     try:
-        size = path.stat().st_size
-        if size > AUDIT_OVERSIZE_ALERT_BYTES:
-            mb = size / (1024 * 1024)
-            log(
-                f"WARN: {cli}/audit.jsonl = {mb:.1f} MB "
-                f"(> {AUDIT_OVERSIZE_ALERT_BYTES // (1024*1024)} MB) — "
-                f"maintenance SKILL 호출 권장 (jq cross-tab + rm)"
-            )
+        if path.stat().st_size <= AUDIT_ROTATE_BYTES:
+            return
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        archive = log_dir / f"audit.{stamp}-{os.getpid()}-{uuid.uuid4().hex[:8]}.jsonl"
+        path.rename(archive)
+        path.touch()
+        log(
+            f"WARN: rotated {cli}/audit.jsonl to {archive.name} "
+            f"(>{AUDIT_ROTATE_BYTES // (1024*1024)} MB)"
+        )
+        _prune_audit_archives(log_dir)
     except Exception:
         pass
+
+
+def _prune_audit_archives(log_dir: Path) -> None:
+    """Bound audit archives by count and aggregate bytes."""
+    try:
+        entries = list(log_dir.glob("audit.*.jsonl"))
+    except Exception:
+        return
+    rows: list[tuple[Path, float, int]] = []
+    for p in entries:
+        try:
+            st = p.stat()
+            rows.append((p, st.st_mtime, st.st_size))
+        except OSError:
+            continue
+    rows.sort(key=lambda x: x[1])
+    total_bytes = sum(sz for _, _, sz in rows)
+    over_count = max(0, len(rows) - AUDIT_MAX_ARCHIVES)
+    over_bytes = total_bytes - AUDIT_ARCHIVE_MAX_BYTES
+    for p, _, sz in rows:
+        if over_count <= 0 and over_bytes <= 0:
+            break
+        try:
+            p.unlink()
+            over_count -= 1
+            over_bytes -= sz
+        except OSError:
+            continue
 
 
 # ─── Per-execution run-log (dispatch SKILL input) ─────────────────────────

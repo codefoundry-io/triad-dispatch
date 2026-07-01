@@ -29,8 +29,9 @@ makes the `unknown`-classification path correctly route to the repair sub-agent.
 3. **Cleanup after dispatch.** `rm -f <run-log-path>` once the repair agent returns (REPAIRED *or* ESCALATE). The wrapper failsafe is for orphans, not normal cleanup.
 4. **Repair agent ONLY on `unknown`.** Other classifications carry actionable meaning at the wrapper layer — dispatching the agent on them wastes its 3-attempt budget.
 5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. See leader memory `feedback_dispatch_prompt_hygiene.md` for the full reasoning + fake run-log realistic-format guide.
-6. **No model name pinning.** Gemini model names rot every few weeks. Use vendor's Auto router by default; `--approval-mode plan` for read-only deep reasoning (auto-upgrades to Pro); `--model <name>` only when the user explicitly named the model. Date-anchor any pinned model usage.
+6. **No model name pinning.** Gemini model names rot every few weeks. Use vendor's Auto router by default; `--model <name>` only when the user explicitly named the model. Date-anchor any pinned model usage.
 7. **Repair dispatch is MANDATORY and non-deferrable — spawn it in PARALLEL, never skip it.** When Step 4 routes a failure to repair (`unknown` / `extraction-error` / `timeout`), you MUST spawn the `gemini-wrapper-repair` sub-agent. Surfacing the failure to the user does NOT discharge this — *surfacing* and *repairing* are SEPARATE obligations; doing one is not doing the other. "I have other / more important work", "the call already failed", "this looks like a one-off" are NEVER valid reasons to skip or defer the spawn. Remove the temptation to defer by dispatching with the `Agent` tool's **`run_in_background: true`** so it runs CONCURRENTLY with your foreground work; parse its output (Step 5c) + clean up (Step 5d) when it completes. Why non-skippable: the repair agent's payoff is FUTURE routing — framework completeness, NOT the immediate call — so it is a fire-in-parallel task, and skipping it is a silent regression that lets the same vendor error keep failing un-routed on every later call (origin: 2026-06-12 — a freshly-installed company plugin leader hit an HTTP 403 → `unknown`, reported only "failed", and skipped the spawn citing "other work"). Complements rule 4: rule 4 = dispatch ONLY for these classes; rule 7 = you MUST, in parallel, for these classes.
+8. **No plan/yolo approval modes.** The wrapper argparse accepts only `--approval-mode default|auto_edit`. Read-only dispatch uses `--sandbox read-only`, which attaches the per-call Policy Engine file instead of Gemini plan mode. `yolo` is not a permitted mode in this repo.
 
 ## Flow
 
@@ -45,14 +46,15 @@ gemini_wrapper.py \
 PROMPT
 )" \
   [--cwd /absolute/path] \
-  [--approval-mode default|auto_edit|plan|yolo] \
+  [--sandbox read-only|workspace-write] \
+  [--approval-mode default|auto_edit] \
   [--model <pinned-model-name>] \
   [--skip-trust] \
   [--timeout <seconds>] \
   [--pydantic module:Class]
 ```
 
-Defaults: `--approval-mode default` (read auto, write/shell prompt). `plan` = read-only deep reasoning, auto-upgrades to Pro model. `auto_edit` = write/shell auto (only on explicit leader request). Triad policy disallows `yolo` (refused at lib level).
+Defaults: no `--sandbox` policy and `--approval-mode default` (read auto, write/shell prompt). `--sandbox read-only` attaches `bin/policies/gemini-readonly.toml` for that call only. `auto_edit` = write/shell auto (only on explicit leader request) and conflicts with `--sandbox read-only`. `--approval-mode plan/yolo` is rejected by argparse.
 
 > **Empirical caveat (2026-06-08): `plan` mode is unreliable for HEAVY multi-file agentic reads.** On a heavy task (e.g. "read 16 source files in full and review"), the Pro plan-loop emits an empty/malformed turn (vendor `Invalid stream: The model returned an empty response or malformed tool call`), surfacing as `extraction-error` (rc=1) in ~10-25s. Isolation: `default+small` PASS, `plan+small` PASS, `default+big` PASS, `plan+big` FAIL — it is the **plan-mode × heavy-read interaction**, not plan mode or size alone. **For heavy repo-read reviews use `--approval-mode default`** (handles the agentic load robustly); reserve `plan` for focused deep-reasoning on a small surface. A failed gemini dispatch must be root-caused (isolate mode × load), never silently dropped. See leader memory `feedback_gemini_plan_mode_heavy_read_2026_06_08`.
 

@@ -37,6 +37,15 @@ You may write **only** to `~/.config/triad-dispatch/classifier-patches.json` (cr
 
 **Use the JSON keys** `vendor_exit_map` / `patterns` and the existing list NAMES above. **NEVER write a Python-level engine symbol name** (an upper-case identifier ending in `_VENDOR_EXIT_MAP`, or any other internal Python variable) as a JSON key — the engine reads the JSON keys `vendor_exit_map` / `patterns` only.
 
+## Classifier JSON lock (HARD)
+
+Concurrent repair agents can target the same classifier file. Before reading or
+writing the extension JSON, acquire an exclusive `fcntl.flock` on a sibling lock
+file named `classifier-patches.json.lock` (or `<TRIAD_CLASSIFIER_EXTENSION>.lock`
+when the env override is set). Hold the lock for the full read → merge → write a
+temp file in the same directory → `os.replace` → validate cycle. Never use a
+read-modify-write sequence outside that lock; it can drop another leg's patch.
+
 You must **NOT**:
 - Edit, patch, or compile any engine source (the wrapper or any installed plugin file). The engine is ephemeral; your durable patch is the extension JSON.
 - Touch retry policy / retry counts / backoff timing.
@@ -121,7 +130,7 @@ Keep edits **surgical**:
 - The substring must be **lowercase** and appear verbatim in lowercased stderr/stdout (verify by reading the actual text — don't trust hypothesis).
 - The vendor exit code must be an integer actually observed in this call, written as a string key (e.g. `"77"`).
 
-**Mechanics**: Read `~/.config/triad-dispatch/classifier-patches.json` (or start from `{}` if the file is absent), add ONE entry under the failing CLI's `codex` envelope, then Write the merged JSON back atomically (valid JSON only — no comments, no trailing prose). The engine's two-layer `classify()` merges this extension at runtime, so the re-run with `--repair-mode` will route correctly.
+**Mechanics**: Acquire the classifier lock, read `~/.config/triad-dispatch/classifier-patches.json` (or start from `{}` if the file is absent), add ONE entry under the failing CLI's `codex` envelope, then write the merged JSON to a temp file in the same directory and `os.replace` it over the target (valid JSON only — no comments, no trailing prose). Validate while still holding the lock. The engine's two-layer `classify()` merges this extension at runtime, so the re-run with `--repair-mode` will route correctly.
 
 Example extension JSON (note the top-level key is **`codex`** for this agent, and the keys are the JSON keys `vendor_exit_map` / `patterns` — NOT engine symbol names):
 

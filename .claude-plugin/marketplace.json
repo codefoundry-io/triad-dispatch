@@ -8,7 +8,7 @@
     {
       "name": "triad-dispatch",
       "description": "Triad cross-CLI dispatch: single-shot codex/gemini/antigravity dispatch + self-improving classifier + cross-family review.",
-      "version": "0.1.419",
+      "version": "0.1.420",
       "source": "./"
     }
   ]

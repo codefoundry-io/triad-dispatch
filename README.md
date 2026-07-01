@@ -147,6 +147,26 @@ it **survives plugin updates** (NOT the ephemeral plugin dir). The repair
 sub-agents append new `error → class` entries there; the engine merges them at
 runtime. It is portable — a team can curate and share it.
 
+## Runtime Artifacts And Cleanup
+
+Wrapper telemetry is local and bounded. Runtime files live under
+`bin/_logs/<cli>/` for each wrapper family (`codex`, `gemini`, `antigravity`):
+
+- `audit.jsonl` rotates when the active file exceeds 10 MB and keeps at most
+  five archives / 50 MB per CLI.
+- Failure IPC run logs live under `bin/_logs/<cli>/runs/*.json`. File names
+  include UTC timestamp, process id, and an 8-character random UUID suffix, so
+  parallel dispatches do not collide.
+- Normal dispatch cleanup deletes the run log and matching `.repair.json` after
+  the repair agent returns.
+- Wrapper failsafes cap run logs at 100 files / 20 MB per CLI and sweep stale
+  run logs plus `.repair.json` files older than 7200 seconds on the next normal
+  dispatch.
+
+Classifier patches live in `~/.config/triad-dispatch/classifier-patches.json`.
+Repair agents use the adjacent lock file before editing it so concurrent repairs
+do not silently overwrite each other.
+
 ## What's inside
 
 - **skills** (4): `triad-codex-dispatch`, `triad-gemini-dispatch`,

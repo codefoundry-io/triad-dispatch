@@ -57,8 +57,8 @@ def test_default_unset_has_no_policy(tmp_path):
     assert "--policy" not in argv
 
 
-def test_readonly_plus_yolo_rejected_before_spawn(tmp_path):
-    r, argv = _run(tmp_path, "--sandbox", "read-only", "--approval-mode", "yolo")
-    assert r.returncode != 0, "read-only + yolo must be rejected"
-    assert "conflicts" in r.stderr
+def test_yolo_approval_mode_rejected_before_spawn(tmp_path):
+    r, argv = _run(tmp_path, "--approval-mode", "yolo")
+    assert r.returncode != 0, "yolo approval mode must be rejected"
+    assert "invalid choice" in r.stderr
     assert argv == "", "gemini must not be spawned on the rejected combo"

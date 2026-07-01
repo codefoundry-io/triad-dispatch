@@ -149,6 +149,25 @@ leader 와 오너가 실제로 사용하는 방식:
 서브에이전트가 새 `error → class` 엔트리를 추가하고, 엔진이 런타임에 병합합니다.
 이식 가능 — 팀이 큐레이션하고 공유할 수 있습니다.
 
+## 런타임 산출물과 정리
+
+Wrapper telemetry는 로컬에 남지만 크기가 제한된다. 파일은 wrapper family별로
+`bin/_logs/<cli>/` 아래에 생긴다(`codex`, `gemini`, `antigravity`).
+
+- `audit.jsonl`은 active file이 10 MB를 넘으면 rotate하고, CLI당 archive는
+  최대 5개 / 50 MB까지만 유지한다.
+- 실패 IPC run log는 `bin/_logs/<cli>/runs/*.json`에 생긴다. 파일명에는 UTC
+  timestamp, process id, 8자 random UUID suffix가 들어가므로 병렬 dispatch끼리
+  충돌하지 않는다.
+- 정상 dispatch cleanup은 repair agent가 끝난 뒤 run log와 대응되는
+  `.repair.json`을 지운다.
+- wrapper failsafe는 run log를 CLI당 100개 / 20 MB로 제한하고, 다음 normal
+  dispatch 시작 시 7200초보다 오래된 run log와 `.repair.json`을 sweep한다.
+
+Classifier patch는 `~/.config/triad-dispatch/classifier-patches.json`에 남는다.
+repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하도록 되어 있어 병렬
+repair 간 덮어쓰기를 피한다.
+
 ## 구성 (What's inside)
 
 - **skills** (4): `triad-codex-dispatch`, `triad-gemini-dispatch`,
