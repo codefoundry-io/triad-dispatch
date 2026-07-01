@@ -11,11 +11,13 @@ pre-merge review.
 
 - **Vendor CLIs installed + authenticated** — the wrappers never manage auth:
   - `codex` installed, then `codex login`.
-  - `gemini` (Gemini CLI) installed, then its sign-in. **Company-internal:
-    available through 2026-07-31; after that the Google-family review leg
-    degrades to claude+codex (logged, not an error).**
-  - `agy` (Antigravity) installed, then its OAuth sign-in. **Company-internal:
-    not used.**
+  - **Google-family leg — choose per your environment:**
+    - **External / individual → `agy` (Antigravity)**, installed + OAuth sign-in.
+      The Gemini CLI *individual* tier is deprecated (Google migrated it to the
+      Antigravity suite), so agy is the individual-environment Google-family leg.
+    - **Company-internal → `gemini` (Gemini CLI)**, installed + your org sign-in.
+      Internally the **enterprise** Gemini tier stays in use (the individual-tier
+      deprecation does not affect it); agy is not used internally.
   - The claude leg of a review is an in-session `Agent` subagent — no separate install.
 - **`python3 >= 3.12`** on PATH (the `bin/` wrappers run via `#!/usr/bin/env python3`).
 

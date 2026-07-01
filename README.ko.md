@@ -11,10 +11,13 @@ Claude Code **leader** 를 위한 단발(single-shot) 크로스-CLI 디스패치
 
 - **vendor CLI 설치 + 인증** — wrapper 는 인증을 직접 관리하지 않습니다:
   - `codex` 설치 후 `codex login`.
-  - `gemini` (Gemini CLI) 설치 후 로그인. **사내: 2026-07-31 까지 사용 가능;
-    그 이후에는 Google-family 리뷰 leg 가 claude+codex 로 degrade 됩니다
-    (에러 아님, 로그만 남김).**
-  - `agy` (Antigravity) 설치 후 OAuth 로그인. **사내 미사용.**
+  - **Google-family leg — 환경에 따라 선택:**
+    - **사외 / 개인 → `agy` (Antigravity)** 설치 + OAuth 로그인. Gemini CLI *개인*
+      tier 는 폐지(Google 이 Antigravity 스위트로 이전)되어, 개인 환경의
+      Google-family leg 는 agy 입니다.
+    - **사내 → `gemini` (Gemini CLI)** 설치 + 사내 로그인. 사내에서는
+      **엔터프라이즈** Gemini tier 를 계속 사용합니다(개인-tier 폐지의 영향
+      없음); agy 는 사내 미사용.
   - 리뷰의 claude leg 는 세션 내 `Agent` 서브에이전트입니다 — 별도 설치 불필요.
 - **`python3 >= 3.12`** 가 PATH 에 있어야 합니다 (`bin/` wrapper 는
   `#!/usr/bin/env python3` 로 실행).

@@ -9,7 +9,10 @@
 대상 환경:
 
 - **OS**: Ubuntu 24.04 (Noble) — 사내 prod 기준.
-- **사용 가능 vendor CLI**: Codex CLI, Gemini CLI, Claude Code. (Antigravity 없음)
+- **사용 가능 vendor CLI**: Codex CLI, **Gemini CLI(엔터프라이즈 tier)**, Claude
+  Code. (Antigravity 없음) 사내 Google-family leg 는 **엔터프라이즈 Gemini** 이며
+  계속 사용 — 개인-tier Gemini 폐지(사외 사용자는 Antigravity/agy 로 이전)는
+  엔터프라이즈 tier 에 영향 없음.
 - **네트워크**: 폐쇄망 + **제한적 프록시** — 외부 마켓플레이스 직접 접근 불가.
   공개 `github.com` URL 대신 **사내 GHE 미러** 또는 **로컬 폴더 복사**로 설치.
 

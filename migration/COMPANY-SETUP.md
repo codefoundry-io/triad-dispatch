@@ -10,7 +10,10 @@ This guide bootstraps a company Claude Code environment with the tools and
 working practices that make the human↔Claude pair effective. It targets:
 
 - **OS**: Ubuntu 24.04 (Noble) — the internal prod baseline.
-- **Vendor CLIs available**: Codex CLI, Gemini CLI, Claude Code. (No Antigravity.)
+- **Vendor CLIs available**: Codex CLI, **Gemini CLI (enterprise tier)**, Claude
+  Code. (No Antigravity.) Internally the Google-family leg is **enterprise
+  Gemini**, which stays in use — the individual-tier Gemini deprecation
+  (external users migrate to Antigravity/agy) does NOT affect the enterprise tier.
 - **Network**: closed network with a **limited proxy** — external marketplaces are
   not directly reachable; install from an **internal GHE mirror** or a **local
   folder copy**, not a public `github.com` URL.
