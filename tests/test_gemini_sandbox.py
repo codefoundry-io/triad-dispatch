@@ -62,3 +62,17 @@ def test_yolo_approval_mode_rejected_before_spawn(tmp_path):
     assert r.returncode != 0, "yolo approval mode must be rejected"
     assert "invalid choice" in r.stderr
     assert argv == "", "gemini must not be spawned on the rejected combo"
+
+
+def test_plan_approval_mode_rejected_before_spawn(tmp_path):
+    r, argv = _run(tmp_path, "--approval-mode", "plan")
+    assert r.returncode != 0, "plan approval mode must be rejected"
+    assert "invalid choice" in r.stderr
+    assert argv == "", "gemini must not be spawned on the rejected combo"
+
+
+def test_readonly_plus_auto_edit_rejected_before_spawn(tmp_path):
+    r, argv = _run(tmp_path, "--sandbox", "read-only", "--approval-mode", "auto_edit")
+    assert r.returncode != 0, "read-only + auto_edit must be rejected"
+    assert "conflicts" in r.stderr
+    assert argv == "", "gemini must not be spawned on the rejected combo"
