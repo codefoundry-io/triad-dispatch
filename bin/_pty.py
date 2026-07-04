@@ -2,9 +2,13 @@
 """Stdlib-pty runner for CLIs (agy) that drop stdout on a non-TTY stdout.
 
 agy -p emits nothing and hangs when stdout is not a tty (GitHub
-google-antigravity/antigravity-cli#76). Driving it through a pty makes it
-believe it has a terminal. No `script`/`pexpect` dependency (BSD vs util-linux
-`script` syntax differs — would break artifact portability).
+google-antigravity/antigravity-cli#76 — v1.0.15 fixed this on WINDOWS only;
+still OPEN for macOS/Linux, both Triad targets, re-checked 2026-07-04 on
+1.0.16). Driving it through a pty makes it believe it has a terminal. Retire
+the pty ONLY when `agy --help` shows a JSON/plain output mode AND #76 is fixed
+on macOS/Linux — a changelog "fixed #76" line alone is not sufficient. No
+`script`/`pexpect` dependency (BSD vs util-linux `script` syntax differs —
+would break artifact portability).
 """
 from __future__ import annotations
 

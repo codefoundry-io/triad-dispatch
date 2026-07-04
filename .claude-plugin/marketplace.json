@@ -1,14 +1,13 @@
 {
-  "name": "triad-internal-tools",
-  "description": "Internal Triad dispatch toolkit.",
+  "name": "triad-dispatch",
+  "description": "Triad cross-CLI dispatch toolkit.",
   "owner": {
-    "name": "Triad"
+    "name": "codefoundry-io"
   },
   "plugins": [
     {
       "name": "triad-dispatch",
       "description": "Triad cross-CLI dispatch: single-shot codex/gemini/antigravity dispatch + self-improving classifier + cross-family review.",
-      "version": "0.1.421",
       "source": "./"
     }
   ]

@@ -27,8 +27,8 @@ makes the `unknown`-classification path correctly route to the repair sub-agent.
 1. **Bash invocation only.** No `Agent()` around the wrapper itself. The stderr `[wrapper]` summary line and `run-log:` path emission only surface via Bash.
 2. **Path-based agent input.** Pass the run-log file *path* to the repair agent, not its content. Inline-embedding corrupts on JSON-in-JSON / utf-8 / ANSI / large vendor stdout.
 3. **Cleanup after dispatch.** `rm -f <run-log-path>` once the repair agent returns (REPAIRED *or* ESCALATE). The wrapper failsafe is for orphans, not normal cleanup.
-4. **Repair agent ONLY on `unknown`.** Other classifications carry actionable meaning at the wrapper layer — dispatching the agent on them wastes its 3-attempt budget.
-5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. See leader memory `feedback_dispatch_prompt_hygiene.md` for the full reasoning + fake run-log realistic-format guide.
+4. **Repair agent ONLY on `unknown` / `extraction-error` / `timeout`.** Every other classification carries actionable meaning at the wrapper layer — dispatching the agent on them wastes its 3-attempt budget.
+5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. Reasoning: any test framing leaks into the vendor model's behavior and corrupts both the sample and the repair agent's accumulated memory.
 6. **Repair dispatch is MANDATORY and non-deferrable — spawn it in PARALLEL, never skip it.** When Step 4 routes a failure to repair (`unknown` / `extraction-error` / `timeout`), you MUST spawn the `codex-wrapper-repair` sub-agent. Surfacing the failure to the user does NOT discharge this — *surfacing* and *repairing* are SEPARATE obligations; doing one is not doing the other. "I have other / more important work", "the call already failed", "this looks like a one-off" are NEVER valid reasons to skip or defer the spawn. Remove the temptation to defer by dispatching with the `Agent` tool's **`run_in_background: true`** so it runs CONCURRENTLY with your foreground work; parse its output (Step 5c) + clean up (Step 5d) when it completes. Why non-skippable: the repair agent's payoff is FUTURE routing — framework completeness, NOT the immediate call — so it is a fire-in-parallel task, and skipping it is a silent regression that lets the same vendor error keep failing un-routed on every later call (origin: 2026-06-12 — a freshly-installed company plugin leader hit an HTTP 403 → `unknown`, reported only "failed", and skipped the spawn citing "other work"). Complements rule 4: rule 4 = dispatch ONLY for these classes; rule 6 = you MUST, in parallel, for these classes.
 
 ## Flow
@@ -93,7 +93,7 @@ Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) / `4` (bin
 | classification (rc) | Leader action |
 |---|---|
 | `ok` (0) | Return wrapper stdout. With `--pydantic`, stdout is the validated JSON object. |
-| terminal (65) — cli-subscription-cap / token-limit / oauth-env / fanout-spawn-error / config-conflict | Surface to user with cause (re-login / quota / prompt size / `--task` subagent spawn rejected / inherited `~/.codex/config.toml` parse error). **NOT** repair-agent territory (already matched — only `unknown` routes to repair). |
+| terminal (65) — cli-subscription-cap / token-limit / oauth-env / fanout-spawn-error / config-conflict | Surface to user with cause (re-login / quota / prompt size / `--task` subagent spawn rejected / inherited `~/.codex/config.toml` parse error). **NOT** repair-agent territory (already matched — repair routing is only `unknown` / `extraction-error` / `timeout`). |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff. |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 6). Spawn it even when you are busy or also surfacing the failure — never skip.** |
 | `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 6).** Vendor returned rc=0 but extractor found no answer (empty JSON envelope, missing last-message file). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
@@ -135,13 +135,13 @@ Input:
     "patch":            "<string|null>  // description in '<file:line> — entry added' form, null when ESCALATE",
     "reason":           "<string>  // one-line semantic summary of what happened",
     "attempts":         "<int>  // 1-3",
-    "per_attempt_log":  "<array>  // per-attempt records, each {n, hypothesis, source, patch, py_compile, rerun}"
+    "per_attempt_log":  "<array>  // per-attempt records, each {n, hypothesis, source, patch, validate, rerun}"
   },
-  "task": "Read the run-log, run repair workflow (extract literal error → WebSearch date-anchored → patch _common.py → py_compile → re-run with --repair-mode), then write the JSON object matching output_schema to output_path. 3-attempt ceiling, then escalate."
+  "task": "Read the run-log, run repair workflow (extract literal error → WebSearch date-anchored → append to the classifier extension JSON (~/.config/triad-dispatch/classifier-patches.json) → re-run with --repair-mode), then write the JSON object matching output_schema to output_path. 3-attempt ceiling, then escalate."
 }
 
 Example response (Write this JSON object to output_path):
-{"outcome": "REPAIRED", "downstream": "ok", "patch": "_common.py:71 — added 'rate limit' to SERVER_CAPACITY_PATTERNS", "reason": "transient backend rate throttle, framework now classifies", "attempts": 1, "per_attempt_log": [{"n": 1, "hypothesis": "server-capacity", "source": "https://github.com/openai/codex/issues/N", "patch": "SERVER_CAPACITY_PATTERNS += ('rate limit',)", "py_compile": "PASS", "rerun": "rc=0/classification=ok"}]}
+{"outcome": "REPAIRED", "downstream": "ok", "patch": "classifier-patches.json — added 'rate limit' to codex patterns.SERVER_CAPACITY_PATTERNS", "reason": "transient backend rate throttle, framework now classifies", "attempts": 1, "per_attempt_log": [{"n": 1, "hypothesis": "server-capacity", "source": "https://github.com/openai/codex/issues/N", "patch": "codex patterns.SERVER_CAPACITY_PATTERNS: appended 'rate limit'", "validate": "PASS", "rerun": "rc=0/classification=ok"}]}
 
 Now do the repair work, write the JSON to output_path, then return `done` in chat.
 ```
@@ -198,10 +198,10 @@ REPAIRED and ESCALATE both clean up — leader has the parsed values in shell va
 
 - **Reads** `_logs/codex/runs/<id>.json` (run-log) and `_logs/codex/runs/<id>.json.repair.json` (agent's file-based response).
 - **Removes** both paths post-dispatch (REPAIRED + ESCALATE).
-- **Invokes** `3rd-Agent/wrappers/codex_wrapper.py` via Bash.
+- **Invokes** `bin/codex_wrapper.py` via Bash.
 - **Dispatches** sub-agent `codex-wrapper-repair`.
 
-Does NOT edit `_common.py` (repair agent's territory) or read `_logs/codex/audit.jsonl` (maintenance SKILL's territory).
+Does NOT edit the classifier extension JSON (repair agent's territory) or read `_logs/codex/audit.jsonl` (maintenance SKILL's territory).
 
 ## Code task (Archetype B) — autonomous coding worker
 
@@ -244,7 +244,7 @@ should be aware when dispatching code tasks on sensitive repositories.
    - `69` (EXIT_TASK_BLOCKED — codex self-reported BLOCKED / NEEDS_CONTEXT) → read the report, re-dispatch with the missing context, or escalate. Do NOT verify/commit.
    - any other non-zero → a real wrapper/vendor failure (see the Step 4 table); handle per that table.
 5. **Verify (leader-side, authoritative).** Run the verify-cmd INSIDE the worktree, outside the sandbox: `( cd <path> && <verify-cmd> )`. codex's in-sandbox TDD is best-effort self-correction; this run is the commit gate.
-6. **Review.** `git -C <path> diff`, scoped to intended paths (ignore `__pycache__/` and other build artifacts pytest may create). Read codex's report. For merge-worthy or correctness-critical changes, run `triad-cross-family-review` (self-rule #6) BEFORE committing.
+6. **Review.** `git -C <path> diff`, scoped to intended paths (ignore `__pycache__/` and other build artifacts pytest may create). Read codex's report. For merge-worthy or correctness-critical changes, run `triad-cross-family-review` (the cross-family review rule) BEFORE committing.
 7. **Commit (leader/user judgment).** If verify passed and the review is clean: commit/merge into the main repo, noting "implemented by codex worker (Archetype B)" in the message body (author-disclosure). If verify failed or the change is doubtful: reject, re-dispatch with the failure as context, or escalate.
 8. **Cleanup.** `git worktree remove <path>`.
 
@@ -253,7 +253,7 @@ should be aware when dispatching code tasks on sensitive repositories.
 | Task | Invocation |
 |---|---|
 | simple, well-scoped | `--task code` (single implementer, no fan-out) |
-| complex | `--task code --fanout auto` (codex self-decomposes; the safety of this path is scrutinized under self-rule #6) |
+| complex | `--task code --fanout auto` (codex self-decomposes; the safety of this path is scrutinized under the cross-family review rule) |
 
 **`--fanout auto` assumption (owner decision):** `--task code --fanout auto`
 relies on codex's `dispatching-parallel-agents` skill to parallelize only
@@ -266,15 +266,15 @@ the assumption, not a prohibition.
 
 ## Direct `codex exec` knowledge — sandbox grants, execpolicy rules, skills
 
-(Added 2026-06-10 — facts proven in the IngenuityPrint cross-CLI authoring
+(Added 2026-06-10 — facts proven in a lab project's cross-CLI authoring
 work; Tier-1 verified against the official codex skills doc
-(developers.openai.com/codex/skills) + installed `codex-cli 0.137.0` help.)
+(developers.openai.com/codex/skills) + installed `codex-cli 0.142.5 (re-verified 2026-07-04)` help.)
 
 The wrapper covers single-shot Q&A / `--task` dispatches. Some invocations
 are NOT expressible through the wrapper — it pins `--ephemeral` (ephemeral
 threads do not support `/goal`) and exposes no `--add-dir` / arbitrary `-c`
 passthrough. For those, the leader (or a project-side skill, e.g.
-IngenuityPrint `codex-tc-writer`) builds a direct `codex exec` invocation.
+a lab project's `codex-tc-writer`) builds a direct `codex exec` invocation.
 Keep these facts straight instead of re-deriving them from memory:
 
 ### Extra writable roots (multiple workspaces)
@@ -336,16 +336,13 @@ Keep these facts straight instead of re-deriving them from memory:
 - `codex_wrapper.py` pins `--ephemeral`; a `/goal`-driving or skill-invoking
   dispatch must be a direct `codex exec` WITHOUT `--ephemeral`.
 - `--add-dir` / arbitrary `-c` passthrough is NOT implemented in the wrapper
-  (candidate follow-up; touching it triggers the 3rd-Agent doc-sync chain —
-  `3rd-Agent/CLAUDE.md` § Mandatory doc updates).
-- Proven instance: IngenuityPrint repo
+  (candidate follow-up; in the source repo this triggers the doc-sync chain).
+- Proven instance: a lab-project repo
   `.claude/skills/codex-tc-writer/SKILL.md` (leader dispatch procedure) +
   `.claude/skills/nl-to-yaml-author/references/cross-cli.md` (v5 flag notes).
 
 ## See also
 
-- `3rd-Agent/wrappers/README.md` — wrapper contract + run-log schema.
-- `.claude/agents/codex-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
-- `triad-codex-reference` — codex CLI flag / sub-command lookup (raw `--help` dumps; this SKILL's § Direct `codex exec` knowledge carries the curated facts).
+- the plugin `README.md` — wrapper contract + run-log schema.
+- `agents/codex-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
 - `triad-gemini-dispatch` — parallel SKILL for Gemini.
-- Leader memory `feedback_dispatch_prompt_hygiene.md` — dispatch prompt hygiene + test isolation rationale.

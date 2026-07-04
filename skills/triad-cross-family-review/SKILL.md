@@ -1,6 +1,6 @@
 ---
 name: triad-cross-family-review
-description: Use for the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by self-rule #6 — dispatch INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frame the suspect/omitted/simplified decisions as QUESTIONS, consolidate their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then run a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
+description: Use for the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatch INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frame the suspect/omitted/simplified decisions as QUESTIONS, consolidate their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then run a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
 version: 0.9.0
 # changelog:
 #   0.9.0 (2026-06-26): large-packet file-IPC rule — for a LARGE diff/multi-doc
@@ -16,13 +16,13 @@ version: 0.9.0
 The leader's standard **final pre-merge review**: three independent reviewers
 from different model families judge a diff/branch, the suspect decisions are
 posed as questions, and findings drive a fix→re-confirm loop. Codifies
-self-rule #6 (`CLAUDE.md` § Self-rules 6).
+the lab's standing cross-family review rule.
 
 ## When to use
 
 - About to merge review-worthy or security/correctness-critical work.
 - The leader OMITTED or SIMPLIFIED something from a vetted external source
-  (the canonical self-rule #6 blind-spot case).
+  (the canonical author-blind-spot case).
 - After a `superpowers:subagent-driven-development` run, before integrating —
   per-task spec+quality reviews are same-family and miss cross-cutting issues.
 
@@ -50,7 +50,7 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    # REASONING TIER (review-only override of the no-model-pin rule, owner directive
    # 2026-06-14): the agy/gemini DEFAULT is a fast shallow model (Gemini 3.5 Flash)
    # — empirically USELESS for adversarial review. Measured 2026-06-14 on the
-   # IngenuityPrint B5 diff: agy on the Flash default found 0 real issues across 4
+   # a lab project B5 diff: agy on the Flash default found 0 real issues across 4
    # rounds, while the SAME diff at the Pro tier surfaced 3 real findings (a dead-code
    # path + 2 wrong-descriptor edges) that even codex+claude had missed. agy encodes
    # reasoning in the MODEL VARIANT (there is NO --reasoning flag; the separate
@@ -68,7 +68,7 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    empty → **skip the Google leg and log** "Google-family reviewer unavailable;
    review proceeds with claude(Agent)+codex (2-family)". Normally THREE
    reviewers; degrades to two (claude+codex) only when neither Google CLI is
-   installed (e.g. 사내 after the gemini sunset). Same-family-only reviewers
+   installed. Same-family-only reviewers
    inherit the leader's framing; cross-family + fresh-eye is what breaks the
    monoculture.
 
@@ -87,14 +87,14 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
      the prompt ("Think as hard as you can / ultrathink before answering"). The
      `Agent` tool exposes no effort flag, so the ONLY depth lever is the PROMPT —
      instruct deep, adversarial reasoning (rule 10). Without it the claude leg
-     under-reasons and rubber-stamps (owner 2026-06-22: "요즘 잡아내는 게 없다").
+     under-reasons and rubber-stamps (owner 2026-06-22: "the claude leg catches nothing lately").
    Cost note: the Pro / xhigh / max-thinking tiers are API-billed (not
    subscription-covered) — acceptable for the high-stakes pre-merge gate by owner
    directive; do NOT use them for cheap single-shot dispatches (those stay on the
    default per the no-model-pin rule).
 2. **Frame suspect decisions as QUESTIONS, not settled facts.** "Is X actually
    safe to omit?" — never "X is a no-op." A biased framing propagates into the
-   reviewers and defeats the purpose (2026-05-24 IngenuityPrint incident).
+   reviewers and defeats the purpose (2026-05-24 internal incident).
 3. **Each reviewer gets the diff scope + reads it themselves.** Give the branch
    ref / SHA range + the list of suspect decisions; let each reviewer run
    `git diff` and read files with its OWN tools (keeps leader context lean).
@@ -110,7 +110,7 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
 5. **Fix→re-confirm loop.** Findings → fix each (own implementer + per-fix
    review) → RE-RUN the 3-way on the fixed branch. A first-pass DO-NOT-MERGE
    is only closed by a re-confirm pass, not by the leader asserting it's fixed.
-6. **Codex-path caveat (self-rule #6 nuance).** When the work being reviewed IS
+6. **Codex-path caveat (cross-family-rule nuance).** When the work being reviewed IS
    the codex dispatch path itself, codex reviews the *artifact diff* (e.g.
    Python), not its own reasoning — cross-family + fresh-eye still holds, so
    the full 3-way is valid (2026-05-30 owner directive overrode the earlier
@@ -128,8 +128,7 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    still be valid (it surfaces real robustness gaps) — capture the gap, then
    re-dispatch read-only. Origin: 2026-06-11 gemini-agy-parity gate, codex
    live-ran `gemini-daily-check.sh`'s deep probe → 580s timeout, no verdict;
-   adding the no-exec directive → same review completed in 101s. See leader
-   memory `feedback_vendor_review_leg_readonly_no_exec_2026_06_11.md`.
+   adding the no-exec directive → same review completed in 101s. See the lab's recorded incident log.
 8. **Vendor-leg context files go at a repo-relative gitignored path, never
    `/tmp`.** gemini and agy are **workspace-sandboxed to the repo** — a brief /
    diff / context file handed to them at `/tmp/...` is unreadable (gemini errors
@@ -189,8 +188,7 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
    case) the INLINED body must ALSO be the FOCUSED / high-risk subset, not the
    whole diff — codex inlines what agy/gemini get as the pre-assembled file; same
    focused content, different transport. Origin: 2026-06-11 slice-1 cross-family
-   gate; see leader memory
-   `feedback_vendor_review_leg_readonly_no_exec_2026_06_11.md` (Pitfall 3).
+   gate; see the lab's recorded incident log (Pitfall 3).
 10. **claude fresh-eye leg = a TRUE fresh-eye Agent, MAX thinking, adversarial
     (owner directive 2026-06-22).** The claude leg MUST be a separate `Agent`
     (isolated context) — NEVER the leader reasoning inline (the leader holds the
@@ -241,7 +239,7 @@ self-rule #6 (`CLAUDE.md` § Self-rules 6).
 
 ## Why this exists
 
-self-rule #6 (codified 2026-05-24, IngenuityPrint device-shell injection: the
+The cross-family review rule (codified 2026-05-24 after an internal device-shell injection: the
 leader declared an appium wrap "a no-op," seeded it into the implementer prompt,
 the all-claude review chain passed it, codex+gemini independently caught a real
 hole). Re-validated 2026-05-30 (codex-dispatch Foundation+Archetype A): a strict
@@ -251,9 +249,6 @@ review is necessary but not sufficient; the final cross-family pass is the gate.
 
 ## Related
 
-- `CLAUDE.md` § Self-rules 6 — the originating rule.
-- leader memory `feedback_three_way_fresh_eye_cross_check.md` — origin narrative + 2026-05-30 re-validation.
-- leader memory `feedback_vendor_review_leg_readonly_no_exec_2026_06_11.md` — Hard rule 7 origin (codex live-run hang).
 - `triad-codex-dispatch` (codex leg) / `triad-antigravity-dispatch` + `triad-gemini-dispatch` (the runtime-selected Google-family leg).
 - `superpowers:subagent-driven-development` — the per-task (same-family) review this final pass backstops.
 - `superpowers:requesting-code-review` / `superpowers:receiving-code-review` — single-reviewer code-review conventions.

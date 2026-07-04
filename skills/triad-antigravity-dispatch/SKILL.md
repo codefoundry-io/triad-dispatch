@@ -1,6 +1,6 @@
 ---
 name: triad-antigravity-dispatch
-description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; user said "agy 한 번 불러줘" / "antigravity로 X 처리" / "agy CLI 단발 실행" / "안티그래비티 호출"; a higher-level orchestration SKILL needs the agy leg of a fan-out (gemini CLI successor; gemini public EOL 2026-06-18, but 사내 keeps gemini until ~2026-07-31 so both ship in the interim); classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`),.
+description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; user said "agy 한 번 불러줘" / "antigravity로 X 처리" / "agy CLI 단발 실행" / "안티그래비티 호출"; a higher-level orchestration SKILL needs the agy leg of a fan-out (gemini CLI successor for individual users; the enterprise gemini tier stays active, so both legs ship); classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
 version: 0.2.0
 ---
 
@@ -8,11 +8,12 @@ version: 0.2.0
 
 Single-shot Antigravity CLI (`agy`) dispatch with classification-based routing
 and a self-improving repair loop. The leader's standard "call agy once" path.
-agy is the gemini CLI successor (gemini CLI public EOL 2026-06-18) — Android /
-Google-ecosystem domain strength. **사내 deployment caveat:** 사내 keeps using
-gemini through ~2026-07-31 (and cannot run agy), so the gemini leg is NOT dropped
-on the public EOL date — agy succeeds gemini only after the 사내 sunset. Both
-ship in the distributable plugin in the interim.
+agy is the gemini CLI successor for individual users (the Gemini CLI *individual*
+tier is deprecated — Google migrated it to Antigravity) — Android /
+Google-ecosystem domain strength. **Deployment caveat:** the **enterprise** Gemini
+CLI tier stays active (the individual-tier deprecation does not affect it), so the
+gemini leg is NOT dropped — environments on enterprise Gemini keep using it while
+individual users move to agy. Both ship in the distributable plugin.
 
 ## Use when
 
@@ -52,8 +53,20 @@ deny transaction (`_agy_settings.agy_settings_guard`): the wrapper merges
 `permissions.deny` into `~/.gemini/antigravity-cli/settings.json`, runs agy, then
 byte-exactly restores (flock-serialized, `.agybak` crash sentinel).
 
-**agy tool → permission action map** (probed on agy 1.0.7, 2026-06-11 — re-confirm
-with `agy -p "list your built-in tools and their permission actions"`):
+**agy tool → permission action map** (probed on agy 1.0.7 2026-06-11; RE-PROBED
+on agy **1.0.16** 2026-07-04 — re-confirm with `agy -p "list your built-in tools
+and their permission actions"`). 1.0.16 deltas: **no new mutation verbs** (the
+write path is still exactly write_to_file / replace_file_content /
+multi_replace_file_content → `write_file`, so the per-verb denylist stays
+complete for the known surface); `execute_url` / `mcp` no longer appear in the
+self-reported inventory (denies KEPT — denying an absent action is a no-op and
+protective if they return); `search_web` now self-reports `(none)` instead of
+`read_url` (read-only, no isolation impact); new non-resource tools
+(`generate_image`, `send_message`, `manage_task`, `manage_subagents`,
+`list_permissions`, `ask_permission`) report no permission action —
+`generate_image`'s artifact write path is UNVERIFIED against the `write_file`
+gate (self-report only), covered by the standing mitigation (isolated worktree
+cwd + leader verify/commit):
 
 | agy tool | permission action | notes |
 |---|---|---|
@@ -82,7 +95,7 @@ web access the transaction ever leaves allowed (§ Routing) — `execute_url` an
   mutation verb NOT enumerated here (e.g. a future `edit_file` / `apply_patch`)
   would not be blocked — this is strong fs-write isolation for the *known* agy
   tool surface, not OS-level process isolation. Treat the agy read-only leg of
-  `triad-cross-family-review` / 사자회담 as an enforced read-only worker for the
+  `triad-cross-family-review` / multi-CLI council reviews as an enforced read-only worker for the
   proven write path; the owner's manual e2e should ALSO attempt a `command(...)`
   and an `mcp(...)` mutation to confirm those denies on the live build.
 - `workspace-write` — dangerous-path/command denies (incl. `unsandboxed(*)` so a
@@ -126,7 +139,7 @@ are deferred to slice 3.
 2. **Path-based agent input.** Pass the run-log file *path* to the repair agent, not its content. Inline-embedding corrupts on JSON-in-JSON / utf-8 / ANSI / large vendor stdout.
 3. **Cleanup after dispatch.** `rm -f <run-log-path>` once the repair agent returns (REPAIRED *or* ESCALATE). The wrapper failsafe is for orphans, not normal cleanup.
 4. **Repair agent ONLY on `unknown` / `extraction-error` / `timeout`.** Every other classification carries actionable meaning at the wrapper layer — dispatching the agent on them wastes its 3-attempt budget.
-5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. See leader memory `feedback_dispatch_prompt_hygiene.md` for the full reasoning + fake run-log realistic-format guide.
+5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. Reasoning: any test framing leaks into the vendor model's behavior and corrupts both the sample and the repair agent's accumulated memory.
 6. **No model name pinning.** agy model names rot every few weeks. Use the vendor default by default; `--model <name>` only when the user explicitly named the model. Date-anchor any pinned model usage.
 7. **Never `--dangerously-*`.** argparse rejects it (the flag is intentionally undefined), and it voids agy's `--sandbox` (agy issue #36). The Triad safety invariant forbids it regardless.
 8. **Repair dispatch is MANDATORY and non-deferrable — spawn it in PARALLEL, never skip it.** When Step 4 routes a failure to repair (`unknown` / `extraction-error` / `timeout`), you MUST spawn the `agy-wrapper-repair` sub-agent. Surfacing the failure to the user does NOT discharge this — *surfacing* and *repairing* are SEPARATE obligations; doing one is not doing the other. "I have other / more important work", "the call already failed", "this looks like a one-off" are NEVER valid reasons to skip or defer the spawn. Remove the temptation to defer by dispatching with the `Agent` tool's **`run_in_background: true`** so it runs CONCURRENTLY with your foreground work; parse its output (Step 5c) + clean up (Step 5d) when it completes. Why non-skippable: the repair agent's payoff is FUTURE routing — framework completeness, NOT the immediate call — so it is a fire-in-parallel task, and skipping it is a silent regression that lets the same vendor error keep failing un-routed on every later call (origin: 2026-06-12 — a freshly-installed company plugin leader hit an HTTP 403 → `unknown`, reported only "failed", and skipped the spawn citing "other work"). Complements rule 4: rule 4 = dispatch ONLY for these classes; rule 8 = you MUST, in parallel, for these classes.
@@ -161,11 +174,9 @@ PROMPT
   object (the marker is NOT part of the JSON). The wrapper validates the
   pre-marker text with `_common.validate_response`, does ONE schema-repair re-run
   on failure, then exits `EXIT_SCHEMA_FAIL=66`. Same prompt-instructed approach as
-  the gemini wrapper. **Deferred e2e gate**: the real-agy "marker-after-JSON"
-  adherence is **NOT yet e2e-verified** — the owner's earlier spike tested plain
-  JSON WITHOUT the completion marker. The fake-agy integration proves the wrapper
-  plumbing (sentinel parse + validate + repair re-run), not real-model adherence;
-  a manual real-agy e2e run is the open verification gate.
+  the gemini wrapper. **e2e gate CLOSED (2026-07-05)**: real-agy
+  "marker-after-JSON" adherence live-verified — `--pydantic _test_schemas:CityResponse`
+  returned schema-valid JSON with correct sentinel placement (rc=0, 8s, agy 1.0.16).
 - `--timeout` default is `600` seconds. The wrapper derives agy's `--print-timeout` from it (`max(timeout - 10, 5)s`); the pty kill is the backstop.
 - `--cwd` sets agy's working directory.
 - `--debug` accumulates a markdown debug table.
@@ -263,13 +274,13 @@ Input:
     "patch":            "<string|null>  // description in '<file:line> — entry added' form, null when ESCALATE",
     "reason":           "<string>  // one-line semantic summary of what happened",
     "attempts":         "<int>  // 1-3",
-    "per_attempt_log":  "<array>  // per-attempt records, each {n, hypothesis, source, patch, py_compile, rerun}"
+    "per_attempt_log":  "<array>  // per-attempt records, each {n, hypothesis, source, patch, validate, rerun}"
   },
-  "task": "Read the run-log, run repair workflow (extract literal error → WebSearch date-anchored → patch _common.py → py_compile → re-run with --repair-mode), then write the JSON object matching output_schema to output_path. 3-attempt ceiling, then escalate."
+  "task": "Read the run-log, run repair workflow (extract literal error → WebSearch date-anchored → append to the classifier extension JSON (~/.config/triad-dispatch/classifier-patches.json) → re-run with --repair-mode), then write the JSON object matching output_schema to output_path. 3-attempt ceiling, then escalate."
 }
 
 Example response (Write this JSON object to output_path):
-{"outcome": "REPAIRED", "downstream": "oauth-env", "patch": "_common.py — added a verified auth-banner phrase to AGY_AUTH_BANNER_PATTERNS", "reason": "agy emitted a new re-login banner the seed pattern missed; framework now classifies it as oauth-env (user re-login signal)", "attempts": 1, "per_attempt_log": [{"n": 1, "hypothesis": "oauth-env", "source": "https://github.com/google/antigravity/issues/N", "patch": "AGY_AUTH_BANNER_PATTERNS += ('please re-authenticate to continue',)", "py_compile": "PASS", "rerun": "rc=65/classification=oauth-env"}]}
+{"outcome": "REPAIRED", "downstream": "terminal:oauth-env", "patch": "classifier-patches.json — added a verified auth-banner phrase to antigravity patterns.AGY_AUTH_BANNER_PATTERNS", "reason": "agy emitted a new re-login banner the seed pattern missed; framework now classifies it as oauth-env (user re-login signal)", "attempts": 1, "per_attempt_log": [{"n": 1, "hypothesis": "oauth-env", "source": "https://github.com/google/antigravity/issues/N", "patch": "antigravity patterns.AGY_AUTH_BANNER_PATTERNS: appended 'please re-authenticate to continue'", "validate": "PASS", "rerun": "rc=65/classification=oauth-env"}]}
 
 Now do the repair work, write the JSON to output_path, then return `done` in chat.
 ```
@@ -331,8 +342,8 @@ Three layers keep the agy leg healthy without manual babysitting — two reactiv
 
 1. **`agy-wrapper-repair` sub-agent (reactive, per-call).** On an `unknown` /
    `extraction-error` / `timeout` classification, the dispatch flow (Step 5)
-   routes to this agent, which patches `_common.py`'s classifier (one
-   `ANTIGRAVITY_VENDOR_EXIT_MAP` entry or one L2 substring) so the next call
+   routes to this agent, which appends to the classifier extension JSON (one
+   `vendor_exit_map` entry or one `patterns` substring) so the next call
    auto-routes. Self-improving: dispatch frequency falls as the classifier
    matures.
 2. **`.agybak` crash-recovery (reactive, per-call integrity).** Every agy call
@@ -349,23 +360,22 @@ Three layers keep the agy leg healthy without manual babysitting — two reactiv
    JSON-adherence broke) / `2` = INFORMATIONAL change (changelog version /
    plugin list / superpowers-available). A failed `agy` subcommand preserves the
    previous snapshot. Surfaced as a dated report for owner review. Scheduling +
-   flags = `3rd-Agent/wrappers/README.md` § agy daily-check.
+   flags = the plugin `README.md` § agy daily-check.
 
 ## Path scope
 
 - **Reads** `_logs/antigravity/runs/<id>.json` (run-log) and `_logs/antigravity/runs/<id>.json.repair.json` (agent's file-based response).
 - **Removes** both paths post-dispatch (REPAIRED + ESCALATE).
-- **Invokes** `3rd-Agent/wrappers/antigravity_wrapper.py` via Bash.
+- **Invokes** `bin/antigravity_wrapper.py` via Bash.
 - **Dispatches** sub-agent `agy-wrapper-repair`.
 
-Does NOT edit `_common.py` (repair agent's territory) or read
+Does NOT edit the classifier extension JSON (repair agent's territory) or read
 `_logs/antigravity/audit.jsonl` (maintenance SKILL's territory).
 
 ## See also
 
-- `3rd-Agent/wrappers/README.md` — wrapper contract + run-log schema.
-- `.claude/agents/agy-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
+- the plugin `README.md` — wrapper contract + run-log schema.
+- `agents/agy-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
 - `triad-codex-dispatch` — parallel SKILL for Codex.
-- `triad-gemini-dispatch` — parallel SKILL for Gemini (agy's predecessor; gemini CLI public EOL 2026-06-18, but retained 사내 until ~2026-07-31 — both ship in the plugin until the 사내 sunset).
-- `triad-cross-family-review` — final pre-merge cross-family review (the agy leg here is best-effort non-write, not enforced — see § Isolation HARD WARNING).
-- Leader memory `feedback_dispatch_prompt_hygiene.md` — dispatch prompt hygiene + test isolation rationale.
+- `triad-gemini-dispatch` — parallel SKILL for Gemini (agy's predecessor; the individual Gemini tier is deprecated but the enterprise tier stays active — both legs ship in the plugin).
+- `triad-cross-family-review` — final pre-merge cross-family review (the agy leg here is best-effort non-write, see § Isolation for the enforced deny surface).

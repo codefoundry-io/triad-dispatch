@@ -1,11 +1,13 @@
 {
   "name": "triad-dispatch",
-  "version": "0.1.421",
+  "version": "0.2.420",
   "description": "Triad cross-CLI dispatch: single-shot codex/gemini/antigravity dispatch + self-improving classifier + cross-family review.",
   "author": {
-    "name": "Triad"
+    "name": "codefoundry-io"
   },
   "license": "MIT",
+  "homepage": "https://github.com/codefoundry-io/triad-dispatch",
+  "repository": "https://github.com/codefoundry-io/triad-dispatch",
   "keywords": [
     "dispatch",
     "codex",

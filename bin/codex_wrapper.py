@@ -88,8 +88,15 @@ def codex_invocation(search: bool) -> list[str]:
     """Leading `codex [--search] exec` argv. codex's `--search` (live web search via
     the native Responses web_search tool) is a TOP-LEVEL flag — it MUST precede the
     `exec` subcommand (`codex --search exec ...`; `codex exec --search` errors with
-    "unexpected argument"). Emitted ONLY when search=True, so the default stays the
-    cheap no-search path."""
+    "unexpected argument").
+
+    Contract: --search OFF really means NO web search. Since codex 0.14x the
+    vendor default for the `web_search` config is "cached" (an OpenAI-maintained
+    index — a search tool is silently available even without --search), so the
+    OFF branch pins `-c web_search="disabled"` to restore the advertised
+    no-search default (review legs stay deterministic / offline). Verified
+    against the official config reference (web_search: disabled|cached|live,
+    default "cached") on 2026-07-04, codex-cli 0.142.5."""
     return ["codex"] + (["--search"] if search else []) + ["exec"]
 
 
@@ -298,6 +305,13 @@ def main() -> int:
             # the top-level flag in codex_invocation); default OFF. (3-way review A, owner)
             "-c", "approval_policy=never",
         ]
+        if not args.search:
+            # Vendor default for `web_search` is "cached" since 0.14x (an
+            # OpenAI-maintained index — a search tool is silently available even
+            # without --search). Pin it off so --search OFF really means NO web
+            # search (advertised contract; review legs stay deterministic).
+            # Config reference verified 2026-07-04 (disabled|cached|live).
+            cmd += ["-c", 'web_search="disabled"']
         if args.reasoning:
             # TOML string value (canonical -c form). Bare `=high` would rely on
             # codex's literal-string fallback; the quoted form is unambiguous.

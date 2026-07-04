@@ -11,7 +11,7 @@
 # A failed `agy` subcommand KEEPS the previous snapshot (never overwrites with an
 # empty result) so a transient CLI failure cannot manufacture false drift next run.
 #
-# Wire to launchd (Mac) or cron (Ubuntu) — see 3rd-Agent/wrappers/README.md.
+# Wire to launchd (Mac) or cron (Ubuntu) — see the plugin README.md.
 # Env: AGY_DAILY_STATE (state dir, default ~/.gemini/antigravity-cli/triad-daily).
 #      --no-update skips `agy update` (tests / offline).
 #      AGY_DAILY_DEEP=1 runs the heavy pty JSON-adherence probe (portable `script`).

@@ -11,40 +11,40 @@ pre-merge review.
 
 - **Vendor CLIs installed + authenticated** — the wrappers never manage auth:
   - `codex` installed, then `codex login`.
-  - **Google-family leg — choose per your environment:**
-    - **External / individual → `agy` (Antigravity)**, installed + OAuth sign-in.
+  - **Google-family leg — pick the one that matches your Gemini access:**
+    - **Individual Gemini access → `agy` (Antigravity)**, installed + OAuth sign-in.
       The Gemini CLI *individual* tier is deprecated (Google migrated it to the
-      Antigravity suite), so agy is the individual-environment Google-family leg.
-    - **Company-internal → `gemini` (Gemini CLI)**, installed + your org sign-in.
-      Internally the **enterprise** Gemini tier stays in use (the individual-tier
-      deprecation does not affect it); agy is not used internally.
+      Antigravity suite), so agy is the Google-family leg for individual users.
+    - **Enterprise / organization Gemini access → `gemini` (Gemini CLI)**, installed
+      + your org sign-in. The **enterprise** Gemini tier stays in use (the
+      individual-tier deprecation does not affect it); use `gemini` there, not agy.
   - The claude leg of a review is an in-session `Agent` subagent — no separate install.
 - **`python3 >= 3.12`** on PATH (the `bin/` wrappers run via `#!/usr/bin/env python3`).
 
 ## Install
 
 ```
-/plugin marketplace add <internal-git-url>
-/plugin install triad-dispatch@triad-internal-tools
+/plugin marketplace add codefoundry-io/triad-dispatch
+/plugin install triad-dispatch@triad-dispatch
 ```
 
-Private-repo auth uses your existing git credentials (an SSH key in `ssh-agent`,
-or a `gh`/git credential helper). Background auto-update needs `GITLAB_TOKEN` /
-`GITHUB_TOKEN` in your environment.
+The repo is public, so installing needs no special auth. Background auto-update
+works over public GitHub as-is; set `GITHUB_TOKEN` in your environment only to
+raise the API rate limit.
 
 **Local install (from a built folder).** To test a locally-built copy before
-publishing to the internal repo, point `marketplace add` at the plugin directory
+publishing, point `marketplace add` at the plugin directory
 itself — **no git repo required** (the directory's `.claude-plugin/marketplace.json`
 is what is read; its relative `source` resolves for local-directory adds). The
 path must be absolute or start with `./`:
 
 ```
-/plugin marketplace add ~/triad-dispatch-plugin
-/plugin install triad-dispatch@triad-internal-tools
+/plugin marketplace add /absolute/path/to/triad-dispatch
+/plugin install triad-dispatch@triad-dispatch
 ```
 
 **Test from a CLEAN working directory** — not a checkout that already has its own
-`.claude/skills/` or `.claude/agents/`. Plugin skills/agents are namespaced
+`.claude/skills/` or `agents/`. Plugin skills/agents are namespaced
 (e.g. `triad-dispatch:triad-codex-dispatch`), and a project's own same-named
 `.claude/skills` / `.claude/agents` **override** the plugin's — so run from a
 directory without those to exercise the plugin's own copies.
@@ -114,7 +114,7 @@ How the leader and the owner actually use the toolkit:
 - **agy = the search / research specialist** — its web `read_url` / `search_web`
   is always allowed. Include agy on any web-grounded lookup.
 - Before merging review-worthy or correctness-critical work, the leader runs
-  **`triad-cross-family-review`** (self-rule #6): three INDEPENDENT reviewers
+  **`triad-cross-family-review`** (the cross-family review rule): three INDEPENDENT reviewers
   from different model families — a claude fresh-eye `Agent` subagent + codex +
   the Google-family CLI (agy or gemini, runtime-selected) — each frames the
   suspect decisions as questions; the leader consolidates
@@ -173,4 +173,15 @@ do not silently overwrite each other.
   `triad-antigravity-dispatch`, `triad-cross-family-review`.
 - **agents** (3): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`.
 - **bin**: the Python wrappers (codex / gemini / agy) + `agy-daily-check.sh` +
-  `gemini-daily-check.sh`.
+  `gemini-daily-check.sh` + `policies/gemini-readonly.toml` (the per-call
+  read-only Policy Engine file the gemini `--sandbox read-only` mode attaches).
+- **tests**: stdlib-only wrapper tests you can run as-is to verify the install:
+
+  ```bash
+  python3 tests/test_gemini_sandbox.py   # 6 checks — gemini sandbox argv contract
+  python3 tests/test_log_cleanup.py      # 2 checks — log prune + audit rotation
+  ```
+
+- **migration**: `CLAUDE.recommended.md` — a starter CLAUDE.md encoding the
+  working practices this toolkit assumes (pre-execution discipline,
+  cross-family review, artifact portability).

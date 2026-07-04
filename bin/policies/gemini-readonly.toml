@@ -5,14 +5,14 @@
 # heavy files — gemini-cli issues #11321 / #18331 / #26588). It is per-call, so
 # the same leg still does code work under `--sandbox workspace-write`.
 #
-# ⚠️ NOT e2e-VERIFIED (2026-07-01): the exact tool identifiers and the
-# toolName/decision/priority schema are per the Policy Engine docs
-# (geminicli.com/docs/reference/policy-engine), but could NOT be run here —
-# individual-tier gemini auth is deprecated (IneligibleTierError → Antigravity).
-# VERIFY at the company (business/Vertex/API-key tier): run a write-attempt
-# under `--sandbox read-only` and confirm NO file is created / the write tool is
-# denied. Adjust tool names / keys here if the schema differs. Highest priority
-# wins, so the deny rules (200) override the allow rules (100).
+# Schema DOC-VERIFIED 2026-07-04 against geminicli.com/docs/reference/policy-engine
+# (rule table: toolName / decision allow|deny / priority; highest priority wins,
+# so the deny rules (200) override the allow rules (100)). `--policy` loads at
+# the User tier (4) and REPLACES ~/.gemini/policies for this call; only an
+# Admin-tier policy can outrank these denies (gemini-cli PR #18500).
+# ⚠️ Live ENFORCEMENT still to be e2e-confirmed on an enterprise/Vertex/API-key
+# tier (individual-tier auth is deprecated → IneligibleTierError): run one
+# write-attempt under `--sandbox read-only` and confirm the write tool is denied.
 
 # --- allow read tools ---
 [[rule]]
@@ -53,5 +53,14 @@ priority = 200
 
 [[rule]]
 toolName = "run_shell_command"
+decision = "deny"
+priority = 200
+
+# --- defense-in-depth: deny MCP-server tools (read-only must not depend on
+# headless ask_user->deny defaults for unlisted tools). Wildcard is DOCUMENTED:
+# policy-engine reference — "mcp_*: Matches any tool from any MCP server"
+# (geminicli.com/docs/reference/policy-engine, verified 2026-07-05). ---
+[[rule]]
+toolName = "mcp_*"
 decision = "deny"
 priority = 200

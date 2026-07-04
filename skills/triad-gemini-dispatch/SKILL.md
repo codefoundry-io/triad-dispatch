@@ -27,8 +27,8 @@ makes the `unknown`-classification path correctly route to the repair sub-agent.
 1. **Bash invocation only.** No `Agent()` around the wrapper itself. The stderr `[wrapper]` summary line and `run-log:` path emission only surface via Bash.
 2. **Path-based agent input.** Pass the run-log file *path* to the repair agent, not its content. Inline-embedding corrupts on JSON-in-JSON / utf-8 / ANSI / large vendor stdout.
 3. **Cleanup after dispatch.** `rm -f <run-log-path>` once the repair agent returns (REPAIRED *or* ESCALATE). The wrapper failsafe is for orphans, not normal cleanup.
-4. **Repair agent ONLY on `unknown`.** Other classifications carry actionable meaning at the wrapper layer — dispatching the agent on them wastes its 3-attempt budget.
-5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. See leader memory `feedback_dispatch_prompt_hygiene.md` for the full reasoning + fake run-log realistic-format guide.
+4. **Repair agent ONLY on `unknown` / `extraction-error` / `timeout`.** Every other classification carries actionable meaning at the wrapper layer — dispatching the agent on them wastes its 3-attempt budget.
+5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. Reasoning: any test framing leaks into the vendor model's behavior and corrupts both the sample and the repair agent's accumulated memory.
 6. **No model name pinning.** Gemini model names rot every few weeks. Use vendor's Auto router by default; `--model <name>` only when the user explicitly named the model. Date-anchor any pinned model usage.
 7. **Repair dispatch is MANDATORY and non-deferrable — spawn it in PARALLEL, never skip it.** When Step 4 routes a failure to repair (`unknown` / `extraction-error` / `timeout`), you MUST spawn the `gemini-wrapper-repair` sub-agent. Surfacing the failure to the user does NOT discharge this — *surfacing* and *repairing* are SEPARATE obligations; doing one is not doing the other. "I have other / more important work", "the call already failed", "this looks like a one-off" are NEVER valid reasons to skip or defer the spawn. Remove the temptation to defer by dispatching with the `Agent` tool's **`run_in_background: true`** so it runs CONCURRENTLY with your foreground work; parse its output (Step 5c) + clean up (Step 5d) when it completes. Why non-skippable: the repair agent's payoff is FUTURE routing — framework completeness, NOT the immediate call — so it is a fire-in-parallel task, and skipping it is a silent regression that lets the same vendor error keep failing un-routed on every later call (origin: 2026-06-12 — a freshly-installed company plugin leader hit an HTTP 403 → `unknown`, reported only "failed", and skipped the spawn citing "other work"). Complements rule 4: rule 4 = dispatch ONLY for these classes; rule 7 = you MUST, in parallel, for these classes.
 8. **No plan/yolo approval modes.** The wrapper argparse accepts only `--approval-mode default|auto_edit`. Read-only dispatch uses `--sandbox read-only`, which attaches the per-call Policy Engine file instead of Gemini plan mode. `yolo` is not a permitted mode in this repo.
@@ -54,7 +54,7 @@ PROMPT
   [--pydantic module:Class]
 ```
 
-Defaults: no `--sandbox` policy and `--approval-mode default` (read auto, write/shell prompt). `--sandbox read-only` attaches `bin/policies/gemini-readonly.toml` for that call only. `auto_edit` = write/shell auto (only on explicit leader request) and conflicts with `--sandbox read-only`. `--approval-mode plan/yolo` is rejected by argparse.
+Defaults: no `--sandbox` policy and `--approval-mode default` (read auto, write/shell prompt). `--sandbox read-only` attaches the wrapper-adjacent `policies/gemini-readonly.toml` for that call only. `auto_edit` = write/shell auto (only on explicit leader request) and conflicts with `--sandbox read-only`. `--approval-mode plan/yolo` is rejected by argparse.
 
 > **Historical reason for the ban (2026-06-08): `plan` mode was unreliable for HEAVY multi-file agentic reads.** On a heavy task (e.g. "read 16 source files in full and review"), the Pro plan-loop emitted an empty/malformed turn (vendor `Invalid stream: The model returned an empty response or malformed tool call`), surfacing as `extraction-error` (rc=1) in ~10-25s. That history is why this wrapper no longer exposes `plan`; use `--sandbox read-only` for read-only reviews and `--approval-mode default` for normal reads.
 
@@ -87,7 +87,7 @@ Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) / `4` (bin
 | classification (rc) | Leader action |
 |---|---|
 | `ok` (0) | Return wrapper stdout (Gemini's `response` field text or pydantic-validated JSON). |
-| terminal (65) — cli-subscription-cap / token-limit / oauth-env | Surface to user with cause (re-login / Pro 200 or Flash 1800 daily reset / prompt size). **NOT** repair-agent territory. |
+| terminal (65) — cli-subscription-cap / token-limit / oauth-env | Surface to user with cause (re-login / Code Assist license daily-quota or API-key RPM-tier reset / prompt size — see the enterprise auth note). **NOT** repair-agent territory. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper retried per backoff (plus Gemini's own internal retries). |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 7). Spawn it even when you are busy or also surfacing the failure — never skip.** |
 | `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 7).** Vendor returned rc=0 but extractor found no answer (empty `response` field, unparseable JSON, vendor refusal text). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
@@ -126,13 +126,13 @@ Input:
     "patch":            "<string|null>  // description in '<file:line> — entry added' form, null when ESCALATE",
     "reason":           "<string>  // one-line semantic summary of what happened",
     "attempts":         "<int>  // 1-3",
-    "per_attempt_log":  "<array>  // per-attempt records, each {n, hypothesis, source, patch, py_compile, rerun}"
+    "per_attempt_log":  "<array>  // per-attempt records, each {n, hypothesis, source, patch, validate, rerun}"
   },
-  "task": "Read the run-log, run repair workflow (extract literal error → WebSearch date-anchored → patch _common.py → py_compile → re-run with --repair-mode), then write the JSON object matching output_schema to output_path. 3-attempt ceiling, then escalate."
+  "task": "Read the run-log, run repair workflow (extract literal error → WebSearch date-anchored → append to the classifier extension JSON (~/.config/triad-dispatch/classifier-patches.json) → re-run with --repair-mode), then write the JSON object matching output_schema to output_path. 3-attempt ceiling, then escalate."
 }
 
 Example response (Write this JSON object to output_path):
-{"outcome": "REPAIRED", "downstream": "ok", "patch": "_common.py:78 — added 'quota will reset' to CLI_SUB_CAP_PATTERNS", "reason": "transient quota issue, framework now classifies", "attempts": 1, "per_attempt_log": [{"n": 1, "hypothesis": "cli-subscription-cap", "source": "https://github.com/google-gemini/gemini-cli/issues/N", "patch": "CLI_SUB_CAP_PATTERNS += ('quota will reset',)", "py_compile": "PASS", "rerun": "rc=0/classification=ok"}]}
+{"outcome": "REPAIRED", "downstream": "ok", "patch": "classifier-patches.json — added 'quota will reset' to gemini patterns.CLI_SUB_CAP_PATTERNS", "reason": "transient quota issue, framework now classifies", "attempts": 1, "per_attempt_log": [{"n": 1, "hypothesis": "cli-subscription-cap", "source": "https://github.com/google-gemini/gemini-cli/issues/N", "patch": "gemini patterns.CLI_SUB_CAP_PATTERNS: appended 'quota will reset'", "validate": "PASS", "rerun": "rc=0/classification=ok"}]}
 
 Now do the repair work, write the JSON to output_path, then return `done` in chat.
 ```
@@ -187,14 +187,13 @@ REPAIRED and ESCALATE both clean up — leader has the parsed values in shell va
 
 - **Reads** `_logs/gemini/runs/<id>.json` (run-log) and `_logs/gemini/runs/<id>.json.repair.json` (agent's file-based response).
 - **Removes** both paths post-dispatch (REPAIRED + ESCALATE).
-- **Invokes** `3rd-Agent/wrappers/gemini_wrapper.py` via Bash.
+- **Invokes** `bin/gemini_wrapper.py` via Bash.
 - **Dispatches** sub-agent `gemini-wrapper-repair`.
 
-Does NOT edit `_common.py` (repair agent's territory) or read `_logs/gemini/audit.jsonl` (maintenance SKILL's territory).
+Does NOT edit the classifier extension JSON (repair agent's territory) or read `_logs/gemini/audit.jsonl` (maintenance SKILL's territory).
 
 ## See also
 
-- `3rd-Agent/wrappers/README.md` — wrapper contract + run-log schema.
-- `.claude/agents/gemini-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
+- the plugin `README.md` — wrapper contract + run-log schema.
+- `agents/gemini-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
 - `triad-codex-dispatch` — parallel SKILL for Codex.
-- Leader memory `feedback_dispatch_prompt_hygiene.md` — dispatch prompt hygiene + test isolation rationale.

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Per-call isolation for the Antigravity (agy) wrapper.
 
-agy has only two per-call flags (--model, --sandbox); fs-write isolation lives
+agy exposes NO per-call permission/settings surface (its per-call flags are
+session/transport-only); fs-write isolation lives
 only in the single global ~/.gemini/antigravity-cli/settings.json (no
 per-directory file, no profile, no --settings flag, no config-dir env — proven
 4-source). So a per-call read-only / workspace-write worker is implemented as a

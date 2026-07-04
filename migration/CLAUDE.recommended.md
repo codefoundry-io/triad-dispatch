@@ -1,13 +1,24 @@
-# CLAUDE.md — working-practices base (company)
+# CLAUDE.md — working-practices base
 
 > Drop this into `~/.claude/CLAUDE.md` (global) and/or extend it in a
 > project-root `CLAUDE.md`. It encodes the *habits* that make the human↔Claude
 > pair effective — distilled to what transfers across projects. Sections marked
 > **[tailor]** are placeholders to fill per project; the rest are universal.
 >
-> Environment assumed: Ubuntu 24.04, closed network (limited proxy), vendor CLIs
-> = Codex + Gemini + Claude Code. The `triad-dispatch` plugin provides the
-> cross-CLI dispatch + review skills referenced below.
+> Environment assumed: a POSIX shell with the vendor CLIs = Codex + a
+> Google-family CLI (Gemini CLI or Antigravity/agy) + Claude Code. The
+> `triad-dispatch` plugin provides the cross-CLI dispatch + review skills
+> referenced below.
+>
+> **Gemini leg prerequisites (post-2026-06-18):** the Gemini CLI serves only
+> Code Assist Standard/Enterprise licenses or API-key/Vertex auth — personal
+> Google-account OAuth is deprecated (`IneligibleTierError`; individual users
+> were migrated to Antigravity). Enterprise users: sign in with the org
+> account and set `GOOGLE_CLOUD_PROJECT` (or use `GEMINI_API_KEY`/Vertex).
+> Individual users: use the `triad-antigravity-dispatch` (agy) leg instead —
+> the review skill selects the available Google-family CLI at runtime. A
+> wrapper dispatch failing with classification `oauth-env` (exit 65) is this
+> auth boundary, not a bug.
 
 ## Pre-execution discipline
 
@@ -80,7 +91,7 @@ the **Codex** leg specifically, if a read-only sandbox can't read the files,
 ## Lookup priority for CLI / command facts
 
 1. **Tier 1** — official sources (vendor docs, repo README/CHANGELOG, recent
-   issues). In a closed network: approved mirrors / cached vendor docs.
+   issues).
 2. **Tier 2** — `--help` of the installed binary.
 3. **Tier 3** — local notes.
 
@@ -89,23 +100,24 @@ the **Codex** leg specifically, if a read-only sandbox can't read the files,
 the next attempt — don't patch-by-guess across turns. Cite which tier a fact came
 from. CLIs change often; re-verify rather than trust memory.
 
-## Artifact cross-platform compatibility (Ubuntu 24.04)
+## Artifact cross-platform compatibility
 
 The working environment may use convenience tools freely, but **artifacts**
 (`.sh` / `.py` / config / tests / lib committed to a repo) must run identically
-on the prod Ubuntu 24.04 baseline.
+on the target/deployment environment, not just the dev machine.
 
 - **Bash**: `#!/usr/bin/env bash`, target **5.x** features. Never `#!/bin/bash`
   pinned to an old version.
 - **Python**: `#!/usr/bin/env python3`, target **3.12**. No version pinning in
   shebangs.
-- **Artifact-callable tools only** (apt-available, identical syntax both sides):
-  `rg` `fd` `jq` `yq`(Go binary) `shellcheck` `shfmt` `ruff` `expect` `parallel`
-  `pv` `tokei` `difft` `git` `bash` `python3`. **Never** call from artifacts:
-  Mac-only (`osascript` `open` `pbcopy`), interactive-only (`fzf` `lazygit`),
-  shell-hook tools (`direnv`), or `httpie` (use the vendor CLI, not raw HTTP).
-- Verify a new artifact command resolves on Ubuntu (`which <cmd>`) and document
-  its install path before adding it.
+- **Artifact-callable tools only** (packaged on both dev and target, identical
+  syntax): `rg` `fd` `jq` `yq`(Go binary) `shellcheck` `shfmt` `ruff` `expect`
+  `parallel` `pv` `tokei` `difft` `git` `bash` `python3`. **Never** call from
+  artifacts: platform-specific (`osascript` `open` `pbcopy`), interactive-only
+  (`fzf` `lazygit`), shell-hook tools (`direnv`), or `httpie` (use the vendor
+  CLI, not raw HTTP).
+- Verify a new artifact command resolves on the target (`which <cmd>`) and
+  document its install path before adding it.
 
 ## Sub-agents and AI calls — minimum-judgment only
 

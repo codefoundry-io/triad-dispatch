@@ -62,7 +62,9 @@ TASKS: dict[str, dict] = {
 }
 
 FANOUT_MIN = 1
-FANOUT_MAX = 12  # mirror [agents] max_threads; config caps the real value.
+FANOUT_MAX = 12  # wrapper sanity ceiling. Vendor [agents] max_threads default is 6
+                 # (concurrent); codex wave-schedules N>6 sequentially, so 12 is a
+                 # cost guard, not a concurrency mirror (comment fixed 2026-07-04).
 
 
 def fanout_instruction(fanout: "int | str") -> str:

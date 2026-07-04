@@ -12,7 +12,7 @@
 # A failed `gemini` subcommand KEEPS the previous snapshot (never overwrites with
 # an empty result) so a transient CLI failure cannot manufacture false drift.
 #
-# Wire to launchd (Mac) or cron (Ubuntu) — see 3rd-Agent/wrappers/README.md.
+# Wire to launchd (Mac) or cron (Ubuntu) — see the plugin README.md.
 # Env: GEMINI_DAILY_STATE (state dir, default ~/.gemini/triad-daily).
 #      GEMINI_DAILY_DEEP=1 runs the deep JSON-adherence probe.
 #      GEMINI_DEEP_TIMEOUT_S bounds the deep probe (default 60s; portable watchdog).

@@ -101,6 +101,7 @@ CLI_SUB_CAP_PATTERNS: tuple[str, ...] = (
     "weekly limit reached",
     "subscription limit reached",
     "usage limit reached",
+    "no longer supported for gemini code assist for individuals",  # 2026-06-30: IneligibleTierError — Gemini Code Assist individuals tier discontinued 2026-06-18; user must migrate to Antigravity. github.com/google-gemini/gemini-cli/discussions/28017
 )
 
 TOKEN_LIMIT_PATTERNS: tuple[str, ...] = (
@@ -171,34 +172,39 @@ OAUTH_ENV_PATTERNS: tuple[str, ...] = (
     "please authenticate",
 )
 
-# Stderr 의 semantic 분류 (도구 미설치 / vendor warning / 정상 동작 등) 은
-# leader (Bash tool 통해 stderr mirror 받는 AI) 의 책임. wrapper 는 raw stderr
-# 만 audit 에 박고, leader 가 직접 판단 + 사용자 alert. dispatch SKILL (Step C)
-# 의 description 에 stderr 해석 가이드 명시 예정.
+# SEMANTIC classification of stderr (tool-not-installed / vendor warning /
+# normal chatter) is the LEADER's job (the AI that receives the mirrored
+# stderr via its shell tool). The wrapper only records raw stderr into the
+# audit log; the leader judges it and alerts the user. The dispatch SKILLs
+# carry the stderr-interpretation guidance.
 
 
 # ─── Vendor exit code maps (EMPIRICAL ONLY) ───────────────────────────────
-# 실측 검증된 exit code 만 박음. 실측 안 된 code = "unknown" → 수리공 dispatch
-# (수리공이 WebSearch + 분석 + python source 즉시 patch 로 entry 추가).
+# ONLY empirically observed exit codes are entered. An unobserved code =>
+# "unknown" => repair-agent dispatch (the repair agent web-searches, analyzes,
+# and patches an entry into this map).
 # Tier 1 docs (Gemini PR #13728: 41/42/52/53/130, Codex mintlify: 2/3/4/130)
-# 는 우리 환경에서 trigger 시켜본 적 없으므로 박지 않음 — Step A3 검증 후 추가.
+# never triggered in this environment, so NOT entered — add after observing.
 
 GEMINI_VENDOR_EXIT_MAP: dict[int, str] = {
     0: "ok",
-    # 41/42/52/53/130 = docs 만 (PR #13728 / headless docs) — 실측 후 추가.
+    # 41/42/52/53/130 = docs-only so far (anthropics/claude-code#13728 /
+    # headless docs) — add after empirical observation.
 }
 
 CODEX_VENDOR_EXIT_MAP: dict[int, str] = {
     0: "ok",
-    # 130 = Issue #4721 미해결 가능 — 실측 후 추가.
-    # 2/3/4 = mintlify 출처만, 공식 미확정 — 실측 후 추가.
+    # 130 = possibly anthropics/claude-code#4721 (unresolved) — add after observing.
+    # 2/3/4 = third-party (mintlify) sources only, not officially confirmed —
+    # add after empirical observation.
 }
 
 CLAUDE_VENDOR_EXIT_MAP: dict[int, str] = {
     0: "ok",
-    # claude `--print` 의 본 추가 vendor exit code 는 실측 후 추가.
-    # `is_error: true` 안 박혀있는 ENV/AUTH fail 은 rc=0 (envelope-only signal).
-    # extract_claude_answer 가 본 envelope 분석 → extraction-error 전파.
+    # Further claude `--print` vendor exit codes: add after observing.
+    # An ENV/AUTH failure carrying `is_error: true` still exits rc=0
+    # (envelope-only signal); extract_claude_answer analyzes the envelope
+    # and propagates extraction-error.
 }
 
 ANTIGRAVITY_VENDOR_EXIT_MAP: dict[int, str] = {
@@ -231,20 +237,21 @@ AUDIT_ARCHIVE_MAX_BYTES = AUDIT_ROTATE_BYTES * AUDIT_MAX_ARCHIVES
 
 
 # ─── Run-log policy (per-execution artifact, dispatch-SKILL input) ────────
-# audit.jsonl 와 별개로 _logs/<cli>/runs/<UTC-ts>-<pid>-<uuid8>.json 에 호출당
-# 1 파일. 실패 호출만 (rc != 0) — 성공은 dispatch agent 안 부르므로 불필요.
-# Dispatch SKILL 이 path 만 prompt 에 박고 agent 가 Read tool 로 가져감 →
-# 대용량 vendor stdout / 한글 / 특수문자 escape 격리.
+# Separate from audit.jsonl: one file per FAILED call (rc != 0) at
+# _logs/<cli>/runs/<UTC-ts>-<pid>-<uuid8>.json — successes never dispatch the
+# repair agent, so no file. The dispatch SKILL passes only the PATH in the
+# agent prompt and the agent fetches it with its Read tool, isolating large
+# vendor stdout / non-ASCII / special-char escaping from prompt transport.
 # 2-layer cleanup:
-#   Primary  = dispatch SKILL 이 agent 호출 종료 직후 rm
-#   Failsafe = 본 함수가 매 write 후 dir cap 초과 시 oldest 부터 unlink
+#   Primary  = the dispatch SKILL rm's it right after the repair agent returns
+#   Failsafe = this function unlinks oldest-first when the dir cap is exceeded
 _RUN_LOG_MAX_FILES = 100
 _RUN_LOG_MAX_BYTES = 20 * 1024 * 1024  # 20 MB total cap
 
 
 @dataclass
 class RunResult:
-    exit_code: int                  # wrapper 정렬 (0/1/2/3/4/64/65/66)
+    exit_code: int                  # wrapper-normalized (0/1/2/3/4/64/65/66)
     stdout: str
     stderr: str
     elapsed_s: float
@@ -257,7 +264,7 @@ class RunResult:
     schema_repair_attempt: int = 0
     extraction_error: Optional[str] = None
     validation_error: Optional[str] = None
-    # Vendor raw exit code — 수리공의 WebSearch 검색 키 (실측 안 된 code 시).
+    # Vendor raw exit code — the repair agent's web-search key for unobserved codes.
     vendor_exit_code: int = -1
 
 
@@ -335,10 +342,10 @@ def classify(
     exit_code: int,
     vendor_exit_code: Optional[int] = None,
 ) -> str:
-    """5분류 + ok. Layer order:
-      L1 — vendor exit code map (실측 검증된 raw code 만)
-      L2 — substring fallback (5분류 pattern lists)
-      L3 — "unknown" (수리공 dispatch 신호)
+    """Failure classes + ok. Layer order:
+      L1 — vendor exit code map (empirically observed raw codes only)
+      L2 — substring fallback (the per-class pattern lists)
+      L3 — "unknown" (repair-agent dispatch signal)
 
     `vendor_exit_code` is the raw CLI subprocess exit (e.g. 7, 130). When
     omitted, falls back to `exit_code` for legacy callers, but L1 is
@@ -361,7 +368,7 @@ def classify(
     # 2026-05-03 (later-3) framework gap fix.
     if exit_code == EXIT_TIMEOUT:
         return "timeout"
-    # L1 — vendor exit code map (실측 only). Use vendor_exit_code when
+    # L1 — vendor exit code map (empirical only). Use vendor_exit_code when
     # available; legacy callers fall back to exit_code (dead-code path).
     raw = vendor_exit_code if vendor_exit_code is not None else exit_code
     _ext = _load_classifier_extension().get(cli, {})
@@ -387,8 +394,20 @@ def classify(
     else:
         vmap = CODEX_VENDOR_EXIT_MAP
     vmap = {**_ext_vmap, **vmap}
+    # A vmap entry of "extraction-error" is a WEAK no-answer fallback (e.g.
+    # ANTIGRAVITY_VENDOR_EXIT_MAP[0], 2026-06-25 repair patch): the specific
+    # L2 classes (agy auth banner / capacity / sub-cap / token-limit / oauth)
+    # must keep winning — an early return here swallowed ALL of them on the
+    # agy no-answer path (t14/t15/f9 regression found on the 2026-07-04
+    # backport pass). The weak entry replaces only the terminal "unknown", so
+    # a pattern-less no-sentinel answer still routes to repair as
+    # extraction-error instead of unknown.
+    _weak_fallback = None
     if raw in vmap and vmap[raw] != "ok":
-        return vmap[raw]
+        if vmap[raw] == "extraction-error":
+            _weak_fallback = "extraction-error"
+        else:
+            return vmap[raw]
     # L2 — substring fallback
     # Order rationale: terminal user-action class (cli-sub-cap) first (most
     # specific phrases, near-zero false positive). Then transient
@@ -423,8 +442,9 @@ def classify(
         return "fanout-spawn-error"
     if any(p in stderr_blob for p in _p("CONFIG_CONFLICT_PATTERNS", CONFIG_CONFLICT_PATTERNS)):
         return "config-conflict"
-    # L3 — 수리공 dispatch 신호
-    return "unknown"
+    # L3 — weak vmap fallback (extraction-error) wins over the repair-dispatch
+    # "unknown" ONLY when no L2 class matched.
+    return _weak_fallback or "unknown"
 
 
 # ─── Pydantic helpers (NEW) ───────────────────────────────────────────────
@@ -635,7 +655,8 @@ def extract_codex_fanout(stdout: str) -> Tuple[list[dict], bool]:
     """Extract per-subagent raw messages from a codex --json collab stream.
 
     Returns (agents, complete). `agents` is a list of {thread_id, message}
-    for each subagent that reached a TERMINAL state (completed or failed),
+    for each subagent that reached a TERMINAL state (completed / errored /
+    interrupted / shutdown / not_found — the codex-rs exec_events wire enum),
     de-duplicated by thread_id (last terminal state wins, since `wait` then
     `close_agent` re-emit the same state). A failed thread's `message` may be
     absent and is recorded as "".
@@ -670,10 +691,16 @@ def extract_codex_fanout(stdout: str) -> Tuple[list[dict], bool]:
                 continue
             seen.add(tid)
             status = st.get("status")
-            if status in ("pending_init", "in_progress", None):
+            # Wire enum (codex-rs exec_events, verified rust-v0.135.0 and
+            # v0.142.5): pending_init | running | interrupted | completed |
+            # errored | shutdown | not_found. "running" is the in-flight
+            # value ("in_progress"/"failed" never appear on the wire — the
+            # pre-2026-07-04 skip set matched a nonexistent token, so a
+            # running snapshot was mis-recorded as terminal).
+            if status in ("pending_init", "running", None):
                 continue  # not yet terminal — a later event may supersede it
             by_thread[tid] = {"thread_id": tid, "message": st.get("message") or ""}
-            final_status[tid] = status  # last terminal status wins (completed OR failed)
+            final_status[tid] = status  # last terminal status wins (completed OR errored/…)
     # complete iff at least one thread was referenced AND every referenced thread
     # reached a "completed" terminal state. Zero agents (fan-out ignored) or any
     # non-completed/never-terminated thread → False. (no-silent-partial)
@@ -773,17 +800,18 @@ def extract_claude_answer(stdout: str, stderr: str) -> Tuple[str, Optional[str]]
       - permission_denials non-empty → ext_err = denial summary (objective signal)
       - JSON parse fail / empty stdout → ext_err = parse description
 
-    Markdown fence-strip safety: `--print` 안 fence X (envelope = raw JSON)
-    이지만 `--agent` mode 안 fence wrap 가능 (haiku 패턴 — singleshot.md
-    Empirical observations 박힘). 본 helper 가 안전 fence-strip.
+    Markdown fence-strip safety: `--print` emits no fence (envelope = raw
+    JSON) but `--agent` mode can fence-wrap (haiku pattern, recorded in the
+    empirical observations). This helper strips a fence safely.
     """
     s = (stdout or "").strip()
     if not s:
-        # stdout empty — claude 의 본 envelope 항상 stdout (rc=0 케이스).
-        # stderr 은 progress / warning 만. envelope 부재 = abnormal.
+        # stdout empty — claude's envelope always arrives on stdout (rc=0
+        # case); stderr carries only progress/warnings. A missing envelope
+        # is abnormal.
         return "", "empty stdout — claude envelope missing"
 
-    # Fence-strip safety (--agent mode 안 markdown wrap 가능).
+    # Fence-strip safety (--agent mode can markdown-wrap the envelope).
     if s.startswith("```"):
         nl = s.find("\n")
         if nl != -1:
@@ -803,19 +831,21 @@ def extract_claude_answer(stdout: str, stderr: str) -> Tuple[str, Optional[str]]
         result = json.dumps(result, ensure_ascii=False)
 
     if is_error:
-        # vendor returned envelope with is_error=true. result field 안
-        # 본 자세한 message 박힘 (e.g. "Not logged in · Please run /login",
-        # API error description 등). repair-agent 가 본 message 으로 분류.
+        # Vendor returned an envelope with is_error=true. The result field
+        # carries the detailed message (e.g. "Not logged in · Please run
+        # /login", an API error description). The repair agent classifies
+        # from this message.
         api_status = obj.get("api_error_status")
         prefix = f"is_error=true (api_error_status={api_status})"
         if result:
             return "", f"{prefix}: {result}"
         return "", prefix
 
-    # permission_denials 안 entry 박힘 = tool block 발견 (objective signal —
-    # claude worker 의 본 본질, leader 의 본 frame X). caller (SKILL) 가
-    # 본 신호로 추가 분석. extraction-error 으로 surface 박지 X (정상 답 안
-    # tool block 표시) — answer 우선 return, denials 별 audit 박을 방법 후속.
+    # A permission_denials entry = a tool block was observed (an objective
+    # signal from the claude worker, not the leader's framing). The caller
+    # (SKILL) analyzes it further. Do NOT surface it as extraction-error (a
+    # normal answer can carry tool-block markers) — return the answer first;
+    # auditing denials separately is a follow-up.
     if not result:
         return "", "vendor JSON valid but result field empty"
     return result, None
@@ -993,8 +1023,9 @@ def _run_once(
         cli, stderr, stdout, result.exit_code, vendor_exit_code=rc,
     )
 
-    # 1줄 deterministic 요약 (leader / 사용자 즉시 가시화). stderr 의 semantic
-    # 분류 (도구 미설치 / vendor warning) 은 leader 가 raw stderr mirror 보고 판단.
+    # One-line deterministic summary (immediately visible to leader/user).
+    # SEMANTIC stderr classification (tool-not-installed / vendor warning)
+    # stays the leader's judgment over the mirrored raw stderr.
     log(
         f"[wrapper] {cli} {result.classification} "
         f"exit={result.exit_code} vendor={result.vendor_exit_code} "
@@ -1167,7 +1198,12 @@ def run_cli_with_retry(
 
 # ─── Audit log ────────────────────────────────────────────────────────────
 
-_LOG_DIR = Path(__file__).resolve().parent / "_logs"
+# TRIAD_DISPATCH_LOG_DIR overrides the log root (audit + run-logs; the --debug
+# markdown dir is separate). Default = wrapper-adjacent _logs/. Consumers/tests point it
+# at a temp dir so an installed plugin dir is never mutated (plugin roots are
+# ephemeral per the Claude Code plugin docs).
+_LOG_DIR = Path(os.environ.get("TRIAD_DISPATCH_LOG_DIR")
+                or Path(__file__).resolve().parent / "_logs")
 _DEBUG_DIR = Path(__file__).resolve().parent / "_debug"
 
 
@@ -1398,7 +1434,8 @@ _STALE_IPC_AGE_FLOOR_S = 7200
 
 
 def prune_stale_run_logs(cli: str, age_floor_s: int = _STALE_IPC_AGE_FLOOR_S) -> None:
-    """Next-run cleanup of stale run-logs (the owner's "다음 run 에 클린업").
+    """Next-run cleanup of stale run-logs (owner contract: "clean up on the
+    NEXT run", not at exit — a crashed call must leave its evidence).
 
     Removes `_logs/<cli>/runs/*.json` (run-logs AND their `.repair.json` pairs)
     whose mtime is older than `age_floor_s`. Called at the START of every normal
