@@ -31,6 +31,8 @@ import sys
 import tempfile
 
 from _common import (
+    validate_wrapper_cwd,
+    load_prompt_text,
     EXIT_ARG_ERROR,
     EXIT_FANOUT_PARTIAL,
     EXIT_OK,
@@ -102,7 +104,13 @@ def codex_invocation(search: bool) -> list[str]:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Codex CLI single-shot wrapper")
-    p.add_argument("--prompt", required=True, help="User prompt")
+    prompt_group = p.add_mutually_exclusive_group(required=True)
+    prompt_group.add_argument("--prompt", help="User prompt")
+    prompt_group.add_argument(
+        "--prompt-file",
+        help="Read the user prompt from a UTF-8 file (>=50K-char prompts: pass "
+             "a file, not inline argv — L12; containment applies under "
+             "TRIAD_WRAPPER_ALLOWED_ROOTS)")
     p.add_argument(
         "--sandbox",
         default=None,
@@ -175,6 +183,19 @@ def main() -> int:
              "_debug/<UTC-YYYY-MM-DD>/codex.md (per-call summary)",
     )
     args = p.parse_args()
+
+    try:
+        _prompt_text = load_prompt_text(args.prompt, args.prompt_file)
+    except Exception as e:
+        log(f"prompt load failed: {e}")
+        return EXIT_ARG_ERROR
+    args.prompt = _prompt_text  # downstream code keeps using args.prompt
+
+    try:
+        args.cwd = validate_wrapper_cwd(args.cwd)
+    except Exception as e:
+        log(f"--cwd validation failed: {e}")
+        return EXIT_ARG_ERROR
 
     # Next-run IPC cleanup: sweep prior leaked `codex_report_*` mkdtemp dirs
     # (the --task fan-out path auto-creates one per call and never unlinks it).
@@ -249,7 +270,7 @@ def main() -> int:
     elif args.sandbox is None:
         args.sandbox = "read-only"  # default for raw (non-task) calls
 
-    require_binary("codex")
+    codex_bin = require_binary("codex")
 
     if args.image:
         for img in args.image:
@@ -305,6 +326,10 @@ def main() -> int:
             # the top-level flag in codex_invocation); default OFF. (3-way review A, owner)
             "-c", "approval_policy=never",
         ]
+        # argv[0] = resolved/pinned codex path (finding #3). codex_invocation
+        # stays pure ("codex" literal) so its unit test is unaffected; the pin
+        # is substituted here at the run site so a PATH shadow cannot win at exec.
+        cmd[0] = codex_bin
         if not args.search:
             # Vendor default for `web_search` is "cached" since 0.14x (an
             # OpenAI-maintained index — a search tool is silently available even

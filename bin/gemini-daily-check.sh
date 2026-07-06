@@ -23,6 +23,25 @@ mkdir -p "$STATE"
 REPORT="$STATE/report.md"
 actionable=0      # -> exit 1
 informational=0   # -> exit 2
+# Bounded vendor probe (2026-07-05): a network-dependent agy/gemini subcommand
+# must NEVER hang this script (cron job / test suite) — observed: a suite sat
+# hours on this case. Pure-bash watchdog (no coreutils `timeout`: absent on
+# stock macOS, artifact-portability rule). Usage: bounded <secs> cmd args...
+bounded() {
+  local _secs="$1"; shift
+  "$@" & local _pid=$!
+  local _i=0
+  while kill -0 "$_pid" 2>/dev/null; do
+    if [ "$_i" -ge "$_secs" ]; then
+      kill "$_pid" 2>/dev/null; sleep 1; kill -9 "$_pid" 2>/dev/null
+      wait "$_pid" 2>/dev/null
+      return 124
+    fi
+    sleep 1; _i=$((_i + 1))
+  done
+  wait "$_pid"
+}
+
 note() { printf '%s\n' "$*" >> "$REPORT"; }
 
 command -v gemini >/dev/null || { echo "gemini not installed" >&2; exit 4; }
@@ -34,7 +53,7 @@ command -v gemini >/dev/null || { echo "gemini not installed" >&2; exit 4; }
 
 # 1. version drift (INFORMATIONAL). No `update` subcommand (npm-managed): report
 #    the installed version, operator updates manually. Preserve prior on failure.
-if gemini --version 2>/dev/null | head -n 1 > "$STATE/version.now" && [ -s "$STATE/version.now" ]; then
+if bounded 120 gemini --version 2>/dev/null | head -n 1 > "$STATE/version.now" && [ -s "$STATE/version.now" ]; then
   if [ -f "$STATE/version.snapshot" ] && ! diff -q "$STATE/version.snapshot" "$STATE/version.now" >/dev/null; then
     note "- INFO: gemini version changed ($(cat "$STATE/version.snapshot") -> $(cat "$STATE/version.now")) — review for spec impact (npm-managed; update manually)"
     informational=1
@@ -46,7 +65,7 @@ else
 fi
 
 # 2. extensions-list drift (INFORMATIONAL). Preserve prior snapshot on failure/empty.
-if gemini extensions list 2>/dev/null | sort > "$STATE/extensions.now" && [ -s "$STATE/extensions.now" ]; then
+if bounded 120 gemini extensions list 2>/dev/null | sort > "$STATE/extensions.now" && [ -s "$STATE/extensions.now" ]; then
   if [ -f "$STATE/extensions.snapshot" ] && ! diff -q "$STATE/extensions.snapshot" "$STATE/extensions.now" >/dev/null; then
     {
       printf -- '- INFO: extensions list changed:\n'

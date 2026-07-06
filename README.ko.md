@@ -2,13 +2,55 @@
 
 # triad-dispatch
 
-Claude Code **leader** 를 위한 단발(single-shot) 크로스-CLI 디스패치 도구.
-**codex**, **gemini**, **antigravity (agy)** 를 단발 워커로 디스패치하며, 분류
-기반(classification-aware) 라우팅 + 자기개선 분류기 + 머지 전 크로스-패밀리
-리뷰를 제공합니다.
+**AI 코딩 어시스턴트는 자기 리뷰어와 blind spot 을 공유합니다.** Claude 에게
+Claude 의 결과물을 검토시키면 같은 framing 을 물려받습니다 — 버그를 만든 추론이
+곧 그 버그를 리뷰하는 추론입니다. triad-dispatch 는 **다른 모델 패밀리** 로부터
+두 번째, 세 번째 의견을 받아줍니다: Claude Code 세션에서 **codex**(OpenAI)와
+**antigravity / `agy`**(Google)를 단발(single-shot) 워커로 디스패치하고, 위험한
+변경을 머지하기 전에는 각 패밀리가 그 결정을 **독립적으로** 반박하는 리뷰를
+돌립니다 — 그래서 내 주 모델이 스스로 합리화해 넘긴 버그를, 그 blind spot 이 애초에
+없던 모델이 잡아냅니다.
+
+Claude Code 에 플러그인으로 추가합니다. 계속 Claude Code 안에서 작업하되, 외부
+의견이 필요하거나 변경이 머지를 막을 만큼 위험할 때 어시스턴트가 대신 다른
+패밀리에 물어봅니다.
+
+> **자매 제품:** 팀이 Claude Code 대신 **codex** CLI 를 리더로 쓴다면
+> **[triad-codex-dispatch](https://github.com/codefoundry-io/triad-codex-dispatch)**
+> 를 보세요 — codex 가 드라이버인 동일한 3-패밀리 모델입니다. 이 제품은 Claude Code
+> 드라이버용입니다.
+
+## 첫 디스패치 (2분)
+
+[설치](#설치-install) + [권한 allowlist](#권한-설정-필수) 뒤에, 평소처럼 Claude Code
+에게 이렇게 요청합니다:
+
+> triad-codex-dispatch 로 codex 에게 물어봐: `git rebase --onto` 는 무슨 일을 해? 한 문단으로.
+
+Claude 가 `triad-codex-dispatch` skill 을 실행하고, codex wrapper 를 호출해 codex 의
+답을 돌려줍니다. stderr 에는 아래 같은 한 줄 성공 요약이 보입니다:
+
+```
+[wrapper] codex ok exit=0 vendor=0 elapsed=6.4s
+```
+
+- `[wrapper] codex` — 어떤 워커가 실행됐는지.
+- `ok` — 분류(깨끗한 답변; `oauth-env` 나 `server-capacity` 같은 다른 값은 특정
+  실패를 뜻합니다 — [문제 해결](#문제-해결-troubleshooting) 참고).
+- `exit=0` — 성공. 이어서 codex 의 답이 응답으로 옵니다.
+
+이 `[wrapper] <cli> ok …` 줄이 디스패치가 동작했다는 신호입니다. 이 줄과 답이
+보이면 플러그인이 살아 있는 것입니다. `triad-codex-dispatch` 를
+`triad-antigravity-dispatch` 로 바꾸면 Google-family(`agy`) leg 을 같은 방식으로
+시험할 수 있습니다.
 
 ## 요구사항 (Requirements)
 
+- **최신 Claude Code** — 플러그인 마켓플레이스(`/plugin marketplace add` + install),
+  네임스페이스 플러그인 skill, harness 강제 서브에이전트 `tools:` allowlist 를
+  지원하는 버전(아래 보안 control 이 그 allowlist 에 의존합니다). 오래된 릴리스는
+  이것들을 opaque 하게 실패시킵니다. `/plugin marketplace` 가 없으면 먼저 Claude
+  Code 를 업데이트하세요.
 - **vendor CLI 설치 + 인증** — wrapper 는 인증을 직접 관리하지 않습니다:
   - `codex` 설치 후 `codex login`.
   - **Google-family leg — 사용하는 Gemini 액세스에 맞춰 선택:**
@@ -21,6 +63,36 @@ Claude Code **leader** 를 위한 단발(single-shot) 크로스-CLI 디스패치
   - 리뷰의 claude leg 는 세션 내 `Agent` 서브에이전트입니다 — 별도 설치 불필요.
 - **`python3 >= 3.12`** 가 PATH 에 있어야 합니다 (`bin/` wrapper 는
   `#!/usr/bin/env python3` 로 실행).
+
+## 설치 체크리스트 (순서대로)
+
+새 오너는 아래 세 단계로 동작하는 setup 을 그대로 재현합니다. 분리는
+**manual login (사람) → config → 자동 repair** 입니다 — wrapper 는 token 을
+절대 관리하지 않습니다(의도된 safety boundary, [SECURITY.md](SECURITY.md) 참고).
+
+1. **1회 manual login (사람) — WORKER CLI 만.** 이 플러그인이 디스패치하는 각
+   worker CLI 를 vendor 의 native login 으로 로그인합니다(wrapper 는 token 을
+   발급하거나 refresh 하지 않습니다):
+   - `codex` — `codex login`.
+   - `agy` (Antigravity) — OAuth 로그인, 개인 Google-family 액세스용.
+   - `gemini` — 조직 로그인, 엔터프라이즈 / 조직 Gemini 액세스용.
+   **claude** leg 는 세션 내 leader(그리고 리뷰의 fresh-eye `Agent`)이므로 별도
+   로그인이 **필요 없습니다**.
+2. **config — Bash permission allowlist.** wrapper `Bash(...)` 엔트리를
+   `.claude/settings.json` 에 추가합니다(아래 권한 설정 참고). 플러그인은 Bash
+   권한을 부여할 수 없으므로 이 manual config 한 단계는 필수입니다. 없으면 매
+   디스패치마다 프롬프트가 뜨거나(headless 시 거부).
+3. **repair 는 세션 내 자동 — manual 단계 없음.** 인식 안 된 실패 시 leader 가
+   해당 wrapper-repair 에이전트를 디스패치합니다 — READ-ONLY analyzer
+   (`Read, Grep, Glob` 만; write 없음)가 inline proposal 을 반환하고, leader 가
+   `bin/apply_patch.py`(결정적 zero-LLM applier)로 적용합니다. 사용자는 아무것도
+   하지 않습니다 — classifier 가 자기개선합니다. untrusted run-log 를 읽는
+   analyzer 는 설계상 write 권한이 0 입니다.
+
+**그다음 Claude Code 세션을 재시작하세요.** 플러그인 skill 과
+`.claude/settings.json` 권한 allowlist 는 세션 시작 시 로드됩니다. 따라서 플러그인
+설치 + 설정 편집 뒤에는 Claude Code 를 한 번 reload / 재시작하세요. 그 전까지는 새
+skill 이 안 뜨거나 매 디스패치마다 승인 프롬프트가 계속 뜹니다.
 
 ## 설치 (Install)
 
@@ -88,6 +160,47 @@ API rate limit 을 올리려는 경우에만 설정하면 됩니다.
    를 런타임 해소(`TRIAD_GOOGLE_REVIEW_CLI`, 없으면 agy, 없으면 gemini)하고
    claude(`Agent`) + codex + 그 leg 를 실행.
 
+## 문제 해결 (Troubleshooting)
+
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| 매 디스패치마다 권한 프롬프트가 뜨거나, headless 에서 거부됨 | wrapper `Bash(...)` 명령이 allowlist 에 없음 | [권한 설정](#권한-설정-필수)의 엔트리를 `.claude/settings.json` 에 추가한 뒤 **세션 재시작**(allowlist 는 시작 시 로드). |
+| 설치 뒤 새 skill/agent 가 안 뜸 | 플러그인 skill 은 세션 시작 시 로드 | 설치 + 설정 편집 뒤 Claude Code 세션을 한 번 reload / 재시작. |
+| 디스패치가 `oauth-env` 로 실패 | 워커 CLI 의 로그인이 만료됐거나 없음 | 해당 vendor 의 native login 재실행(`codex login`, 또는 `agy` OAuth 로그인). wrapper 는 대신 재인증하지 않습니다 — 신호만 surface 하니 직접 로그인하세요. |
+| gemini leg 이 `IneligibleTier` 로 실패(개인 계정) | Gemini CLI *개인* tier 폐지 | `agy`(Antigravity) leg 을 대신 사용하세요 — 개인 사용자의 Google-family leg 입니다. `gemini` 는 엔터프라이즈 / 조직 계정 전용. |
+| 디스패치가 non-zero 로 끝났고 원인을 알고 싶음 | 각 실패에는 분류 + exit code 가 있음 | 아래 exit-code 범례 + `[wrapper] …` stderr 줄의 분류를 보세요. |
+
+**Exit-code 범례**(wrapper 프로세스 exit code; 같은 실패 class 가
+`[wrapper] <cli> <class> …` stderr 줄의 단어로도 나타납니다):
+
+| Exit | 의미 | 조치 |
+|---|---|---|
+| `0` | 성공 — 이어서 답변 | 없음. |
+| `64` | 재시도 후에도 server capacity 소진 | 일시적 vendor 과부하; 기다렸다 재시도. |
+| `65` | 인증 / config / quota(예: `oauth-env`, `cli-subscription-cap`) | 재로그인하거나 quota reset 대기 — 분류 단어 참고. |
+| `66` | 구조화 출력(`--pydantic`) 스키마 검증 실패 | 1회 repair 재시도 후에도 모델 JSON 이 스키마 불일치. |
+| `69` | code task 가 blocked / 컨텍스트 부족(codex `--task code`) | 부족한 컨텍스트를 채워 재디스패치. |
+
+## 범위와 한계 — 이 도구가 하지 않는 것
+
+플러그인이 어디서 멈추는지 알 수 있도록, 정직한 경계:
+
+- **vendor 인증이나 token 을 관리하지 않습니다.** token 발급/refresh 없음, API-key
+  주입 없음. 각 vendor CLI 의 native login 으로 직접 로그인하며, 인증성 에러는
+  재로그인하라고 surface 됩니다. credential 을 toolkit 밖에 두는 것 자체가 의도된
+  safety boundary 입니다.
+- **OS 패키지를 설치하지 않습니다.** vendor CLI 와 `python3` 는 직접 설치하며,
+  플러그인은 PATH 에 이미 있는 것을 오케스트레이션만 합니다.
+- **자기개선 분류기는 heuristic 이지 oracle 이 아닙니다.** 진짜 실패를
+  그럴듯하지만 틀린 class 로 라우팅할 수 있습니다. worst case 는 *integrity* 이슈 —
+  지속적 라우팅 오분류이지 코드 실행이 **아닙니다**([보안](#보안-security) 참고) —
+  이지만, `~/.config/triad-dispatch/classifier-patches.json` 에 적용된 delta 를
+  주기적으로 검토하세요.
+- **wrapper containment 은 프로세스/권한 수준이지 OS 수준 confinement 이 아닙니다.**
+  read-only 리뷰 leg 은 *알려진* agy 도구 표면에 대한 fs-write denylist 를
+  강제하지만, sandbox jail 은 아닙니다. 격리는 궁극적으로 격리된 작업
+  디렉터리 + 커밋 전 사용자 검토에 의존합니다.
+
 ## 권장 동반 도구 — Superpowers
 
 링크: https://github.com/obra/superpowers . 마켓플레이스로 설치
@@ -104,6 +217,25 @@ API rate limit 을 올리려는 경우에만 설정하면 됩니다.
 - **antigravity (agy)**: Superpowers 는 Antigravity CLI 를 **아직 지원하지
   않습니다** — **향후 업데이트가 예정**되어 있습니다. `agy-daily-check.sh` 가
   매일 "superpowers-for-agy" 릴리스를 탐지합니다.
+
+## 동작 원리 (How it works)
+
+위의 가치가 이해된 뒤 살펴보는 메커니즘:
+
+- **Leader / worker.** 내 Claude Code 세션이 *leader* 입니다. 외부 의견이 필요하면
+  *worker* — `codex`, `gemini`, `agy` 로의 단발 호출 — 를 skill 을 통해
+  디스패치하고, 답 하나를 받아 계속 진행합니다. worker 는 내 세션 기억이 없습니다;
+  그 프롬프트 하나에만 답합니다.
+- **분류 기반 라우팅.** 모든 디스패치는 raw 쉘 호출이 아니라 skill 을 거칩니다.
+  wrapper 가 결과에 *분류*(`ok`, 또는 `oauth-env` / `server-capacity` 같은 명명된
+  실패)를 태그하므로, leader 가 raw 출력으로 추측하지 않고 정확히 반응합니다.
+- **자기개선 분류기.** 실패가 알려진 class 에 안 맞으면, read-only analyzer 가 새
+  규칙 하나를 제안하고 leader 가 결정적으로 적용합니다. 다음 동일 실패는 자동
+  라우팅됩니다. 이 상태는 홈 디렉터리에 저장되어 플러그인 업데이트를 가로질러
+  지속됩니다.
+- **크로스-패밀리 리뷰(머지 게이트).** 위험한 변경에는 leader 가 세 패밀리에 동시에
+  fan-out 하고 — 각각 독립 리뷰어 — 판정을 종합합니다. *leg* 은 그 fan-out 에서 한
+  패밀리의 몫을 뜻할 뿐입니다.
 
 ## 권장 사용법 (Recommended usage)
 
@@ -146,8 +278,20 @@ leader 와 오너가 실제로 사용하는 방식:
 분류기는 `~/.config/triad-dispatch/classifier-patches.json` 를 통해 플러그인
 업데이트를 가로질러 학습합니다 — 사용자 홈 디렉터리에 있으므로 **플러그인
 업데이트에도 살아남습니다** (휘발성 플러그인 디렉터리가 아님). repair
-서브에이전트가 새 `error → class` 엔트리를 추가하고, 엔진이 런타임에 병합합니다.
-이식 가능 — 팀이 큐레이션하고 공유할 수 있습니다.
+서브에이전트가 새 `error → class` 엔트리를 제안하고 leader 가
+`bin/apply_patch.py` 로 적용하며, 엔진이 런타임에 병합합니다. 이식 가능 — 팀이
+큐레이션하고 공유할 수 있습니다.
+
+## 보안 (Security)
+
+지속적인 control 은 model trust 가 아니라 **privilege separation** 입니다.
+분류기는 untrusted vendor run-log 에서 학습하므로, run-log 를 읽는 컴포넌트는
+write 권한이 0 입니다: 세션 내 repair 에이전트는 READ-ONLY analyzer
+(harness 가 `Read, Grep, Glob` 만 허용 — Write/Edit/Bash/network 없음)로,
+유일한 출력은 inline proposal 이고 leader 가 결정적 zero-LLM `bin/apply_patch.py`
+로 적용합니다. "model 이 injection 에 저항한다"는 경계가 **아닙니다**. wrapper 는
+인증을 관리하지 않습니다. 전체 threat model 과 per-product 집행:
+[SECURITY.md](SECURITY.md).
 
 ## 런타임 산출물과 정리
 

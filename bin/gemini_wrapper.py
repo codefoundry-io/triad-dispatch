@@ -29,6 +29,9 @@ import sys
 from pathlib import Path
 
 from _common import (
+    _wrapper_hardened,
+    validate_wrapper_cwd,
+    load_prompt_text,
     EXIT_ARG_ERROR,
     audit,
     debug_log,
@@ -55,7 +58,13 @@ _READONLY_POLICY = Path(__file__).resolve().parent / "policies" / "gemini-readon
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Gemini CLI single-shot wrapper")
-    p.add_argument("--prompt", required=True, help="User prompt")
+    prompt_group = p.add_mutually_exclusive_group(required=True)
+    prompt_group.add_argument("--prompt", help="User prompt")
+    prompt_group.add_argument(
+        "--prompt-file",
+        help="Read the user prompt from a UTF-8 file (>=50K-char prompts: pass "
+             "a file, not inline argv — L12; containment applies under "
+             "TRIAD_WRAPPER_ALLOWED_ROOTS)")
     p.add_argument(
         "--approval-mode",
         default="default",
@@ -100,6 +109,19 @@ def main() -> int:
     )
     args = p.parse_args()
 
+    try:
+        _prompt_text = load_prompt_text(args.prompt, args.prompt_file)
+    except Exception as e:
+        log(f"prompt load failed: {e}")
+        return EXIT_ARG_ERROR
+    args.prompt = _prompt_text  # downstream code keeps using args.prompt
+
+    try:
+        args.cwd = validate_wrapper_cwd(args.cwd)
+    except Exception as e:
+        log(f"--cwd validation failed: {e}")
+        return EXIT_ARG_ERROR
+
     if not args.prompt.strip():
         log("empty prompt")
         return EXIT_ARG_ERROR
@@ -112,7 +134,12 @@ def main() -> int:
         log(f"read-only policy file missing: {_READONLY_POLICY}")
         return EXIT_ARG_ERROR
 
-    require_binary("gemini")
+    if args.sandbox is None and _wrapper_hardened():
+        # Hardened installs default the Google legs to read-only: a raw call
+        # on a public install must not be write-capable by omission.
+        args.sandbox = "read-only"
+
+    gemini_bin = require_binary("gemini")
 
     pydantic_cls = None
     if args.pydantic:
@@ -124,7 +151,7 @@ def main() -> int:
 
     def build_cmd(effective_prompt: str) -> list[str]:
         cmd = [
-            "gemini",
+            gemini_bin,   # resolved/pinned path (finding #3) — never a bare name
             "-p", effective_prompt,
             "--approval-mode", args.approval_mode,
             "--output-format", "json",

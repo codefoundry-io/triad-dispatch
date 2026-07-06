@@ -23,6 +23,25 @@ NO_UPDATE=0; [ "${1:-}" = "--no-update" ] && NO_UPDATE=1
 REPORT="$STATE/report.md"
 actionable=0      # -> exit 1
 informational=0   # -> exit 2
+# Bounded vendor probe (2026-07-05): a network-dependent agy/gemini subcommand
+# must NEVER hang this script (cron job / test suite) — observed: a suite sat
+# hours on this case. Pure-bash watchdog (no coreutils `timeout`: absent on
+# stock macOS, artifact-portability rule). Usage: bounded <secs> cmd args...
+bounded() {
+  local _secs="$1"; shift
+  "$@" & local _pid=$!
+  local _i=0
+  while kill -0 "$_pid" 2>/dev/null; do
+    if [ "$_i" -ge "$_secs" ]; then
+      kill "$_pid" 2>/dev/null; sleep 1; kill -9 "$_pid" 2>/dev/null
+      wait "$_pid" 2>/dev/null
+      return 124
+    fi
+    sleep 1; _i=$((_i + 1))
+  done
+  wait "$_pid"
+}
+
 note() { printf '%s\n' "$*" >> "$REPORT"; }
 
 command -v agy >/dev/null || { echo "agy not installed" >&2; exit 4; }
@@ -34,11 +53,11 @@ command -v agy >/dev/null || { echo "agy not installed" >&2; exit 4; }
 
 # 1. update (unless suppressed)
 if [ "$NO_UPDATE" -eq 0 ]; then
-  agy update >/dev/null 2>&1 || note "- WARN: agy update failed"
+  bounded 120 agy update >/dev/null 2>&1 || note "- WARN: agy update failed/timed out"
 fi
 
 # 2. model-list drift (ACTIONABLE). Preserve prior snapshot on failure/empty.
-if agy models 2>/dev/null | sort > "$STATE/models.now" && [ -s "$STATE/models.now" ]; then
+if bounded 120 agy models 2>/dev/null | sort > "$STATE/models.now" && [ -s "$STATE/models.now" ]; then
   if [ -f "$STATE/models.snapshot" ] && ! diff -q "$STATE/models.snapshot" "$STATE/models.now" >/dev/null; then
     {
       printf -- '- DRIFT (actionable): model list changed:\n'
@@ -54,7 +73,7 @@ fi
 
 # 3. changelog drift (INFORMATIONAL). Normalize to the latest version token so
 #    only a real release bump (not formatting) registers.
-if agy changelog 2>/dev/null > "$STATE/changelog.raw" && [ -s "$STATE/changelog.raw" ]; then
+if bounded 120 agy changelog 2>/dev/null > "$STATE/changelog.raw" && [ -s "$STATE/changelog.raw" ]; then
   grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' "$STATE/changelog.raw" | head -n 1 > "$STATE/changelog.now"
   [ -s "$STATE/changelog.now" ] || head -n 1 "$STATE/changelog.raw" > "$STATE/changelog.now"
   if [ -f "$STATE/changelog.snapshot" ] && ! diff -q "$STATE/changelog.snapshot" "$STATE/changelog.now" >/dev/null; then
@@ -68,7 +87,7 @@ fi
 rm -f "$STATE/changelog.raw"
 
 # 4. plugin-list drift (INFORMATIONAL) + superpowers-for-agy probe.
-if agy plugins list 2>/dev/null | sort > "$STATE/plugins.now" && [ -s "$STATE/plugins.now" ]; then
+if bounded 120 agy plugins list 2>/dev/null | sort > "$STATE/plugins.now" && [ -s "$STATE/plugins.now" ]; then
   if [ -f "$STATE/plugins.snapshot" ] && ! diff -q "$STATE/plugins.snapshot" "$STATE/plugins.now" >/dev/null; then
     {
       printf -- '- INFO: plugin list changed:\n'
