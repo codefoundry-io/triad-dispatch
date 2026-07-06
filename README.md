@@ -45,87 +45,117 @@ That `[wrapper] <cli> ok …` line is your signal the dispatch worked. If you se
 and an answer, the plugin is live. Swap `triad-codex-dispatch` for
 `triad-antigravity-dispatch` to try the Google-family (`agy`) leg the same way.
 
-## Requirements
+## Required (~2 minutes)
 
-- A **recent Claude Code** — one new enough to support plugin marketplaces
-  (`/plugin marketplace add` + install), namespaced plugin skills, and
-  harness-enforced subagent `tools:` allowlists (the security control below relies
-  on that allowlist). Older releases fail these opaquely; if `/plugin marketplace`
-  is unavailable, update Claude Code first.
-- **Vendor CLIs installed + authenticated** — the wrappers never manage auth:
-  - `codex` installed, then `codex login`.
-  - **Google-family leg — pick the one that matches your Gemini access:**
-    - **Individual Gemini access → `agy` (Antigravity)**, installed + OAuth sign-in.
-      The Gemini CLI *individual* tier is deprecated (Google migrated it to the
-      Antigravity suite), so agy is the Google-family leg for individual users.
-    - **Enterprise / organization Gemini access → `gemini` (Gemini CLI)**, installed
-      + your org sign-in. The **enterprise** Gemini tier stays in use (the
-      individual-tier deprecation does not affect it); use `gemini` there, not agy.
-  - The claude leg of a review is an in-session `Agent` subagent — no separate install.
-- **`python3 >= 3.12`** on PATH (the `bin/` wrappers run via `#!/usr/bin/env python3`).
+Four steps get you a working install. Everything past this section is optional.
 
-## Setup checklist (do these in order)
+1. **Install + log in to ONE worker CLI.** You need at least one non-Claude
+   family to dispatch to; add the others later (see [Optional](#optional--advanced)).
+   Pick the one you have access to and use its native login — the wrappers never
+   manage auth:
+   - `codex` (OpenAI) — install, then `codex login`.
+   - **Google family** — `agy` (Antigravity), install + OAuth sign-in, for
+     individual Google access; or `gemini` (Gemini CLI) + your org sign-in for
+     enterprise / organization Gemini access. The Gemini CLI *individual* tier is
+     deprecated (migrated to the Antigravity suite), so use `agy` there; the
+     **enterprise** Gemini tier stays in use.
 
-A fresh owner reproduces the working setup with these three steps. The split is
-**manual login (human) → config → automatic repair** — the wrapper NEVER manages
-tokens (a deliberate safety boundary; see [SECURITY.md](SECURITY.md)).
+   You also need **`python3 >= 3.12`** on PATH (the wrappers run via
+   `#!/usr/bin/env python3`), and a **recent Claude Code** — new enough for plugin
+   marketplaces and namespaced plugin skills. The claude review leg is an
+   in-session `Agent`, so it needs no separate login.
 
-1. **One-time manual login (human) — WORKER CLIs only.** Log in to each worker CLI
-   this plugin dispatches, using the vendor's native login (the wrappers issue no
-   tokens and refresh no credentials):
-   - `codex` — `codex login`.
-   - `agy` (Antigravity) — OAuth sign-in, for individual Google-family access.
-   - `gemini` — your org sign-in, for enterprise / organization Gemini access.
-   The **claude** leg is the in-session leader (and the review's fresh-eye
-   `Agent`), so it needs NO separate login.
-2. **Config — the Bash permission allowlist.** Add the wrapper `Bash(...)` entries
-   to your `.claude/settings.json` (see Permission setup below). A plugin cannot
-   grant Bash permissions, so this one manual config step is required; without it
-   every dispatch prompts (or is denied when headless).
-3. **Repair is AUTOMATIC in-session — no manual step.** On an unrecognized failure
-   the leader dispatches the matching wrapper-repair agent, a READ-ONLY analyzer
-   (`Read, Grep, Glob` only — no write) that returns an inline proposal; the
-   leader applies it via `bin/apply_patch.py` (the deterministic, zero-LLM
-   applier). You do nothing — the classifier self-improves. The analyzer that
-   reads the untrusted run-log has zero write authority by design.
+2. **Add the plugin.**
 
-**Then restart the Claude Code session.** Plugin skills and the `.claude/settings.json`
-permission allowlist load at session start, so after installing the plugin and
-editing settings, reload / restart Claude Code once. Until you do, the new skills
-may not fire and every dispatch will still prompt.
+   ```
+   /plugin marketplace add codefoundry-io/triad-dispatch
+   /plugin install triad-dispatch@triad-dispatch
+   ```
 
-## Install
+   The repo is public — installing needs no special auth.
 
-```
-/plugin marketplace add codefoundry-io/triad-dispatch
-/plugin install triad-dispatch@triad-dispatch
-```
+3. **Grant the wrapper Bash permissions (one command).** A plugin cannot grant
+   Bash permissions, so the wrapper commands must be allow-listed in your
+   `.claude/settings.json`. This script does it for you — deterministic,
+   idempotent, safe to re-run:
 
-The repo is public, so installing needs no special auth. Background auto-update
-works over public GitHub as-is; set `GITHUB_TOKEN` in your environment only to
-raise the API rate limit.
+   ```bash
+   python3 <plugin-dir>/scripts/setup_permissions.py
+   ```
 
-**Local install (from a built folder).** To test a locally-built copy before
-publishing, point `marketplace add` at the plugin directory
-itself — **no git repo required** (the directory's `.claude-plugin/marketplace.json`
-is what is read; its relative `source` resolves for local-directory adds). The
-path must be absolute or start with `./`:
+   Run it from your project root (it writes `./.claude/settings.json`, creating it
+   if absent, and merges the entries without duplicating). To find `<plugin-dir>`,
+   ask Claude Code in a Bash tool call: `command -v codex_wrapper.py` resolves
+   under the installed plugin's `bin/`; the plugin root is its parent. You can also
+   point the script elsewhere with `--target <path-or-dir>`, or preview with
+   `--dry-run`. The [manual allowlist](#manual-allowlist-what-the-script-does) is
+   below if you prefer to edit the file yourself.
 
-```
-/plugin marketplace add /absolute/path/to/triad-dispatch
-/plugin install triad-dispatch@triad-dispatch
-```
+4. **Restart the session, then smoke-test.** Plugin skills and the settings
+   allowlist load at session start, so reload / restart Claude Code once. Then, in
+   a normal turn, ask the leader:
 
-**Test from a CLEAN working directory** — not a checkout that already has its own
-`.claude/skills/` or `agents/`. Plugin skills/agents are namespaced
-(e.g. `triad-dispatch:triad-codex-dispatch`), and a project's own same-named
-`.claude/skills` / `.claude/agents` **override** the plugin's — so run from a
-directory without those to exercise the plugin's own copies.
+   > Use triad-codex-dispatch to ask codex: what does `git rebase --onto` do? One paragraph.
 
-## Permission setup (required)
+   An answer plus a `[wrapper] <cli> ok …` line on stderr means the install is
+   live. (Swap in `triad-antigravity-dispatch` for the `agy` leg.)
 
-A plugin **cannot** grant Bash permissions, so you add them to your own
-`.claude/settings.json` (or `.claude/settings.local.json`):
+That is the whole required path. Repair is automatic and needs no setup: on an
+unrecognized failure the leader self-improves the classifier for you (details in
+[How it works](#how-it-works) and [Security](#security)).
+
+## Optional / Advanced
+
+Nothing in this section is needed for a normal install. Reach for a subsection
+only when its "do this ONLY if…" line applies to you.
+
+### Add a 2nd / 3rd worker CLI
+
+*Do this ONLY if you want cross-family review* (three independent families instead
+of one worker + the claude leg). Install and log in to the other CLIs the same way
+as step 1: `codex login`; `agy` OAuth sign-in; or `gemini` org sign-in
+(enterprise / organization accounts only). `triad-cross-family-review` resolves
+its Google-family leg at runtime (`TRIAD_GOOGLE_REVIEW_CLI`, else agy, else gemini)
+and runs claude (`Agent`) + codex + that leg.
+
+### Recommended companion — Superpowers
+
+*Do this ONLY if you want the implementer / TDD / review workflow skills.*
+Superpowers is a companion skill set that pairs well with this toolkit. Install it
+via its own marketplace
+(`/plugin marketplace add https://github.com/obra/superpowers` then
+`/plugin install superpowers`), or follow its README:
+https://github.com/obra/superpowers .
+
+- **codex**: recommended — the codex `--task code` mode mirrors a Superpowers
+  implementer subagent, and `triad-cross-family-review` is the capstone of
+  `superpowers:subagent-driven-development`.
+- **gemini**: supported — gemini has native skills (`gemini skills`), so
+  Superpowers installs as a companion. The bundled `gemini-daily-check.sh` tracks
+  the installed skill set.
+- **antigravity (agy)**: Superpowers does not yet support the Antigravity CLI — a
+  future update is planned. `agy-daily-check.sh` probes daily for it.
+
+### Extra verify steps
+
+*Do this ONLY if the smoke test in step 4 was not enough and you want to confirm
+each layer.*
+
+- **bin on PATH** — `command -v codex_wrapper.py` resolves under the installed
+  plugin's `bin/` (auto-added to PATH; no user action needed).
+- **self-improving classifier** — on an unrecognized failure the matching
+  wrapper-repair agent's proposal is applied to
+  `~/.config/triad-dispatch/classifier-patches.json` (in your home, not the plugin
+  dir); that file gains an entry and persists across plugin updates.
+- **cross-family review** — run `triad-cross-family-review`; it resolves its
+  Google-family leg at runtime and runs claude (`Agent`) + codex + that leg.
+- **bundled tests** — `python3 <plugin-dir>/tests/test_*.py` (stdlib-only).
+
+### Manual allowlist — what the script does
+
+*Do this ONLY if you prefer editing the file by hand instead of running
+`scripts/setup_permissions.py`.* Add these entries to `.claude/settings.json`
+(or `.claude/settings.local.json`) — this is exactly what the script merges in:
 
 ```json
 { "permissions": { "allow": [
@@ -137,26 +167,53 @@ A plugin **cannot** grant Bash permissions, so you add them to your own
 ] } }
 ```
 
-Without this you are prompted on every dispatch (or denied when headless). The
-commands need **network egress** — the wrappers spawn the vendor CLIs, which
-make the API calls — so do not run them inside a no-network Bash sandbox.
+Without the allowlist you are prompted on every dispatch (or denied when
+headless). Being allow-listed and being sandboxed are **orthogonal** — the
+allowlist does not exempt a command from the Bash sandbox.
 
-## Verify the install
+The Bash sandbox is **OFF by default** (opt-in via `/sandbox`). If you enable
+it, network is restricted and the wrappers — which spawn the vendor CLIs that
+make authenticated API calls with your auth — must run **outside** the sandbox.
+`scripts/setup_permissions.py` already adds them to `sandbox.excludedCommands`;
+the manual form is:
 
-After install + the permission allowlist, confirm the plugin is live:
+```json
+{ "sandbox": { "excludedCommands": [
+  "codex_wrapper.py *",
+  "gemini_wrapper.py *",
+  "antigravity_wrapper.py *"
+] } }
+```
 
-1. **bin on PATH** — in a Bash tool call, `command -v codex_wrapper.py` resolves
-   under the installed plugin's `bin/` (auto-added to PATH; no user action needed).
-2. **single-shot dispatch** — have the leader use `triad-codex-dispatch` (or
-   `triad-gemini-dispatch`) on a trivial prompt; expect the answer plus a
-   `[wrapper] <cli> ok …` summary line on stderr.
-3. **self-improving classifier** — on an unrecognized failure the matching
-   wrapper-repair agent appends a pattern to
-   `~/.config/triad-dispatch/classifier-patches.json` (in your home, not the
-   plugin dir); that file gains an entry and persists across plugin updates.
-4. **cross-family review** — `triad-cross-family-review` resolves its
-   Google-family leg at runtime (`TRIAD_GOOGLE_REVIEW_CLI`, else agy, else gemini)
-   and runs claude(`Agent`) + codex + that leg.
+### Local install (from a built folder)
+
+*Do this ONLY if you are testing a locally-built copy before publishing.* Point
+`marketplace add` at the plugin directory itself — **no git repo required** (the
+directory's `.claude-plugin/marketplace.json` is read; its relative `source`
+resolves for local-directory adds). The path must be absolute or start with `./`:
+
+```
+/plugin marketplace add /absolute/path/to/triad-dispatch
+/plugin install triad-dispatch@triad-dispatch
+```
+
+Test from a CLEAN working directory — not a checkout that already has its own
+`.claude/skills/` or `agents/`. Plugin skills/agents are namespaced
+(e.g. `triad-dispatch:triad-codex-dispatch`), and a project's own same-named
+`.claude/skills` / `.claude/agents` **override** the plugin's — so run from a
+directory without those to exercise the plugin's own copies.
+
+### Read the security model
+
+*Do this ONLY if you want the full threat model before relying on the toolkit.*
+See [SECURITY.md](SECURITY.md) — the durable control is privilege separation, not
+model trust (summarized under [Security](#security) below).
+
+### Background auto-update rate limit
+
+*Do this ONLY if background auto-update hits GitHub API rate limits.* Set
+`GITHUB_TOKEN` in your environment to raise the limit; installing and updating
+otherwise work over public GitHub as-is.
 
 ## Troubleshooting
 
@@ -198,23 +255,6 @@ Honest boundaries, so you know where the plugin stops:
   The read-only review leg enforces an fs-write denylist for the *known* agy tool
   surface; it is not a sandbox jail. Isolation ultimately rests on the isolated
   working directory + your review before commit.
-
-## Recommended companion — Superpowers
-
-Link: https://github.com/obra/superpowers . Install it via its marketplace
-(`/plugin marketplace add https://github.com/obra/superpowers` then
-`/plugin install superpowers`), or follow its README.
-
-- **codex**: Superpowers is **recommended** — install it. The toolkit's codex
-  `--task code` mirrors a Superpowers implementer subagent, and
-  `triad-cross-family-review` is the capstone of
-  `superpowers:subagent-driven-development`.
-- **gemini**: Superpowers is **supported** — gemini has native skills
-  (`gemini skills`), so install Superpowers as a companion. The bundled
-  `gemini-daily-check.sh` tracks the installed skill set (incl. superpowers).
-- **antigravity (agy)**: Superpowers does **not yet support** the Antigravity
-  CLI — a **future update is planned**. `agy-daily-check.sh` probes daily for a
-  "superpowers-for-agy" release.
 
 ## How it works
 

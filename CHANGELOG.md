@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.459 — 2026-07-06
+## 0.2.464 — 2026-07-06
 
 **Repair privilege-separation redesign.** The self-improving classifier's
 repair path is now split so the component that reads an untrusted vendor
