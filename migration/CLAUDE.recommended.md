@@ -119,6 +119,15 @@ on the target/deployment environment, not just the dev machine.
 - Verify a new artifact command resolves on the target (`which <cmd>`) and
   document its install path before adding it.
 
+## Sandbox choices
+
+Claude Code's Bash sandbox is **OFF by default** — simpler, and relies on the
+permission allowlist for safety. Turning it ON adds OS-level isolation, but
+the wrapper commands must then run **outside** it (the setup script already
+adds them to `sandbox.excludedCommands`, since they need network + vendor
+auth). For a dispatch-plugin setup like this one, OFF is the simpler default.
+See https://code.claude.com/docs/en/sandboxing.md for the full model.
+
 ## Sub-agents and AI calls — minimum-judgment only
 
 Put AI calls only where a deterministic program *cannot* do the job (semantic

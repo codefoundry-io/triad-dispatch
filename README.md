@@ -118,6 +118,25 @@ as step 1: `codex login`; `agy` OAuth sign-in; or `gemini` org sign-in
 its Google-family leg at runtime (`TRIAD_GOOGLE_REVIEW_CLI`, else agy, else gemini)
 and runs claude (`Agent`) + codex + that leg.
 
+### If you enable the Bash sandbox
+
+The sandbox is **OFF by default**, so the permission allowlist from step 3 is
+all a normal install needs. If you do turn it on (`/sandbox`), the setup script
+already exempts the wrappers via `sandbox.excludedCommands` — they need network +
+your vendor auth. To also pre-approve the vendor APIs and set a fallback, add
+`sandbox.network.allowedDomains` and `allowUnsandboxedCommands` yourself; see the
+[Claude Code sandboxing docs](https://code.claude.com/docs/en/sandboxing).
+
+### Optional: daily drift checks
+
+`bin/agy-daily-check.sh` and `bin/gemini-daily-check.sh` are optional drift
+detectors — they check for CLI / model-list / skill-set drift (for example, a
+Superpowers release for agy, or a gemini extension/skill change). Run them
+occasionally, or wire one up to a daily cron/launchd job; each splits its exit
+code into 0 (no change), 1 (actionable), and 2 (informational). Neither is
+required for normal use — read the scripts' own header comments for exact
+behavior.
+
 ### Recommended companion — Superpowers
 
 *Do this ONLY if you want the implementer / TDD / review workflow skills.*
