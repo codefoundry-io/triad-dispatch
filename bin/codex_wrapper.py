@@ -10,10 +10,15 @@ JSON object). Stderr = wrapper log + Codex's brief 39 B header.
 Audit log: _logs/codex/audit.jsonl (gitignored).
 
 Options:
-  --reasoning {low,medium,high,xhigh}
+  --reasoning {low,medium,high,xhigh,max}
         Override model_reasoning_effort (`-c model_reasoning_effort=...`).
-        Default = vendor default. Read-only deep work → high. Heavy
-        write/exec deep → xhigh (5h cap token burn — verify status first).
+        Default = vendor default. Read-only deep work → high; deep
+        architecture / long refactor → xhigh; hardest problems → max
+        (the top pure-depth tier the wrapper exposes; 5h cap token burn —
+        verify status first). `ultra` (max reasoning + automatic subagent
+        delegation) is intentionally NOT exposed: it makes a single-shot
+        dispatch runaway/over-long, and not every model variant supports
+        it (an auto-routed dispatch could hit an ultra-less model).
   --pydantic module.path:ClassName
         Inject a JSON schema block into the prompt and validate the answer
         with `cls.model_validate_json()`. On validation fail, retry once
@@ -51,7 +56,7 @@ from _common import (
 
 
 SANDBOX_CHOICES = ("read-only", "workspace-write")  # danger-full-access banned (triad no-yolo invariant)
-REASONING_CHOICES = ("low", "medium", "high", "xhigh")
+REASONING_CHOICES = ("low", "medium", "high", "xhigh", "max")  # ultra excluded: self-delegates subagents (runaway single-shot) + not every variant supports it
 
 
 def write_fanout_report(

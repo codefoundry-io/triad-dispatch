@@ -1,23 +1,17 @@
 # Changelog
 
-## 0.2.472 — 2026-07-10
+## 0.2.476 — 2026-07-11
 
-**Repair privilege-separation redesign.** The self-improving classifier's
-repair path is now split so the component that reads an untrusted vendor
-run-log has zero write authority:
+**Codex reasoning tier `max`.** The codex reasoning-effort enum now
+exposes `max`, the deepest pure-depth tier, above `xhigh`:
 
-- The in-session repair agent is a **read-only analyzer** (`Read, Grep,
-  Glob` only) that proposes one classifier delta as inline JSON — it never
-  edits a file, spawns a process, or reaches the network.
-- The leader applies the proposal via the **deterministic, zero-LLM**
-  `bin/apply_patch.py`, which re-validates every field and is the only
-  writer to the persistent classifier extension.
-- Ships a **SECURITY.md** documenting the threat model, the control, and —
-  explicitly — what is NOT the control ("the model resists injection" is not
-  the boundary).
-
-README polish: value-first opening, a copy-runnable first-dispatch example,
-a troubleshooting + exit-code section, and an honest scope-&-limits list.
+- `ultra` is deliberately NOT exposed — it adds automatic subagent
+  delegation on top of max reasoning, which makes a single-shot dispatch
+  run away and over-long, and not every model variant supports it; the
+  wrapper rejects `--reasoning ultra` at parse time.
+- The cross-family-review codex leg moves its top tier `xhigh` → `max`.
+- The wrapper pins no model, so it auto-routes to the current default;
+  only the reasoning enum changed.
 
 Built from the Triad source of truth. Full history: https://github.com/codefoundry-io/triad-dispatch/commits/main (each release commit summarizes its delta).
 

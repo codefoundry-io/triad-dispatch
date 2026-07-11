@@ -1,8 +1,14 @@
 ---
 name: triad-cross-family-review
 description: Use for the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatch INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frame the suspect/omitted/simplified decisions as QUESTIONS, consolidate their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then run a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.11.0
+version: 0.12.0
 # changelog:
+#   0.12.0 (2026-07-11): codex leg tracks the codex reasoning catalog — top tier
+#     bumped xhigh → max. `codex debug models` (0.144.x) exposes low/medium/high/
+#     xhigh/max on ALL gpt-5.6-* variants, plus ultra on sol/terra only (the volume
+#     variant caps at max); the wrapper exposes up to max (universal). ultra is NOT
+#     used — max reasoning + automatic subagent delegation → runaway single-shot,
+#     and it is not universal. Fallback ladder max → xhigh → high.
 #   0.11.0 (2026-07-10): 9-lens gate round-1 fixes — TRIAD_GOOGLE_REVIEW_CLI
 #     normalization (antigravity alias accepted), shallow-fallback Google leg is
 #     ADVISORY for the merge gate + degraded 2-family mode needs an owner decision
@@ -112,10 +118,13 @@ the lab's standing cross-family review rule.
      otherwise run the CLI default and log that the review tier is unpinned — an
      unpinned-default gemini leg is ADVISORY for gating, like the agy fallback
      above.
-   - **codex:** `--reasoning xhigh` — the wrapper's MAX tier (`codex_wrapper.py
-     --help` lists `{low,medium,high,xhigh}`; xhigh so codex matches agy-Pro
-     depth) — plus `--search` (live web-grounding; see rule 9
-     example). If a future codex CLI rejects `xhigh`, fall back to `high` + log.
+   - **codex:** `--reasoning max` — the wrapper's MAX tier (`codex debug models`
+     lists `low/medium/high/xhigh/max/ultra`; the wrapper exposes up to `max`, the
+     deepest non-delegating tier — so the codex leg reviews at full depth, not a
+     shallow rubber-stamp). `ultra` is NOT used — it self-delegates subagents
+     (runaway/over-long) and not every model variant supports it. Plus `--search`
+     (live web-grounding; see rule 9 example). If a future codex CLI rejects `max`,
+     fall back to `xhigh` → `high` + log.
    - **claude fresh-eye `Agent`:** the strongest available Claude tier (set it via
      the `Agent` tool's model parameter where the harness exposes one) + an
      explicit **max-thinking** directive in
@@ -208,7 +217,7 @@ the lab's standing cross-family review rule.
    ```bash
    # build the full review body (diff + questions) in a file, then:
    codex_wrapper.py --sandbox read-only \
-     --reasoning xhigh --search --timeout 900 \
+     --reasoning max --search --timeout 900 \
      --prompt "$(cat /path/to/review-body.txt)"     # <-- substitution fires here
    ```
 
@@ -263,7 +272,7 @@ the lab's standing cross-family review rule.
    reviewers in parallel, each at its family's MAX reasoning (rule 1) — `Agent`
    (claude fresh-eye at the strongest available Claude tier via the Agent model
    parameter, max-thinking/adversarial prompt per rule 10) +
-   `triad-codex-dispatch` (codex `--reasoning xhigh --search`) + the resolved
+   `triad-codex-dispatch` (codex `--reasoning max --search`) + the resolved
    Google leg (`triad-antigravity-dispatch`, passing `--model
    "$GOOGLE_REVIEW_MODEL"` ONLY when it is non-empty — on the verify-fallback
    path it is empty, so dispatch without `--model` and treat the leg as ADVISORY
