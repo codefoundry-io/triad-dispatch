@@ -148,7 +148,7 @@ Your job is only to PROPOSE the surgical delta below; the applier merges it into
   "proposal": null }
 ```
 
-Enum SoT — `classification` must be one of: `ok, server-capacity, cli-subscription-cap, token-limit, oauth-env, timeout, extraction-error, schema-fail, schema-rejected, fanout-spawn-error, config-conflict, task-blocked, unknown`.
+Enum SoT — `classification` must be one of: `ok, server-capacity, cli-subscription-cap, token-limit, oauth-env, timeout, extraction-error, schema-fail, schema-rejected, fanout-spawn-error, config-conflict, task-blocked, unknown`. (`vendor-error` — the antigravity driver's "nonzero vendor rc with a non-empty answer" state — is DELIBERATELY absent: it is driver-emitted on the answer-present path, which a classifier patch cannot express, so never propose it; it routes surface-to-user and you will never be dispatched on it.)
 
 
 The applier re-validates every field against these SoTs and the literal bounds independently, and leaves the extension file untouched on any invalid field — so a malformed proposal fails safely (the leader surfaces it as an escalate). Propose ONE surgical target; state a dual-evidence justification in `reason` only if the same error genuinely has independent evidence at both a distinct vendor exit code AND a distinct stderr substring.

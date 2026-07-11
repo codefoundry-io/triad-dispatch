@@ -15,8 +15,8 @@ Audit log: _logs/antigravity/audit.jsonl (gitignored).
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
+import secrets
 import sys
 import time
 from dataclasses import dataclass
@@ -47,16 +47,20 @@ class AgyResult:
     validated: Optional[dict] = None
 
 
-def _make_sentinel(prompt: str, attempt: int) -> str:
-    """Deterministic per-call id (no random / Date — reproducible).
+def _make_sentinel() -> str:
+    """Per-INVOCATION identity marker, generated ONCE in main() and held constant
+    across the schema-repair re-run (reproducibility comes from reuse, not from
+    deriving it from the prompt).
 
-    Hashes the FULL prompt (plus length + attempt), not a 64-char prefix, so
-    two prompts sharing a long common prefix cannot collide on the sentinel.
-    """
-    h = hashlib.sha1(
-        f"{len(prompt)}:{prompt}:{attempt}".encode()
-    ).hexdigest()[:10]
-    return f"AGY_DONE_{h}"
+    A random 128-bit id (secrets.token_hex(16)) so two concurrent calls — even
+    with an IDENTICAL prompt AND identical cwd — get DISTINCT sentinels, and a
+    marker embedded in a reviewed document/log cannot forge a live call's
+    identity. Randomness defeats prediction and copy-from-a-past-log; the
+    transcript-extractor's structural "the marker is the USER_INPUT footer" check
+    (see _common._scan_transcript) defeats copy-from-a-concurrent-live-prompt.
+    Format AGY_DONE_<32 lowercase hex>; the extractor + fake-agy match the marker
+    length-agnostically."""
+    return f"AGY_DONE_{secrets.token_hex(16)}"
 
 
 def _build_cmd(prompt, sentinel, agy_sandbox, model, timeout, *, pydantic=False):
@@ -83,12 +87,21 @@ def _build_cmd(prompt, sentinel, agy_sandbox, model, timeout, *, pydantic=False)
     return cmd
 
 
-def _repair_cmd(cmd, err):
-    """Rebuild the agy cmd with a one-shot JSON-repair hint appended to the -p arg."""
+def _repair_cmd(cmd, err, sentinel):
+    """Rebuild the agy cmd with a one-shot JSON-repair hint appended to the -p arg.
+
+    RESEALS the prompt (P4 round-3, codex finding): `err` is DYNAMIC text (a
+    pydantic validation message that can echo the failing value — potentially
+    containing a marker-shaped string from reviewed content), and the
+    transcript-identity rule keys on the LAST agy-marker in the USER_INPUT
+    footer. Re-appending this call's own marker after the hint guarantees it
+    stays last, so the repair re-run's transcript is still owned by THIS call
+    and can never be claimed by (or claim) another live call's sentinel."""
     new = list(cmd)
     i = new.index("-p") + 1
     new[i] = (new[i] + f"\n\nYour previous output was NOT valid JSON for the "
-              f"schema ({err}). Output ONLY corrected JSON, then the marker line.")
+              f"schema ({err}). Output ONLY corrected JSON, then the marker "
+              f"line <<<{sentinel}>>> on its own new line.")
     return new
 
 
@@ -112,13 +125,22 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, expected_sentinel,
     with a bounded server-capacity retry (cap SERVER_CAP_RETRIES).
 
     Decision table (extract-then-classify so a rc=0 auth banner the model
-    quotes inside a real answer never mis-classifies):
-      - answer present + non-empty -> ("ok", EXIT_OK)   [classify NOT called]
+    quotes inside a real answer never mis-classifies; ORDER MATTERS):
+      - killed          -> ("timeout", EXIT_TIMEOUT)   [FIRST — P4 round 2:
+                            a killed run has no complete DONE record, so any
+                            pty "answer" is partial, and its rc=128+signal
+                            would otherwise hit the rc gate and mislabel a
+                            retriable timeout as terminal vendor-error]
+      - answer present + non-empty, vendor rc==0 -> ("ok", EXIT_OK)
+                                                     [classify NOT called]
+      - answer present + non-empty, vendor rc!=0 -> ("vendor-error",
+                            EXIT_TERMINAL)   [P4 rc gate — never a silent ok,
+                            never via classify; answer quarantined from stdout,
+                            bounded copy in extraction_error -> run-log]
       - sentinel found, body empty -> ("extraction-error", EXIT_CLI_FAIL)
                                        [direct — NOT via classify, whose blob
                                         still holds the marker and would
                                         misroute an empty answer to unknown]
-      - killed          -> ("timeout", EXIT_TIMEOUT)
       - clean + empty   -> ("extraction-error", EXIT_CLI_FAIL)
       - else            -> classify(antigravity, scrubbed) -> mapped exit;
                             server-capacity retries the whole pty run.
@@ -154,18 +176,48 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, expected_sentinel,
         _brain_before = _common.snapshot_agy_transcripts()
         result = _pty.run_via_pty(cmd, cwd=cwd, timeout=timeout, env=None)
         scrubbed = _common.scrub_agy_output(result.output_bytes)
+        if result.killed:
+            # Killed short-circuit (P4 review round 2, 3-family convergent):
+            # a killed run has no complete DONE record — that is exactly why
+            # transcript-read is skipped for it — so any pty-scrub "answer"
+            # (e.g. an early-echoed marker) is partial and unreliable, and a
+            # kill reaps rc=128+signal, which would otherwise fall into the
+            # rc gate and mislabel a retriable timeout as terminal
+            # vendor-error. The scrubbed partial output still reaches the
+            # run-log for inspection.
+            return AgyResult(None, "timeout", _common.EXIT_TIMEOUT,
+                             result.rc, scrubbed_output=scrubbed)
         # PRIMARY: read the complete answer from agy's own transcript.jsonl
-        # (sentinel-independent — kills the "long answer drops the trailing
-        # marker" data-loss class). Only on a NON-killed run (a killed/timeout
-        # run has no complete DONE record). FALLBACK to pty-scrub+sentinel.
-        answer = ext_err = None
-        if not result.killed:
-            answer = _common.extract_agy_answer_from_transcript(
-                None, _brain_before, sentinel=expected_sentinel)
+        # (the identity anchor is the USER_INPUT footer, so a long answer that
+        # drops the trailing marker is still recovered). FALLBACK to
+        # pty-scrub+sentinel.
+        answer = _common.extract_agy_answer_from_transcript(
+            None, _brain_before, sentinel=expected_sentinel)
+        ext_err = None
         if answer is None:
             answer, ext_err = _common.extract_antigravity_answer(
                 scrubbed, result.killed, expected_sentinel)
         if answer is not None and answer.strip():
+            if result.rc != 0:
+                # rc gate (P4). success => rc=0 (agy audit: 36/36 ok at rc=0).
+                # A non-empty answer at a FAILING vendor rc is NOT a silent ok,
+                # and is NOT fed to classify (a real answer can quote error-shaped
+                # tokens -> a spurious server-capacity re-run / oauth-env terminal
+                # that discards a valid answer). A DISTINCT token routed to
+                # surface-not-repair: reusing `extraction-error` would MANDATE a
+                # repair-agent dispatch (SKILL Hard rule 8) and violate its
+                # documented "rc=0, no answer" invariant. The answer is
+                # QUARANTINED from stdout (final_answer=None, like every other
+                # failure); a bounded copy rides in extraction_error so the
+                # RUN-LOG genuinely carries it even when it was recovered from
+                # the transcript (not the pty output) — review round-2 fix.
+                snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
+                return AgyResult(None, "vendor-error", _common.EXIT_TERMINAL,
+                                 result.rc, scrubbed_output=scrubbed,
+                                 extraction_error=(
+                                     f"vendor rc={result.rc} returned a non-empty "
+                                     f"answer; surfaced as vendor-error (not ok, "
+                                     f"not repair). quarantined answer: {snippet}"))
             if pydantic_cls is None:
                 return AgyResult(answer, "ok", _common.EXIT_OK, result.rc,
                                  scrubbed_output=scrubbed)
@@ -174,7 +226,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, expected_sentinel,
                 return AgyResult(answer, "ok", _common.EXIT_OK, result.rc,
                                  scrubbed_output=scrubbed, validated=payload)
             if not schema_repaired:   # exactly one schema-repair re-run, independent
-                cmd = _repair_cmd(cmd, payload)
+                cmd = _repair_cmd(cmd, payload, expected_sentinel)
                 schema_repaired = True
                 continue
             return AgyResult(answer, "schema-fail", _common.EXIT_SCHEMA_FAIL,
@@ -278,7 +330,7 @@ def main() -> int:
         _common.log("AGY_SETTINGS_LOCK_TIMEOUT must be a number")
         return _common.EXIT_ARG_ERROR
 
-    sentinel = _make_sentinel(args.prompt, 0)
+    sentinel = _make_sentinel()
     eff_prompt = inject_schema_to_prompt(args.prompt, pydantic_cls) if pydantic_cls else args.prompt
     cmd = _build_cmd(eff_prompt, sentinel, agy_sandbox, args.model, args.timeout,
                      pydantic=pydantic_cls is not None)
@@ -314,6 +366,11 @@ def main() -> int:
                 f"{e}; completed vendor result suppressed because the agy "
                 f"settings transaction did not release cleanly"
             )
+            if prior.extraction_error:
+                # P4 round-3: never DISCARD the prior result's diagnostic —
+                # for a transcript-recovered vendor-error answer this carries
+                # the only run-log copy of the quarantined answer.
+                extraction_error += f" | prior: {prior.extraction_error}"
         r = AgyResult(
             None,
             "config-conflict",

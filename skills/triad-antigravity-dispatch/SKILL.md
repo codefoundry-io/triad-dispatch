@@ -1,7 +1,7 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.6.0
+version: 0.7.0
 ---
 
 # triad-antigravity-dispatch
@@ -176,7 +176,7 @@ CLS=$(printf '%s' "$SUMMARY" | sed -E 's/.*\[wrapper\] antigravity ([a-z-]+) .*/
 ```
 
 Token set:
-`ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | timeout | extraction-error | config-conflict | unknown`
+`ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | timeout | extraction-error | vendor-error | config-conflict | unknown`
 
 Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) /
 `4` (binary missing) / `64` (server-cap exhausted) / `65` (terminal) /
@@ -187,7 +187,7 @@ Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) /
 | classification (rc) | Leader action |
 |---|---|
 | `ok` (0) | Return wrapper stdout (agy's final answer text). |
-| terminal (65) — cli-subscription-cap / token-limit / oauth-env / config-conflict | Surface to user with cause (re-login / quota daily reset / prompt size too large / settings deny-transaction failed: lock-lease timeout or corrupt `~/.gemini/antigravity-cli/settings.json`). **NOT** repair-agent territory (already matched — only `unknown` / `extraction-error` / `timeout` route to repair). |
+| terminal (65) — cli-subscription-cap / token-limit / oauth-env / config-conflict / vendor-error | Surface to user with cause (re-login / quota daily reset / prompt size too large / settings deny-transaction failed: lock-lease timeout or corrupt `~/.gemini/antigravity-cli/settings.json` / vendor-error: agy exited rc≠0 yet produced a non-empty answer — the answer is NOT on stdout but IS preserved in the run-log + agy transcript; inspect it there and decide re-dispatch vs accept, P4 rc gate 2026-07-11). **NOT** repair-agent territory (already matched — only `unknown` / `extraction-error` / `timeout` route to repair; `vendor-error` is driver-emitted on the answer-present path, which a classifier patch cannot express). |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff (cap 2 pty re-runs). |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 8). Spawn it even when you are busy or also surfacing the failure — never skip.** |
 | `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 8).** agy ran but the extractor found no answer (clean output but empty, missing sentinel, vendor refusal text). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.476 — 2026-07-11
+## 0.2.478 — 2026-07-11
 
 **Codex reasoning tier `max`.** The codex reasoning-effort enum now
 exposes `max`, the deepest pure-depth tier, above `xhigh`:

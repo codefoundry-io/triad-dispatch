@@ -151,7 +151,7 @@ Your job is only to PROPOSE the surgical delta below; the applier merges it into
   "proposal": null }
 ```
 
-Enum SoT — `classification` must be one of: `ok, server-capacity, cli-subscription-cap, token-limit, oauth-env, timeout, extraction-error, schema-fail, schema-rejected, fanout-spawn-error, config-conflict, task-blocked, unknown`.
+Enum SoT — `classification` must be one of: `ok, server-capacity, cli-subscription-cap, token-limit, oauth-env, timeout, extraction-error, schema-fail, schema-rejected, fanout-spawn-error, config-conflict, task-blocked, unknown`. (`vendor-error` — the antigravity driver's "nonzero vendor rc with a non-empty answer" state — is DELIBERATELY absent: it is driver-emitted on the answer-present path, which a classifier patch cannot express, so never propose it; it routes surface-to-user and you will never be dispatched on it.)
 
 Pattern-list SoT — `pattern_list` must be one of: `SERVER_CAPACITY_PATTERNS, CLI_SUB_CAP_PATTERNS, TOKEN_LIMIT_PATTERNS, OAUTH_ENV_PATTERNS, SCHEMA_REJECTED_PATTERNS, FANOUT_SPAWN_PATTERNS, CONFIG_CONFLICT_PATTERNS, AGY_AUTH_BANNER_PATTERNS`.
 

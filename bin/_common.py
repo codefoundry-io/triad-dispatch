@@ -77,6 +77,7 @@ def map_classification_to_exit(cls: str) -> int:
         "fanout-spawn-error": EXIT_TERMINAL,
         "config-conflict": EXIT_TERMINAL,
         "task-blocked": EXIT_TERMINAL,
+        "vendor-error": EXIT_TERMINAL,  # agy: rc!=0 but a non-empty answer — surface, NOT repair
         "unknown": EXIT_CLI_FAIL,
     }.get(cls, EXIT_CLI_FAIL)
 
@@ -1117,63 +1118,146 @@ def _agy_brain_dir() -> str:
 def snapshot_agy_transcripts(brain_dir: str | None = None) -> dict:
     """{transcript_path: mtime} for every conversation transcript, BEFORE a run.
 
-    Paired with extract_agy_answer_from_transcript to identify THIS call's new
-    conversation (single-flight). Missing brain dir -> {} (first-ever run)."""
+    Paired with extract_agy_answer_from_transcript to BOUND the candidate set to
+    conversations created/touched during this call. Identity within that set is
+    by the per-invocation sentinel (see extract_agy_answer_from_transcript), NOT
+    by mtime — several agy calls may be in flight concurrently. Missing brain dir
+    -> {} (first-ever run)."""
     base = brain_dir or _agy_brain_dir()
     out: dict = {}
     for pth in _glob.glob(os.path.join(base, _AGY_BRAIN_GLOB)):
         try:
             out[pth] = os.path.getmtime(pth)
         except OSError:
-            continue
+            # The path EXISTS (glob saw it) — record its presence with a 0.0
+            # mtime rather than dropping it (P4 round-3): a transiently
+            # stat-failing PRE-EXISTING transcript must never look "new" to
+            # the post-run candidate rule, which keys on path presence.
+            out[pth] = 0.0
     return out
+
+
+_AGY_MARKER_RE = re.compile(r"<<<AGY_DONE_[0-9a-f]+>>>")
+
+# Scan refusal threshold for one transcript candidate (see _scan_transcript).
+_AGY_TRANSCRIPT_MAX_BYTES = 50 * 1024 * 1024
+
+
+def _scan_transcript(pth: str, marker: str) -> Tuple[bool, Optional[str]]:
+    """Stream ONE transcript once (context-managed, UTF-8-safe). Returns
+    (owns, final_done_content):
+
+      - `owns` = a USER_INPUT/USER_EXPLICIT record's content has `marker` as its
+        LAST agy-marker (the wrapper-appended sealed-prompt footer). A foreign
+        call that merely QUOTES `marker` mid-prompt has its OWN footer marker
+        last, so it does NOT own this sentinel (replay defense).
+      - `final_done_content` = the last PLANNER_RESPONSE/MODEL/DONE record's
+        content (str), or None.
+
+    Malformed/partial JSON lines, valid-JSON non-object records, and non-str
+    content are all skipped so a concurrently-appended foreign transcript can
+    never crash the scan (errors='replace' handles a truncated multi-byte char;
+    the isinstance guards handle `null`/`[]`/`123`/dict-content). (False, None)
+    on OSError. Streaming (not `.read()`) bounds memory on a large transcript.
+
+    ASSUMPTION (ground-truthed 500/500 real transcripts, 2026-07-11): a
+    single-shot `agy -p` conversation holds EXACTLY ONE USER_INPUT/USER_EXPLICIT
+    record, so `owns` and the global last-DONE `final` always belong to the same
+    turn. If a future agy multiplexes several turns into one transcript.jsonl
+    (e.g. a --resume path), bind `final` to the segment FOLLOWING the owning
+    USER_INPUT record instead of the whole file before routing such calls here."""
+    owns = False
+    final: Optional[str] = None
+    try:
+        # Resource bound (P4 round-2): a real agy transcript is KB-MB scale;
+        # refuse to scan a pathological/foreign multi-GB candidate rather than
+        # buffer it — skipping fails closed (not an owner -> pty-scrub path).
+        if os.path.getsize(pth) > _AGY_TRANSCRIPT_MAX_BYTES:
+            return (False, None)
+        with open(pth, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                content = rec.get("content")
+                if not isinstance(content, str):
+                    continue
+                if (rec.get("type") == "USER_INPUT"
+                        and rec.get("source") == "USER_EXPLICIT"):
+                    ms = _AGY_MARKER_RE.findall(content)
+                    if ms and ms[-1] == marker:
+                        owns = True
+                elif (rec.get("type") == "PLANNER_RESPONSE"
+                        and rec.get("source") == "MODEL"
+                        and rec.get("status") == "DONE"):
+                    final = content
+    except OSError:
+        return (False, None)
+    return (owns, final)
 
 
 def extract_agy_answer_from_transcript(
     brain_dir: str | None,
     before: dict,
-    sentinel: str | None = None,
+    sentinel: str,
 ) -> Optional[str]:
-    """Read this call's final answer from agy's own transcript.jsonl (P4.5,
-    spike-verified 2026-07-05) — the robust, sentinel-INDEPENDENT transport:
-    agy has no native JSON/-o-file output (issues #76/#7 OPEN on 1.0.16), but
-    every run writes a per-conversation transcript whose last
-    `PLANNER_RESPONSE/MODEL/DONE` record carries the COMPLETE, ANSI-free answer
-    (cleaner than pty-scrub, which also captures the thinking-stream).
+    """Read THIS call's final answer from agy's own transcript.jsonl (P4.5
+    transport, concurrency-hardened 2026-07-11).
 
-    `before` = snapshot_agy_transcripts() taken BEFORE the run; the new/updated
-    transcript (newest mtime not seen, or bumped) is THIS call's. Returns the
-    answer text (trailing `<<<sentinel>>>` stripped if present) or None when no
-    new transcript / no DONE record exists (caller falls back to pty extract)."""
+    agy has no native JSON/-o-file output; every run writes a per-conversation
+    transcript whose last `PLANNER_RESPONSE/MODEL/DONE` record carries the
+    complete ANSI-free answer. A long agentic run drops the trailing marker from
+    the ANSWER, but the wrapper-sealed marker is ALWAYS present in the USER_INPUT
+    record — that (not the answer, not mtime) is the identity anchor.
+
+    `before` = snapshot_agy_transcripts() taken BEFORE the run bounds the
+    candidate set to conversations CREATED during this call (new paths only —
+    a single-shot `agy -p` always starts a new conversation). Among those, THIS
+    call's transcript is the one that OWNS `sentinel` (_scan_transcript: its
+    USER_INPUT footer's LAST marker == this sentinel). EXACTLY ONE owner with a
+    DONE record -> return its answer; ZERO owners (crash before USER_INPUT / not
+    yet flushed / schema drift) or MORE THAN ONE (a genuine collision) -> None,
+    and the caller falls back to the per-call pty-scrub (which reads THIS
+    process's own bytes and can NEVER return a foreign answer). Selection is
+    NEVER by mtime.
+
+    Concurrency contract: the identity guarantee covers calls dispatched
+    THROUGH this wrapper (each seals its own footer marker last). A concurrent
+    RAW/manual agy call that quotes a live wrapper call's sealed prompt
+    verbatim while that call's own transcript is absent is outside the
+    contract — documented residual, not a supported flow.
+
+    `sentinel` is REQUIRED — the wrapper always supplies its per-invocation id."""
     base = brain_dir or _agy_brain_dir()
     after = snapshot_agy_transcripts(base)
-    fresh = [pth for pth, mt in after.items()
-             if pth not in before or mt > before.get(pth, 0.0)]
+    # Ownership candidates are NEW conversations only (P4 round-2 tightening):
+    # a single-shot `agy -p` ALWAYS creates a new conversation dir (ground-
+    # truthed across the whole brain store), so a pre-existing transcript can
+    # never be this call's — excluding mtime-bumped old paths removes both the
+    # stale-schema-repair corner and needless scanning of foreign transcripts
+    # that were created before the snapshot and are still being appended.
+    fresh = [pth for pth in after if pth not in before]
     if not fresh:
         return None
-    fresh.sort(key=lambda pth: after[pth], reverse=True)
-    tpath = fresh[0]
-    final = None
-    try:
-        for line in open(tpath, encoding="utf-8").read().splitlines():
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            if (rec.get("type") == "PLANNER_RESPONSE"
-                    and rec.get("source") == "MODEL"
-                    and rec.get("status") == "DONE"):
-                final = rec
-    except OSError:
+    marker = f"<<<{sentinel}>>>"
+    owner_count = 0
+    owner_final: Optional[str] = None
+    for pth in fresh:
+        owns, final = _scan_transcript(pth, marker)
+        if owns:
+            owner_count += 1
+            owner_final = final
+    if owner_count != 1 or owner_final is None:
         return None
-    if final is None:
-        return None
-    content = (final.get("content") or "").rstrip()
-    if sentinel:
-        marker = f"<<<{sentinel}>>>"
-        idx = content.rfind(marker)
-        if idx != -1:
-            content = content[:idx].rstrip()
+    content = owner_final.rstrip()
+    if content.endswith(marker):
+        content = content[:-len(marker)].rstrip()
     return content or None
 
 
@@ -1736,6 +1820,10 @@ def _prune_audit_archives(log_dir: Path) -> None:
 #
 #   CLASSIFICATION_TOKENS = the classify() result enum (keys of the
 #     map_classification_to_exit dict — the single source of truth).
+#     EXCEPTION (deliberate, P4 2026-07-11): `vendor-error` is in the exit map
+#     but NOT here — it is emitted directly by the agy driver when rc!=0 with a
+#     non-empty answer (a condition a classifier patch cannot express), so it
+#     must never be a proposable repair target.
 #   PATTERN_LIST_NAMES    = the built-in pattern-list constant names an
 #     extension may extend (a proposal's pattern_list must be one of these).
 
