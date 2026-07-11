@@ -1,10 +1,20 @@
 # Changelog
 
-## 0.2.480 — 2026-07-12
+## 0.2.481 — 2026-07-12
 
-**Hardened-audit custody + agy extraction strictness + review-packet
-lifecycle.**
+**Review orchestration discipline** (on top of the prior release's
+hardened-audit custody + agy extraction strictness + review-packet
+lifecycle):
 
+- The cross-family-review skill now spells out the LEADER's
+  consolidation role (fact-check every finding with a deterministic
+  probe, classify the round CONVERGING vs OSCILLATING, and hand an
+  oscillating round's conflict table to the user instead of another
+  round), plus leg-orchestration rules: background dispatch with ONE
+  generous event-driven wait (a wait timeout is a wake-up boundary,
+  not a failure), no unrelated work while legs run, bounded
+  delegation with an explicit return contract, and timeouts scaled
+  to packet size x reasoning tier.
 - Redact mode (`TRIAD_AUDIT_REDACT_PROMPTS=1` / hardened default):
   the durable audit now stores `stdout`/`stdout_head`/`stderr` as
   `"<redacted>"` plus lengths on every record (a prompt echo can ride

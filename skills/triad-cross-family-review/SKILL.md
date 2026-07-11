@@ -1,8 +1,22 @@
 ---
 name: triad-cross-family-review
 description: Use for the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatch INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frame the suspect/omitted/simplified decisions as QUESTIONS, consolidate their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then run a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.13.0
+version: 0.14.0
 # changelog:
+#   0.14.0 (2026-07-12): owner directives from live codex-side practice —
+#     rule 4 now spells out the LEADER's consolidation role (fact-check every
+#     finding via deterministic probe -> classify the round converging vs
+#     oscillating -> report oscillation to the owner), rule 12 non-convergence
+#     STOP (round findings that only flip prior
+#     decisions / contradict live legs -> conflict table to the owner, not
+#     another round; same-defect convergence = fix + one final confirm), rule
+#     13 leg orchestration (background dispatch, ONE generous event-driven
+#     wait, wait-timeout != failure, no unrelated interleaving while legs run,
+#     bounded delegation with explicit return contract, collect every leg
+#     before consolidating). Rule 7 timeout now SCALES with packet x tier
+#     (measured 2026-07-11/12: 65K-char inline @ codex max needs a ~1500s
+#     BUDGET — completes ~950-1050s; focused packet = hundreds of seconds —
+#     shrink the packet first).
 #   0.13.0 (2026-07-11): P3 cleanup guarantee — packet lifecycle moves to the
 #     deterministic lib/review_scratch.py helper (open/touch/close + stale-sibling
 #     prune; crash backstop). Hardened over 5 cross-family re-confirm rounds:
@@ -157,8 +171,21 @@ the lab's standing cross-family review rule.
    NOT self-assemble a large diff / multi-file packet — the leader pre-assembles
    a focused packet file and the leg reads only that. Self-read-themselves applies
    to small/focused reviews; large ones are leader-pre-assembled.
-4. **Consolidate, don't average.** ANY reviewer's Critical / must-fix or a
-   DO-NOT-MERGE verdict blocks merge. Cross-family complementarity is the
+4. **Consolidate, don't average — the LEADER verifies, classifies, then
+   acts.** ANY reviewer's Critical / must-fix or a DO-NOT-MERGE verdict
+   blocks merge. The leader's consolidation role is three duties, in order:
+   (a) **FACT-CHECK every finding against the source before acting on it**
+   — read the cited lines, reproduce the claim with a deterministic probe
+   (grep, a controlled fixture, official docs); a finding can be plausible
+   and wrong, and a reviewer's confidence is not evidence — a
+   probe-refuted finding is closed by recording the probe, never by a
+   counter-argument. (b) **CLASSIFY the round**: CONVERGING (new real
+   findings, or independent legs hitting the SAME defect — the rule-12
+   convergence floor) vs OSCILLATING (verdict flips / head-on
+   contradictions between legs / re-litigation without new evidence).
+   (c) On an OSCILLATING round, STOP and REPORT to the owner with the
+   rule-12 conflict table — the owner adjudicates, never another round.
+   Cross-family complementarity is the
    point: one may catch what the others miss — each family tends to catch a
    different class of issue (an extractor bug, a classifier false-positive, a
    config/safety gap), with little overlap.
@@ -179,8 +206,13 @@ the lab's standing cross-family review rule.
    sandboxed reviewer will otherwise live-run the code under review, hang on a
    real vendor API call, and — under its read-only sandbox — be unable to reap
    the hung child, burning the whole timeout with no verdict. Pair the no-exec
-   directive with a **generous timeout** (e.g. codex 850-900s) — both, not
-   either. Also avoid concurrent same-family API pressure: don't run the gemini
+   directive with a **generous timeout scaled to packet size × reasoning
+   tier** — both, not either. Measured: a ~65K-char inline
+   packet at codex `--reasoning max` exhausted 900s with NO verdict and
+   completed at ~950-1050s → budget `--timeout 1500` for a LARGE packet at
+   max; a FOCUSED sub-500-line packet at max completes in a few hundred
+   seconds. Prefer SHRINKING the packet (rules 8-9) over raising the
+   timeout. Also avoid concurrent same-family API pressure: don't run the gemini
    leg while another leg may also call gemini (429). A live-run finding can
    still be valid (it surfaces real robustness gaps) — capture the gap, then
    re-dispatch read-only. See the lab's recorded incident log (a codex leg that
@@ -189,8 +221,8 @@ the lab's standing cross-family review rule.
 
    Known-harmless codex artifact of this profile: codex may REPORT that it
    lacks permission to persist its own session/scratch file under
-   `--sandbox read-only`. Observed once in real review use (2026-07-11); not
-   reproducible on demand; the verdict still returned complete. Treat THAT
+   `--sandbox read-only`. Observed in real review use, not reproducible on
+   demand; the verdict still returned complete. Treat THAT
    specific self-persistence complaint as expected — do NOT widen the sandbox
    for it, and do NOT normalize OTHER permission failures under this note.
 8. **Vendor-leg context files go at a repo-relative gitignored path, never
@@ -263,7 +295,7 @@ the lab's standing cross-family review rule.
    ```bash
    # build the full review body (diff + questions) in a file, then:
    codex_wrapper.py --sandbox read-only \
-     --reasoning max --search --timeout 900 \
+     --reasoning max --search --timeout 900 \   # focused packet; LARGE → 1500 (rule 7)
      --prompt "$(cat /path/to/review-body.txt)"     # <-- substitution fires here
    ```
 
@@ -306,6 +338,40 @@ the lab's standing cross-family review rule.
     signal → re-dispatch that leg with the adversarial framing. The framing, not the
     tier, is the gap: a leg at its top tier still rubber-stamps a bare "faithful/none"
     when it is only asked to check that things look fine (see the changelog).
+12. **Non-convergence is a STOP, not another round.** The fix→re-confirm
+    loop exists to CONVERGE. Stop dispatching when a new round — WITHOUT
+    adding material new evidence — merely flips a prior round's settled
+    decision, contradicts another live leg head-on, or re-litigates an
+    already-adjudicated point: consolidate the conflicting claims into a
+    table (claim / leg / round / evidence) and hand the conflict to the
+    owner for adjudication. When a flip or contradiction DOES carry new
+    evidence, adjudicate that evidence with a deterministic probe first
+    (grep the source, run a controlled fixture, read vendor docs) and let
+    the probe decide whether the loop has genuinely stopped converging.
+    One healthy signal is NOT a conflict: independent legs finding the
+    SAME defect is a CONVERGENCE floor — fix it and run one final confirm.
+13. **Leg orchestration: background dispatch, ONE generous wait, no
+    unrelated interleaving.** Dispatch every leg in the BACKGROUND and
+    wait event-driven: one generous wait per leg, never short repeated
+    polls. A wait that expires is a wake-up boundary, not evidence the leg
+    failed: inspect that leg's state ONCE, keep a healthy running leg
+    alive through its completion notification, and move a leg to rule 1's
+    degraded/missing handling only on a documented terminal failure or an
+    explicit owner decision to end the wait — never interrupt or respawn a
+    healthy leg because a wait elapsed, and never re-wait a leg whose
+    result already arrived. While legs run, keep the leader's own context
+    review-adjacent (fact-check planning, packet hygiene, staging fixes
+    for already-returned findings) — unrelated work interleaved here
+    pollutes later consolidation and leg prompts. Delegate only concrete,
+    bounded work, and tell each leg what to inspect and exactly what to
+    return: a distilled verdict + findings with evidence paths, never a
+    raw dump. Consolidate once every dispatched leg has either returned a
+    result or been logged as missing via that terminal path — never by
+    silently dropping one. claude-host mechanics: the `Agent` tool runs in
+    the background by default (`run_in_background` overrides per call) +
+    the completion task-notification; a completed agent is
+    resumed by id/name via `SendMessage`; wrapper legs = background Bash +
+    its completion notification.
 
 ## Flow
 
@@ -327,12 +393,16 @@ the lab's standing cross-family review rule.
    path it is empty, so dispatch without `--model` and treat the leg as ADVISORY
    per rule 1 — or `triad-gemini-dispatch`; skip+log if none) — each with the
    same suspect-question list and the diff scope.
-3. Collect the three verdicts + findings.
+3. Collect the three verdicts + findings, then run rule 4's consolidation:
+   fact-check each finding against the source (deterministic probe), and
+   classify the round CONVERGING vs OSCILLATING.
 4. If unanimous SAFE TO MERGE with no must-fix → proceed to merge.
-5. Otherwise: fix each finding (implementer + per-fix review), then GOTO 2
-   (re-confirm) until unanimous SAFE — stopping after `TRIAD_REVIEW_MAX_ROUNDS`
-   (default 2) full rounds; past that, record the residual findings and get an
-   owner decision (rule 5).
+5. Otherwise, if the round is CONVERGING: fix each finding (implementer +
+   per-fix review), then GOTO 2 (re-confirm) until unanimous SAFE — stopping
+   after `TRIAD_REVIEW_MAX_ROUNDS` (default 2) full rounds; past that, record
+   the residual findings and get an owner decision (rule 5). If the round is
+   OSCILLATING, STOP instead of re-dispatching: hand the rule-12 conflict
+   table to the owner (rules 4, 12).
 
 ## Failure modes
 
@@ -347,6 +417,9 @@ the lab's standing cross-family review rule.
 | A leg returns a repair-routed wrapper failure (`unknown` / `extraction-error` / `timeout`) | The leg's CLI transport hiccuped — not a review verdict | Let that leg's dispatch SKILL run its repair path, then re-dispatch the leg once; if it fails again, that family is unavailable this round (degraded-mode gating applies). Never count a wrapper failure as SAFE |
 | agy/gemini leg times out / extraction-error with no verdict on a LARGE review | The leg was told to self-assemble a large diff/packet (`git diff` + read N files itself) and ran out the wall-time budget reading + stitching it | Pre-assemble a focused packet file; the leg reads ONLY that one file (rule 8 large-packet sub-rule); codex inlines the same focused subset (rule 9) |
 | codex leg returns no verdict / "couldn't access the files" / reviews the literal string `$(cat ...)` | codex handed a file PATH under read-only+no-exec (file-read route empty), or `$(cat ...)` nested in a single-quoted heredoc (literal, unexpanded) | Inline the diff+questions into `--prompt` via call-site `"$(cat body.txt)"`, not a quoted-heredoc and not a file path (rule 9) |
+| codex leg times out at max tier on a big inline packet | Timeout not scaled to packet × tier (a ~65K-char packet at max needs ~1000s+) | Shrink to the focused subset first (rules 8-9); if the packet must stay large, `--timeout 1500` (rule 7) |
+| Rounds keep flipping each other's verdicts / re-litigating settled points | The loop stopped converging — more rounds only oscillate | STOP; consolidate the conflict table (claim / leg / round / evidence) and hand it to the owner (rule 12) |
+| Leader burns the wait busy-polling legs, or picks up unrelated work mid-review | Poll loops / context interleaving instead of event-driven waits | Background dispatch + ONE generous wait per leg; wait-timeout = wake-up, not failure; review-adjacent prep only while legs run (rule 13) |
 
 ## Why this exists
 
