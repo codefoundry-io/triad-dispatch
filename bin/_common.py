@@ -470,7 +470,18 @@ def load_prompt_text(prompt: Optional[str], prompt_file: Optional[str]) -> str:
         raise ValueError("either --prompt or --prompt-file is required")
     path = Path(prompt_file).expanduser()
     if not path.is_absolute():
-        raise ValueError("--prompt-file must be an absolute path")
+        # P3.b D-2 (spec 3-way unanimous 2026-07-11): stay FAIL-LOUD —
+        # silent relative resolution against a reverted/unexpected cwd could
+        # read the wrong same-named file and pass containment silently. The
+        # candidate below is cwd-DERIVED, not necessarily the intended path.
+        cwd = Path.cwd()
+        raise ValueError(
+            f"--prompt-file must be an absolute path (got {prompt_file!r}; "
+            f"caller cwd: {cwd}). If that cwd is the intended base, retry "
+            f"with --prompt-file {cwd / path}; note the foreground shell cwd "
+            f"can revert between turns — verify it before trusting the "
+            f"candidate."
+        )
     resolved = _ensure_within_runtime_roots(path, "--prompt-file")
     if not resolved.is_file():
         raise ValueError(f"--prompt-file must be a file: {resolved}")
@@ -1264,17 +1275,45 @@ def extract_agy_answer_from_transcript(
 def extract_antigravity_answer(
     scrubbed: str, killed: bool, expected_sentinel: str
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Find the exact per-call sentinel in already-scrubbed text. Present ->
-    (answer_without_sentinel, None). Absent -> (None, 'no-sentinel').
+    """Find the exact per-call sentinel in already-scrubbed text. Present and
+    TERMINAL -> (answer_without_sentinel, None). Absent -> (None, 'no-sentinel').
 
     Uses the LAST marker occurrence (rfind) so an early echoed marker — e.g.
     the model quoting the closing instruction back at the top — does not
     truncate a real answer that ends at the genuine terminal marker.
+
+    P4.c strictness (spec 3-way 2026-07-11): the accepted marker must be
+    TERMINAL — the tail after it is whitespace only (the sealed prompt says
+    "and nothing after it"; the live-spike healthy tail is a single '\\n')
+    AND the marker is newline-preceded (own-line floor, re-confirm round-2:
+    the sealed prompt instructs the marker "on its own line", so an INLINE
+    early echo at the exact end of a truncated capture must not pass).
+    Either violation means the genuine terminal marker never arrived
+    -> (None, 'non-terminal-marker'), never a partial prefix as ok. Widen to
+    a residue allowlist ONLY on captured real-fixture evidence (anchored
+    full-tail match, <=1024 chars), never a broad pattern.
+
+    killed=True fails closed here as belt-and-suspenders — the driver
+    already short-circuits killed -> timeout BEFORE extraction; this guards
+    a future caller that skips that ordering.
     """
+    if killed:
+        return None, "killed-partial"
     marker = f"<<<{expected_sentinel}>>>"
     idx = scrubbed.rfind(marker)
     if idx == -1:
         return None, "no-sentinel"
+    if scrubbed[idx + len(marker):].strip():
+        return None, "non-terminal-marker"
+    if idx > 0 and not scrubbed[:idx].endswith("\n"):
+        # Own-line floor (re-confirm round-2, both families): the sealed
+        # prompt instructs the marker "on its own line", so a genuine
+        # terminal marker is newline-preceded. An INLINE marker at the exact
+        # end of a truncated capture ("I will end with <<<S>>>") would
+        # otherwise pass the whitespace-tail check and surface the partial
+        # prefix as ok. idx==0 stays allowed: an empty body routes to the
+        # driver's empty-answer-body, not here.
+        return None, "non-terminal-marker"
     return scrubbed[:idx].rstrip(), None
 
 
@@ -1715,14 +1754,35 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
     log_dir = _LOG_DIR / cli
     log_dir.mkdir(parents=True, exist_ok=True)
     ok = result.exit_code == EXIT_OK
+    redact = _audit_redact_enabled()
+    # Custody taxonomy (P4.b, spec 3-way 2026-07-11; extends the 2026-07-05
+    # prompt-custody adjudication): in redact mode, MODEL-OUTPUT fields
+    # (final_answer_head, extraction_error) are allowed at a 500 cap, but
+    # STREAMS that can carry PROMPT content (stdout, stdout_head, stderr —
+    # vendor UIs/JSON envelopes may reflect the input) are fully "<redacted>"
+    # (+ lengths): a partial cap cannot guarantee prompt custody because a
+    # prompt echo rides the stream HEAD. Applied to this record only — the
+    # RunResult is never mutated (emit_run_log() runs AFTER audit() and must
+    # keep the full copies in the transient, pruned run-log).
+    def _redact_cap(text: Optional[str]) -> Optional[str]:
+        """Model-output field custody: the adjudicated 500 cap in redact mode."""
+        if redact and text and len(text) > 500:
+            return text[:500] + " …[redact-cap]"
+        return text
+
     rec: dict = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "cli": cli,
         # Prompt custody (adjudication 2026-07-05): lab default = full evidence;
         # hardened/redact mode strips prompt-bearing argv + prompt text (length
-        # only) so a public install's durable audit never stores prompts.
-        "cmd": _redact_prompt_args(cmd) if _audit_redact_enabled() else cmd,
-        "prompt_head": "<redacted>" if _audit_redact_enabled() else prompt[:200],
+        # only) so a public install's durable audit never MECHANICALLY stores
+        # prompts. Explicit allowance (re-confirm 2026-07-11): the 500-capped
+        # model-output fields (final_answer_head / extraction_error /
+        # validation_error) may incidentally contain prompt text the MODEL
+        # chose to echo into its answer — the guarantee covers mechanical
+        # storage of the input, not model-echoed content.
+        "cmd": _redact_prompt_args(cmd) if redact else cmd,
+        "prompt_head": "<redacted>" if redact else prompt[:200],
         "prompt_len": len(prompt),
         "vendor_exit_code": result.vendor_exit_code,
         "exit_code": result.exit_code,
@@ -1731,16 +1791,27 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
         "mode": result.mode,
         "repair_attempt": result.repair_attempt,
         "schema_repair_attempt": result.schema_repair_attempt,
-        "stderr": result.stderr,
+        "stderr": "<redacted>" if redact else result.stderr,
         "final_answer_head": (result.final_answer or "")[:500],
         "final_answer_len": len(result.final_answer or ""),
-        "validated": result.validated,
-        "extraction_error": result.extraction_error,
-        "validation_error": result.validation_error,
+        # validated (the full pydantic dict) and validation_error (pydantic's
+        # message embeds the model's failing input) are the SAME model-output
+        # class as final_answer_head — the taxonomy bounds them too (panel
+        # custody-lens finding 2026-07-11; schema-fail empties final_answer
+        # but validation_error would otherwise carry the answer uncapped).
+        "validated": ("<redacted>" if (redact and result.validated is not None)
+                      else result.validated),
+        "extraction_error": _redact_cap(result.extraction_error),
+        "validation_error": _redact_cap(result.validation_error),
     }
+    if redact:
+        rec["stderr_len"] = len(result.stderr or "")
     if ok:
-        rec["stdout_head"] = result.stdout[:500]
+        rec["stdout_head"] = "<redacted>" if redact else result.stdout[:500]
         rec["stdout_len"] = len(result.stdout)
+    elif redact:
+        rec["stdout"] = "<redacted>"
+        rec["stdout_len"] = len(result.stdout or "")
     else:
         rec["stdout"] = result.stdout
     path = log_dir / "audit.jsonl"
@@ -2461,6 +2532,12 @@ def debug_log(cli: str, prompt: str, result: RunResult) -> None:
     Path: `_debug/<UTC-YYYY-MM-DD>/<cli>.md`. Header (table head) written
     exactly once on first append per file, race-free under fcntl lock.
     """
+    if _audit_redact_enabled():
+        # Redact-mode custody (panel custody-lens, 2026-07-11): the debug dump
+        # stores the FULL prompt + streams in a durable-ish per-day file. A
+        # hardened install must not get a prompt-custody bypass via --debug.
+        log("debug dump skipped: redact mode (prompt/stream custody)")
+        return
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     day_dir = _DEBUG_DIR / today
     day_dir.mkdir(parents=True, exist_ok=True)

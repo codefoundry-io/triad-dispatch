@@ -50,6 +50,12 @@ Run-log JSON schema (read from `run_log_path`):
 - `classification` — wrapper's classification label (one of `"unknown"` / `"extraction-error"` / `"timeout"` when you're dispatched)
 - `stderr` — full stderr from the failing call
 - `stdout` — full vendor stdout (vendor error / failure events may live here, NOT in stderr)
+- `extraction_error` — the extractor's reason string, when set; for
+  `extraction-error` dispatches it distinguishes root causes (e.g.
+  `no-sentinel` = the completion marker never appeared vs
+  `non-terminal-marker` = a marker was present but NOT terminal: a
+  non-whitespace tail after it, or not newline-preceded/own-line — a
+  truncated run whose only marker is an early echo)
 - `wrapper_cmd` — how the wrapper was invoked
 - `vendor_cmd` — the underlying vendor argv
 

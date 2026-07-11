@@ -1,7 +1,12 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.7.0
+version: 0.7.1
+# changelog:
+#   0.7.1 (2026-07-11): P4.c — Step 4 extraction-error row now names the
+#     non-terminal-marker trigger (truncated rc=0 run whose only marker is an
+#     early echo; run-log extraction_error distinguishes it from no-sentinel).
+#     Underlying extractor requires a whitespace-only tail after the marker.
 ---
 
 # triad-antigravity-dispatch
@@ -190,7 +195,7 @@ Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) /
 | terminal (65) — cli-subscription-cap / token-limit / oauth-env / config-conflict / vendor-error | Surface to user with cause (re-login / quota daily reset / prompt size too large / settings deny-transaction failed: lock-lease timeout or corrupt `~/.gemini/antigravity-cli/settings.json` / vendor-error: agy exited rc≠0 yet produced a non-empty answer — the answer is NOT on stdout but IS preserved in the run-log + agy transcript; inspect it there and decide re-dispatch vs accept, P4 rc gate 2026-07-11). **NOT** repair-agent territory (already matched — only `unknown` / `extraction-error` / `timeout` route to repair; `vendor-error` is driver-emitted on the answer-present path, which a classifier patch cannot express). |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff (cap 2 pty re-runs). |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 8). Spawn it even when you are busy or also surfacing the failure — never skip.** |
-| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 8).** agy ran but the extractor found no answer (clean output but empty, missing sentinel, vendor refusal text). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
+| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 8).** agy ran but the extractor found no answer (clean output but empty, missing sentinel, vendor refusal text, or a NON-TERMINAL marker — a truncated rc=0 run whose only marker is an early echo; the run-log `extraction_error` field distinguishes `non-terminal-marker` from `no-sentinel`). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
 | `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since a hang (pty killed at the print-timeout backstop) is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
 | arg (3) / binary missing (4) / `schema-fail` (66) | Surface to user with cause (empty prompt / `agy` not on PATH / `--pydantic` output still failed validation after the one schema-repair re-run — fix the schema or prompt and re-dispatch). |
 

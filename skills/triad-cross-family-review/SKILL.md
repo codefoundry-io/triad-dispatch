@@ -1,8 +1,19 @@
 ---
 name: triad-cross-family-review
 description: Use for the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatch INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frame the suspect/omitted/simplified decisions as QUESTIONS, consolidate their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then run a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.12.0
+version: 0.13.0
 # changelog:
+#   0.13.0 (2026-07-11): P3 cleanup guarantee — packet lifecycle moves to the
+#     deterministic lib/review_scratch.py helper (open/touch/close + stale-sibling
+#     prune; crash backstop). Hardened over 5 cross-family re-confirm rounds:
+#     every deletion is provenance-bound (.active with binary-compared magic —
+#     name alone never authorizes), create-NEW-only open (duplicate slug +
+#     reserved *.pruning tail refused), claim-rename before every rmtree with
+#     next-open reclaim, heartbeat-mtime-only staleness (floor 1-3650), symlink/
+#     line-terminator refusals, empty-shell rmdir self-healing. Packets live
+#     ONLY under _runs/review/ (bare _shared/ prohibited). Rule 7 gains the
+#     known-harmless codex self-persistence note (P3.b D-1, accept-and-document).
+#     Spec 3-way unanimous: enforcement is review-owned, never wrapper-side.
 #   0.12.0 (2026-07-11): codex leg tracks the codex reasoning catalog — top tier
 #     bumped xhigh → max. `codex debug models` (0.144.x) exposes low/medium/high/
 #     xhigh/max on ALL gpt-5.6-* variants, plus ultra on sol/terra only (the volume
@@ -175,17 +186,52 @@ the lab's standing cross-family review rule.
    re-dispatch read-only. See the lab's recorded incident log (a codex leg that
    live-ran the code under review hung on a real vendor call and burned the whole
    timeout with no verdict; the no-exec directive let the same review finish quickly).
+
+   Known-harmless codex artifact of this profile: codex may REPORT that it
+   lacks permission to persist its own session/scratch file under
+   `--sandbox read-only`. Observed once in real review use (2026-07-11); not
+   reproducible on demand; the verdict still returned complete. Treat THAT
+   specific self-persistence complaint as expected — do NOT widen the sandbox
+   for it, and do NOT normalize OTHER permission failures under this note.
 8. **Vendor-leg context files go at a repo-relative gitignored path, never
    `/tmp`.** gemini and agy are **workspace-sandboxed to the repo** — a brief /
    diff / context file handed to them at `/tmp/...` is unreadable (gemini errors
    `Path not in workspace: "/tmp" resolves outside the allowed workspace`; agy
-   the same). Put any review-context file at a repo-relative gitignored location
-   — a repo-relative gitignored path, e.g. a plain `_shared/<name>.md`
-   (`_shared/` `_runs/` `_logs/` are gitignored) —
-   so every leg (codex reads it fine too) can `Read` it. The claude `Agent` leg is
-   NOT workspace-sandboxed, so it can read `/tmp`; do not rely on that for the
-   vendor legs. Clean up the context file after the review (it is itself an IPC
-   artifact).
+   the same). Put every review-context file inside a helper-managed packet dir
+   under the gitignored `_runs/review/` — NEVER at a bare `_shared/<name>.md`
+   and never `/tmp` — so every leg (codex reads it fine too) can `Read` it.
+   The claude `Agent` leg is NOT workspace-sandboxed, so it can read `/tmp`;
+   do not rely on that for the vendor legs.
+
+   **Packet lifecycle = the deterministic helper `lib/review_scratch.py`**
+   (python3 stdlib; enforcement is review-owned — a wrapper-side prune of a
+   leader path was reviewed and REJECTED as scope-creep + a foreign-repo
+   deletion hazard in exported installs):
+   - `python3 <skill>/lib/review_scratch.py open <abs-root> <slug>` at review
+     start — creates `<root>/<UTC-date>-<slug>/` with an `.active` heartbeat,
+     prunes stale HELPER-MANAGED siblings (date-prefixed dirs whose `.active`
+     heartbeat mtime is past the floor — a crashed loop stops refreshing it;
+     default 7 days, `TRIAD_REVIEW_SCRATCH_MAX_AGE_DAYS` overrides), prints
+     the packet dir. A date-dir WITHOUT a regular `.active` file is unmanaged
+     and is skipped with a note, never deleted (the wrong-root fence). `open`
+     is create-NEW-only — a same-day duplicate slug is refused loud, never
+     silently shared. `<abs-root>` = the ABSOLUTE `<repo>/_runs/review` path
+     (canonicalized; the final component must not be a symlink).
+   - `… touch <abs-dir>` when a fix→re-confirm loop spans days (keeps the
+     heartbeat fresh so an ACTIVE loop outlives the floor).
+   - `… close <abs-dir>` at review end — the primary cleanup path; the
+     prune-at-next-open is only the crash backstop.
+   Symlinks are refused (root and children), non-date-prefixed entries and
+   plain files are never touched, the root is always an explicit absolute
+   path (never cwd-derived), and EVERY ownership-checked operation — the
+   `close`/prune deletions and the `touch` heartbeat refresh alike —
+   operates ONLY on dirs carrying the helper's
+   `.active` ownership marker WITH its provenance magic inside (a foreign
+   file that merely happens to be named `.active` never qualifies): an
+   arbitrary date-named dir is skipped or refused, never rmtree'd, so even
+   a typo'd root cannot reap foreign directories. A deliberately KEPT record dir retains `.active` and is
+   pruned by a later `open` once its heartbeat passes the floor; keep
+   long-term records outside the packet root.
 
    **LARGE packet → PRE-ASSEMBLE one focused file; the vendor leg reads ONLY
    that, never self-assembles.** When the review's expected packet is LARGE — a big diff (e.g.
@@ -227,7 +273,7 @@ the lab's standing cross-family review rule.
    and codex receives the uninterpreted string `$(cat ...)`. (The outer heredoc
    shape itself stays valid for a literal prompt body — the sibling dispatch
    skills' Step 1 uses exactly that.) (gemini / agy are
-   workspace-sandboxed and DO read a repo-relative `_shared/` file per rule 8, so
+   workspace-sandboxed and DO read a repo-relative `_runs/review/` packet file per rule 8, so
    inlining is a codex-leg requirement, not a universal one — though inlining a
    small packet works for every leg.) For a LARGE diff (rule 8's large-packet
    case) the INLINED body must ALSO be the FOCUSED / high-risk subset, not the
@@ -264,10 +310,13 @@ the lab's standing cross-family review rule.
 ## Flow
 
 1. Scope the review: branch ref + base SHA + the list of suspect/omitted/
-   simplified decisions (phrased as questions). If the packet is LARGE (rule 8),
-   PRE-ASSEMBLE the focused packet file (framing + high-risk diff subset) at a
-   repo-relative gitignored path, e.g. `_runs/review/<date>/packet.md`; the
-   agy/gemini leg reads only that, codex inlines the same focused body.
+   simplified decisions (phrased as questions). Open the packet dir via the
+   rule-8 helper (`python3 <skill>/lib/review_scratch.py open <abs>/_runs/review
+   <slug>` — also prunes stale packets from crashed past reviews). If the packet
+   is LARGE (rule 8), PRE-ASSEMBLE the focused packet file (framing + high-risk
+   diff subset) inside that dir, e.g. `<packet-dir>/packet.md`; the agy/gemini
+   leg reads only that, codex inlines the same focused body. At review end,
+   `… close <packet-dir>` (rule 8 lifecycle).
 2. Resolve the Google-family leg (Hard rule 1 snippet), then dispatch the
    reviewers in parallel, each at its family's MAX reasoning (rule 1) — `Agent`
    (claude fresh-eye at the strongest available Claude tier via the Agent model

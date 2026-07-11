@@ -1,17 +1,28 @@
 # Changelog
 
-## 0.2.478 — 2026-07-11
+## 0.2.480 — 2026-07-12
 
-**Codex reasoning tier `max`.** The codex reasoning-effort enum now
-exposes `max`, the deepest pure-depth tier, above `xhigh`:
+**Hardened-audit custody + agy extraction strictness + review-packet
+lifecycle.**
 
-- `ultra` is deliberately NOT exposed — it adds automatic subagent
-  delegation on top of max reasoning, which makes a single-shot dispatch
-  run away and over-long, and not every model variant supports it; the
-  wrapper rejects `--reasoning ultra` at parse time.
-- The cross-family-review codex leg moves its top tier `xhigh` → `max`.
-- The wrapper pins no model, so it auto-routes to the current default;
-  only the reasoning enum changed.
+- Redact mode (`TRIAD_AUDIT_REDACT_PROMPTS=1` / hardened default):
+  the durable audit now stores `stdout`/`stdout_head`/`stderr` as
+  `"<redacted>"` plus lengths on every record (a prompt echo can ride
+  a stream head, so a cap cannot guarantee prompt custody), and caps
+  `extraction_error` at 500 chars. The transient failure run-log keeps
+  full copies. NOTE: audit files written by earlier hardened installs
+  may contain full non-ok streams — rotate/purge them once.
+- The antigravity pty-fallback extractor accepts its completion marker
+  only when TERMINAL (whitespace-only tail AND newline-preceded, per the
+  sealed prompt's own-line instruction); a truncated run whose only
+  marker is an early echo now fails closed (`non-terminal-marker`)
+  instead of returning a partial answer as ok.
+- The cross-family-review skill ships a deterministic packet-lifecycle
+  helper (`skills/triad-cross-family-review/lib/review_scratch.py`):
+  open/touch/close plus a stale-packet prune, so packets stranded by a
+  crashed review are swept at the next review `open`.
+- Relative `--prompt-file` stays fail-loud; the error now shows the
+  caller cwd and a cwd-derived absolute candidate.
 
 Built from the Triad source of truth. Full history: https://github.com/codefoundry-io/triad-dispatch/commits/main (each release commit summarizes its delta).
 
