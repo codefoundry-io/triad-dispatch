@@ -84,7 +84,9 @@ another family catches).
 When dispatching a vendor CLI as a review leg: tell it to **review by READING
 only — do not run scripts/tests or spawn CLIs** (a sandboxed agentic reviewer can
 live-run the code and hang). Put any context file at a **repo-relative gitignored
-path**, never `/tmp` (sandboxed reviewers can't read outside the workspace). For
+path**, never `/tmp` (sandboxed reviewers can't read outside the workspace —
+true for gemini and agy ≤1.1.2; an agy ≥1.1.3 reviewer is NOT contained, so
+don't rely on workspace confinement there). For
 the **Codex** leg specifically, if a read-only sandbox can't read the files,
 **embed the diff/context inline** in the prompt.
 

@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import secrets
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -63,7 +65,8 @@ def _make_sentinel() -> str:
     return f"AGY_DONE_{secrets.token_hex(16)}"
 
 
-def _build_cmd(prompt, sentinel, agy_sandbox, model, timeout, *, pydantic=False):
+def _build_cmd(prompt, sentinel, agy_sandbox, model, timeout, *, pydantic=False,
+               skip_permissions=False):
     if pydantic:
         sealed = (
             f"{prompt}\n\n"
@@ -84,6 +87,8 @@ def _build_cmd(prompt, sentinel, agy_sandbox, model, timeout, *, pydantic=False)
         cmd.append("--sandbox")
     if model:
         cmd += ["--model", model]
+    if skip_permissions:
+        cmd = _add_skip_permissions(cmd)
     return cmd
 
 
@@ -116,6 +121,78 @@ def _classify_no_answer(scrubbed: str, killed: bool, vendor_rc: int) -> tuple:
         exit_code=_common.EXIT_CLI_FAIL, vendor_exit_code=vendor_rc,
     )
     return cls, _common.map_classification_to_exit(cls)
+
+
+# agy 1.1.3 flipped headless (-p) permission policy: a tool needing a
+# confirmation is soft-denied UNCONDITIONALLY (the allow-list is not consulted
+# in print mode — verified: allow-rule forms, settings modes, env vars, and a
+# PreToolUse decision:allow hook all fail). agy emits this distinctive line:
+#   "... a tool required the "read_file" permission that headless mode cannot
+#    prompt for, so it was auto-denied."
+_HEADLESS_SOFTDENY_SIGNATURE = "headless mode cannot prompt"
+
+
+def _is_headless_softdeny(text) -> bool:
+    """True when agy's output carries the 1.1.3+ headless soft-deny signature.
+    Targeted — matches ONLY that vendor message, so a version where the
+    allow-list works (<=1.1.2 and any future fix) never trips it, and a plain
+    empty/extraction failure is untouched."""
+    return _HEADLESS_SOFTDENY_SIGNATURE in (text or "").lower()
+
+
+def _add_skip_permissions(cmd):
+    """Insert --dangerously-skip-permissions right after argv[0] (the
+    empirically-verified working position `agy --dangerously-skip-permissions
+    -p ...`). Idempotent. This is the ONLY internal caller of the danger flag
+    — user argv can never supply it (argparse in main() has no such option)."""
+    if "--dangerously-skip-permissions" in cmd:
+        return list(cmd)
+    return list(cmd[:1]) + ["--dangerously-skip-permissions"] + list(cmd[1:])
+
+
+# Version at/after which agy's headless (-p) mode soft-denies tools that need a
+# confirmation — the allow-list is no longer consulted in print mode, so a
+# read-only dispatch cannot run its own read tools. Floor, not a pin: the gate
+# below fires for this version and up. When agy restores headless allow-list
+# support in some future release, narrow this to a range (the daily-check tracks
+# the version bump but NOT the allow-list-restored behavior, so this narrowing is
+# a MANUAL trigger — merge-review F3). The flag never breaks a working dispatch
+# (agy would auto-approve anyway), but on a future fixed version it still VOIDS
+# the deny transaction + OS-ring — a security-relevant standing residual for the
+# untrusted-review use case, NOT a harmless no-op (SKILL § Headless soft-deny
+# adaptation), until the floor is narrowed.
+_HEADLESS_SOFTDENY_FLOOR = (1, 1, 3)
+
+
+def _parse_agy_version(text):
+    """Extract the first dotted numeric version tuple from `agy --version`
+    output (e.g. '1.1.3' -> (1, 1, 3)); None if unparseable."""
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
+    return tuple(int(g) for g in m.groups()) if m else None
+
+
+def _agy_needs_skip_permissions(agy_bin) -> bool:
+    """True when the installed agy version soft-denies headless tools and the
+    operator has NOT opted out (AGY_NO_HEADLESS_AUTOAPPROVE=1). Deterministic
+    (version compare, ~instant) — no per-dispatch probe. Version-adaptive: the
+    wrapper follows agy instead of pinning a version, so updates keep flowing.
+    An unparseable/failed `--version` is treated as NOT needing the flag
+    (fail-safe toward the stronger deny-transaction isolation)."""
+    if os.environ.get("AGY_NO_HEADLESS_AUTOAPPROVE") == "1":
+        return False
+    try:
+        proc = subprocess.run([agy_bin, "--version"], capture_output=True,
+                              text=True, timeout=15,
+                              env=_common.scrubbed_child_env())
+    except (OSError, subprocess.SubprocessError):
+        return False
+    # Fail-safe (merge-review F4/Q4): a NON-ZERO `--version` exit is an
+    # unreliable read — even if its stdout happens to carry a semver, do not
+    # trust it to enable the isolation-voiding flag. Only a clean rc=0 counts.
+    if proc.returncode != 0:
+        return False
+    ver = _parse_agy_version(proc.stdout)
+    return ver is not None and ver >= _HEADLESS_SOFTDENY_FLOOR
 
 
 def _run_agy_with_retry(cmd, prompt, timeout, *, expected_sentinel,
@@ -169,6 +246,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, expected_sentinel,
     max_retries = 0 if repair_mode else SERVER_CAP_RETRIES
     server_attempt = 0       # server-capacity retry budget (independent)
     schema_repaired = False  # one-shot schema-repair (independent of server-cap + repair_mode)
+    skip_retried = False     # one-shot headless soft-deny -> skip-permissions retry
     while True:
         # P4.5 transcript-read transport (spike-verified 2026-07-05): snapshot
         # agy's per-conversation transcript store BEFORE the run so the new
@@ -242,6 +320,26 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, expected_sentinel,
             return AgyResult(None, "extraction-error", _common.EXIT_CLI_FAIL,
                              result.rc, scrubbed_output=scrubbed,
                              extraction_error="empty-answer-body")
+        # agy 1.1.3+ headless soft-deny adaptation (owner-authorized 2026-07-18).
+        # When agy auto-denied a tool because print mode cannot prompt, the ONLY
+        # way the (read-only-intent) dispatch can run its tools is to
+        # auto-approve permissions. Retry ONCE with --dangerously-skip-permissions.
+        # SELF-ADAPTING + TARGETED: keyed on the exact vendor signature, so it
+        # NEVER fires on a version where the allow-list works (<=1.1.2, any future
+        # fix) — the wrapper follows agy's behavior instead of pinning a version.
+        # Opt-out: AGY_NO_HEADLESS_AUTOAPPROVE=1 (strict deployments; agy then
+        # stays unusable headless but no auto-approve).
+        # CAVEAT: --dangerously-skip-permissions VOIDS the deny transaction (write
+        # and command tools become auto-approved too — Deny>Allow no longer holds).
+        # The dispatch's containment then rests on the review INTENT + disposable
+        # --cwd + leader verification, NOT the deny list. Documented in the SKILL
+        # § Isolation + the safety boundary.
+        if (answer is None and not skip_retried
+                and _is_headless_softdeny(scrubbed)
+                and os.environ.get("AGY_NO_HEADLESS_AUTOAPPROVE") != "1"):
+            cmd = _add_skip_permissions(cmd)
+            skip_retried = True
+            continue
         cls, code = _classify_no_answer(scrubbed, result.killed, result.rc)
         if cls == "server-capacity" and server_attempt < max_retries:
             _server_cap_backoff(server_attempt)
@@ -336,8 +434,14 @@ def main() -> int:
 
     sentinel = _make_sentinel()
     eff_prompt = inject_schema_to_prompt(args.prompt, pydantic_cls) if pydantic_cls else args.prompt
+    # agy 1.1.3+ headless soft-deny adaptation (owner-authorized 2026-07-18):
+    # version-gated auto-approve so a read-only-INTENT dispatch can actually run
+    # its own read tools (the vendor stopped consulting the allow-list in print
+    # mode). See _agy_needs_skip_permissions + § Isolation caveat.
+    skip_permissions = _agy_needs_skip_permissions(agy_bin)
     cmd = _build_cmd(eff_prompt, sentinel, agy_sandbox, args.model, args.timeout,
-                     pydantic=pydantic_cls is not None)
+                     pydantic=pydantic_cls is not None,
+                     skip_permissions=skip_permissions)
     # argv[0] = resolved/pinned agy path (finding #3). _build_cmd stays pure ("agy"
     # literal) so its unit test is unaffected; the pin is substituted here at the
     # run site so a PATH shadow cannot win when the pty execs argv[0].

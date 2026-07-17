@@ -4,6 +4,23 @@ Loaded on demand from `triad-antigravity-dispatch/SKILL.md` § Isolation.
 Read this before changing a sandbox mode, auditing the deny surface, or
 diagnosing a settings-transaction failure.
 
+> **⚠️ agy ≥1.1.3 — the entire deny model below is NEUTERED at runtime.**
+> On agy ≥1.1.3 the wrapper inserts `--dangerously-skip-permissions` (headless
+> soft-deny adaptation — SKILL.md § Headless soft-deny adaptation), which VOIDS
+> the deny transaction AND agy's `--sandbox` OS-ring (agy issue #36): every
+> `deny` below (`write_file`/`command`/`unsandboxed`/`execute_url`/`mcp`) is
+> auto-approved. So on ≥1.1.3 the "enforced read-only worker" language in this
+> file describes only ≤1.1.2. (Note the floor OVER-applies: even a future
+> ≥1.1.3 release that restores the allow-list still trips the gate until a
+> human narrows the floor.) On ≥1.1.3 the leg is read-only by INTENT, not
+> enforcement; the owner-accepted residual = agy can run a `command` that reads
+> sensitive files OUTSIDE `--cwd` (`~/.ssh`, tokens) and exfiltrate over the
+> network — the disposable `--cwd` does NOT contain either. A strict deployment
+> that cannot accept that residual must EITHER set `AGY_NO_HEADLESS_AUTOAPPROVE=1`
+> (keeps the deny model; agy then unusable headless) OR run the ≥1.1.3 dispatch
+> inside an EXTERNAL fs-scoped + network-denied OS sandbox. Full caveat: SKILL's
+> § Headless soft-deny adaptation.
+
 **agy tool → permission action map** — re-confirm against your installed agy with
 `agy -p "list your built-in tools and their permission actions"`. The write path
 is exactly write_to_file / replace_file_content / multi_replace_file_content →
@@ -44,7 +61,8 @@ web access the transaction ever leaves allowed (§ Routing) — `execute_url` an
   blocked — this is strong fs-write isolation for the *known* agy tool surface,
   not OS-level process isolation. Treat the agy read-only leg of
   `triad-cross-family-review` as an enforced read-only worker for the proven
-  write path; the owner's manual e2e should ALSO attempt a `command(...)` and an
+  write path **on agy ≤1.1.2 only** (on ≥1.1.3 the skip-perms gate voids this —
+  see the top banner); the owner's manual e2e should ALSO attempt a `command(...)` and an
   `mcp(...)` mutation to confirm those denies on the live build.
 - `workspace-write` — dangerous-path/command denies (incl. `unsandboxed(*)` so a
   command cannot escape the OS sandbox ring, plus `execute_url(*)` + `mcp(*)` —

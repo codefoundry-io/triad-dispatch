@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.513 — 2026-07-17
+## 0.2.520 — 2026-07-18
 
 **Review orchestration discipline** (on top of the prior release's
 hardened-audit custody + agy extraction strictness + review-packet

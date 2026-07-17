@@ -21,8 +21,10 @@ version: 0.16.0
 #   0.15.0: the claude fresh-eye Agent leg is now spawned MECHANICALLY read-only
 #     — its tool allowlist restricted to `Read, Grep, Glob` at the Agent call
 #     (rules 1a/7/10 + Flow step 2) — instead of relying only on the "do not
-#     execute" prompt directive. This closes the one advisory leg; the
-#     codex/agy/gemini legs are already mechanically `--sandbox read-only`. The
+#     execute" prompt directive. This closes the claude advisory leg; the
+#     codex/gemini legs run `--sandbox read-only` mechanically. (agy: mechanical
+#     on ≤1.1.2, INTENT-only on ≥1.1.3 — skip-perms voids the deny; see body +
+#     triad-antigravity-dispatch § Headless soft-deny adaptation.) The
 #     adversarial anti-rubber-stamp framing is unchanged.
 #   0.14.0 (2026-07-12): owner directives from live codex-side practice —
 #     rule 4 now spells out the LEADER's consolidation role (fact-check every
@@ -101,8 +103,14 @@ the lab's standing cross-family review rule.
    — the dedicated read-only reviewer agent (`agents/cross-family-review-reviewer.md`,
    frontmatter `tools: Read, Grep, Glob`), so the no-execute contract (rule 7) is
    enforced MECHANICALLY by the agent's tool allowlist, not by the prompt directive
-   alone** (this closes the one advisory leg: the codex/agy/gemini legs are already
-   mechanically `--sandbox read-only`). The `Agent` tool exposes NO per-call `tools`
+   alone** (this closes the claude advisory leg: the codex/gemini legs run
+   `--sandbox read-only` mechanically, and the **agy leg is mechanical read-only
+   ONLY on agy ≤1.1.2 — on agy ≥1.1.3 it is read-only by INTENT, not enforcement**,
+   because the wrapper's headless soft-deny adaptation inserts
+   `--dangerously-skip-permissions`, which voids the deny transaction + OS-ring
+   so the agy leg can read outside `--cwd` / exfiltrate over the network when
+   fed an adversarial packet; see `triad-antigravity-dispatch` § Headless
+   soft-deny adaptation, opt-out `AGY_NO_HEADLESS_AUTOAPPROVE=1`). The `Agent` tool exposes NO per-call `tools`
    allowlist, so a plain `subagent_type: general-purpose` Agent would fall back to the
    advisory prompt directive — the dedicated agent whose frontmatter PINS the allowlist
    is the mechanism. (In the shipped claude-host plugin the export rewrites this to the
@@ -260,10 +268,13 @@ the lab's standing cross-family review rule.
    specific self-persistence complaint as expected — do NOT widen the sandbox
    for it, and do NOT normalize OTHER permission failures under this note.
 8. **Vendor-leg context files go at a repo-relative gitignored path, never
-   `/tmp`.** gemini and agy are **workspace-sandboxed to the repo** — a brief /
-   diff / context file handed to them at `/tmp/...` is unreadable (gemini errors
-   `Path not in workspace: "/tmp" resolves outside the allowed workspace`; agy
-   the same). Put every review-context file inside a helper-managed packet dir
+   `/tmp`.** gemini and agy (≤1.1.2) are **workspace-sandboxed to the repo** — a
+   brief / diff / context file handed to them at `/tmp/...` is unreadable (gemini
+   errors `Path not in workspace: "/tmp" resolves outside the allowed workspace`;
+   agy ≤1.1.2 the same). **On agy ≥1.1.3 the skip-perms gate voids that
+   OS-ring, so agy CAN read `/tmp`** — but keep the repo-relative convention
+   anyway (it is required for gemini and keeps every leg uniform). Put every
+   review-context file inside a helper-managed packet dir
    under the gitignored `_runs/review/` — NEVER at a bare `_shared/<name>.md`
    and never `/tmp` — so every leg (codex reads it fine too) can `Read` it.
    The claude `Agent` leg is NOT workspace-sandboxed, so it can read `/tmp`;
@@ -338,7 +349,8 @@ the lab's standing cross-family review rule.
    `PROMPT)"`: the heredoc is literal, so that inner `$(...)` is NOT expanded
    and codex receives the uninterpreted string `$(cat ...)`. (The outer heredoc
    shape itself stays valid for a literal prompt body — the sibling dispatch
-   skills' Step 1 uses exactly that.) (gemini / agy are
+   skills' Step 1 uses exactly that.) (gemini / agy (≤1.1.2 — agy ≥1.1.3's
+   OS-ring is voided by skip-perms, rule 8) are
    workspace-sandboxed and DO read a repo-relative `_runs/review/` packet file per rule 8, so
    inlining is a codex-leg requirement, not a universal one — though inlining a
    small packet works for every leg.) For a LARGE diff (rule 8's large-packet

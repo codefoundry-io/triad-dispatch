@@ -71,13 +71,58 @@ name is pinned — agy uses the vendor default.
 - Final cross-family review → `triad-cross-family-review`.
 - Codex-side calls → `triad-codex-dispatch`. Gemini-side → `triad-gemini-dispatch`. Claude worker → the in-session `Agent` tool.
 
+## Headless soft-deny adaptation (agy ≥1.1.3, owner-authorized 2026-07-18)
+
+agy **1.1.3 flipped headless (`-p`) permission policy**: a tool needing a
+confirmation is soft-denied UNCONDITIONALLY — the `permissions.allow` list is
+NOT consulted in print mode (empirically exhausted: allow-rule forms, settings
+modes, env vars, and a `PreToolUse decision:allow` hook all fail; only
+`--dangerously-skip-permissions` bypasses it). Without adaptation, EVERY agy
+review/research dispatch on 1.1.3+ returns an empty/narration answer — the leg
+is dead. The wrapper therefore **version-gates auto-approve**: when
+`agy --version` ≥ `_HEADLESS_SOFTDENY_FLOOR` (1.1.3), and `--version` exits
+rc=0 (a nonzero exit fails safe to no-flag), it inserts
+`--dangerously-skip-permissions` so a read-only-INTENT dispatch can actually run
+its own read tools. **No version pin** (updates keep flowing); on ≤1.1.2 the
+gate does not fire and the deny transaction (below) keeps its full force.
+**Floor, NOT a range — a known over-application**: once agy eventually RESTORES
+the headless allow-list in some future ≥1.1.3 release, this floor STILL fires
+(voiding isolation) until a human narrows it to a bounded range; `agy-daily-check.sh`
+tracks the version bump but not the allow-list-restored behavior, so nothing
+auto-detects the narrow-trigger (standing residual). The only behavior-adaptive
+part is the secondary in-loop retry (`_is_headless_softdeny`), which fires just
+on the zero-output edge. Opt-out: `AGY_NO_HEADLESS_AUTOAPPROVE=1` (strict
+deployments — agy then stays unusable headless but nothing is auto-approved).
+This is the ONLY internal caller of the danger flag; user argv can never supply
+it (argparse defines no such option).
+
+**ISOLATION CAVEAT (must understand before relying on `--sandbox`):**
+`--dangerously-skip-permissions` **VOIDS the deny transaction AND agy's own
+`--sandbox` OS-ring** (agy issue #36) — under it agy auto-approves ALL tools:
+`write_file`, `command` (arbitrary shell), and network (`read_url`/`search_web`
++ any URL/MCP reach). Deny>Allow no longer holds (verified: a write BREACH file
+was created under deny+skip-perms). So on agy ≥1.1.3 a `--sandbox read-only`
+dispatch has **NO enforced containment** — it is read-only by **INTENT** only
+(the review prompt + disposable `--cwd` + leader verification).
+
+**What the disposable `--cwd` does NOT contain** (owner-accepted residual for
+the review use case, 2026-07-18): the `--cwd` bounds only where mutation is
+*expected*; under skip-perms agy can also (a) run a `command` that reads
+sensitive files OUTSIDE `--cwd` (`~/.ssh`, tokens) and (b) exfiltrate over the
+network. Because this leg ingests UNTRUSTED review content (a prompt-injection
+surface), a strict deployment that cannot accept that residual must either set
+`AGY_NO_HEADLESS_AUTOAPPROVE=1` (agy stays unusable headless) or run the ≥1.1.3
+agy dispatch inside an EXTERNAL fs-scoped + network-denied OS sandbox. On ≤1.1.2
+the deny transaction still enforces and this residual does not apply.
+
 ## Isolation — per-call deny transaction (codex parity)
 
 `--sandbox read-only|workspace-write` brackets the agy call in a global-settings
 deny transaction (`_agy_settings.agy_settings_guard`): the wrapper merges
 `permissions.deny` into `~/.gemini/antigravity-cli/settings.json`, runs agy, then
 byte-exactly restores (flock-serialized state transitions, `.agybak` crash
-sentinel). Identical **read-only** transactions SHARE the active deny lease via
+sentinel). **On agy ≥1.1.3 this is neutered by the skip-perms gate above — see
+the caveat.** Identical **read-only** transactions SHARE the active deny lease via
 a holder registry (per-holder flock liveness files), so concurrent read-only agy
 dispatches are safe; `workspace-write` stays exclusive. Lease/lock waits are
 bounded by `AGY_SETTINGS_LOCK_TIMEOUT` (env, seconds, default 30); a settings
@@ -113,7 +158,7 @@ tier = `--model "<family> (<tier>)"` passthrough (no-pin default when omitted).
 4. **Repair agent ONLY on `unknown` / `extraction-error` / `timeout`.** Every other classification carries actionable meaning at the wrapper layer — dispatching the agent on them wastes the call.
 5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. Reasoning: any test framing leaks into the vendor model's behavior and corrupts both the sample and the repair agent's accumulated memory.
 6. **No model name pinning.** agy model names rot every few weeks. Use the vendor default by default; `--model <name>` only when the user explicitly named the model. Date-anchor any pinned model usage.
-7. **Never `--dangerously-*`.** argparse rejects it (the flag is intentionally undefined), and it voids agy's `--sandbox` (agy issue #36). The Triad safety invariant forbids it regardless.
+7. **Never `--dangerously-*` from user argv.** argparse defines no such option, so a caller can never supply it. ONE scoped internal exception (owner-authorized 2026-07-18): the wrapper itself inserts `--dangerously-skip-permissions` when `agy --version` ≥ 1.1.3, because that vendor release made headless tools unusable otherwise (§ Headless soft-deny adaptation). It voids the deny transaction (documented caveat there); opt out with `AGY_NO_HEADLESS_AUTOAPPROVE=1`. No OTHER `--dangerously-*` / `--yolo` is ever used.
 8. **Always spawn the repair agent in parallel — surfacing a failure is not repairing it.** When Step 4 routes a failure (`unknown` / `extraction-error` / `timeout`), spawn the `agy-wrapper-repair` sub-agent with the `Agent` tool's `run_in_background: true`, so it runs alongside your foreground work; parse its inline proposal (Step 5c), apply it, and clean up (Step 5d) when it completes. The payoff is future routing, not this call — the analyzer grows the classifier so the same vendor error auto-routes next time, so a skipped spawn is a silent regression that keeps the error failing un-routed. Reporting the failure to the user is a separate obligation and does not discharge this one. Mechanism: the agent is a read-only analyzer that returns a JSON patch proposal; the leader applies it via the deterministic `apply_patch.py` (no LLM on the write path) and re-runs `--repair-mode` to verify routing. Rule 4 scopes *which* classes route here; this rule says always follow through when they do.
 
 ## Flow
@@ -365,4 +410,4 @@ The leader (not the analyzer) is the only writer to the classifier extension —
 - `agents/agy-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
 - `triad-codex-dispatch` — parallel SKILL for Codex.
 - `triad-gemini-dispatch` — parallel SKILL for Gemini (the enterprise-credential lane).
-- `triad-cross-family-review` — final pre-merge cross-family review (the agy leg here is best-effort non-write, see § Isolation for the enforced deny surface).
+- `triad-cross-family-review` — final pre-merge cross-family review (the agy leg here is best-effort non-write; the deny surface is enforced on agy ≤1.1.2 but INTENT-only on ≥1.1.3 — see § Headless soft-deny adaptation + § Isolation).
