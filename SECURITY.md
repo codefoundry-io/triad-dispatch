@@ -92,6 +92,81 @@ their host:
   be spawned. The privilege boundary is the top-level read-only sandbox plus the
   deterministic applier.
 
+## Project-agent shadow (claude-host) — a second confused-deputy path
+
+The claude-host privilege boundary above assumes the repair analyzer that runs
+is the shipped **read-only** plugin agent (`tools: Read, Grep, Glob`). A second
+way that assumption can break is **agent-name shadowing**. Claude Code resolves a
+consumer's own project agent at `.claude/agents/<name>.md` **over** a plugin agent
+of the same bare name. So if the dispatch skill spawned the analyzer by the bare
+`subagent_type` (`codex-wrapper-repair`), a consumer who happens to have — or is
+tricked into adding — a same-named **writable** project agent would have THAT
+agent, with its own tools, read the untrusted run-log: the confused deputy
+re-opens, this time through the harness's agent-resolution order rather than the
+analyzer's own grants.
+
+The mitigation is two-layered:
+
+- **Address the plugin agent by its plugin-scoped identity.** The shipped
+  dispatch skills spawn the analyzer as `triad-dispatch:<name>-wrapper-repair`
+  (the export injects the `triad-dispatch:` scope; the source repo, which has no
+  plugin, keeps the bare project-agent name). The scoped identity resolves to the
+  plugin's read-only agent unambiguously, so a same-named project agent cannot be
+  what runs.
+- **Confirm read-only before dispatch (product-agnostic).** Because a consumer
+  can still install agents the toolkit does not control, the skill also instructs
+  the leader to CONFIRM the resolved analyzer's tools are only `Read, Grep, Glob`
+  before dispatch and REFUSE if a same-named writable agent shadows it — a check
+  that needs no plugin name and also covers the source/dev repo (project agent,
+  no scoping).
+
+The **codex-host** product is structurally immune to this path: it spawns no
+named in-session subagent at all — the analyzer is a top-level
+`codex exec -s read-only` command in a fresh terminal — so there is no
+`subagent_type` a project agent could override.
+
+## Intent-gated broad-capability surface (accepted residual)
+
+The leader (Claude Code, or codex) is **user-driven**, and this toolkit lets it
+dispatch a wrapper with broad arguments once the install leg allow-lists the
+wrapper command (so the user is not re-prompted on every dispatch). That broad,
+promptless capability is a **documented residual, deliberately not hardened**.
+
+The reason is the threat model, not an oversight. A user-issued action is
+**intent, not an attack**: when the user tells the leader to run a wrapper with
+some argument, that is the user doing what they could already do directly at a
+shell. Allow-listing only removes a repeated approval prompt — it grants no
+capability the user did not already have. Hardening this surface would therefore
+restrict the **user's own legitimate use** more than it protects them: it blocks
+often, protects rarely. So we do not split, gate, or auto-revoke the capability.
+
+What this residual is NOT is a free pass for *untrusted* input. The durable,
+always-on controls below are the defense-in-depth layers that DO apply — and
+they are aimed at the real distributed threats (untrusted content injected into
+the leader, and a poisoned parent-start environment), not at the user:
+
+- **Privilege separation** on the repair path (above) — the component that reads
+  the untrusted run-log has zero write authority.
+- **Wrapper roots-containment** — `--prompt-file` / `--image` / `--cwd` are
+  confined to the configured workspace roots by the shared engine, regardless of
+  which product runs it.
+- **Pinned vendor binary** — `TRIAD_REQUIRE_PINNED_VENDOR=1` + `TRIAD_<CLI>_BIN`
+  resolve the real vendor, defeating a workspace-planted same-named binary.
+- **Audit redaction** — `TRIAD_AUDIT_REDACT_PROMPTS=1` keeps prompt/stream text
+  out of the durable audit.
+- **claude-host** — a **PreToolUse hook** validates each wrapper invocation and
+  resolves-and-rejects a foreign same-named script on PATH (the reliable gate the
+  basename Bash grant defers to).
+- **codex-host** — `[shell_environment_policy] inherit = "core"` in the merged
+  config drops loader/interpreter injection vars (`LD_PRELOAD`, `NODE_OPTIONS`,
+  `PYTHONPATH`, …) from every subprocess codex spawns, closing the
+  parent-start-env boundary the launcher's own scrub cannot reach.
+
+Those layers are the security posture. The broad promptless capability is the one
+item we accept and document rather than harden, because its only reachable abuse
+is via untrusted-content injection into the leader — for which the layers above
+are the defense — and hardening it would over-restrict the user's own intent.
+
 ## What is NOT the control
 
 - **"The model resists prompt injection" is NOT the security boundary.** Any

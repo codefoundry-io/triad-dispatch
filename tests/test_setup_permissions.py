@@ -1,30 +1,49 @@
 #!/usr/bin/env python3
 """Tests for the claude-host permission-setup script (stdlib-only, no pytest).
 
-Covers the idempotent-merge contract of `setup_permissions.py`:
-  (1) a fresh run creates settings.json with the full wrapper allowlist;
-  (2) a second run is a no-op — every entry present exactly once (idempotent);
-  (3) an existing unrelated settings key + a pre-existing allow entry survive;
-  (4) the output is valid JSON;
-  (5) the same run populates `sandbox.excludedCommands` with the wrapper
-      patterns (so the wrappers reach the vendor APIs when a user opts the Bash
-      sandbox on) — idempotently, valid JSON, and preserving an unrelated
-      pre-existing `sandbox` key.
+Covers the redesigned merge / provenance / --remove / hardening / robustness
+contract of `setup_permissions.py`:
+  (1) a fresh --install writes the bare BASENAME wrapper grants (matching the bare
+      invocation the dispatch SKILLs emit so dispatch stays promptless; the
+      PreToolUse hook, not the grant, is the security gate — vendor-recommended),
+      the sandbox.excludedCommands (excluded posture), and the wrapper hardening
+      `env` block (TRIAD_WRAPPER_HARDENED / TRIAD_REQUIRE_PINNED_VENDOR / resolved
+      TRIAD_<CLI>_BIN pins / TRIAD_WRAPPER_ALLOWED_ROOTS /
+      TRIAD_AUDIT_REDACT_PROMPTS), and a provenance sidecar records them;
+  (2) a second --install is a byte-identical no-op (idempotent);
+  (3) a directory --target resolves to <dir>/.claude/settings.json;
+  (4) an unrelated settings key + a pre-existing allow entry survive;
+  (5) a pre-existing unrelated sandbox sub-key survives the merge;
+  (6) the output is valid JSON;
+  (7) malformed settings (bad JSON) is an error, not a clobber;
+  (8) a malformed list (a dict in permissions.allow) is a CLEAN error, not a
+      TypeError traceback;
+  (9) --install then --remove round-trips a pre-existing settings.json for
+      unrelated keys, removing ONLY the authored entries;
+  (10) a symlinked settings path is refused on read (O_NOFOLLOW / lstat).
 
 Runs in BOTH layouts: the source repo (the script lives under
 `export_assets/claude-host/scripts/`) and the exported plugin (`tests/` with a
 `scripts/` sibling). The script is loaded by file path, not import name.
+
+Hermetic: a fake plugin `bin/` (the wrapper scripts — the installer requires the
+bin dir to exist before it writes the basename grants) and a fake vendor-bin dir
+on PATH (codex/gemini/agy, for the pin resolution) are
+built in a tempdir per test, so the assertions do not depend on the host's
+installed vendors.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import stat
 import sys
-
-sys.dont_write_bytecode = True  # keep an installed plugin dir pristine
 import tempfile
 import traceback
 from pathlib import Path
+
+sys.dont_write_bytecode = True  # keep an installed plugin dir pristine (runs before _load_script)
 
 _TESTS_DIR = Path(__file__).resolve().parent
 _CANDIDATES = (
@@ -54,153 +73,297 @@ def _load_script():
 
 
 setup_permissions = _load_script()
-EXPECTED_ENTRIES = setup_permissions.WRAPPER_ALLOW_ENTRIES
-EXPECTED_SANDBOX_PATTERNS = setup_permissions.WRAPPER_SANDBOX_EXCLUDE_PATTERNS
+WRAPPER_SCRIPTS = setup_permissions.WRAPPER_SCRIPTS
+SANDBOX_PATTERNS = setup_permissions.SANDBOX_EXCLUDE_PATTERNS
+VENDOR_CLIS = setup_permissions.VENDOR_CLIS
 
 
-def test_fresh_run_creates_full_allowlist():
-    with tempfile.TemporaryDirectory() as tmp:
-        target = Path(tmp) / ".claude" / "settings.json"
-        rc = setup_permissions.main(["--target", str(target)])
-        assert rc == 0, f"expected rc 0, got {rc}"
-        assert target.is_file(), "settings.json was not created"
-        data = json.loads(target.read_text(encoding="utf-8"))
-        allow = data["permissions"]["allow"]
-        for entry in EXPECTED_ENTRIES:
-            assert entry in allow, f"missing allow entry: {entry}"
-        # the same run seeds sandbox.excludedCommands with the wrapper patterns
-        excluded = data["sandbox"]["excludedCommands"]
-        for pattern in EXPECTED_SANDBOX_PATTERNS:
-            assert pattern in excluded, f"missing sandbox exclude: {pattern}"
+# ── hermetic fixtures ────────────────────────────────────────────────────────
+def _make_bin(tmp: Path) -> Path:
+    bin_dir = tmp / "plugin" / "bin"
+    bin_dir.mkdir(parents=True)
+    for name in WRAPPER_SCRIPTS:
+        f = bin_dir / name
+        f.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        f.chmod(f.stat().st_mode | stat.S_IEXEC)
+    return bin_dir
 
 
-def test_second_run_is_idempotent():
-    with tempfile.TemporaryDirectory() as tmp:
-        target = Path(tmp) / ".claude" / "settings.json"
-        assert setup_permissions.main(["--target", str(target)]) == 0
-        first = target.read_text(encoding="utf-8")
-        assert setup_permissions.main(["--target", str(target)]) == 0
-        second = target.read_text(encoding="utf-8")
-        # byte-identical: a re-run must not append, reorder, or rewrite anything
-        assert first == second, "second run mutated the file (not idempotent)"
-        data = json.loads(second)
-        allow = data["permissions"]["allow"]
-        # each wrapper entry appears EXACTLY once
-        for entry in EXPECTED_ENTRIES:
-            assert allow.count(entry) == 1, f"{entry} present {allow.count(entry)}x, want 1"
-        # each sandbox exclude pattern also appears EXACTLY once across two runs
-        excluded = data["sandbox"]["excludedCommands"]
-        for pattern in EXPECTED_SANDBOX_PATTERNS:
-            assert (
-                excluded.count(pattern) == 1
-            ), f"{pattern} present {excluded.count(pattern)}x, want 1"
+def _make_vendor_path(tmp: Path) -> Path:
+    vbin = tmp / "vbin"
+    vbin.mkdir()
+    for name in VENDOR_CLIS:
+        f = vbin / name
+        f.write_text("#!/usr/bin/env bash\necho fake\n", encoding="utf-8")
+        f.chmod(f.stat().st_mode | stat.S_IEXEC)
+    return vbin
 
 
-def test_directory_target_resolves_to_dot_claude():
-    # --target <dir> (not ending in .json) resolves to <dir>/.claude/settings.json
-    with tempfile.TemporaryDirectory() as tmp:
-        assert setup_permissions.main(["--target", tmp]) == 0
-        resolved = Path(tmp) / ".claude" / "settings.json"
-        assert resolved.is_file(), "directory target did not resolve to .claude/settings.json"
+def _make_hooks(tmp: Path) -> Path:
+    """A fake plugin hooks/ holding the PreToolUse guard (install requires it)."""
+    h = tmp / "plugin" / "hooks"
+    h.mkdir(parents=True)
+    (h / "pretooluse_wrapper_guard.py").write_text(
+        "#!/usr/bin/env python3\n", encoding="utf-8")
+    return h
 
 
+class _Env:
+    """Context manager: fake vendors on PATH + fake bin/ + fake hooks/ + a work
+    root, restoring os.environ['PATH'] on exit."""
+
+    def __init__(self, tmp: Path):
+        self.tmp = tmp
+        self.bin = _make_bin(tmp)
+        self.hooks = _make_hooks(tmp)
+        self.vbin = _make_vendor_path(tmp)
+        self.work = tmp / "work"
+        self.work.mkdir()
+        self._saved_path = os.environ.get("PATH", "")
+
+    def __enter__(self):
+        os.environ["PATH"] = f"{self.vbin}{os.pathsep}{self._saved_path}"
+        return self
+
+    def __exit__(self, *exc):
+        os.environ["PATH"] = self._saved_path
+
+    def install(self, target: Path, extra=()):
+        return setup_permissions.main(
+            ["--install", "--target", str(target), "--bin-dir", str(self.bin),
+             "--hooks-dir", str(self.hooks),
+             "--allowed-roots", str(self.work), *extra]
+        )
+
+    def remove(self, target: Path, extra=()):
+        return setup_permissions.main(["--remove", "--target", str(target), *extra])
+
+
+# ── (1) fresh install: basename grants + sandbox + hardening env + provenance ─
+def test_fresh_install_writes_basename_grants_and_hardening():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            assert e.install(target) == 0
+            data = json.loads(target.read_text(encoding="utf-8"))
+            allow = data["permissions"]["allow"]
+            for grant in setup_permissions.wrapper_grant_entries(e.bin):
+                assert grant in allow, f"missing basename grant: {grant}"
+            # the basename form matches the bare SKILL invocation -> promptless
+            assert "Bash(codex_wrapper.py:*)" in allow
+            # the install-absolute form must NOT be written (would never match the
+            # bare invocation, re-introducing a prompt on every dispatch)
+            abs_codex = str((e.bin / "codex_wrapper.py").resolve())
+            assert f"Bash({abs_codex}:*)" not in allow
+            excluded = data["sandbox"]["excludedCommands"]
+            for pat in SANDBOX_PATTERNS:
+                assert pat in excluded, f"missing sandbox exclude: {pat}"
+            env = data["env"]
+            assert env["TRIAD_WRAPPER_HARDENED"] == "1"
+            assert env["TRIAD_REQUIRE_PINNED_VENDOR"] == "1"
+            assert env["TRIAD_AUDIT_REDACT_PROMPTS"] == "1"
+            assert env["TRIAD_WRAPPER_ALLOWED_ROOTS"] == str(e.work.resolve())
+            assert env["TRIAD_CODEX_BIN"] == str((e.vbin / "codex").resolve())
+            assert env["TRIAD_GEMINI_BIN"] == str((e.vbin / "gemini").resolve())
+            assert env["TRIAD_AGY_BIN"] == str((e.vbin / "agy").resolve())
+            prov = target.parent / setup_permissions.PROVENANCE_NAME
+            assert prov.exists(), "install must write a provenance sidecar"
+
+
+# ── (2) idempotent second install is a byte-identical no-op ───────────────────
+def test_second_install_is_idempotent():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            assert e.install(target) == 0
+            first = target.read_text(encoding="utf-8")
+            assert e.install(target) == 0
+            second = target.read_text(encoding="utf-8")
+            assert first == second, "second install mutated the file (not idempotent)"
+
+
+# ── (3) directory target resolves to .claude/settings.json ────────────────────
+def test_directory_target_resolves():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            proj = tmp / "proj"
+            proj.mkdir()
+            assert e.install(proj) == 0
+            assert (proj / ".claude" / "settings.json").is_file()
+
+
+# ── (4) preserve unrelated keys + a pre-existing allow entry ──────────────────
 def test_preserves_unrelated_keys_and_existing_allow():
-    with tempfile.TemporaryDirectory() as tmp:
-        target = Path(tmp) / ".claude" / "settings.json"
-        target.parent.mkdir(parents=True)
-        target.write_text(
-            json.dumps(
-                {
-                    "model": "sonnet",
-                    "permissions": {"allow": ["Bash(ls:*)"], "deny": ["Bash(rm:*)"]},
-                    "env": {"FOO": "bar"},
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        assert setup_permissions.main(["--target", str(target)]) == 0
-        data = json.loads(target.read_text(encoding="utf-8"))
-        # unrelated top-level keys preserved
-        assert data["model"] == "sonnet"
-        assert data["env"] == {"FOO": "bar"}
-        # unrelated permissions sub-keys preserved
-        assert data["permissions"]["deny"] == ["Bash(rm:*)"]
-        # the pre-existing allow entry survives, and the wrapper entries are added
-        allow = data["permissions"]["allow"]
-        assert "Bash(ls:*)" in allow
-        for entry in EXPECTED_ENTRIES:
-            assert entry in allow
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            target.parent.mkdir(parents=True)
+            target.write_text(json.dumps({
+                "model": "sonnet",
+                "permissions": {"allow": ["Bash(ls:*)"], "deny": ["Bash(rm:*)"]},
+                "env": {"FOO": "bar"},
+            }, indent=2), encoding="utf-8")
+            assert e.install(target) == 0
+            data = json.loads(target.read_text(encoding="utf-8"))
+            assert data["model"] == "sonnet"
+            assert data["env"]["FOO"] == "bar"
+            assert data["permissions"]["deny"] == ["Bash(rm:*)"]
+            assert "Bash(ls:*)" in data["permissions"]["allow"]
 
 
+# ── (5) preserve a pre-existing unrelated sandbox sub-key ─────────────────────
 def test_preserves_existing_sandbox_key():
-    # a pre-existing, unrelated sandbox sub-key must survive the merge, and the
-    # wrapper exclude patterns get added alongside it (not clobbering it)
-    with tempfile.TemporaryDirectory() as tmp:
-        target = Path(tmp) / ".claude" / "settings.json"
-        target.parent.mkdir(parents=True)
-        target.write_text(
-            json.dumps(
-                {
-                    "sandbox": {
-                        "network": {"allowUnixSockets": True},
-                        "excludedCommands": ["gh *"],
-                    }
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        assert setup_permissions.main(["--target", str(target)]) == 0
-        sandbox = json.loads(target.read_text(encoding="utf-8"))["sandbox"]
-        # unrelated sandbox sub-key preserved
-        assert sandbox["network"] == {"allowUnixSockets": True}
-        excluded = sandbox["excludedCommands"]
-        # the pre-existing unrelated exclude survives
-        assert "gh *" in excluded
-        # the wrapper patterns are added, each exactly once
-        for pattern in EXPECTED_SANDBOX_PATTERNS:
-            assert excluded.count(pattern) == 1, f"{pattern} not added exactly once"
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            target.parent.mkdir(parents=True)
+            target.write_text(json.dumps({
+                "sandbox": {"network": {"allowUnixSockets": True},
+                            "excludedCommands": ["gh *"]},
+            }, indent=2), encoding="utf-8")
+            assert e.install(target) == 0
+            sandbox = json.loads(target.read_text(encoding="utf-8"))["sandbox"]
+            assert sandbox["network"] == {"allowUnixSockets": True}
+            assert "gh *" in sandbox["excludedCommands"]
+            for pat in SANDBOX_PATTERNS:
+                assert sandbox["excludedCommands"].count(pat) == 1
 
 
-def test_sandbox_excluded_is_valid_json():
-    with tempfile.TemporaryDirectory() as tmp:
-        target = Path(tmp) / ".claude" / "settings.json"
-        assert setup_permissions.main(["--target", str(target)]) == 0
-        # json.loads raises on malformed content; the sandbox key must parse too
-        data = json.loads(target.read_text(encoding="utf-8"))
-        assert isinstance(data["sandbox"]["excludedCommands"], list)
-
-
+# ── (6) output is valid JSON ─────────────────────────────────────────────────
 def test_output_is_valid_json():
-    with tempfile.TemporaryDirectory() as tmp:
-        target = Path(tmp) / ".claude" / "settings.json"
-        assert setup_permissions.main(["--target", str(target)]) == 0
-        # json.loads raises on malformed content — the assertion is that it does not
-        json.loads(target.read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            assert e.install(target) == 0
+            json.loads(target.read_text(encoding="utf-8"))
 
 
-def test_malformed_settings_is_an_error_not_a_clobber():
-    # a malformed settings.json must NOT be silently discarded
-    with tempfile.TemporaryDirectory() as tmp:
-        target = Path(tmp) / ".claude" / "settings.json"
-        target.parent.mkdir(parents=True)
-        target.write_text("{ this is not json", encoding="utf-8")
-        rc = setup_permissions.main(["--target", str(target)])
-        assert rc != 0, "expected non-zero rc on malformed settings.json"
-        # the original (malformed) content is left untouched
-        assert target.read_text(encoding="utf-8") == "{ this is not json"
+# ── (7) malformed settings (bad JSON) is an error, not a clobber ─────────────
+def test_malformed_json_is_error_not_clobber():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            target.parent.mkdir(parents=True)
+            target.write_text("{ this is not json", encoding="utf-8")
+            assert e.install(target) != 0
+            assert target.read_text(encoding="utf-8") == "{ this is not json"
+
+
+# ── (8) a dict in permissions.allow is a CLEAN error, not a TypeError ────────
+def test_malformed_allow_list_clean_error():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                json.dumps({"permissions": {"allow": [{"not": "a-string"}]}}),
+                encoding="utf-8")
+            # a clean non-zero rc (not an uncaught TypeError bubbling out)
+            assert e.install(target) != 0
+
+
+# ── (9) --install then --remove round-trips unrelated keys ───────────────────
+def test_install_remove_round_trip():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            target.parent.mkdir(parents=True)
+            original = {
+                "model": "opus",
+                "permissions": {"allow": ["Bash(ls *)"], "deny": ["Bash(rm *)"]},
+                "env": {"MY_VAR": "keep-me"},
+            }
+            target.write_text(json.dumps(original, indent=2), encoding="utf-8")
+            assert e.install(target) == 0
+            assert e.remove(target) == 0
+            restored = json.loads(target.read_text(encoding="utf-8"))
+            assert restored == original, "remove must restore the pre-install state"
+            assert not (target.parent / setup_permissions.PROVENANCE_NAME).exists()
+
+
+# ── (10) a symlinked settings path is refused (O_NOFOLLOW / lstat) ───────────
+def test_symlinked_settings_refused():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            real = tmp / "real.json"
+            real.write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+            link_dir = tmp / "proj" / ".claude"
+            link_dir.mkdir(parents=True)
+            link = link_dir / "settings.json"
+            os.symlink(real, link)
+            assert e.install(link) != 0
+            # the real target is untouched
+            assert json.loads(real.read_text(encoding="utf-8")) == {"model": "opus"}
+
+
+# ── (11) the PreToolUse hook is registered (authored + provenance) + removed ──
+def test_registers_and_removes_pretooluse_hook():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            assert e.install(target) == 0
+            data = json.loads(target.read_text(encoding="utf-8"))
+            pretool = data["hooks"]["PreToolUse"]
+            cmds = [h.get("command", "")
+                    for g in pretool if isinstance(g, dict)
+                    for h in (g.get("hooks") or []) if isinstance(h, dict)]
+            assert any("pretooluse_wrapper_guard.py" in c for c in cmds), pretool
+            # the matcher-group targets Bash tool calls
+            assert any(g.get("matcher") == "Bash" for g in pretool
+                       if isinstance(g, dict)), pretool
+            # provenance records the authored hook command (so --remove strips it)
+            prov = json.loads(
+                (target.parent / setup_permissions.PROVENANCE_NAME)
+                .read_text(encoding="utf-8"))
+            assert "pretooluse_wrapper_guard.py" in json.dumps(prov)
+            # --remove strips the hook; since this install CREATED the settings
+            # file (no pre-existing one), the byte-exact round-trip deletes it.
+            assert e.remove(target) == 0
+            assert not target.exists(), "self-created settings file must be removed"
+
+
+# ── (12) a pre-existing user PreToolUse hook survives install + remove ────────
+def test_preserves_user_pretooluse_hook():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            target.parent.mkdir(parents=True)
+            user_hook = {"matcher": "Bash", "hooks": [
+                {"type": "command", "command": "/usr/bin/true"}]}
+            target.write_text(json.dumps(
+                {"hooks": {"PreToolUse": [user_hook]}}, indent=2), encoding="utf-8")
+            assert e.install(target) == 0
+            assert e.remove(target) == 0
+            after = json.loads(target.read_text(encoding="utf-8"))
+            # the user's own hook is intact; only our authored entry was removed
+            assert after["hooks"]["PreToolUse"] == [user_hook]
 
 
 TESTS = [
-    test_fresh_run_creates_full_allowlist,
-    test_second_run_is_idempotent,
-    test_directory_target_resolves_to_dot_claude,
+    test_fresh_install_writes_basename_grants_and_hardening,
+    test_second_install_is_idempotent,
+    test_directory_target_resolves,
     test_preserves_unrelated_keys_and_existing_allow,
     test_preserves_existing_sandbox_key,
-    test_sandbox_excluded_is_valid_json,
     test_output_is_valid_json,
-    test_malformed_settings_is_an_error_not_a_clobber,
+    test_malformed_json_is_error_not_clobber,
+    test_malformed_allow_list_clean_error,
+    test_install_remove_round_trip,
+    test_symlinked_settings_refused,
+    test_registers_and_removes_pretooluse_hook,
+    test_preserves_user_pretooluse_hook,
 ]
 
 

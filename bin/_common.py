@@ -1319,6 +1319,38 @@ def extract_antigravity_answer(
 
 # ─── Subprocess core ──────────────────────────────────────────────────────
 
+# Loader / interpreter injection env vars scrubbed from the vendor child (I-2/I-3).
+# `_run_once` is the one `subprocess.Popen` site (codex/gemini/claude), and
+# `_pty.run_via_pty` (the agy transport) is a SEPARATE vendor-child spawn — agy
+# does NOT go through Popen. BOTH spawn sites apply the SAME scrub via the shared
+# `scrubbed_child_env()` below, so a poisoned parent env cannot reach the vendor
+# CLI (gemini/claude/agy are Node runtimes; codex/agy spawn tools). The classic
+# vectors: the dynamic loader (LD_PRELOAD / LD_AUDIT / the macOS DYLD_* family),
+# the Node runtime (NODE_OPTIONS=--require=<evil.js> would run workspace code
+# OUTSIDE any sandbox; NODE_PATH), the Python / shell / Perl / Ruby interpreters
+# (PYTHONPATH / BASH_ENV / ENV / PERL5LIB / RUBYOPT ...). PATH is deliberately
+# NOT scrubbed here — the vendor-binary pin (`require_binary` / `TRIAD_<CLI>_BIN`)
+# fixes the vendor bin, and PATH policy belongs to the install leg, not this
+# shared engine change.
+_CHILD_ENV_SCRUB = (
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG",
+    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
+    "NODE_OPTIONS", "NODE_PATH",
+    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
+    "BASH_ENV", "ENV", "PERL5LIB", "RUBYOPT", "RUBYLIB",
+)
+
+
+def scrubbed_child_env(base=None) -> dict:
+    """The single-source vendor-child env: `base` (default `os.environ`) minus the
+    `_CHILD_ENV_SCRUB` injection vars. Applied at BOTH vendor-child spawn sites —
+    `_run_once` (Popen) and `_pty.run_via_pty` (agy pty transport, env=None) — so
+    the scrub policy lives in exactly ONE place. Returns a fresh dict (safe to
+    mutate, e.g. the pty transport's `setdefault("TERM", "dumb")`)."""
+    src = base if base is not None else os.environ
+    return {k: v for k, v in src.items() if k not in _CHILD_ENV_SCRUB}
+
+
 def _drain(stream, accum: list[str], passthrough) -> None:
     """Reader thread — line iter, accumulate, optional mirror to passthrough."""
     try:
@@ -1357,8 +1389,15 @@ def _run_once(
     log(f"exec cwd={cwd or os.getcwd()} timeout={timeout}s argv={cmd}")
     start = time.monotonic()
 
+    # Scrub loader/interpreter injection vars so a poisoned parent env cannot
+    # reach the vendor child (I-2/I-3). Explicit env= replaces the implicit
+    # full-os.environ inheritance. scrubbed_child_env() is the shared
+    # single-source scrub (the agy pty transport applies the same one).
+    child_env = scrubbed_child_env()
+
     popen_kwargs: dict = dict(
         cwd=cwd,
+        env=child_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=(subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL),

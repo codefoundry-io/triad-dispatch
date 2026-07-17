@@ -1,8 +1,29 @@
 ---
 name: triad-cross-family-review
 description: Use for the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatch INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frame the suspect/omitted/simplified decisions as QUESTIONS, consolidate their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then run a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.14.0
+version: 0.16.0
 # changelog:
+#   0.16.0: the claude fresh-eye leg's mechanical read-only enforcement now names a
+#     CONCRETE mechanism — a dedicated reviewer agent `cross-family-review-reviewer`
+#     (`agents/`, frontmatter `tools: Read, Grep, Glob`) spawned via
+#     `subagent_type: triad-dispatch:cross-family-review-reviewer` (rules 1a/7/10 + Flow step 2).
+#     0.15.0 said "a read-only reviewer agent type, or the harness's per-call tool
+#     restriction where exposed" — but no such agent existed and the `Agent` tool
+#     exposes no per-call `tools` allowlist, so the claude-host leg silently fell
+#     back to the advisory "do not execute" prompt directive. The agent's
+#     frontmatter allowlist makes read-only MECHANICAL. Export ships the agent into
+#     the claude-host plugin and rewrites the skill's `subagent_type` to the
+#     plugin-scoped `triad-dispatch:cross-family-review-reviewer` (a bare subagent
+#     name is shadowable by a consumer's same-named project agent — the same
+#     confused-deputy hazard the repair-agent scoping closes). The codex-host claude
+#     synthesizes `--tools "Read,Glob,Grep"` — already mechanical, unchanged. The
+#     adversarial anti-rubber-stamp framing is unchanged.
+#   0.15.0: the claude fresh-eye Agent leg is now spawned MECHANICALLY read-only
+#     — its tool allowlist restricted to `Read, Grep, Glob` at the Agent call
+#     (rules 1a/7/10 + Flow step 2) — instead of relying only on the "do not
+#     execute" prompt directive. This closes the one advisory leg; the
+#     codex/agy/gemini legs are already mechanically `--sandbox read-only`. The
+#     adversarial anti-rubber-stamp framing is unchanged.
 #   0.14.0 (2026-07-12): owner directives from live codex-side practice —
 #     rule 4 now spells out the LEADER's consolidation role (fact-check every
 #     finding via deterministic probe -> classify the round converging vs
@@ -76,8 +97,19 @@ the lab's standing cross-family review rule.
 ## Hard rules
 
 1. **INDEPENDENT cross-family reviewers.** (a) a **claude fresh-eye sub-agent**
-   dispatched via the `Agent` tool (NOT the leader reasoning in-line — the
-   leader holds the originating framing and shares its blind spot), (b) **codex**
+   dispatched via the `Agent` tool with **`subagent_type: triad-dispatch:cross-family-review-reviewer`
+   — the dedicated read-only reviewer agent (`agents/cross-family-review-reviewer.md`,
+   frontmatter `tools: Read, Grep, Glob`), so the no-execute contract (rule 7) is
+   enforced MECHANICALLY by the agent's tool allowlist, not by the prompt directive
+   alone** (this closes the one advisory leg: the codex/agy/gemini legs are already
+   mechanically `--sandbox read-only`). The `Agent` tool exposes NO per-call `tools`
+   allowlist, so a plain `subagent_type: general-purpose` Agent would fall back to the
+   advisory prompt directive — the dedicated agent whose frontmatter PINS the allowlist
+   is the mechanism. (In the shipped claude-host plugin the export rewrites this to the
+   plugin-scoped `subagent_type: triad-dispatch:cross-family-review-reviewer` so a
+   consumer's same-named project agent cannot shadow the read-only plugin reviewer.)
+   NOT the leader reasoning in-line — the
+   leader holds the originating framing and shares its blind spot; (b) **codex**
    via `triad-codex-dispatch`, (c) the **Google-family CLI**, selected at
    runtime. agy and gemini share the Gemini backend (same family), so exactly
    ONE is the Google-family leg. Select it deterministically (no AI):
@@ -200,7 +232,9 @@ the lab's standing cross-family review rule.
    Python), not its own reasoning — cross-family + fresh-eye still holds, so
    the full 3-way is valid. Use judgment; when in doubt, keep all three.
 7. **Vendor review legs: READ-only, no-exec, generous timeout.** Every vendor
-   leg prompt (codex / agy / gemini — and the claude `Agent` leg too) MUST
+   leg prompt (codex / agy / gemini — and the claude `Agent` leg too, which ALSO
+   enforces no-exec MECHANICALLY via the `cross-family-review-reviewer` agent's
+   `Read, Grep, Glob` tool allowlist per rule 1a) MUST
    instruct the reviewer to review by **READING** (`git diff`, file reads) only:
    "Do NOT run scripts/tests or spawn subprocesses / vendor CLIs." An agentic
    sandboxed reviewer will otherwise live-run the code under review, hang on a
@@ -322,7 +356,11 @@ the lab's standing cross-family review rule.
     PRESENT; find what the same-family leader AND the per-task review missed",
     not "check if this looks fine"; (c) forbid severity-deflation — do NOT
     downgrade a real correctness/robustness issue to Minor/benign to dodge a fix
-    loop; rate by impact. The claude leg can otherwise lapse into catching nothing
+    loop; rate by impact. And it MUST be spawned MECHANICALLY read-only via
+    `subagent_type: triad-dispatch:cross-family-review-reviewer` — the dedicated reviewer agent
+    whose frontmatter PINS `tools: Read, Grep, Glob` (rule 1a) — so the no-execute
+    contract (rule 7) is enforced by the agent's tool set, not by the
+    prompt directive alone. The claude leg can otherwise lapse into catching nothing
     while codex/agy escalate residuals it rated Minor — the fix is depth +
     adversarial framing, not replacing the leg. Cross-check: if claude
     returns SAFE but a vendor leg returns must-fix, treat it as a signal the claude
@@ -385,8 +423,10 @@ the lab's standing cross-family review rule.
    `… close <packet-dir>` (rule 8 lifecycle).
 2. Resolve the Google-family leg (Hard rule 1 snippet), then dispatch the
    reviewers in parallel, each at its family's MAX reasoning (rule 1) — `Agent`
-   (claude fresh-eye at the strongest available Claude tier via the Agent model
-   parameter, max-thinking/adversarial prompt per rule 10) +
+   with `subagent_type: triad-dispatch:cross-family-review-reviewer` (the dedicated read-only
+   reviewer agent, frontmatter `tools: Read, Grep, Glob` per rules 1a/10; claude
+   fresh-eye at the strongest available Claude tier via the Agent model
+   parameter; max-thinking/adversarial prompt per rule 10) +
    `triad-codex-dispatch` (codex `--reasoning max --search`) + the resolved
    Google leg (`triad-antigravity-dispatch`, passing `--model
    "$GOOGLE_REVIEW_MODEL"` ONLY when it is non-empty — on the verify-fallback

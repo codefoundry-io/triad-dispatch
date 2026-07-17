@@ -20,6 +20,8 @@ import signal
 import time
 from dataclasses import dataclass
 
+import _common
+
 
 @dataclass
 class PtyResult:
@@ -34,8 +36,15 @@ def run_via_pty(cmd, cwd=None, timeout=600, env=None) -> PtyResult:
     EOF is handled cross-platform: macOS returns b"" on the master fd after the
     child closes; Linux raises OSError(EIO). The child runs in its own session
     (setsid via forkpty) so a timeout kills the whole subtree via killpg.
+
+    This is a SEPARATE vendor-child spawn site from `_common._run_once` (Popen) —
+    the agy vendor child execs here, not through Popen. For `env=None` (the agy
+    wrapper's production call) it inherits the SAME scrubbed env as the Popen site
+    via `_common.scrubbed_child_env()` (loader/interpreter injection vars dropped,
+    I-2/I-3), so a poisoned parent env cannot reach the agy Node runtime. An
+    explicit `env` is used as given (caller owns it).
     """
-    full_env = dict(os.environ if env is None else env)
+    full_env = _common.scrubbed_child_env() if env is None else dict(env)
     full_env.setdefault("TERM", "dumb")  # suppress TUI escapes
 
     pid, master_fd = pty.fork()

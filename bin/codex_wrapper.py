@@ -34,10 +34,12 @@ import json
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 from _common import (
     validate_wrapper_cwd,
     load_prompt_text,
+    _ensure_within_runtime_roots,
     EXIT_ARG_ERROR,
     EXIT_FANOUT_PARTIAL,
     EXIT_OK,
@@ -108,7 +110,8 @@ def codex_invocation(search: bool) -> list[str]:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Codex CLI single-shot wrapper")
+    p = argparse.ArgumentParser(description="Codex CLI single-shot wrapper",
+                                allow_abbrev=False)
     prompt_group = p.add_mutually_exclusive_group(required=True)
     prompt_group.add_argument("--prompt", help="User prompt")
     prompt_group.add_argument(
@@ -278,10 +281,24 @@ def main() -> int:
     codex_bin = require_binary("codex")
 
     if args.image:
+        contained_images = []
         for img in args.image:
             if not os.path.isfile(img):
                 log(f"--image path not found: {img}")
                 return EXIT_ARG_ERROR
+            # Route --image through the SAME runtime-roots containment as
+            # --prompt-file (load_prompt_text) and --cwd (validate_wrapper_cwd):
+            # under TRIAD_WRAPPER_ALLOWED_ROOTS an out-of-root image is an
+            # uncontained file-read -> vendor channel (codex -i). Roots unset
+            # (lab default) -> returned unchanged (resolved). Use the resolved
+            # path so codex reads exactly the file we validated.
+            try:
+                img = str(_ensure_within_runtime_roots(Path(img), "--image"))
+            except Exception as e:
+                log(f"--image validation failed: {e}")
+                return EXIT_ARG_ERROR
+            contained_images.append(img)
+        args.image = contained_images
 
     pydantic_cls = None
     if args.pydantic:

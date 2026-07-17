@@ -174,6 +174,9 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, expected_sentinel,
         # agy's per-conversation transcript store BEFORE the run so the new
         # conversation (this call's) is identifiable afterward.
         _brain_before = _common.snapshot_agy_transcripts()
+        # env=None => _pty inherits the SCRUBBED child env (loader/interpreter
+        # injection vars dropped via _common.scrubbed_child_env, I-2/I-3) — the
+        # agy-transport equivalent of _run_once's Popen env= scrub.
         result = _pty.run_via_pty(cmd, cwd=cwd, timeout=timeout, env=None)
         scrubbed = _common.scrub_agy_output(result.output_bytes)
         if result.killed:
@@ -258,7 +261,8 @@ def _server_cap_backoff(attempt: int) -> None:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Antigravity (agy) single-shot wrapper")
+    p = argparse.ArgumentParser(description="Antigravity (agy) single-shot wrapper",
+                                allow_abbrev=False)
     prompt_group = p.add_mutually_exclusive_group(required=True)
     prompt_group.add_argument("--prompt", help="User prompt")
     prompt_group.add_argument(

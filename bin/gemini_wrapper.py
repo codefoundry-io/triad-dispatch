@@ -57,7 +57,8 @@ _READONLY_POLICY = Path(__file__).resolve().parent / "policies" / "gemini-readon
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Gemini CLI single-shot wrapper")
+    p = argparse.ArgumentParser(description="Gemini CLI single-shot wrapper",
+                                allow_abbrev=False)
     prompt_group = p.add_mutually_exclusive_group(required=True)
     prompt_group.add_argument("--prompt", help="User prompt")
     prompt_group.add_argument(
