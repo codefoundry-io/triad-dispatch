@@ -1,8 +1,23 @@
 # Changelog
 
-## 0.2.520 — 2026-07-18
+## 0.2.521 — 2026-07-18
 
-**Review orchestration discipline** (on top of the prior release's
+**agy ≥1.1.3 headless permission fix.** agy 1.1.3 flipped headless
+(`-p`) permission policy — a tool needing a confirmation is now
+soft-denied unconditionally (the `permissions.allow` list is not
+consulted in print mode), which silently broke the agy dispatch /
+review leg. The wrapper now version-gates
+`--dangerously-skip-permissions` when `agy --version` ≥ 1.1.3 (and
+`--version` exits rc=0), so the leg runs again. Opt-out
+`AGY_NO_HEADLESS_AUTOAPPROVE=1`. **Security note (honestly stated
+across the SKILLs / COMPANY-SETUP):** that flag VOIDS the `--sandbox`
+deny transaction AND agy's OS-ring, so on agy ≥1.1.3 an agy dispatch
+is read-only by INTENT, not enforcement (write / command / network
+are auto-approved) — do NOT treat the agy leg as the enforced
+release-gate on ≥1.1.3; use a genuinely-sandboxed leg or the opt-out.
+Enforced on agy ≤1.1.2.
+
+**Review orchestration discipline** (from the prior release's
 hardened-audit custody + agy extraction strictness + review-packet
 lifecycle):
 
