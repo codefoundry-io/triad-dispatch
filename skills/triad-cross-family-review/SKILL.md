@@ -1,8 +1,24 @@
 ---
 name: triad-cross-family-review
 description: Use for the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatch INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frame the suspect/omitted/simplified decisions as QUESTIONS, consolidate their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then run a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.16.0
+version: 0.17.0
 # changelog:
+#   0.17.0 (2026-07-18): owner directive — CONFLICT = CALL THE OWNER at first
+#     occurrence, not only at non-convergence/oscillation. Rule 4(b) gains a
+#     third round class CONFLICTED (legs contradict HEAD-ON on the SAME
+#     decision — one leg approves what another requires changed, or two demand
+#     mutually exclusive changes — and BOTH sides survive the rule-4a
+#     deterministic probe); rules 4(c)+12 + Flow step 5: a CONFLICTED item is
+#     an IMMEDIATE owner call (push notification where the harness exposes
+#     one, else a clearly-marked OWNER-CALL conflict table in chat) — the
+#     leader never self-adjudicates a compromise between live contradicting
+#     legs, however plausible the middle path; non-conflicted items keep
+#     converging in parallel while the call is pending. Probe-refuted sides,
+#     complementary findings, and same-defect convergence remain NON-conflicts.
+#     Trigger case: 2026-07-18 Argus metric-spec Q4 (codex occurrence-headline
+#     vs identity-headline — a value judgment with both sides defensible; the
+#     leader self-adjudicated a co-headline compromise and it converged, but
+#     the owner directed call-me-first for that class of contradiction).
 #   0.16.0: the claude fresh-eye leg's mechanical read-only enforcement now names a
 #     CONCRETE mechanism — a dedicated reviewer agent `cross-family-review-reviewer`
 #     (`agents/`, frontmatter `tools: Read, Grep, Glob`) spawned via
@@ -221,10 +237,19 @@ the lab's standing cross-family review rule.
    probe-refuted finding is closed by recording the probe, never by a
    counter-argument. (b) **CLASSIFY the round**: CONVERGING (new real
    findings, or independent legs hitting the SAME defect — the rule-12
-   convergence floor) vs OSCILLATING (verdict flips / head-on
-   contradictions between legs / re-litigation without new evidence).
-   (c) On an OSCILLATING round, STOP and REPORT to the owner with the
-   rule-12 conflict table — the owner adjudicates, never another round.
+   convergence floor), **CONFLICTED** (legs contradict HEAD-ON on the
+   SAME decision — one leg approves what another requires changed, or
+   two demand mutually exclusive changes — and BOTH sides survive the
+   (a) probe; owner directive 2026-07-18), or OSCILLATING (verdict
+   flips / re-litigation without new evidence).
+   (c) On a CONFLICTED item or an OSCILLATING round, **CALL THE OWNER
+   IMMEDIATELY** — push notification where the harness exposes one, else
+   a clearly-marked OWNER-CALL section carrying the rule-12 conflict
+   table — the owner adjudicates. The leader NEVER self-adjudicates a
+   compromise between live contradicting legs (however plausible the
+   middle path looks) and never spends another round on the conflicted
+   item; NON-conflicted items keep their fix loop running in parallel
+   while the call is pending.
    Cross-family complementarity is the
    point: one may catch what the others miss — each family tends to catch a
    different class of issue (an extractor bug, a classifier false-positive, a
@@ -398,6 +423,11 @@ the lab's standing cross-family review rule.
     evidence, adjudicate that evidence with a deterministic probe first
     (grep the source, run a controlled fixture, read vendor docs) and let
     the probe decide whether the loop has genuinely stopped converging.
+    **Owner-call threshold (owner directive 2026-07-18): the FIRST
+    head-on same-decision contradiction where both sides survive the
+    probe is already an owner call (rule 4c) — do not wait for
+    oscillation, do not craft a compromise first.** A probe-refuted side
+    is not a conflict; close it by recording the probe.
     One healthy signal is NOT a conflict: independent legs finding the
     SAME defect is a CONVERGENCE floor — fix it and run one final confirm.
 13. **Leg orchestration: background dispatch, ONE generous wait, no
@@ -452,9 +482,10 @@ the lab's standing cross-family review rule.
 5. Otherwise, if the round is CONVERGING: fix each finding (implementer +
    per-fix review), then GOTO 2 (re-confirm) until unanimous SAFE — stopping
    after `TRIAD_REVIEW_MAX_ROUNDS` (default 2) full rounds; past that, record
-   the residual findings and get an owner decision (rule 5). If the round is
-   OSCILLATING, STOP instead of re-dispatching: hand the rule-12 conflict
-   table to the owner (rules 4, 12).
+   the residual findings and get an owner decision (rule 5). If any item is
+   CONFLICTED or the round is OSCILLATING, CALL THE OWNER instead of
+   re-dispatching: hand over the rule-12 conflict table (rules 4, 12);
+   non-conflicted findings may continue their fix loop meanwhile.
 
 ## Failure modes
 

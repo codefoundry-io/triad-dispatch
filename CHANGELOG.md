@@ -1,14 +1,20 @@
 # Changelog
 
-## 0.2.524 — 2026-07-18
+## 0.2.526 — 2026-07-18
 
-**claude worker `--model` dispatch-time selection.** `claude_wrapper.py`
-now accepts `--model <alias-or-name>` (forwarded to the claude CLI
-`--model`; free string, never pinned in code — the leader picks the
-model per call, the same shape as codex `-m`). Omit = vendor default.
-`--effort` (reasoning level) was already wired. Guidance: a
-fable-class model for long-running leader/worker operation, opus-4.8
-with `--effort xhigh` for review legs.
+**Cross-family review v0.17.0 — CONFLICTED verdicts CALL THE OWNER.**
+The consolidation rules gain a CONFLICTED round class: a head-on
+same-decision contradiction between review legs, with both sides
+surviving the deterministic fact-check probe, triggers an IMMEDIATE
+owner call (push notification where available, else an OWNER-CALL
+conflict table) instead of leader-side compromise adjudication;
+non-conflicted findings keep converging in parallel. Probe-refuted
+sides, complementary findings, and same-defect convergence remain
+non-conflicts (rules 4b/4c/12 + Flow step 5).
+
+_(Prior release 0.2.524 — **claude worker `--model` dispatch-time
+selection**: `claude_wrapper.py` accepts `--model <alias-or-name>`,
+free string, never pinned in code; `--effort` already wired.)_
 
 _(Prior release 0.2.521 — **agy ≥1.1.3 headless permission fix**: the
 wrapper version-gates `--dangerously-skip-permissions` on agy ≥1.1.3
