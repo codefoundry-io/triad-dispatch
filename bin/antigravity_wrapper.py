@@ -140,6 +140,19 @@ def _is_headless_softdeny(text) -> bool:
     return _HEADLESS_SOFTDENY_SIGNATURE in (text or "").lower()
 
 
+# agy CLI-side answer fold (observed 2026-07-22, repro A-F): print output AND
+# the transcript PLANNER_RESPONSE/DONE record are BOTH capped (~4KB observed)
+# with a literal own-line `<truncated N bytes>` / `<truncated N lines>` marker
+# replacing the folded middle (format strings live in the agy binary; every
+# transcript record type is capped, incl. VIEW_FILE tool results). The full
+# text is NOT preserved anywhere agy-side -> a marker-carrying answer is LOSSY
+# and unrecoverable at this layer. Own-line anchor keeps a mid-sentence QUOTE
+# of the marker from tripping the gate (observed folds are always own-line).
+# Loophole route: agy's write_file is NOT subject to the fold (verified: 24KB
+# file intact) -> the SKILL's absolute-path output-file contract.
+_AGY_TRUNCATION_MARKER_RE = re.compile(r"(?m)^[ \t]*<truncated \d+ (?:bytes|lines)>[ \t]*$")
+
+
 def _add_skip_permissions(cmd):
     """Insert --dangerously-skip-permissions right after argv[0] (the
     empirically-verified working position `agy --dangerously-skip-permissions
@@ -208,6 +221,14 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, expected_sentinel,
                             pty "answer" is partial, and its rc=128+signal
                             would otherwise hit the rc gate and mislabel a
                             retriable timeout as terminal vendor-error]
+      - answer present + non-empty, vendor rc==0, own-line
+        `<truncated N bytes|lines>` marker inside -> ("truncated-answer",
+                            EXIT_TERMINAL)   [agy folded the middle of the
+                            answer CLI-side and kept no full copy anywhere
+                            (transcript DONE record is capped too) — lossy,
+                            never a silent ok, never classify/repair; answer
+                            quarantined like vendor-error; leader re-dispatches
+                            under the output-file contract]
       - answer present + non-empty, vendor rc==0 -> ("ok", EXIT_OK)
                                                      [classify NOT called]
       - answer present + non-empty, vendor rc!=0 -> ("vendor-error",
@@ -299,6 +320,24 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, expected_sentinel,
                                      f"vendor rc={result.rc} returned a non-empty "
                                      f"answer; surfaced as vendor-error (not ok, "
                                      f"not repair). quarantined answer: {snippet}"))
+            if _AGY_TRUNCATION_MARKER_RE.search(answer):
+                # Vendor mid-answer fold (see _AGY_TRUNCATION_MARKER_RE note):
+                # the answer LOOKS complete but its middle was replaced by the
+                # marker and the lost bytes exist nowhere agy-side. Never a
+                # silent ok. Driver-emitted terminal token (NOT classify, NOT
+                # repair — deterministic vendor behavior on the answer-present
+                # path, which a classifier patch cannot express; mirrors the
+                # vendor-error quarantine). Leader remediation = re-dispatch
+                # under the SKILL's absolute-path output-file contract
+                # (write_file is not subject to the fold).
+                snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
+                return AgyResult(None, "truncated-answer", _common.EXIT_TERMINAL,
+                                 result.rc, scrubbed_output=scrubbed,
+                                 extraction_error=(
+                                     "agy folded the answer mid-body "
+                                     "(own-line <truncated N bytes|lines> marker); "
+                                     "lossy and unrecoverable at this layer. "
+                                     f"quarantined answer: {snippet}"))
             if pydantic_cls is None:
                 return AgyResult(answer, "ok", _common.EXIT_OK, result.rc,
                                  scrubbed_output=scrubbed)

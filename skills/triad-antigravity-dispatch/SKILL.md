@@ -1,8 +1,15 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.8.0
+version: 0.9.0
 # changelog:
+#   0.9.0 (2026-07-22): truncated-answer classification + § Long-answer
+#     output-file contract. agy folds long answers CLI-side (own-line
+#     `<truncated N bytes|lines>`, ~4KB cap, transcript DONE record capped
+#     too — loss unrecoverable at the wrapper layer). Wrapper now emits
+#     driver-side terminal token `truncated-answer` (65) instead of a lossy
+#     silent ok; remediation = absolute-path write_file output-file contract
+#     (verified fold-exempt). Repro + root-cause: 2026-07-22 session (A-F).
 #   0.8.0: Step 5b SECURITY note — address the read-only repair analyzer by its
 #     plugin-scoped identity (`triad-dispatch:agy-wrapper-repair`, export-
 #     injected) so a same-named project `agents/` agent cannot shadow the
@@ -231,7 +238,7 @@ CLS=$(printf '%s' "$SUMMARY" | sed -E 's/.*\[wrapper\] antigravity ([a-z-]+) .*/
 ```
 
 Token set:
-`ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | timeout | extraction-error | vendor-error | config-conflict | unknown`
+`ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | timeout | extraction-error | vendor-error | truncated-answer | config-conflict | unknown`
 
 Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) /
 `4` (binary missing) / `64` (server-cap exhausted) / `65` (terminal) /
@@ -243,6 +250,7 @@ Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) /
 |---|---|
 | `ok` (0) | Return wrapper stdout (agy's final answer text). |
 | terminal (65) — cli-subscription-cap / token-limit / oauth-env / config-conflict / vendor-error | Surface to user with cause (re-login / quota daily reset / prompt size too large / settings deny-transaction failed: lock-lease timeout or corrupt `~/.gemini/antigravity-cli/settings.json` / vendor-error: agy exited rc≠0 yet produced a non-empty answer — the answer is NOT on stdout but IS preserved in the run-log + agy transcript; inspect it there and decide re-dispatch vs accept, P4 rc gate 2026-07-11). **NOT** repair-agent territory (already matched — only `unknown` / `extraction-error` / `timeout` route to repair; `vendor-error` is driver-emitted on the answer-present path, which a classifier patch cannot express). |
+| `truncated-answer` (65) | agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB, 2026-07-22 repro) and keeps NO full copy anywhere — the transcript DONE record is capped too, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader remediation: re-dispatch under § Long-answer output-file contract** (agy's `write_file` is NOT subject to the fold — verified 24KB intact). **NOT** repair-agent territory (deterministic vendor behavior on the answer-present path; a classifier patch cannot express it). Retrying the same stdout-shaped dispatch will fold again — do not plain-retry. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff (cap 2 pty re-runs). |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 8). Spawn it even when you are busy or also surfacing the failure — never skip.** |
 | `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 8).** agy ran but the extractor found no answer (clean output but empty, missing sentinel, vendor refusal text, or a NON-TERMINAL marker — a truncated rc=0 run whose only marker is an early echo; the run-log `extraction_error` field distinguishes `non-terminal-marker` from `no-sentinel`). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
@@ -369,6 +377,31 @@ Branch summary:
 | propose → applier exit 0 | Re-run wrapper `--repair-mode` to verify routing; report the routing result. Framework now catches future identical errors. |
 | propose → applier exit 3 | Proposal invalid (analyzer error) — surface REASON, treat as escalate. |
 | escalate | Surface REASON. Manual diagnosis needed; no apply. |
+
+## Long-answer output-file contract (truncation loophole; 2026-07-22)
+
+agy's print path AND its own transcript store cap every record's content
+(observed ~4KB; own-line `<truncated N bytes|lines>` markers; format strings
+live in the agy binary) — a long single answer is FOLDED mid-body and the
+lost text is preserved NOWHERE agy-side. `write_file` output is NOT subject
+to the fold (verified: 24KB file intact while the chat answer folded).
+
+For any dispatch whose answer may exceed ~3KB (review legs, research
+reports, multi-section documents), use the output-file contract:
+
+1. Prompt the worker to WRITE the full deliverable to an **ABSOLUTE path**
+   (a leader-chosen file under the dispatch's working area — agy resolves
+   relative paths against its own scratch project, NOT `--cwd`, so relative
+   paths land in `~/.gemini/antigravity-cli/scratch/`), and to print only a
+   one-line confirmation (e.g. `DONE <filename>`) to the chat.
+2. The leader reads the file as the deliverable; the chat answer is only a
+   completion signal.
+3. Version caveat: on agy ≤1.1.2 a `--sandbox read-only` deny transaction
+   blocks `write_file`, so the contract needs `--sandbox` omitted there; on
+   ≥1.1.3 the headless skip-perms adaptation auto-approves it (documented
+   isolation caveat in § Headless soft-deny adaptation applies).
+4. If a stdout-shaped dispatch comes back `truncated-answer` (65), re-dispatch
+   once under this contract instead of plain-retrying.
 
 ## Outputs (what this skill returns)
 

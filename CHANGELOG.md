@@ -1,27 +1,28 @@
 # Changelog
 
-## 0.2.526 — 2026-07-18
+## 0.2.528 — 2026-07-22
 
-**Cross-family review v0.17.0 — CONFLICTED verdicts CALL THE OWNER.**
-The consolidation rules gain a CONFLICTED round class: a head-on
-same-decision contradiction between review legs, with both sides
-surviving the deterministic fact-check probe, triggers an IMMEDIATE
-owner call (push notification where available, else an OWNER-CALL
-conflict table) instead of leader-side compromise adjudication;
-non-conflicted findings keep converging in parallel. Probe-refuted
+**agy `truncated-answer` gate — long answers are no longer silently lossy.**
+agy folds a long chat answer MID-BODY at a ~4KB cap (own-line
+`<truncated N bytes|lines>` marker) and keeps no full copy anywhere —
+its own transcript record is capped too, so the folded text is
+unrecoverable. The wrapper now detects the own-line marker on the
+answer-present rc=0 path and returns terminal `truncated-answer` (65)
+with the lossy answer quarantined from stdout (bounded run-log copy),
+instead of a silent ok; the antigravity dispatch skill gains a
+§ Long-answer output-file contract (absolute-path `write_file` is
+fold-exempt — verified 24KB intact) for review-leg-sized answers.
+
+_(Prior release — **cross-family review v0.17.0, CONFLICTED verdicts
+call the owner**: a head-on same-decision contradiction between legs,
+both sides surviving the deterministic fact-check probe, triggers an
+immediate owner call instead of leader-side compromise; probe-refuted
 sides, complementary findings, and same-defect convergence remain
-non-conflicts (rules 4b/4c/12 + Flow step 5).
+non-conflicts.)_
 
 _(Prior release 0.2.524 — **claude worker `--model` dispatch-time
 selection**: `claude_wrapper.py` accepts `--model <alias-or-name>`,
 free string, never pinned in code; `--effort` already wired.)_
-
-_(Prior release 0.2.521 — **agy ≥1.1.3 headless permission fix**: the
-wrapper version-gates `--dangerously-skip-permissions` on agy ≥1.1.3
-so the soft-denied headless leg runs again; that flag voids the
-`--sandbox` deny transaction, so on ≥1.1.3 an agy dispatch is
-read-only by INTENT not enforcement — opt-out
-`AGY_NO_HEADLESS_AUTOAPPROVE=1`, enforced on ≤1.1.2.)_
 
 **Review orchestration discipline** (from an earlier release's
 hardened-audit custody + agy extraction strictness + review-packet
