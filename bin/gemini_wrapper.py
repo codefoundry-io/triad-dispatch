@@ -50,7 +50,8 @@ SANDBOX_CHOICES = ("read-only", "workspace-write")
 # crashy `--approval-mode plan` (plan mode OOMs the Node/V8 heap on heavy files
 # — gemini-cli issues #11321 / #18331 / #26588). The policy denies mutation +
 # shell tools for THIS call only, so the same leg still does code work under
-# `--sandbox workspace-write` (per-call, mirrors codex/agy). The exact policy
+# `--sandbox workspace-write` (per-call, mirrors codex; agy dropped its write
+# mode 2026-07-25). The exact policy
 # tool identifiers are per the Policy Engine docs but NOT e2e-verified here
 # (individual-tier gemini auth is deprecated) — see the policy file header.
 _READONLY_POLICY = Path(__file__).resolve().parent / "policies" / "gemini-readonly.toml"

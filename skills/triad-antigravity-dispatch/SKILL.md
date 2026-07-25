@@ -1,8 +1,18 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.9.0
+version: 0.10.0
 # changelog:
+#   0.10.0 (2026-07-25): workspace-write REMOVED per owner directive — never
+#     used in 616 audited agy wrapper calls (0 workspace-write). --sandbox
+#     now takes only `read-only`; the write-mode DENY SET
+#     (_workspace_write_deny) and the app-level --cwd requirement go with
+#     it — the exclusive lock path itself (_exclusive_settings_guard) is
+#     RETAINED (the shared read-only lease + exclusive-baseline guard are
+#     unaffected — the EXCLUSIVE guard also
+#     brackets the permissive no-sandbox baseline; the shared lease is
+#     read-only-only). Upstream lock issues
+#     google-antigravity/antigravity-cli #573/#627 still open.
 #   0.9.0 (2026-07-22): truncated-answer classification + § Long-answer
 #     output-file contract. agy folds long answers CLI-side (own-line
 #     `<truncated N bytes|lines>`, ~4KB cap, transcript DONE record capped
@@ -80,6 +90,14 @@ name is pinned — agy uses the vendor default.
 
 ## Headless soft-deny adaptation (agy ≥1.1.3, owner-authorized 2026-07-18)
 
+> **Enforcement re-verified on current agy (1.1.7, live differential probe):
+> the `read-only` deny BLOCKED `write_file` headless while the permissive
+> baseline wrote — the skip-perms void below appears VENDOR-FIXED at some
+> version ≤1.1.7 (exact boundary unknown). Treat this section's
+> "INTENT-only" caveats as the conservative floor for older builds; agy also
+> SELF-REPORTED the denied write as done ("WROTE"), so deterministic
+> arrival checks stay mandatory.
+
 agy **1.1.3 flipped headless (`-p`) permission policy**: a tool needing a
 confirmation is soft-denied UNCONDITIONALLY — the `permissions.allow` list is
 NOT consulted in print mode (empirically exhausted: allow-rule forms, settings
@@ -124,17 +142,19 @@ the deny transaction still enforces and this residual does not apply.
 
 ## Isolation — per-call deny transaction (codex parity)
 
-`--sandbox read-only|workspace-write` brackets the agy call in a global-settings
-deny transaction (`_agy_settings.agy_settings_guard`): the wrapper merges
+`--sandbox read-only` brackets the agy call in a global-settings deny
+transaction (`_agy_settings.agy_settings_guard`): the wrapper merges
 `permissions.deny` into `~/.gemini/antigravity-cli/settings.json`, runs agy, then
 byte-exactly restores (flock-serialized state transitions, `.agybak` crash
 sentinel). **On agy ≥1.1.3 this is neutered by the skip-perms gate above — see
 the caveat.** Identical **read-only** transactions SHARE the active deny lease via
 a holder registry (per-holder flock liveness files), so concurrent read-only agy
-dispatches are safe; `workspace-write` stays exclusive. Lease/lock waits are
-bounded by `AGY_SETTINGS_LOCK_TIMEOUT` (env, seconds, default 30); a settings
-transaction failure surfaces as `config-conflict` (exit 65). Detail =
-the plugin `README.md` § Deny-transaction isolation.
+dispatches are safe; the permissive (no `--sandbox`) baseline stays exclusive.
+Lease/lock waits are bounded by `AGY_SETTINGS_LOCK_TIMEOUT` (env, seconds,
+default 30); a settings transaction failure surfaces as `config-conflict`
+(exit 65). Detail = the plugin `README.md` § Deny-transaction isolation.
+(`workspace-write` was removed 2026-07-25 — owner directive, never used in
+616 audited calls.)
 
 Mode selection (full detail, including the tool→permission-action map, the
 per-mode deny lists, spike-verification status, and the operational notes on
@@ -145,17 +165,25 @@ per-mode deny lists, spike-verification status, and the operational notes on
   the search leg keeps working. The `write_file` deny is proven headless; deny
   is a per-verb denylist over the KNOWN agy tool surface, not OS-level process
   isolation.
-- `workspace-write` — dangerous-path/command denies plus agy `--sandbox`, and a
-  leader-supplied isolated git worktree as `--cwd` (REQUIRED — the wrapper
-  rejects a missing/relative/non-existent `--cwd`). A `write_file` can still
-  target outside the worktree (Deny>Allow precedence), so the worktree cwd +
-  leader verify/commit is the mitigation.
 - omitted — no deny transaction; the owner's permissive global baseline stays
   intact (the call still acquires the lock and heals a stale `.agybak` first).
+  A write-needing dispatch therefore runs with NO deny rules: on agy ≤1.1.2,
+  on current 1.1.7-class builds (deny re-enforced), or with
+  `AGY_NO_HEADLESS_AUTOAPPROVE=1` it lacks the dangerous-path denies the
+  removed workspace-write mode used to add (references/isolation.md). On a
+  HARDENED install (`TRIAD_WRAPPER_HARDENED=1`, the consumer default)
+  omission auto-upgrades to `read-only`, so no write-INTENT agy mode remains
+  there — `read-only` enforcement is VERSION-dependent: enforced on
+  ≤1.1.2 and again on current builds (1.1.7 differential probe;
+  § Headless banner), INTENT-only in the 1.1.3-era soft-deny window —
+  keep the disposable-`--cwd` + leader-verify practice and always
+  verify arrival.
 
 agy `--sandbox` alone is shell/network OS-ring only (it does NOT block
 `write_file`); the deny transaction is what enforces fs isolation. Reasoning
-tier = `--model "<family> (<tier>)"` passthrough (no-pin default when omitted).
+tier = `--model` passthrough (no-pin default when omitted) — pass a CATALOG
+selector from `agy models` (e.g. `gemini-3.1-pro-high`); the old display-label
+form ("Gemini 3.1 Pro (High)") is no longer listed by current agy builds.
 
 ## Hard rules
 
@@ -185,16 +213,15 @@ antigravity_wrapper.py \
 PROMPT
 )" \
   [--cwd /absolute/path] \
-  [--sandbox read-only|workspace-write] \
+  [--sandbox read-only] \
   [--model <pinned-model-name>] \
   [--pydantic module:Class] \
   [--timeout <seconds>] \
   [--debug]
 ```
 
-- `--sandbox read-only|workspace-write` selects the per-call deny transaction
-  (§ Isolation). Omit for the permissive baseline. `workspace-write` requires
-  `--cwd` (isolated worktree) — argparse/`EXIT_ARG_ERROR` if missing.
+- `--sandbox read-only` selects the per-call deny transaction (§ Isolation).
+  Omit for the permissive baseline.
 - `--pydantic module:Class` forces JSON output. agy has **no native JSON
   schema**, so the wrapper instructs JSON via a prompt addendum: the completion
   sentinel is a REQUIRED trailing line emitted on its own NEW line AFTER the JSON
@@ -242,7 +269,10 @@ Token set:
 
 Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) /
 `4` (binary missing) / `64` (server-cap exhausted) / `65` (terminal) /
-`66` (schema fail).
+`66` (schema fail). Caveat: an ARGPARSE rejection (unknown flag or invalid
+`--sandbox` value) also exits 2 with NO `[wrapper]` summary line — that is an
+invocation error, not a timeout; fix the call, never spawn the repair agent
+for it.
 
 ### Step 4 — Branch on classification
 
@@ -396,10 +426,23 @@ reports, multi-section documents), use the output-file contract:
    one-line confirmation (e.g. `DONE <filename>`) to the chat.
 2. The leader reads the file as the deliverable; the chat answer is only a
    completion signal.
-3. Version caveat: on agy ≤1.1.2 a `--sandbox read-only` deny transaction
-   blocks `write_file`, so the contract needs `--sandbox` omitted there; on
-   ≥1.1.3 the headless skip-perms adaptation auto-approves it (documented
-   isolation caveat in § Headless soft-deny adaptation applies).
+3. Version caveat: wherever the deny ENFORCES — agy ≤1.1.2 AND current
+   builds since the vendor re-fix (enforced on 1.1.7, differential probe;
+   § Headless banner) — a `--sandbox read-only` dispatch CANNOT write the
+   output file, and agy may still SELF-REPORT `DONE` (verify arrival,
+   always): the contract REQUIRES the write-capable permissive baseline
+   (`--sandbox` omitted, non-hardened). Only inside the 1.1.3-era
+   soft-deny window did skip-perms auto-approve the write under
+   read-only. On a HARDENED install (`TRIAD_WRAPPER_HARDENED=1`)
+   omission auto-upgrades to `read-only`, so THERE this contract is
+   UNAVAILABLE at any agy version —
+   prefer ACCEPTING the chat-answer fold; unsetting
+   `TRIAD_WRAPPER_HARDENED` for the call drops the pydantic import gate,
+   makes allowed-roots containment optional (containment and audit
+   redaction key off their own env vars, which a hardened install sets
+   alongside), and disables the auto-read-only guard itself — the control
+   that keeps raw public-install calls from being write-capable by
+   omission.
 4. If a stdout-shaped dispatch comes back `truncated-answer` (65), re-dispatch
    once under this contract instead of plain-retrying.
 

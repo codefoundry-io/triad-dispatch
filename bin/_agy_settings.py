@@ -5,14 +5,20 @@ agy exposes NO per-call permission/settings surface (its per-call flags are
 session/transport-only); fs-write isolation lives
 only in the single global ~/.gemini/antigravity-cli/settings.json (no
 per-directory file, no profile, no --settings flag, no config-dir env — proven
-4-source). So a per-call read-only / workspace-write worker is implemented as a
-global-settings transaction: merge the per-call permissions.deny, run agy, then
-byte-exactly restore. An flock serializes settings state transitions; identical
-read-only calls share the active deny lease, while workspace-write stays
-exclusive. Read-only holder liveness is proven by per-holder flock files rather
-than PIDs, so stale holders can be pruned safely after crashes. A .agybak
-sentinel restores after a mid-transaction crash. See the slice-2 design doc
-§4-§5.
+4-source). So a per-call read-only worker is implemented as a global-settings
+transaction: merge the per-call permissions.deny, run agy, then byte-exactly
+restore. An flock serializes settings state transitions; identical read-only
+calls share the active deny lease, while the permissive (no --sandbox)
+baseline stays exclusive. Read-only holder liveness is proven by per-holder
+flock files rather than PIDs, so stale holders can be pruned safely after
+crashes. A .agybak sentinel restores after a mid-transaction crash. See the
+slice-2 design doc §4-§5.
+
+(workspace-write mode was removed 2026-07-25 — owner directive, never used in
+616 audited calls. The write-exclusive lock path (_exclusive_settings_guard)
+is KEPT: it still brackets the permissive no-sandbox baseline — exclusive
+because a permissive call must not run while a read-only deny lease is live,
+and because the first/exclusive entrant heals a stale .agybak.)
 """
 from __future__ import annotations
 
@@ -40,33 +46,10 @@ _READ_ONLY_DENY = [
 ]
 
 
-def _workspace_write_deny() -> list:
-    # workspace-write: writes allowed (in the worktree cwd) but dangerous paths
-    # + destructive commands denied. ~ is expanded so the rule is absolute
-    # (agy matches absolute paths or workspace-relative paths).
-    gem = os.path.expanduser("~/.gemini")   # protect agy's own config (deny-rule self-overwrite escape)
-    ssh = os.path.expanduser("~/.ssh")
-    aws = os.path.expanduser("~/.aws")
-    return [
-        f"write_file({gem})",
-        "write_file(.git/)",
-        f"write_file({ssh})",
-        f"write_file({aws})",
-        "command(rm -rf)",
-        "command(sudo)",
-        "command(curl .*)",
-        "unsandboxed(*)",   # commands must stay inside the OS sandbox ring
-        "execute_url(*)",   # no code-exec-from-URL even in a write worker
-        "mcp(*)",           # no MCP reach (read_url/search_web remain the only web access)
-    ]
-
-
 def build_deny_rules(mode: str) -> list:
     """Return the permissions.deny list for an agy sandbox mode."""
     if mode == "read-only":
         return list(_READ_ONLY_DENY)
-    if mode == "workspace-write":
-        return _workspace_write_deny()
     raise ValueError(f"unknown sandbox mode: {mode!r}")
 
 
@@ -89,8 +72,8 @@ def _deny_key(deny_rules: list) -> str:
 
 def _shareable_deny(deny_rules: list) -> bool:
     # Read-only calls all install the exact same deny list and can safely share
-    # the active settings transaction. Workspace-write stays exclusive because
-    # those calls are allowed to edit project files and are rare.
+    # the active settings transaction. Any other deny set (including the empty
+    # list for the permissive no-sandbox baseline) stays exclusive.
     return deny_rules == _READ_ONLY_DENY
 
 
@@ -510,6 +493,9 @@ def _exclusive_settings_guard(
         if not deny_rules:
             yield
             return
+        # NOTE: with read-only the only shareable set and [] the only exclusive
+        # production input, the merge/restore branch below is currently
+        # exercised only by tests — kept for a future non-shareable deny set.
         snap = _snapshot(p)
         _atomic_write(bak, json.dumps(snap))
         try:
@@ -532,10 +518,10 @@ def agy_settings_guard(deny_rules, *, lock_timeout: float = 30.0):
     """Bracket an agy call in a global-settings deny transaction.
 
     Read-only calls share an active identical deny transaction so multiple
-    projects can run read-only agy consults concurrently. Workspace-write and
-    other modes remain exclusive. Every first/exclusive entrant runs
-    crash-recovery so a stale .agybak from a prior crashed call is healed before
-    settings are mutated.
+    projects can run read-only agy consults concurrently. The permissive
+    (no --sandbox) baseline remains exclusive. Every first/exclusive entrant
+    runs crash-recovery so a stale .agybak from a prior crashed call is
+    healed before settings are mutated.
     """
     p = _settings_path()
     bak = p.with_name(".agybak")

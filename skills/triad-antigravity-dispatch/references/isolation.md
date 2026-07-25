@@ -4,7 +4,16 @@ Loaded on demand from `triad-antigravity-dispatch/SKILL.md` § Isolation.
 Read this before changing a sandbox mode, auditing the deny surface, or
 diagnosing a settings-transaction failure.
 
-> **⚠️ agy ≥1.1.3 — the entire deny model below is NEUTERED at runtime.**
+> **UPDATE (2026-07-25, live differential probe on agy 1.1.7): the deny model
+> below ENFORCES again on current builds — `read-only` BLOCKED `write_file`
+> headless while the permissive baseline wrote; `read_url`/`search_web`
+> stayed allowed under `read-only` (probed). The vendor fixed the soft-deny
+> void at some version ≤1.1.7 (boundary unknown). The banner below describes
+> the 1.1.3-era soft-deny WINDOW and stays as the conservative floor for
+> older builds; agy also self-reported the denied write as done — verify
+> arrival, always.**
+>
+> **⚠️ agy ≥1.1.3 (soft-deny window) — the deny model below was NEUTERED at runtime.**
 > On agy ≥1.1.3 the wrapper inserts `--dangerously-skip-permissions` (headless
 > soft-deny adaptation — SKILL.md § Headless soft-deny adaptation), which VOIDS
 > the deny transaction AND agy's `--sandbox` OS-ring (agy issue #36): every
@@ -30,26 +39,37 @@ self-reported inventory (denying an absent action is a no-op and protective if
 they return). Non-resource tools (`generate_image`, `send_message`,
 `manage_task`, `manage_subagents`, `list_permissions`, `ask_permission`) report
 no permission action; `generate_image`'s artifact write path is UNVERIFIED
-against the `write_file` gate (self-report only), covered by the standing
-mitigation (isolated worktree cwd + leader verify/commit):
+against the `write_file` gate (self-report only), covered by the surviving
+practice — run write-needing dispatches in a disposable `--cwd` and have the
+leader verify results before use (isolation caveats: SKILL.md § Headless
+soft-deny adaptation; the dedicated workspace-write worktree contract is
+gone). This practice is UNENFORCED: nothing in the wrapper requires `--cwd`,
+and agy resolves RELATIVE paths against its own scratch project, not `--cwd`
+— hand it absolute paths. Note: on a NON-hardened install (a hardened one
+auto-upgrades omission to `read-only` — SKILL.md § Isolation), a
+write-needing agy dispatch runs as the permissive
+baseline with NO deny rules and NO agy `--sandbox` OS ring — on any build
+where the deny enforces (≤1.1.2, current 1.1.7-class builds, or with
+`AGY_NO_HEADLESS_AUTOAPPROVE=1`) it lacks the dangerous-path,
+`unsandboxed(*)`, `execute_url(*)`, and `mcp(*)` denies workspace-write used
+to add (web reach is then no longer bounded to `read_url`/`search_web`):
 
 | agy tool | permission action | notes |
 |---|---|---|
 | `view_file` / `list_dir` / `grep_search` | `read_file` | native reads (NOT shell) — auto-allowed in workspace |
 | `write_to_file` / `replace_file_content` / `multi_replace_file_content` | `write_file` | governed per-call by the deny transaction |
-| `run_command` | `command` OR `unsandboxed` | BOTH denied in read-only; `unsandboxed(*)` also denied in workspace-write (OS-ring escape) |
-| `execute_url` (code-exec-from-URL) | `execute_url` | denied in **BOTH** read-only AND workspace-write |
-| `mcp` (MCP server reach) | `mcp` | denied in **BOTH** read-only AND workspace-write |
-| `read_url_content` / `search_web` | `read_url` | **always allowed** (never denied) — agy's search/research advantage; the ONLY web access left in either mode |
+| `run_command` | `command` OR `unsandboxed` | BOTH denied in read-only (`unsandboxed(*)` = OS-ring escape) |
+| `execute_url` (code-exec-from-URL) | `execute_url` | denied in read-only |
+| `mcp` (MCP server reach) | `mcp` | denied in read-only |
+| `read_url_content` / `search_web` | `read_url` | **always allowed** (never denied) — agy's search/research advantage; the ONLY web access left even under read-only |
 | `invoke_subagent` / `ask_question` / `schedule` | (no resource permission) | not gated by `permissions.deny` |
 
 `run_command` maps to EITHER the `command` OR the `unsandboxed` action, so the
-deny sets enumerate **both** — a command run "unsandboxed" (escaping the OS
-sandbox ring) is blocked in read-only AND workspace-write (`unsandboxed(*)`).
-`execute_url(*)` (code-exec-from-URL) and `mcp(*)` (MCP server reach) are likewise
-denied in **BOTH** modes, so `read_url` (search / web fetch) is the **one and only**
-web access the transaction ever leaves allowed (§ Routing) — `execute_url` and
-`mcp` are never permitted under either `--sandbox` mode.
+read-only deny set enumerates **both** — a command run "unsandboxed" (escaping
+the OS sandbox ring) is blocked too (`unsandboxed(*)`). `execute_url(*)`
+(code-exec-from-URL) and `mcp(*)` (MCP server reach) are likewise denied, so
+`read_url` (search / web fetch) is the **one and only** web access the
+transaction ever leaves allowed (§ Routing).
 
 - `read-only` — `deny:[write_file(*),command(*),unsandboxed(*),execute_url(*),mcp(*)]`
   (`unsandboxed(*)` is the second `run_command` action — see the tool→action map).
@@ -64,24 +84,19 @@ web access the transaction ever leaves allowed (§ Routing) — `execute_url` an
   write path **on agy ≤1.1.2 only** (on ≥1.1.3 the skip-perms gate voids this —
   see the top banner); the owner's manual e2e should ALSO attempt a `command(...)` and an
   `mcp(...)` mutation to confirm those denies on the live build.
-- `workspace-write` — dangerous-path/command denies (incl. `unsandboxed(*)` so a
-  command cannot escape the OS sandbox ring, plus `execute_url(*)` + `mcp(*)` —
-  denied here exactly as in read-only, so `read_url`/`search_web` stays the only
-  permitted web access in this mode too) + agy `--sandbox` + a
-  leader-supplied isolated git worktree as `--cwd` (**required**; the wrapper
-  rejects a missing / relative / non-existent `--cwd` with `EXIT_ARG_ERROR`,
-  but worktree-ness itself is the leader's responsibility). **Residual** (codex
-  `--task code` parity): a `write_file` can still target outside the worktree
-  because Deny>Allow precedence makes a confine-to-cwd whitelist impossible — the
-  worktree cwd + leader verify/commit is the mitigation.
 - omitted — no deny transaction; the owner's permissive global baseline is left
   intact (the call still acquires the lock + heals a stale `.agybak`, see below).
+
+(`workspace-write` was removed 2026-07-25 — owner directive, never used in 616
+audited calls; the wrapper no longer offers a write-enabled agy mode, so
+`--sandbox` now takes only `read-only`.)
 
 agy `--sandbox` alone is shell/network OS-ring only (does NOT block `write_file`);
 the deny transaction is what enforces fs isolation. `toolPermission` presets are
 NOT exposed — they auto-proceed in headless (no TTY to prompt) and would imply a
-guarantee that does not exist. Reasoning tier = `--model "<family> (<tier>)"`
-passthrough (no-pin default when omitted); owl subagents (a `--task`
+guarantee that does not exist. Reasoning tier = `--model` passthrough with a
+CATALOG selector from `agy models` (e.g. `gemini-3.1-pro-high`; display labels
+are no longer listed); no-pin default when omitted; owl subagents (a `--task`
 equivalent) are not currently used by the wrapper.
 
 **Operational notes**:
@@ -92,9 +107,3 @@ equivalent) are not currently used by the wrapper.
   state. If interactive `agy` suddenly cannot write files, remove a stale
   `~/.gemini/antigravity-cli/.agybak`. Writes are atomic (temp + `os.replace`),
   so the file is never left half-written.
-- *workspace-write deny list is illustrative* — `.git/`, `~/.gemini`, `~/.ssh`,
-  `~/.aws`, `rm -rf`, `sudo`, `curl` is a hand-picked danger list, **not** a
-  confinement boundary (paths like `~/.bashrc` / `~/.config` stay writable).
-  Safety rests on the isolated worktree `--cwd` + leader verify/commit, not the
-  list. (`~/.gemini` is denied specifically to stop a worker rewriting its own
-  deny rules.)

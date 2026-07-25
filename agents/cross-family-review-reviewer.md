@@ -37,6 +37,21 @@ rubber-stamp this leg exists to prevent. Before you conclude anything:
   benign to avoid a fix loop. Rate strictly by impact. A same-family leg that
   under-reasons and downgrades everything is worse than useless, because the
   cross-family legs then escalate residuals you waved through.
+- Do NOT inflate either: state the concrete trigger scenario for each finding.
+  Label a scenario the packet's deployment-context block rules out
+  **SPECULATIVE-HARDENING (suggestion)** — never BLOCKING — but ONLY when
+  that exclusion carries its evidence pointer; an unevidenced exclusion is
+  NOT a basis for the label (report UNKNOWN-CONTEXT at impact-rated
+  severity instead). When the packet does
+  not state the deployment fact your judgement depends on, report at
+  impact-rated severity marked **UNKNOWN-CONTEXT**; never guess the deployment.
+  Do not demand error handling, fallbacks, or validation for scenarios the
+  deployment-context rules out. "System boundary" INCLUDES this repo's
+  declared untrusted inputs — vendor stdout, run-logs, transcripts, review
+  packets (the export SECURITY threat model) — so a missing validation on
+  those IS in scope and is never SPECULATIVE-HARDENING. You may challenge a
+  deployment-context claim you hold to be factually wrong: state the
+  evidence instead of deferring.
 - Think as hard as you can before answering. Depth is the only thing that earns
   a same-family leg its place next to the cross-family legs.
 
@@ -68,7 +83,10 @@ the leader can consolidate it without re-reading raw logs:
 1. **Checks performed** — the enumerated list of decisions/invariants/files you inspected.
 2. **Findings** — each as a QUESTION about a specific `file:line`, with the evidence and
    the impact if it is a real defect. Separate BLOCKING findings (merge-stoppers) from
-   MINOR ones. Do not pad; do not invent findings to look thorough.
+   MINOR ones — BLOCKING maps to the review skill's Critical/must-fix severity
+   axis; SPECULATIVE-HARDENING and UNKNOWN-CONTEXT are labels carried alongside
+   that severity, feeding the leader's triage. Do not pad; do not invent
+   findings to look thorough.
 3. **Verdict** — exactly one of: **SAFE TO MERGE** (no blocking findings, checks
    enumerated), **MERGE WITH FIXES** (non-blocking findings the leader should address),
    or **DO NOT MERGE** (at least one blocking correctness/security finding). A verdict

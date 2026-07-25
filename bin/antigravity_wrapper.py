@@ -8,8 +8,9 @@ dedicated extract-then-classify driver (the generic run_cli_with_retry
 classifies before extracting, which can't host agy's rc=0 auth-banner case).
 
 Isolation is a per-call global-settings deny transaction (--sandbox
-read-only|workspace-write -> _agy_settings.agy_settings_guard mutates
-permissions.deny then restores; agy --sandbox adds the terminal OS-ring).
+read-only -> _agy_settings.agy_settings_guard mutates permissions.deny then
+restores; agy --sandbox adds the terminal OS-ring). workspace-write was
+removed 2026-07-25 (owner directive — 616 audited calls, 0 workspace-write).
 Audit log: _logs/antigravity/audit.jsonl (gitignored).
 """
 from __future__ import annotations
@@ -407,10 +408,12 @@ def main() -> int:
         help="Read the user prompt from a UTF-8 file (L12; containment applies "
              "under TRIAD_WRAPPER_ALLOWED_ROOTS)")
     p.add_argument("--cwd", default=None)
-    p.add_argument("--sandbox", choices=["read-only", "workspace-write"],
+    p.add_argument("--sandbox", choices=["read-only"],
                    default=None,
-                   help="read-only|workspace-write — per-call deny transaction "
-                        "(global settings mutate+restore). Omit = permissive baseline.")
+                   help="read-only — per-call deny transaction "
+                        "(global settings mutate+restore). Omit = permissive baseline. "
+                        "(workspace-write removed 2026-07-25 — owner directive, never "
+                        "used in 616 audited calls.)")
     p.add_argument("--model", default=None)
     p.add_argument("--timeout", type=int, default=600)
     p.add_argument("--repair-mode", action="store_true")
@@ -455,16 +458,8 @@ def main() -> int:
     agy_bin = _common.require_binary("agy")
 
     sandbox_mode = args.sandbox
-    if sandbox_mode == "workspace-write":
-        if not args.cwd:
-            _common.log("--sandbox workspace-write requires --cwd (isolated worktree)")
-            return _common.EXIT_ARG_ERROR
-        if not os.path.isabs(args.cwd) or not os.path.isdir(args.cwd):
-            _common.log("--sandbox workspace-write --cwd must be an absolute existing directory (isolated worktree)")
-            return _common.EXIT_ARG_ERROR
-
     deny_rules = _agy_settings.build_deny_rules(sandbox_mode) if sandbox_mode else []
-    agy_sandbox = sandbox_mode is not None  # both modes pass agy --sandbox (terminal ring)
+    agy_sandbox = sandbox_mode is not None  # read-only passes agy --sandbox (terminal ring)
     try:
         settings_lock_timeout = float(os.environ.get("AGY_SETTINGS_LOCK_TIMEOUT", "30"))
     except ValueError:
