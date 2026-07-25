@@ -191,8 +191,9 @@ the lab's standing cross-family review rule.
    differential probe 2026-07-25) and on ≤1.1.2, INTENT-only in the
    1.1.3-era soft-deny window; the `execute_url`/`mcp` denies + the agy
    `--sandbox` OS-ring share the same mechanism but are NOT each
-   individually probed on current builds — treat those as INTENT until
-   spiked**,
+   individually probed on current builds — treat those, and `unsandboxed`,
+   as INTENT until spiked; the probes cover 1.1.7 only, so 1.1.3-1.1.6
+   remain INTENT**,
    (in the 1.1.3-era window the wrapper's inserted
    `--dangerously-skip-permissions` voided the whole deny transaction + OS-ring).
    **A read/exfiltration residual survives on ENFORCING builds too, by
@@ -415,9 +416,10 @@ the lab's standing cross-family review rule.
    `/tmp`.** gemini and agy (≤1.1.2) are **workspace-sandboxed to the repo** — a
    brief / diff / context file handed to them at `/tmp/...` is unreadable (gemini
    errors `Path not in workspace: "/tmp" resolves outside the allowed workspace`;
-   agy ≤1.1.2 the same). **In the 1.1.3-era soft-deny window the skip-perms
-   gate voided that OS-ring (agy could read `/tmp`); whether the ring
-   re-enforces on current 1.1.7-class builds is UNVERIFIED** — keep the repo-relative convention
+   agy ≤1.1.2 the same). **The 1.1.3-era soft-deny window voided that OS-ring,
+   and a 2026-07-25 probe on 1.1.7 read a `/tmp` canary under
+   `--sandbox read-only` — so agy CAN read outside its cwd on current builds
+   too** — keep the repo-relative convention
    anyway (it is required for gemini and keeps every leg uniform). Put every
    review-context file inside a helper-managed packet dir
    under the gitignored `_runs/review/` — NEVER at a bare `_shared/<name>.md`
@@ -515,8 +517,10 @@ the lab's standing cross-family review rule.
    `PROMPT)"`: the heredoc is literal, so that inner `$(...)` is NOT expanded
    and codex receives the uninterpreted string `$(cat ...)`. (The outer heredoc
    shape itself stays valid for a literal prompt body — the sibling dispatch
-   skills' Step 1 uses exactly that.) (gemini / agy (≤1.1.2 — agy ≥1.1.3's
-   OS-ring is voided by skip-perms, rule 8) are
+   skills' Step 1 uses exactly that.) (gemini / agy (the 1.1.3-era window
+   voided agy's OS-ring via skip-perms — and a 1.1.7 probe read `/tmp`
+   under read-only, so treat the ring as NOT containing paths on current
+   builds either, rule 8) are
    workspace-sandboxed and DO read a repo-relative `_runs/review/` packet file per rule 8, so
    inlining is a codex-leg requirement, not a universal one — though inlining a
    small packet works for every leg.) For a LARGE diff (rule 8's large-packet
@@ -751,8 +755,9 @@ the lab's standing cross-family review rule.
    triage per rule 14) —
    — OR, for a blocking finding the owner accepted (`accepted-residual`,
    rule 4 path iii), that recorded decision RELEASES the verdict it sits
-   behind, so a standing non-SAFE verdict resting only on
-   owner-accepted rows does not block —
+   behind, so a standing non-SAFE verdict that carries at least ONE
+   extractable finding and rests only on owner-accepted rows does not
+   block (a no-findings non-SAFE leg stays INVALID, as above) —
    AND no unresolved BLOCKING residual (a blocking row in
    `residuals.md` still at `open` or `fix-ordered`; `fix-cleared`,
    `probe-refuted`, and `accepted-residual` release) AND every rule-14

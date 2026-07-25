@@ -138,10 +138,12 @@ vendor re-fix retired:
    Probe-CONFIRMED CLOSED on 1.1.7 (`write_file` + `command` both denied).
 2. *BY DESIGN, on every build including enforcing ones:* the deny set covers
    write/exec/mcp — `read_file` and `read_url`/`search_web` are deliberately
-   NEVER denied (the search leg needs them). So the leg can read ANY file the
-   user can read, including OUTSIDE `--cwd` (`~/.ssh`, tokens), and ship it
-   out over the network. Probe-CONFIRMED PRESENT on 1.1.7 (2026-07-25: `/tmp`
-   canary read + live URL fetch under `--sandbox read-only --cwd <dir>`).
+   NEVER denied (deny-set inspection; the search leg needs them). So the leg
+   can read ANY file the user can read, including OUTSIDE `--cwd` (`~/.ssh`,
+   tokens), and ship it out over the network. Probe-CONFIRMED PRESENT on
+   1.1.7 for `read_file` + `read_url` (2026-07-25: `/tmp` canary read + live
+   URL fetch under `--sandbox read-only --cwd <dir>`); `search_web` rides the
+   same never-denied action but was not itself probed.
 Because this leg ingests UNTRUSTED review content (a prompt-injection
 surface), a strict deployment that cannot accept residual (2) must run the
 dispatch inside an EXTERNAL fs-scoped + network-denied OS sandbox —

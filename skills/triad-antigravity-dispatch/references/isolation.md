@@ -21,16 +21,20 @@ diagnosing a settings-transaction failure.
 > auto-approved. So on ≥1.1.3 the "enforced read-only worker" language in this
 > file describes only ≤1.1.2. (Note the floor OVER-applies: even a future
 > ≥1.1.3 release that restores the allow-list still trips the gate until a
-> human narrows the floor.) On ≥1.1.3 the leg is read-only by INTENT, not
-> enforcement; the owner-accepted residual of THAT window = agy can run a
+> human narrows the floor.) IN THAT WINDOW the leg was read-only by INTENT,
+> not enforcement (current builds re-enforce — see the UPDATE above);
+> the owner-accepted residual of THAT window = agy can run a
 > `command` that reads sensitive files OUTSIDE `--cwd` (`~/.ssh`, tokens) —
 > closed again on enforcing builds. **Independent of this window, a
 > read/exfiltration residual survives BY DESIGN on every build:** `read_file`
-> and `read_url`/`search_web` are never denied, so the leg can read any
-> user-readable file (outside `--cwd` included) and send it over the network
-> — probe-CONFIRMED on 1.1.7. `AGY_NO_HEADLESS_AUTOAPPROVE=1` does NOT close
+> and `read_url`/`search_web` are never denied (deny-set inspection), so the
+> leg can read any user-readable file (outside `--cwd` included) and send it
+> over the network — probe-CONFIRMED on 1.1.7 for `read_file` + `read_url`
+> (the `search_web` leg of the same action is unprobed). `AGY_NO_HEADLESS_AUTOAPPROVE=1` does NOT close
 > that; only an EXTERNAL fs-scoped + network-denied OS sandbox does. Full
-> caveat: SKILL's § Headless soft-deny adaptation.
+> caveat: SKILL's § Headless soft-deny adaptation. Still OWED on current
+> builds: `execute_url(...)`, `mcp(...)`, and `unsandboxed(*)` (the probe's
+> `run_command` cannot show which of `command`/`unsandboxed` agy requested).
 
 **agy tool → permission action map** — re-confirm against your installed agy with
 `agy -p "list your built-in tools and their permission actions"`. The write path
