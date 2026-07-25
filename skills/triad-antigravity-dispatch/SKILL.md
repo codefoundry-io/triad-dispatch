@@ -131,14 +131,22 @@ dispatch has **NO enforced containment** — it is read-only by **INTENT** only
 (the review prompt + disposable `--cwd` + leader verification).
 
 **What the disposable `--cwd` does NOT contain** (owner-accepted residual for
-the review use case, 2026-07-18): the `--cwd` bounds only where mutation is
-*expected*; under skip-perms agy can also (a) run a `command` that reads
-sensitive files OUTSIDE `--cwd` (`~/.ssh`, tokens) and (b) exfiltrate over the
-network. Because this leg ingests UNTRUSTED review content (a prompt-injection
-surface), a strict deployment that cannot accept that residual must either set
-`AGY_NO_HEADLESS_AUTOAPPROVE=1` (agy stays unusable headless) or run the ≥1.1.3
-agy dispatch inside an EXTERNAL fs-scoped + network-denied OS sandbox. On ≤1.1.2
-the deny transaction still enforces and this residual does not apply.
+the review use case, 2026-07-18) — TWO distinct causes, only one of which the
+vendor re-fix retired:
+1. *Soft-deny window only (1.1.3-era):* under skip-perms agy could also run a
+   `command` that reads sensitive files outside `--cwd` and write anywhere.
+   Probe-CONFIRMED CLOSED on 1.1.7 (`write_file` + `command` both denied).
+2. *BY DESIGN, on every build including enforcing ones:* the deny set covers
+   write/exec/mcp — `read_file` and `read_url`/`search_web` are deliberately
+   NEVER denied (the search leg needs them). So the leg can read ANY file the
+   user can read, including OUTSIDE `--cwd` (`~/.ssh`, tokens), and ship it
+   out over the network. Probe-CONFIRMED PRESENT on 1.1.7 (2026-07-25: `/tmp`
+   canary read + live URL fetch under `--sandbox read-only --cwd <dir>`).
+Because this leg ingests UNTRUSTED review content (a prompt-injection
+surface), a strict deployment that cannot accept residual (2) must run the
+dispatch inside an EXTERNAL fs-scoped + network-denied OS sandbox —
+`AGY_NO_HEADLESS_AUTOAPPROVE=1` addresses only residual (1) and does NOT
+close (2).
 
 ## Isolation — per-call deny transaction (codex parity)
 
@@ -146,7 +154,10 @@ the deny transaction still enforces and this residual does not apply.
 transaction (`_agy_settings.agy_settings_guard`): the wrapper merges
 `permissions.deny` into `~/.gemini/antigravity-cli/settings.json`, runs agy, then
 byte-exactly restores (flock-serialized state transitions, `.agybak` crash
-sentinel). **On agy ≥1.1.3 this is neutered by the skip-perms gate above — see
+sentinel). **In the 1.1.3-era soft-deny window this was neutered by the
+skip-perms gate above; current builds re-enforce `write_file` + `command`
+(1.1.7 differential probes 2026-07-25) — `execute_url`/`mcp`/OS-ring stay
+INTENT until spiked — see
 the caveat.** Identical **read-only** transactions SHARE the active deny lease via
 a holder registry (per-holder flock liveness files), so concurrent read-only agy
 dispatches are safe; the permissive (no `--sandbox`) baseline stays exclusive.
@@ -280,7 +291,7 @@ for it.
 |---|---|
 | `ok` (0) | Return wrapper stdout (agy's final answer text). |
 | terminal (65) — cli-subscription-cap / token-limit / oauth-env / config-conflict / vendor-error | Surface to user with cause (re-login / quota daily reset / prompt size too large / settings deny-transaction failed: lock-lease timeout or corrupt `~/.gemini/antigravity-cli/settings.json` / vendor-error: agy exited rc≠0 yet produced a non-empty answer — the answer is NOT on stdout but IS preserved in the run-log + agy transcript; inspect it there and decide re-dispatch vs accept, P4 rc gate 2026-07-11). **NOT** repair-agent territory (already matched — only `unknown` / `extraction-error` / `timeout` route to repair; `vendor-error` is driver-emitted on the answer-present path, which a classifier patch cannot express). |
-| `truncated-answer` (65) | agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB, 2026-07-22 repro) and keeps NO full copy anywhere — the transcript DONE record is capped too, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader remediation: re-dispatch under § Long-answer output-file contract** (agy's `write_file` is NOT subject to the fold — verified 24KB intact). **NOT** repair-agent territory (deterministic vendor behavior on the answer-present path; a classifier patch cannot express it). Retrying the same stdout-shaped dispatch will fold again — do not plain-retry. |
+| `truncated-answer` (65) | agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB, 2026-07-22 repro) and keeps NO full copy anywhere — the transcript DONE record is capped too, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader remediation: re-dispatch under § Long-answer output-file contract** (agy's `write_file` is NOT subject to the fold — verified 24KB intact) — but that contract needs the WRITE-CAPABLE permissive baseline, so it is UNAVAILABLE on a hardened install and FORBIDDEN on the cross-family-review agy leg (rule 7 containment): there, re-dispatch once read-only asking for a COMPACT verdict instead. **NOT** repair-agent territory (deterministic vendor behavior on the answer-present path; a classifier patch cannot express it). Retrying the same stdout-shaped dispatch will fold again — do not plain-retry. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff (cap 2 pty re-runs). |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 8). Spawn it even when you are busy or also surfacing the failure — never skip.** |
 | `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 8).** agy ran but the extractor found no answer (clean output but empty, missing sentinel, vendor refusal text, or a NON-TERMINAL marker — a truncated rc=0 run whose only marker is an early echo; the run-log `extraction_error` field distinguishes `non-terminal-marker` from `no-sentinel`). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
@@ -486,4 +497,4 @@ The leader (not the analyzer) is the only writer to the classifier extension —
 - `agents/agy-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
 - `triad-codex-dispatch` — parallel SKILL for Codex.
 - `triad-gemini-dispatch` — parallel SKILL for Gemini (the enterprise-credential lane).
-- `triad-cross-family-review` — final pre-merge cross-family review (the agy leg here is best-effort non-write; the deny surface is enforced on agy ≤1.1.2 but INTENT-only on ≥1.1.3 — see § Headless soft-deny adaptation + § Isolation).
+- `triad-cross-family-review` — final pre-merge cross-family review (the agy leg here is best-effort non-write; the write/exec deny surface is enforced on ≤1.1.2 and again on current builds, INTENT-only in the 1.1.3-era window — while the by-design read/network residual persists on every build — see § Headless soft-deny adaptation + § Isolation).

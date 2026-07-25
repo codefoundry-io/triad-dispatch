@@ -22,13 +22,15 @@ diagnosing a settings-transaction failure.
 > file describes only ≤1.1.2. (Note the floor OVER-applies: even a future
 > ≥1.1.3 release that restores the allow-list still trips the gate until a
 > human narrows the floor.) On ≥1.1.3 the leg is read-only by INTENT, not
-> enforcement; the owner-accepted residual = agy can run a `command` that reads
-> sensitive files OUTSIDE `--cwd` (`~/.ssh`, tokens) and exfiltrate over the
-> network — the disposable `--cwd` does NOT contain either. A strict deployment
-> that cannot accept that residual must EITHER set `AGY_NO_HEADLESS_AUTOAPPROVE=1`
-> (keeps the deny model; agy then unusable headless) OR run the ≥1.1.3 dispatch
-> inside an EXTERNAL fs-scoped + network-denied OS sandbox. Full caveat: SKILL's
-> § Headless soft-deny adaptation.
+> enforcement; the owner-accepted residual of THAT window = agy can run a
+> `command` that reads sensitive files OUTSIDE `--cwd` (`~/.ssh`, tokens) —
+> closed again on enforcing builds. **Independent of this window, a
+> read/exfiltration residual survives BY DESIGN on every build:** `read_file`
+> and `read_url`/`search_web` are never denied, so the leg can read any
+> user-readable file (outside `--cwd` included) and send it over the network
+> — probe-CONFIRMED on 1.1.7. `AGY_NO_HEADLESS_AUTOAPPROVE=1` does NOT close
+> that; only an EXTERNAL fs-scoped + network-denied OS sandbox does. Full
+> caveat: SKILL's § Headless soft-deny adaptation.
 
 **agy tool → permission action map** — re-confirm against your installed agy with
 `agy -p "list your built-in tools and their permission actions"`. The write path
@@ -81,9 +83,11 @@ transaction ever leaves allowed (§ Routing).
   blocked — this is strong fs-write isolation for the *known* agy tool surface,
   not OS-level process isolation. Treat the agy read-only leg of
   `triad-cross-family-review` as an enforced read-only worker for the proven
-  write path **on agy ≤1.1.2 only** (on ≥1.1.3 the skip-perms gate voids this —
-  see the top banner); the owner's manual e2e should ALSO attempt a `command(...)` and an
-  `mcp(...)` mutation to confirm those denies on the live build.
+  write path **on agy ≤1.1.2 AND on current builds** — `write_file` and
+  `command` are both probe-CONFIRMED denied on 1.1.7 (differential probes
+  2026-07-25); only the 1.1.3-era soft-deny window voided this (see the
+  UPDATE banner at the top). Still OWED on current builds: an
+  `execute_url(...)` and an `mcp(...)` attempt to confirm those two denies.
 - omitted — no deny transaction; the owner's permissive global baseline is left
   intact (the call still acquires the lock + heals a stale `.agybak`, see below).
 

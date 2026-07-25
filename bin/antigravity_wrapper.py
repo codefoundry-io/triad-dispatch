@@ -150,7 +150,9 @@ def _is_headless_softdeny(text) -> bool:
 # and unrecoverable at this layer. Own-line anchor keeps a mid-sentence QUOTE
 # of the marker from tripping the gate (observed folds are always own-line).
 # Loophole route: agy's write_file is NOT subject to the fold (verified: 24KB
-# file intact) -> the SKILL's absolute-path output-file contract.
+# file intact) -> the SKILL's absolute-path output-file contract, which needs
+# the write-capable permissive baseline (unavailable on a hardened install and
+# forbidden on the cross-family-review leg -> compact re-dispatch there).
 _AGY_TRUNCATION_MARKER_RE = re.compile(r"(?m)^[ \t]*<truncated \d+ (?:bytes|lines)>[ \t]*$")
 
 

@@ -193,11 +193,19 @@ the lab's standing cross-family review rule.
    `--sandbox` OS-ring share the same mechanism but are NOT each
    individually probed on current builds — treat those as INTENT until
    spiked**,
-   because the wrapper's headless soft-deny adaptation inserts
-   `--dangerously-skip-permissions`, which voids the deny transaction + OS-ring
-   so the agy leg can read outside `--cwd` / exfiltrate over the network when
-   fed an adversarial packet; see `triad-antigravity-dispatch` § Headless
-   soft-deny adaptation, opt-out `AGY_NO_HEADLESS_AUTOAPPROVE=1`). The `Agent` tool exposes NO per-call `tools`
+   (in the 1.1.3-era window the wrapper's inserted
+   `--dangerously-skip-permissions` voided the whole deny transaction + OS-ring).
+   **A read/exfiltration residual survives on ENFORCING builds too, by
+   design, not by the skip-perms void:** `read_file` and `read_url` are
+   never denied (the deny set covers write/exec/mcp only), so an
+   adversarial packet can still make the leg read OUTSIDE `--cwd` and
+   ship data out over the network — probe-CONFIRMED on 1.1.7
+   (2026-07-25: read of a `/tmp` canary + live URL fetch under
+   `--sandbox read-only --cwd <packet dir>`). A deployment that cannot
+   accept that must run the leg inside an EXTERNAL fs-scoped +
+   network-denied OS sandbox; `AGY_NO_HEADLESS_AUTOAPPROVE=1` does NOT
+   close it. See `triad-antigravity-dispatch` § Headless
+   soft-deny adaptation. The `Agent` tool exposes NO per-call `tools`
    allowlist, so a plain `subagent_type: general-purpose` Agent would fall back to the
    advisory prompt directive — the dedicated agent whose frontmatter PINS the allowlist
    is the mechanism. (In the shipped claude-host plugin the export rewrites this to the
@@ -353,7 +361,7 @@ the lab's standing cross-family review rule.
    point: one may catch what the others miss — each family tends to catch a
    different class of issue (an extractor bug, a classifier false-positive, a
    config/safety gap), with little overlap.
-5. **Fix→re-confirm loop, with a round budget.** Findings → fix each (own
+5. **Fix→re-confirm loop, no round cap — stops are evidence-based.** Findings → fix each (own
    implementer + per-fix review) → RE-RUN the 3-way on the fixed branch. A
    first-pass DO-NOT-MERGE addressed by a FIX is only closed by a
    re-confirm pass, not by the leader asserting it's fixed (a finding
@@ -644,6 +652,9 @@ the lab's standing cross-family review rule.
     probe-refuted | accepted-residual). A row moves to `fix-cleared`
     when the re-confirm pass clears its fix (rule 4 path ii) and to
     `probe-refuted` when a recorded rule-4a probe refutes it (path i);
+    a fix that is APPLIED but not yet re-confirmed stays `fix-ordered`
+    (never `fix-cleared (pending …)` — that would release the gate on a
+    leader assertion);
     rows are UPDATED, never deleted — the table is audit history.
     `accepted-residual` is set ONLY by a recorded owner decision
     (rule 4 path iii) — never leader-assigned.
@@ -660,8 +671,11 @@ the lab's standing cross-family review rule.
     the next round's reviewers correctly decline to re-raise is NOT a
     release (rule 4's three release paths are exhaustive). Before
     `close`-ing the packet dir (Flow 1), copy the residual table WITH
-    dispositions to a durable record — the commit/PR body or a docs/
-    ledger — because packet close DELETES the dir.
+    dispositions to a durable record — the COMPLETE table (every row and
+    disposition, not a summary) at
+    `docs/reviews/<UTC-date>-<slug>-residuals.md`, with the commit body
+    carrying a pointer to it plus the load-bearing rows — because packet
+    close DELETES the dir.
     **Reviewer-side instruction (add to every leg's prompt, alongside
     rule 11):** report every finding (coverage first — rule 11's
     no-severity-DEFLATION stands), but no severity INFLATION either: for
@@ -735,6 +749,10 @@ the lab's standing cross-family review rule.
    where a MERGE WITH FIXES whose findings are ALL non-blocking does
    not block merge (rule 4's severity axis governs; its findings still
    triage per rule 14) —
+   — OR, for a blocking finding the owner accepted (`accepted-residual`,
+   rule 4 path iii), that recorded decision RELEASES the verdict it sits
+   behind, so a standing non-SAFE verdict resting only on
+   owner-accepted rows does not block —
    AND no unresolved BLOCKING residual (a blocking row in
    `residuals.md` still at `open` or `fix-ordered`; `fix-cleared`,
    `probe-refuted`, and `accepted-residual` release) AND every rule-14
