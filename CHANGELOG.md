@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.531 — 2026-07-25
+## 0.2.534 — 2026-07-30
 
 **agy `truncated-answer` gate — long answers are no longer silently lossy.**
 agy folds a long chat answer MID-BODY at a ~4KB cap (own-line

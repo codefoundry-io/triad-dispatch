@@ -122,13 +122,19 @@ This is the ONLY internal caller of the danger flag; user argv can never supply
 it (argparse defines no such option).
 
 **ISOLATION CAVEAT (must understand before relying on `--sandbox`):**
-`--dangerously-skip-permissions` **VOIDS the deny transaction AND agy's own
-`--sandbox` OS-ring** (agy issue #36) — under it agy auto-approves ALL tools:
-`write_file`, `command` (arbitrary shell), and network (`read_url`/`search_web`
-+ any URL/MCP reach). Deny>Allow no longer holds (verified: a write BREACH file
-was created under deny+skip-perms). So on agy ≥1.1.3 a `--sandbox read-only`
-dispatch has **NO enforced containment** — it is read-only by **INTENT** only
-(the review prompt + disposable `--cwd` + leader verification).
+In the **1.1.3-era soft-deny window** `--dangerously-skip-permissions`
+**VOIDED the deny transaction AND agy's own `--sandbox` OS-ring** (agy issue
+#36) — agy auto-approved ALL tools: `write_file`, `command` (arbitrary
+shell), and network. Deny>Allow no longer held (verified: a write BREACH file
+was created under deny+skip-perms), so a `--sandbox read-only` dispatch THERE
+had **NO enforced containment** — read-only by **INTENT** only.
+**Current builds re-enforce the write/exec half** (1.1.7 differential probes
+2026-07-25: `write_file` + `command` DENIED). What NO build contains is the
+read/network half — `read_file` and `read_url`/`search_web` are never denied
+by design, probe-confirmed reading across the `--cwd` boundary and fetching a
+live URL on 1.1.7. So the standing posture on current builds = write/exec
+mechanically denied, reads + network open; the review prompt + disposable
+`--cwd` + leader verification remain the only bound on the latter.
 
 **What the disposable `--cwd` does NOT contain** (owner-accepted residual for
 the review use case, 2026-07-18) — TWO distinct causes, only one of which the
@@ -206,7 +212,7 @@ form ("Gemini 3.1 Pro (High)") is no longer listed by current agy builds.
 4. **Repair agent ONLY on `unknown` / `extraction-error` / `timeout`.** Every other classification carries actionable meaning at the wrapper layer — dispatching the agent on them wastes the call.
 5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. Reasoning: any test framing leaks into the vendor model's behavior and corrupts both the sample and the repair agent's accumulated memory.
 6. **No model name pinning.** agy model names rot every few weeks. Use the vendor default by default; `--model <name>` only when the user explicitly named the model. Date-anchor any pinned model usage.
-7. **Never `--dangerously-*` from user argv.** argparse defines no such option, so a caller can never supply it. ONE scoped internal exception (owner-authorized 2026-07-18): the wrapper itself inserts `--dangerously-skip-permissions` when `agy --version` ≥ 1.1.3, because that vendor release made headless tools unusable otherwise (§ Headless soft-deny adaptation). It voids the deny transaction (documented caveat there); opt out with `AGY_NO_HEADLESS_AUTOAPPROVE=1`. No OTHER `--dangerously-*` / `--yolo` is ever used.
+7. **Never `--dangerously-*` from user argv.** argparse defines no such option, so a caller can never supply it. ONE scoped internal exception (owner-authorized 2026-07-18): the wrapper itself inserts `--dangerously-skip-permissions` when `agy --version` ≥ 1.1.3, because that vendor release made headless tools unusable otherwise (§ Headless soft-deny adaptation). In the 1.1.3-era window it voided the deny transaction; current builds re-enforce write/exec while reads/network stay open by design (documented caveat there); opt out with `AGY_NO_HEADLESS_AUTOAPPROVE=1`. No OTHER `--dangerously-*` / `--yolo` is ever used.
 8. **Always spawn the repair agent in parallel — surfacing a failure is not repairing it.** When Step 4 routes a failure (`unknown` / `extraction-error` / `timeout`), spawn the `agy-wrapper-repair` sub-agent with the `Agent` tool's `run_in_background: true`, so it runs alongside your foreground work; parse its inline proposal (Step 5c), apply it, and clean up (Step 5d) when it completes. The payoff is future routing, not this call — the analyzer grows the classifier so the same vendor error auto-routes next time, so a skipped spawn is a silent regression that keeps the error failing un-routed. Reporting the failure to the user is a separate obligation and does not discharge this one. Mechanism: the agent is a read-only analyzer that returns a JSON patch proposal; the leader applies it via the deterministic `apply_patch.py` (no LLM on the write path) and re-runs `--repair-mode` to verify routing. Rule 4 scopes *which* classes route here; this rule says always follow through when they do.
 
 ## Flow
