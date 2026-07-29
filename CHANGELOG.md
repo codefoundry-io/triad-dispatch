@@ -1,17 +1,29 @@
 # Changelog
 
-## 0.2.534 — 2026-07-30
+## 0.2.538 — 2026-07-30
 
-**agy `truncated-answer` gate — long answers are no longer silently lossy.**
-agy folds a long chat answer MID-BODY at a ~4KB cap (own-line
-`<truncated N bytes|lines>` marker) and keeps no full copy anywhere —
-its own transcript record is capped too, so the folded text is
-unrecoverable. The wrapper now detects the own-line marker on the
-answer-present rc=0 path and returns terminal `truncated-answer` (65)
-with the lossy answer quarantined from stdout (bounded run-log copy),
-instead of a silent ok; the antigravity dispatch skill gains a
-§ Long-answer output-file contract (absolute-path `write_file` is
-fold-exempt — verified 24KB intact) for review-leg-sized answers.
+**Review model-tier policy — cross-family review v0.19.0.** Review
+legs now run xhigh-class depth by DEFAULT; max-class depth is an
+ESCALATION reserved for rounds the leader designates very-important
+AND algorithmically complex. The claude fresh-eye leg pins
+`model: opus` + `effort: xhigh` in the reviewer agent's frontmatter
+(previously unpinned — it silently inherited the leader's session
+model), and a new sibling agent `cross-family-review-reviewer-max`
+(identical body, `effort: max`) is the escalation mechanism, because
+effort is frontmatter-fixed with no per-invocation override. The
+codex leg defaults to `--reasoning xhigh` with `--reasoning max` on
+escalation (`ultra` stays banned); the Google leg is unchanged
+(`gemini-3.1-pro-high`). Basis: Opus 5 official effort guidance —
+xhigh for demanding coding/agentic work, max only when unconstrained
+spend is justified.
+
+_(Prior release — **agy `truncated-answer` gate**: agy folds a long
+chat answer mid-body at a ~4KB cap and keeps no full copy; the
+wrapper detects the own-line marker on the answer-present rc=0 path
+and returns terminal `truncated-answer` (65) with the lossy answer
+quarantined from stdout, and the antigravity dispatch skill gains a
+§ Long-answer output-file contract — absolute-path `write_file` is
+fold-exempt, verified 24KB intact.)_
 
 _(Prior release — **cross-family review v0.17.0, CONFLICTED verdicts
 call the owner**: a head-on same-decision contradiction between legs,
@@ -19,10 +31,6 @@ both sides surviving the deterministic fact-check probe, triggers an
 immediate owner call instead of leader-side compromise; probe-refuted
 sides, complementary findings, and same-defect convergence remain
 non-conflicts.)_
-
-_(Prior release 0.2.524 — **claude worker `--model` dispatch-time
-selection**: `claude_wrapper.py` accepts `--model <alias-or-name>`,
-free string, never pinned in code; `--effort` already wired.)_
 
 **Review orchestration discipline** (from an earlier release's
 hardened-audit custody + agy extraction strictness + review-packet

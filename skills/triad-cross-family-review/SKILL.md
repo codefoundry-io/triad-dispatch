@@ -1,8 +1,27 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.18.0
+version: 0.19.0
 # changelog:
+#   0.19.0 (2026-07-30): owner model-tier policy — review legs run xhigh-class
+#     depth by DEFAULT; max-class ONLY on rounds the leader designates
+#     very-important AND algorithmically complex. fable is OUT of the review
+#     rotation entirely (too heavy/slow for review wall-clock; Opus 5 official
+#     effort guidance: xhigh for demanding coding/agentic work, max only when
+#     unconstrained spend is justified). claude leg = the dedicated agent's
+#     frontmatter `model: opus` + `effort: xhigh` (no longer "strongest
+#     available tier" via session-model inheritance, which silently ran the
+#     leader's session model — e.g. fable); escalation = new sibling agent
+#     `cross-family-review-reviewer-max` (identical body, `effort: max`) —
+#     effort is frontmatter-fixed with no per-invocation override, so a
+#     separate definition is the only deterministic per-round escalation.
+#     codex leg = `--reasoning xhigh` default (partial revert of the earlier
+#     xhigh→max bump; evidence: a LARGE packet at max exhausted 900s with no
+#     verdict) with `--reasoning max` escalation under the same designation;
+#     ultra stays banned. Google leg unchanged (gemini-3.1-pro-high remains
+#     the deepest catalog selector; the 3.6 line is flash-only as of this
+#     entry). Agent definitions are session-start snapshots — frontmatter
+#     changes take effect from the NEXT session.
 #   0.18.0 (2026-07-25): owner directive — finding triage & over-design
 #     containment (new Hard rule 14, wired into rules 4/5 + Flow + a
 #     failure-modes row). The fix→re-confirm loop structurally rewards ADDING
@@ -273,9 +292,12 @@ the lab's standing cross-family review rule.
    inherit the leader's framing; cross-family + fresh-eye is what breaks the
    monoculture.
 
-   **MAX reasoning on EVERY leg.** The pre-merge
-   gate is high-stakes, so each reviewer runs at its family's TOP reasoning tier
-   — a shallow reviewer rubber-stamps. The tier is necessary but NOT sufficient:
+   **DEEP reasoning on EVERY leg — xhigh-class default, max-class by
+   designation.** The pre-merge gate is high-stakes, so each reviewer runs at
+   its family's xhigh-class review tier (owner model-tier policy: one below
+   the family top — a shallow reviewer rubber-stamps, while the unconstrained
+   top tier is reserved for rounds the leader designates very-important AND
+   algorithmically complex). The tier is necessary but NOT sufficient:
    every leg ALSO needs rule 11's adversarial anti-rubber-stamp framing (a leg at its
    top tier still rubber-stamps when merely asked to "check if this looks fine"):
    - **agy (Google leg):** when `GOOGLE_REVIEW_MODEL` is non-empty, the dispatch
@@ -287,23 +309,32 @@ the lab's standing cross-family review rule.
      otherwise run the CLI default and log that the review tier is unpinned — an
      unpinned-default gemini leg is ADVISORY for gating, like the agy fallback
      above.
-   - **codex:** `--reasoning max` — the wrapper's MAX tier (`codex debug models`
-     lists `low/medium/high/xhigh/max/ultra`; the wrapper exposes up to `max`, the
-     deepest non-delegating tier — so the codex leg reviews at full depth, not a
-     shallow rubber-stamp). `ultra` is NOT used — it self-delegates subagents
+   - **codex:** `--reasoning xhigh` — the DEFAULT review tier (owner model-tier
+     policy: deep, but one below the family top). Escalate to `--reasoning max`
+     (the deepest non-delegating tier) ONLY on a round the leader designates
+     very-important AND algorithmically complex — and at max a LARGE packet has
+     exhausted 900s with no verdict, so max also demands the rule-7
+     large-packet timeout. `ultra` is NOT used — it self-delegates subagents
      (runaway/over-long) and not every model variant supports it. Plus `--search`
-     (live web-grounding; see rule 9 example). If a future codex CLI rejects `max`,
-     fall back to `xhigh` → `high` + log.
-   - **claude fresh-eye `Agent`:** the strongest available Claude tier (set it via
-     the `Agent` tool's model parameter where the harness exposes one) + an
-     explicit **max-thinking** directive in
-     the prompt ("Think as hard as you can / ultrathink before answering"). The
-     `Agent` tool exposes no effort flag, so beyond model choice the depth lever is the PROMPT —
-     instruct deep, adversarial reasoning (rule 10). Without it the claude leg
-     under-reasons and rubber-stamps.
-   A FOCUSED sub-500-line packet may run one tier below the family MAX
-   where wall-clock matters (owner pace policy) — the anti-rubber-stamp
-   mechanism is rule 11's framing, not the tier alone. This allowance
+     (live web-grounding; see rule 9 example). If the CLI rejects the chosen
+     tier, fall back one step (`max` → `xhigh` → `high`) + log.
+   - **claude fresh-eye `Agent`:** `subagent_type: triad-dispatch:cross-family-review-reviewer`,
+     whose frontmatter pins `model: opus` + `effort: xhigh` (owner model-tier
+     policy — do NOT leave the model to session inheritance: an unpinned agent
+     inherits the leader's SESSION model, silently running a heavier tier such
+     as fable, which is OUT of the review rotation). Escalation for a
+     very-important AND algorithmically complex round =
+     `subagent_type: triad-dispatch:cross-family-review-reviewer-max` (identical body,
+     `effort: max`; effort is frontmatter-fixed with no per-invocation
+     override, so the sibling definition IS the escalation mechanism). Either
+     way, add the explicit **max-thinking** directive in the prompt ("Think as
+     hard as you can / ultrathink before answering") — the depth levers are
+     frontmatter effort + the PROMPT (rule 10). Without the directive the
+     claude leg under-reasons and rubber-stamps.
+   The xhigh-class default IS the pace policy: the anti-rubber-stamp
+   mechanism is rule 11's framing, not the tier alone, and max-class depth
+   is an ESCALATION the leader designates (both deep legs escalate
+   together: codex `--reasoning max` + the `-max` claude agent). This
    concerns the REASONING/MODEL tier only: rule 10's max-thinking PROMPT
    directive on the claude leg stays unconditional at every tier.
    Cost note: the Gemini thinking tier is API-billed (not subscription-covered);
@@ -508,8 +539,9 @@ the lab's standing cross-family review rule.
    # --timeout 900 fits a focused packet, LARGE packet → 1500 (rule 7):
    review_body=/path/to/review-body.txt
    codex_wrapper.py --sandbox read-only \
-     --reasoning max --search --timeout 900 \
+     --reasoning xhigh --search --timeout 900 \
      --prompt "$(cat -- "$review_body")"     # <-- substitution fires here
+   # (--reasoning max only on a designated escalation round — rule 1)
    ```
 
    NEVER place `$(cat body.txt)` inside a single-quoted heredoc BODY — i.e.
@@ -548,8 +580,8 @@ the lab's standing cross-family review rule.
     returns SAFE but a vendor leg returns must-fix, treat it as a signal the claude
     prompt under-reasoned, and sharpen it next round.
 11. **Adversarial anti-rubber-stamp framing on EVERY leg, not just claude.**
-    MAX reasoning tier (rule 1) is necessary but NOT sufficient — a leg at
-    its top tier still rubber-stamps when the prompt only asks it to "check if this looks
+    The rule-1 review tier is necessary but NOT sufficient — a leg at
+    its deepest tier still rubber-stamps when the prompt only asks it to "check if this looks
     fine". So apply rule 10's adversarial framing (assume a defect is present; no
     severity-deflation) to the codex and agy legs too, and additionally require every leg
     to (a) ENUMERATE which criteria/rules it checked before concluding and (b) treat a
@@ -717,12 +749,15 @@ the lab's standing cross-family review rule.
    leg reads only that, codex inlines the same focused body. At review end,
    `… close <packet-dir>` (rule 8 lifecycle).
 2. Resolve the Google-family leg (Hard rule 1 snippet), then dispatch the
-   reviewers in parallel, each at its family's MAX reasoning (rule 1) — `Agent`
+   reviewers in parallel, each at its family's DEFAULT review tier (rule 1 —
+   xhigh-class; max-class only on a designated escalation round) — `Agent`
    with `subagent_type: triad-dispatch:cross-family-review-reviewer` (the dedicated read-only
-   reviewer agent, frontmatter `tools: Read, Grep, Glob` per rules 1a/10; claude
-   fresh-eye at the strongest available Claude tier via the Agent model
-   parameter; max-thinking/adversarial prompt per rule 10) +
-   `triad-codex-dispatch` (codex `--reasoning max --search`) + the resolved
+   reviewer agent, frontmatter `tools: Read, Grep, Glob` + `model: opus` +
+   `effort: xhigh` per rules 1a/10; escalation round →
+   `subagent_type: triad-dispatch:cross-family-review-reviewer-max`; max-thinking/adversarial
+   prompt per rule 10) +
+   `triad-codex-dispatch` (codex `--reasoning xhigh --search`; escalation
+   round → `--reasoning max`) + the resolved
    Google leg (`triad-antigravity-dispatch`, passing `--sandbox read-only`
    — the leg stays read-only for the WHOLE round; never widen it to
    write a long verdict, which would forfeit rule 7's mechanical
@@ -794,7 +829,7 @@ the lab's standing cross-family review rule.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Reviewers all pass a leader blind-spot | claude leg was leader-inline, or suspect framed as fact | Use a fresh-eye Agent; frame as questions (rules 1-2) |
-| claude leg keeps returning SAFE while codex/agy escalate residuals | claude prompt under-reasoned / not adversarial / shallow tier | Max-thinking + adversarial prompt + no severity-deflation (rule 10); legs at family-MAX reasoning (rule 1) |
+| claude leg keeps returning SAFE while codex/agy escalate residuals | claude prompt under-reasoned / not adversarial / shallow tier | Max-thinking + adversarial prompt + no severity-deflation (rule 10); legs at the rule-1 review tier |
 | A vendor leg (codex/agy) returns a fast bare SAFE/none despite MAX tier | Tier was set but the leg got no adversarial framing — it rubber-stamped | Give EVERY leg the rule-11 framing (assume a defect, enumerate checks, reject bare SAFE, no deflation); a sub-30s terse pass on a large packet → re-dispatch adversarially |
 | Merged on 2-of-3 SAFE | Averaged instead of consolidated | ANY Critical/DO-NOT-MERGE blocks (rule 4) |
 | First-pass fixes assumed sufficient | No re-confirm | Re-run the 3-way on the fixed branch (rule 5) |
