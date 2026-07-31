@@ -1,23 +1,34 @@
 # Changelog
 
-## 0.2.578 — 2026-07-31
+## 0.2.587 — 2026-08-01
 
-**agy read-audit digest = durable FILE artifact
-(`TRIAD_READ_AUDIT_FILE`) — cross-family review v0.22.0.** The agy
-wrapper now writes its per-call read-audit digest to a JSON file on
-EVERY completed call (success included — the failure-only run-log
-never covered the review leg's normal case): default
-`_logs/antigravity/read-audit/<UTC-ts>-<pid>-<uuid8>.json` with
-run-log-style prune caps, or the exact path bound via the
-`TRIAD_READ_AUDIT_FILE` env override (caller-owned, never pruned).
-The cross-family review skill's mechanical read-audit gate reads
-that file directly and the whole stderr-parsing surface is retired
-(anchored grep/sed extraction, `AGY_STDERR` binding + truncate
-rules, the separate JSON validity pre-check, and the
-late-append/first-match forgery residuals those rules contained).
-The digest remains evidence that the leg did the reading work, not
-an authenticated control. The antigravity dispatch skill (v0.12.0)
-documents the new `read-audit-file:` stderr line + override.
+**Skill progressive-disclosure split + cross-family hardening —
+cross-family review v0.23.0, antigravity dispatch v0.13.0.** Both
+skill bodies are now lean operating overviews backed by ten
+on-demand `references/*.md` (leg contracts + the read-audit gate,
+packet lifecycle, triage + residual schema, failure modes,
+evidence; isolation, invocation, repair loop, long-answer,
+read-audit) — duplicated rules collapsed to one home each, version
+chronology moved out of live rule text. A 6-leg cross-family
+skill-prompt-review round then drove a hardening pass: the agy
+invocation template's heredoc terminator is collision-resistant
+(a prompt containing a bare terminator line can no longer close
+the heredoc early and execute as shell), the repair-loop run-log
+path check rejects traversal/quote/whitespace shapes before any
+`rm -f` or prompt interpolation, the review skill's degraded-mode
+trigger and codex-inline transport rules are stated unambiguously,
+and the codex `--search` leg gains a dispatch-time sensitivity
+precondition.
+
+_(Prior release — **agy read-audit digest = durable FILE artifact
+(`TRIAD_READ_AUDIT_FILE`), cross-family review v0.22.0**: the agy
+wrapper writes its per-call digest to a JSON file on EVERY
+completed call — default `_logs/antigravity/read-audit/` with
+run-log-style prune caps, or the exact path bound via the env
+override — and the review skill's mechanical read-audit gate reads
+that file directly; the stderr-parsing surface is retired. The
+digest remains evidence of reading work, not an authenticated
+control.)_
 
 _(Prior release 0.2.572 — **agy transport = native stream-json (agy
 >= 1.1.8)**: the pty + completion-sentinel + transcript-scan stack is
@@ -26,13 +37,6 @@ through the shared vendor-child site over `-p --output-format
 stream-json` NDJSON, folds a deterministic read-audit digest from
 `tool_info` events, and gains a native `--json-schema` structured
 output path.)_
-
-_(Prior release — **review model-tier policy, cross-family review
-v0.19.0**: review legs run xhigh-class depth by default; max-class
-depth is an escalation for rounds designated very-important AND
-algorithmically complex — claude via the `effort: max` sibling
-reviewer agent, codex via `--reasoning max` (`ultra` stays
-banned).)_
 
 **Review orchestration discipline** (from an earlier release's
 hardened-audit custody + agy extraction strictness + review-packet
