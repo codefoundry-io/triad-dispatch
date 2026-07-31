@@ -606,6 +606,14 @@ def main() -> int:
         # lines. Escaping them keeps the line single-line by construction.
         _common.log("[wrapper] antigravity read-audit "
                     + json.dumps(r.read_audit, separators=(",", ":")))
+        # Durable file artifact (task-1, 2026-07-31 follow-up): the stderr
+        # line above is a transient operator aid; a review-SKILL-grade
+        # consumer needs a durable, jq-only artifact that exists on the
+        # SUCCESS path too (emit_run_log only writes on failure). Best-effort
+        # — an IO failure here never changes rr.exit_code/classification.
+        read_audit_path = _common.emit_read_audit("antigravity", rr)
+        if read_audit_path is not None:
+            _common.log(f"read-audit-file: {read_audit_path}")
 
     # Canonical 1-line summary — byte-match the format _run_once emits so the
     # dispatch SKILL grep + the parity test see the same shape.

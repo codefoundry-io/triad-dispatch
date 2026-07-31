@@ -1,36 +1,38 @@
 # Changelog
 
-## 0.2.572 — 2026-07-31
+## 0.2.578 — 2026-07-31
 
-**Review model-tier policy — cross-family review v0.19.0.** Review
-legs now run xhigh-class depth by DEFAULT; max-class depth is an
-ESCALATION reserved for rounds the leader designates very-important
-AND algorithmically complex. The claude fresh-eye leg pins
-`model: opus` + `effort: xhigh` in the reviewer agent's frontmatter
-(previously unpinned — it silently inherited the leader's session
-model), and a new sibling agent `cross-family-review-reviewer-max`
-(identical body, `effort: max`) is the escalation mechanism, because
-effort is frontmatter-fixed with no per-invocation override. The
-codex leg defaults to `--reasoning xhigh` with `--reasoning max` on
-escalation (`ultra` stays banned); the Google leg is unchanged
-(`gemini-3.1-pro-high`). Basis: Opus 5 official effort guidance —
-xhigh for demanding coding/agentic work, max only when unconstrained
-spend is justified.
+**agy read-audit digest = durable FILE artifact
+(`TRIAD_READ_AUDIT_FILE`) — cross-family review v0.22.0.** The agy
+wrapper now writes its per-call read-audit digest to a JSON file on
+EVERY completed call (success included — the failure-only run-log
+never covered the review leg's normal case): default
+`_logs/antigravity/read-audit/<UTC-ts>-<pid>-<uuid8>.json` with
+run-log-style prune caps, or the exact path bound via the
+`TRIAD_READ_AUDIT_FILE` env override (caller-owned, never pruned).
+The cross-family review skill's mechanical read-audit gate reads
+that file directly and the whole stderr-parsing surface is retired
+(anchored grep/sed extraction, `AGY_STDERR` binding + truncate
+rules, the separate JSON validity pre-check, and the
+late-append/first-match forgery residuals those rules contained).
+The digest remains evidence that the leg did the reading work, not
+an authenticated control. The antigravity dispatch skill (v0.12.0)
+documents the new `read-audit-file:` stderr line + override.
 
-_(Prior release — **agy `truncated-answer` gate**: agy folds a long
-chat answer mid-body at a ~4KB cap and keeps no full copy; the
-wrapper detects the own-line marker on the answer-present rc=0 path
-and returns terminal `truncated-answer` (65) with the lossy answer
-quarantined from stdout, and the antigravity dispatch skill gains a
-§ Long-answer output-file contract — absolute-path `write_file` is
-fold-exempt, verified 24KB intact.)_
+_(Prior release 0.2.572 — **agy transport = native stream-json (agy
+>= 1.1.8)**: the pty + completion-sentinel + transcript-scan stack is
+deleted behind a fail-closed version floor; the wrapper spawns
+through the shared vendor-child site over `-p --output-format
+stream-json` NDJSON, folds a deterministic read-audit digest from
+`tool_info` events, and gains a native `--json-schema` structured
+output path.)_
 
-_(Prior release — **cross-family review v0.17.0, CONFLICTED verdicts
-call the owner**: a head-on same-decision contradiction between legs,
-both sides surviving the deterministic fact-check probe, triggers an
-immediate owner call instead of leader-side compromise; probe-refuted
-sides, complementary findings, and same-defect convergence remain
-non-conflicts.)_
+_(Prior release — **review model-tier policy, cross-family review
+v0.19.0**: review legs run xhigh-class depth by default; max-class
+depth is an escalation for rounds designated very-important AND
+algorithmically complex — claude via the `effort: max` sibling
+reviewer agent, codex via `--reasoning max` (`ultra` stays
+banned).)_
 
 **Review orchestration discipline** (from an earlier release's
 hardened-audit custody + agy extraction strictness + review-packet

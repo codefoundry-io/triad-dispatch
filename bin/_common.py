@@ -2821,15 +2821,29 @@ def emit_run_log(
     return path
 
 
-def _prune_run_logs(runs_dir: Path, preserve: Optional[Path] = None) -> None:
-    """Best-effort prune: enforce file count + total byte caps.
+def _prune_dir_by_caps(
+    dir_path: Path,
+    max_files: int,
+    max_bytes: int,
+    preserve: Optional[Path],
+    glob_patterns: tuple[str, ...],
+) -> None:
+    """Shared oldest-first prune-by-cap logic (file count + total bytes).
+
+    Factored out of the original run-log-only implementation (task-1,
+    2026-07-31 read-audit durable-artifact follow-up) so the read-audit
+    digest dir (`emit_read_audit`) can reuse the exact same race-tolerant
+    algorithm instead of a parallel copy. Callers pass their OWN cap
+    constants read at call time (never bound as function defaults), so a
+    test that reassigns e.g. `_RUN_LOG_MAX_FILES` on the module still takes
+    effect on the next call.
 
     Race-tolerant — parallel writes that all hit the cap may all attempt to
     prune; duplicate unlink attempts are absorbed by try/except. Worst case =
-    slight over-prune. `preserve` (L6 twin→SoT port, 2026-07-05) is never
-    deleted by this writer: a single large fresh run-log IS the current
-    call's repair IPC and must survive even when it alone exceeds the byte
-    cap (mtime order alone did not protect the only-file case).
+    slight over-prune. `preserve` is never deleted by this writer: a single
+    large fresh artifact IS the current call's own IPC and must survive even
+    when it alone exceeds the byte cap (mtime order alone did not protect
+    the only-file case).
     """
     preserve_resolved = preserve.resolve(strict=False) if preserve else None
     # Race-resilient listing: a concurrent unlink (or a dangling symlink) makes
@@ -2837,7 +2851,9 @@ def _prune_run_logs(runs_dir: Path, preserve: Optional[Path] = None) -> None:
     # entry that vanishes — a single bad entry must NOT abort the whole prune
     # (the previous `sorted(..., key=p.stat)` form aborted on the first OSError).
     try:
-        entries = list(runs_dir.glob("*.json")) + list(runs_dir.glob("*.prompt.tmp"))
+        entries: list[Path] = []
+        for pat in glob_patterns:
+            entries.extend(dir_path.glob(pat))
     except Exception:
         return
     pairs: list[tuple[Path, float]] = []
@@ -2848,7 +2864,7 @@ def _prune_run_logs(runs_dir: Path, preserve: Optional[Path] = None) -> None:
             continue
     files = [p for p, _ in sorted(pairs, key=lambda x: x[1])]
 
-    over_count = max(0, len(files) - _RUN_LOG_MAX_FILES)
+    over_count = max(0, len(files) - max_files)
     # Per-file accumulation (NOT sum(... if f.exists())): a concurrent unlink
     # between exists() and stat() raises OSError; a single try/except over the
     # whole sum would reset total_bytes to 0 and silently bypass byte-limit
@@ -2859,7 +2875,7 @@ def _prune_run_logs(runs_dir: Path, preserve: Optional[Path] = None) -> None:
             total_bytes += f.stat().st_size
         except OSError:
             continue
-    over_bytes = total_bytes - _RUN_LOG_MAX_BYTES
+    over_bytes = total_bytes - max_bytes
 
     for f in files:
         if over_count <= 0 and over_bytes <= 0:
@@ -2873,6 +2889,115 @@ def _prune_run_logs(runs_dir: Path, preserve: Optional[Path] = None) -> None:
             over_bytes -= sz
         except Exception:
             pass
+
+
+def _prune_run_logs(runs_dir: Path, preserve: Optional[Path] = None) -> None:
+    """Best-effort prune: enforce file count + total byte caps.
+
+    Thin wrapper over the shared `_prune_dir_by_caps` (task-1, 2026-07-31 —
+    factored out so `emit_read_audit`'s digest dir can reuse the identical
+    race-tolerant algorithm). Behavior unchanged from before the factor-out.
+    """
+    _prune_dir_by_caps(
+        runs_dir, _RUN_LOG_MAX_FILES, _RUN_LOG_MAX_BYTES, preserve,
+        ("*.json", "*.prompt.tmp"),
+    )
+
+
+# ─── Read-audit digest — durable file artifact (Task 1, 2026-07-31) ───────
+# Root cause: emit_run_log writes only on FAILURE, so a successful agy call's
+# read-audit digest previously existed only as a transient stderr line (the
+# review SKILL's read-audit gate had to text-extract it from a stream that
+# also mirrors untrusted vendor bytes verbatim — the anchor-mismatch /
+# first-match-forgery / late-append findings this durable file retires).
+# emit_read_audit writes on EVERY outcome where `result.read_audit is not
+# None` — success AND failure — unlike emit_run_log's failure-only rule
+# (which stays exactly as it is; this is a NEW, separate artifact).
+#
+# Owner ruling (do NOT re-open): this file is EVIDENCE THAT A LEG DID THE
+# READING WORK, not an authenticated control — no nonce, no dedicated fd,
+# nothing framed as authentication. The digest's CONTENT is still folded
+# from vendor-supplied stream events regardless of transport.
+_READ_AUDIT_MAX_FILES = 100
+_READ_AUDIT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB total cap, same policy shape as run-logs
+
+
+def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
+    """Write the per-call read-audit digest to a durable JSON file.
+
+    Default path: `_LOG_DIR / cli / "read-audit" / <UTC-ts>-<pid>-<uuid8>.json`
+    (NOTE: the dir is named `read-audit/`, deliberately NOT `audit/` — the
+    sibling `_logs/<cli>/audit.jsonl` already owns the name "audit", and a
+    colliding dir name would confuse the two artifacts).
+
+    `TRIAD_READ_AUDIT_FILE` (absolute path) overrides the default: writes to
+    EXACTLY that path instead (parent dirs created, existing content
+    overwritten). This mirrors the existing `TRIAD_DISPATCH_LOG_DIR` override
+    pattern and is what lets a consumer (e.g. the cross-family-review SKILL)
+    know the path a priori — zero stderr parsing. Concurrency note: the
+    override names ONE file, so a caller running parallel legs must give each
+    call its own path (the review SKILL uses one `<packet-dir>/agy-read-audit.json`
+    per packet dir, one packet dir per leg).
+
+    File content is a single JSON object with exactly two top-level keys, so
+    digest keys can never collide with metadata keys:
+        {"meta": {"cli", "ts_utc", "classification", "exit_code",
+                   "vendor_exit_code", "elapsed_s"},
+         "digest": <result.read_audit, verbatim>}
+
+    Returns None (and writes nothing) when `result.read_audit is None` — the
+    caller (currently only antigravity_wrapper.py) is expected to skip the
+    `read-audit-file:` stderr line in that case, same as `emit_run_log`'s
+    None-on-success convention.
+
+    Best-effort: an IO failure (unwritable dir, blocked path component, …)
+    must NOT change the wrapper's exit code or classification — it logs one
+    stderr line via `log()` and returns None. `result` (the RunResult) is
+    never mutated on this path.
+
+    The default dir self-prunes after write (`_READ_AUDIT_MAX_FILES` /
+    `_READ_AUDIT_MAX_BYTES`, same shape as `_prune_run_logs`). The env-override
+    path is caller-owned and is NEVER pruned by this function.
+    """
+    if result.read_audit is None:
+        return None
+
+    override = os.environ.get("TRIAD_READ_AUDIT_FILE")
+    try:
+        if override:
+            path = Path(override)
+            path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            read_audit_dir = _LOG_DIR / cli / "read-audit"
+            read_audit_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            pid = os.getpid()
+            suffix = uuid.uuid4().hex[:8]
+            path = read_audit_dir / f"{ts}-{pid}-{suffix}.json"
+
+        rec = {
+            "meta": {
+                "cli": cli,
+                "ts_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "classification": result.classification,
+                "exit_code": result.exit_code,
+                "vendor_exit_code": result.vendor_exit_code,
+                "elapsed_s": round(result.elapsed_s, 2),
+            },
+            "digest": result.read_audit,
+        }
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False, indent=2)
+
+        if not override:
+            _prune_dir_by_caps(
+                read_audit_dir, _READ_AUDIT_MAX_FILES, _READ_AUDIT_MAX_BYTES,
+                preserve=path, glob_patterns=("*.json",),
+            )
+        return path
+    except Exception as e:
+        log(f"emit_read_audit: failed to write digest file — {e}")
+        return None
 
 
 # Default age floor for the next-run stale-prune. Must comfortably exceed the

@@ -1,8 +1,20 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.11.2
+version: 0.12.0
 # changelog:
+#   0.12.0 (2026-07-31): task-1 follow-up (plan
+#     `.superpowers/sdd/2026-07-31-agy-post-migration-followups.md` item (1))
+#     — the wrapper now ALSO writes the read-audit digest to a durable file
+#     via `_common.emit_read_audit`, on every completed call (success or
+#     failure), and emits one new stderr line after the existing informational
+#     digest line: `read-audit-file: <path>`. Default path
+#     `_logs/antigravity/read-audit/<UTC-ts>-<pid>-<uuid8>.json`;
+#     `TRIAD_READ_AUDIT_FILE` (absolute path) overrides it — this is what lets
+#     `triad-cross-family-review`'s v0.22.0 gate know the path a priori and
+#     read it with `jq` instead of text-extracting stderr. No change to the
+#     existing `[wrapper] antigravity read-audit {…}` stderr line, the
+#     run-log's `read_audit` key, exit codes, or the classification token set.
 #   0.11.2 (2026-07-31): skill-prompt-review round-1 fixes (PART A1-A8) —
 #     single-valued the agy version range (dispatch floor >= 1.1.8, above the
 #     1.1.3 skip-permissions floor); Step 5d control-flow + run-log
@@ -264,6 +276,25 @@ or judge anything itself; the caller (leader / review SKILL) reads it and
 decides what a missing or unexpected packet-read means for that dispatch.
 The same digest rides into the run-log's `read_audit` key on failure.
 
+**Read-audit durable FILE (2026-07-31 task-1 follow-up).** The stderr line
+above is a transient operator aid; a caller that needs the digest as a
+durable, jq-only artifact (e.g. the `triad-cross-family-review` gate) should
+set `TRIAD_READ_AUDIT_FILE=<absolute-path>` in the wrapper invocation's
+environment. When set, the wrapper writes the SAME digest to exactly that
+path (parent dirs created, existing content overwritten) via
+`_common.emit_read_audit`, on EVERY completed call whether it succeeded or
+not — unlike the run-log, which only exists on failure. File content is
+`{"meta": {cli, ts_utc, classification, exit_code, vendor_exit_code,
+elapsed_s}, "digest": <the read-audit object, verbatim>}`. When
+`TRIAD_READ_AUDIT_FILE` is unset, the wrapper still writes to its own default
+location (`_logs/antigravity/read-audit/<UTC-ts>-<pid>-<uuid8>.json`,
+self-pruned the same way run-logs are) purely as an operator convenience —
+no caller currently reads that default location. Either way, the wrapper
+prints one more stderr line after the digest line: `read-audit-file:
+<path>`. This is best-effort: an IO failure writing the file never changes
+the wrapper's exit code or classification (it logs one line and continues,
+and the `read-audit-file:` line is simply omitted).
+
 ## Hard rules
 
 1. **Bash invocation only.** No `Agent()` around the wrapper itself. The stderr `[wrapper]` summary line and `run-log:` path emission only surface via Bash.
@@ -342,6 +373,7 @@ manage any of this; it just calls the wrapper.
 Wrapper stderr contains:
 - Timestamped wrapper log lines
 - 1-line summary: `[<timestamp>] [wrapper] antigravity <classification> exit=<int> vendor=<int> elapsed=<s>` (every wrapper log line, this one included, carries the leading timestamp bracket — the Step 3 grep anchors on it)
+- On every completed call: `[wrapper] antigravity read-audit {…}` (informational digest, § Isolation above) followed by `read-audit-file: <absolute-path>` (the durable file `emit_read_audit` just wrote — `$TRIAD_READ_AUDIT_FILE` if set, else the wrapper's own default location)
 - On failure: `run-log: <absolute-path>`
 
 Wrapper stdout = agy's final answer (the stream-json terminal `result` event's `response` field — no marker to strip, no ANSI scrub needed).

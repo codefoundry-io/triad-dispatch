@@ -1,8 +1,34 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.21.7
+version: 0.22.0
 # changelog:
+#   0.22.0 (2026-07-31): read-audit gate is now FILE-based, not stderr-based
+#     (task-1, plan `.superpowers/sdd/2026-07-31-agy-post-migration-followups.md`
+#     item (1) — the wrapper's `_common.emit_read_audit` now writes the digest
+#     to a durable `{meta, digest}` JSON file on EVERY completed agy call,
+#     success or failure, at a path the dispatch names up front via
+#     `TRIAD_READ_AUDIT_FILE`). The agy dispatch instruction now sets
+#     `TRIAD_READ_AUDIT_FILE="$PACKET_DIR/agy-read-audit.json"` instead of
+#     capturing stderr to `<packet-dir>/agy-leg.err`; the gate reads that file
+#     directly with `jq`, re-rooted at `.digest` (e.g.
+#     `.digest.files_read[*].params`), branching on jq's own exit code
+#     (0=covered, 1=coverage-miss, >=2=corrupted/unparseable=INCONCLUSIVE) —
+#     no more grep/sed extraction, no separate `jq -e 'type == "object"'`
+#     validity pre-check, no `AGY_STDERR`/`AGY_RUN_LOG` binding, no
+#     last-match/anchoring convention. This retires the transport-level
+#     late-append/first-match-forgery/anchored-extraction-brittleness class
+#     of findings from the v0.21.x-r4 gate (the run-log's `read_audit` field
+#     is unchanged and still exists for the repair-agent path; the GATE
+#     simply no longer reads it). Owner ruling from the r4 gate closure
+#     stands UNCHANGED and is restated up front: this remains evidence that a
+#     leg did the reading work, not an authenticated control — the digest's
+#     CONTENT is still folded from vendor-supplied stream events regardless
+#     of transport, so a fabricated read event is still possible; only the
+#     STRUCTURAL transport-tampering vector (a mirrored-stderr race) is
+#     closed by the dedicated file. See
+#     `docs/reviews/2026-07-31-agy-stream-json-residuals.md` for the
+#     residual rows this specifically supersedes.
 #   0.21.7 (2026-07-31): cross-family review r4 — UNCONTESTED fixes only (the
 #     authentication mechanism itself stays escalated to the owner). H1(a):
 #     the r3 disclosed-residual note overstated what last-match+anchoring
@@ -460,14 +486,14 @@ the lab's standing cross-family review rule.
      Pro/High variant — current agy encodes effort in the model SLUG; a separate
      `--effort low|medium|high` flag exists since agy 1.1.5 but the wrapper does
      not pass it, so the slug stays the supported mechanism).
-     **The SAME dispatch MUST also redirect the leg's stderr to
-     `<packet-dir>/agy-leg.err`, TRUNCATED per dispatch (`2>`, never `2>>` —
-     an appended file keeps a prior round's digest, which the read-audit
-     gate's last-match rule would accept as this round's evidence) — bind
-     `AGY_STDERR` to exactly that path. This capture is the read-audit gate's
-     ONLY evidence source on a successful call (rule 1's MECHANICAL
-     read-audit gate below); do this at dispatch time — a leader who reads
-     the gate only after dispatching, without having captured stderr, cannot
+     **The SAME dispatch MUST also set `TRIAD_READ_AUDIT_FILE="$PACKET_DIR/agy-read-audit.json"`
+     in the wrapper invocation's environment (v0.22.0 — one packet dir per
+     leg, so no collision across a parallel fan-out). The wrapper writes the
+     read-audit digest to EXACTLY that path on every completed call, success
+     or failure (`_common.emit_read_audit`) — this durable FILE is the
+     read-audit gate's ONLY evidence source (rule 1's MECHANICAL read-audit
+     gate below); set the env var at dispatch time — a leader who reads the
+     gate only after dispatching, without having set it, cannot
      retro-create the evidence and must re-dispatch.**
      **agy verdict = ADVISORY for the unanimous gate (STANDING, 2026-07-31).**
      Its findings enter consolidation like any leg's, but its SAFE does not
@@ -491,80 +517,77 @@ the lab's standing cross-family review rule.
      finding." (A traced containment run dropped exploration tool calls to
      zero.) **Placement: immediately before the closing instruction, never
      leading the packet — rule 8's canonical packet order.**
-     **MECHANICAL read-audit gate (v0.21.0) — apply BEFORE weighing the
-     verdict, and before any agy finding enters the residual table.**
-     **Threat model (r4/H1, both legs converged):** this gate is evidence
-     that the leg DID THE READING WORK — a mechanical anti-shallow-review
-     check — it is NOT an authenticated channel; the digest's CONTENT is
-     folded from vendor-supplied stream events, so a hostile vendor process
-     could fabricate a read event regardless of how the line is transported
-     to the leader. The wrapper emits a digest on EVERY completed call, into
-     ONE of two artifacts — extract it the way that artifact requires
-     (v0.21.5):
-     - **successful call → the leg's captured STDERR.** The line is
-       `[<UTC-ts>] [wrapper] antigravity read-audit {…}`: the wrapper's logger
-       prefixes a timestamp, so anchor on that prefix
-       (`^\[.*\] \[wrapper\] …`, the same form `triad-codex-dispatch` uses) and
-       strip up to the marker. An `^\[wrapper\]`-anchored grep matches NOTHING
-       and silently VOIDs every leg — that was the live v0.21.0-0.21.4 bug.
-     - **failing call → the run-log JSON** (`run-log: <path>` on stderr). Its
-       `read_audit` is a nested OBJECT and the wrapper's own stderr lines are
-       not copied into it, so grep can never work there: use
-       `jq -c '.read_audit'`.
+     **MECHANICAL read-audit gate (v0.21.0; FILE-based since v0.22.0) —
+     apply BEFORE weighing the verdict, and before any agy finding enters
+     the residual table.**
+     **Threat model (r4/H1, both legs converged; unchanged by the v0.22.0
+     file move — owner ruling, do NOT re-open):** this gate is evidence that
+     the leg DID THE READING WORK — a mechanical anti-shallow-review check —
+     it is NOT an authenticated channel; the digest's CONTENT is folded from
+     vendor-supplied stream events, so a hostile vendor process could
+     fabricate a read event regardless of how the digest reaches the leader.
+     What the file move DOES close: the wrapper now writes the digest to a
+     DEDICATED file it alone owns, once, strictly after the vendor
+     subprocess is reaped — there is no shared stream a stray grandchild
+     could append to afterward, so the transport-level late-append/forgery
+     residual this gate carried through v0.21.x-r4 (a well-formed digest
+     line appended after the genuine one, indistinguishable by syntax alone)
+     no longer applies. The content-forgery question above is unaffected and
+     stays open by design (owner ruling).
+
+     The wrapper writes the digest to `TRIAD_READ_AUDIT_FILE` on EVERY
+     completed call, success or failure (`_common.emit_read_audit`) — ONE
+     artifact this time, not two: extract it with `jq`, never grep/sed.
+     (The run-log's `read_audit` key is unchanged and still exists — the
+     wrapper side of that was not touched — but the GATE below no longer
+     reads it; the run-log stays the repair-agent's input artifact only.)
 
      Then apply:
      1. every packet file's absolute path MUST appear among
-        `read_audit.files_read[*].params` values. `files_read` records only
-        tool calls that SUCCEEDED (terminal DONE with no `tool_info.error`),
-        so a hit is real proof the leg received the bytes; an ERRORED or
-        permission-DENIED read attempt appears instead under
-        `read_audit.read_attempts[*]` with an `outcome` of `error`/`denied`
-        and does NOT satisfy this gate (v0.21.4 — before that fix a failed
-        attempt landed in `files_read` exactly like a success, so the gate
-        passed for a leg that never got the packet). The digest is
-        CAPPED (every `params` value truncated at 200 chars; `files_read`
-        itself capped at the first 40 entries, with `files_read_omitted`
-        counting the rest), so match the packet path TRUNCATED the same
-        way (equality once truncated is sufficient — both sides carry the
-        same 200-char cap, so a prefix/`startswith` comparison adds only
-        false positives, never coverage); if
-        that capped match fails AND `files_read_omitted > 0`, the result
-        is INCONCLUSIVE, not VOID. What that leaves you (v0.21.5 — be
-        precise, earlier text over-promised): the digest is the MERGED
-        aggregate over every retry attempt, and the run-log's `read_audit`
-        is the SAME merged object as the stderr line, not a fuller one, so
-        there is no bigger digest to open. Recoverable evidence is the
-        per-attempt census (`read_audit.attempts[]` — one row per attempt with
-        `attempt` / `status` / `tool_steps` / `error_steps`, plus ONE NUMBER per
-        list key that already folds that attempt's own entries AND its own
-        omitted overflow together; a row carries NO separate `_omitted` fields,
-        so the number is a pre-dedupe TOTAL and cannot be split back into
-        kept-vs-omitted — v0.21.6 correction, the earlier text promised a
-        breakdown the wrapper never emits) and
-        `read_audit.read_attempts[]`. The run-log's `stdout` holds the raw
-        NDJSON of the FINAL attempt ONLY — an earlier attempt's raw stream
-        is retained NOWHERE, so never plan to read it. If the census does
-        not settle it, re-dispatch with a narrower packet rather than
-        guessing. Only a failed match
-        WITH `files_read_omitted == 0` is a confirmed VOID (treat as
-        leg-not-run: re-dispatch ONCE with the containment block above;
-        do NOT count a VOID leg toward the gate) — a leg still VOID
-        after that one re-dispatch is terminally missing this round
-        (rule 13): apply the same degraded
-        2-family (claude+codex) + owner-decision mode as any other
-        terminal-failure leg (rule 1 degraded mode); no second
-        re-dispatch;
-     2. surface `read_audit.denied` / `read_audit.writes` /
-        `read_audit.read_attempts` entries in the round notes — e.g. a write
-        rerouted to agy's scratch dir shows up as a `writes` entry whose
-        `TargetFile` is outside the packet dir (worth noting; it does not by
-        itself void the leg), and a **read-CLASS** `read_attempts` entry naming
-        a packet file is the diagnostic for a VOID verdict (the leg TRIED and
-        was blocked, rather than never looking). `read_attempts` holds every
-        unsuccessful tool, so filter on its `class` field
-        (`read`/`write`/`command`/`web`/`other`, v0.21.5): a blocked write or
-        `run_command` that merely NAMED the packet is not a failed read and
-        must not be reported as one;
+        `read_audit.digest.files_read[*].params` values (`read_audit` here
+        names the loaded `{meta, digest}` object — see the code below).
+        `files_read` records only tool calls that SUCCEEDED (terminal DONE
+        with no `tool_info.error`), so a hit is real proof the leg received
+        the bytes; an ERRORED or permission-DENIED read attempt appears
+        instead under `read_audit.digest.read_attempts[*]` with an
+        `outcome` of `error`/`denied` and does NOT satisfy this gate. The
+        digest is CAPPED (every `params` value truncated at 200 chars;
+        `files_read` itself capped at the first 40 entries, with
+        `files_read_omitted` counting the rest), so match the packet path
+        TRUNCATED the same way (equality once truncated is sufficient —
+        both sides carry the same 200-char cap, so a prefix/`startswith`
+        comparison adds only false positives, never coverage); if that
+        capped match fails AND `files_read_omitted > 0`, the result is
+        INCONCLUSIVE, not VOID. The digest is the MERGED aggregate over
+        every retry attempt — there is no bigger digest to open.
+        Recoverable evidence is the per-attempt census
+        (`read_audit.digest.attempts[]` — one row per attempt with
+        `attempt` / `status` / `tool_steps` / `error_steps`, plus ONE NUMBER
+        per list key that already folds that attempt's own entries AND its
+        own omitted overflow together; a row carries NO separate `_omitted`
+        fields, so the number is a pre-dedupe TOTAL) and
+        `read_audit.digest.read_attempts[]`. The run-log's `stdout` holds
+        the raw NDJSON of the FINAL attempt ONLY — an earlier attempt's raw
+        stream is retained NOWHERE, so never plan to read it. If the census
+        does not settle it, re-dispatch with a narrower packet rather than
+        guessing. Only a failed match WITH `files_read_omitted == 0` is a
+        confirmed VOID (treat as leg-not-run: re-dispatch ONCE with the
+        containment block above; do NOT count a VOID leg toward the gate)
+        — a leg still VOID after that one re-dispatch is terminally
+        missing this round (rule 13): apply the same degraded 2-family
+        (claude+codex) + owner-decision mode as any other terminal-failure
+        leg (rule 1 degraded mode); no second re-dispatch;
+     2. surface `read_audit.digest.denied` / `read_audit.digest.writes` /
+        `read_audit.digest.read_attempts` entries in the round notes — e.g.
+        a write rerouted to agy's scratch dir shows up as a `writes` entry
+        whose `TargetFile` is outside the packet dir (worth noting; it does
+        not by itself void the leg), and a **read-CLASS** `read_attempts`
+        entry naming a packet file is the diagnostic for a VOID verdict
+        (the leg TRIED and was blocked, rather than never looking).
+        `read_attempts` holds every unsuccessful tool, so filter on its
+        `class` field (`read`/`write`/`command`/`web`/`other`): a blocked
+        write or `run_command` that merely NAMED the packet is not a
+        failed read and must not be reported as one;
      3. the latency signal (rule 11: <60s on a >=100KB packet ⇒ shallow)
         is DEMOTED to a secondary signal — the read-audit is
         the PRIMARY, deterministic evidence.
@@ -578,103 +601,58 @@ the lab's standing cross-family review rule.
      # iteration checks (NOT the packet DIR `review_scratch.py open` printed
      # — that is a directory; for a single-file packet this is
      # <packet-dir>/packet.md).
-     # TWO artifacts, TWO extractions (v0.21.5 — verified end to end against
-     # real wrapper output; the older single grep matched NOTHING):
-     #   AGY_STDERR  = the leg's captured stderr. The dispatch MUST create it:
-     #                 `triad-antigravity-dispatch` Step 2 says "capture rc,
-     #                 stdout, stderr", and this gate is the consumer — redirect
-     #                 the wrapper's stderr to `<packet-dir>/agy-leg.err` and
-     #                 bind AGY_STDERR to exactly that path. TRUNCATE per
-     #                 dispatch (`2>`, never `2>>`): an APPENDED file keeps the
-     #                 previous round's digest, and a last-match read would
-     #                 accept it as this round's evidence. Living in the packet
-     #                 dir means `review_scratch.py close` disposes of it. The
-     #                 variable is `${…:-}`-guarded below exactly like
-     #                 AGY_RUN_LOG — unbound used to mean empty extraction,
-     #                 i.e. every leg VOID (v0.21.6 / r3-G3). The line is
-     #                 `[<UTC-ts>] [wrapper] antigravity read-audit {…}` —
-     #                 _common.log() prepends the timestamp, so the anchor must
-     #                 allow it and the strip must not assume line-start.
-     #   AGY_RUN_LOG = the `run-log: <path>` JSON the wrapper writes on a
-     #                 FAILING call. `read_audit` there is a nested OBJECT
-     #                 (grep cannot extract it) -> jq.
-     # WHY LAST-MATCH + ANCHORED (v0.21.6, r3/G1 — do not regress this): the
-     # wrapper MIRRORS the vendor's stderr VERBATIM into its own
-     # (`_common._drain` -> `sys.stderr`), so AGY_STDERR carries UNTRUSTED
-     # vendor output interleaved with the wrapper's own lines — the same
-     # premise behind `triad-antigravity-dispatch` Step 3 (`| tail -1`) and
-     # Step 5a (`^\[[^]]*\] ` anchor). A vendor-FORGED `[…] [wrapper]
-     # antigravity read-audit {…}` line is therefore always possible, and it
-     # necessarily PRECEDES the genuine digest (the wrapper logs its own only
-     # after the child is reaped), so a FIRST match (`grep -m1`) prefers the
-     # forgery and the read-proof gate fails OPEN. The mirror-image bug is an
-     # UNANCHORED greedy strip (`sed 's/.*<marker>//'`): a marker literal
-     # INSIDE the digest JSON (e.g. a command value echoing it) cuts the
-     # payload at the LAST occurrence -> invalid JSON -> false VOID. Hence
-     # last match, both patterns anchored on the wrapper's own timestamped
-     # prefix, and a VALIDITY gate on the payload. Disclosed residual (r4/H1
-     # correction — the prior text overstated what this closes): the stderr
-     # mirror thread is joined with a 2s timeout, so a vendor child that
-     # outlives its own reap could append one more line AFTER the genuine
-     # digest. Last-match + anchoring proves only the appended line's SYNTAX
-     # and that it appeared after the wrapper's own timestamped prefix — it
-     # does NOT authenticate ORIGIN. A WELL-FORMED JSON object appended after
-     # the wrapper's own digest would pass the `jq -e 'type == "object"'`
-     # validity gate unchanged and be selected as "the" digest, and there is
-     # NO leg-level signal that this happened — it is neither automatically
-     # re-dispatched nor otherwise flagged.
-     if [ -n "${AGY_RUN_LOG:-}" ] && [ -f "${AGY_RUN_LOG:-}" ]; then
-       audit_json="$(jq -c '.read_audit // empty' "$AGY_RUN_LOG")"
-     elif [ -n "${AGY_STDERR:-}" ] && [ -f "${AGY_STDERR:-}" ]; then
-       audit_json="$(grep -E '^\[[^]]*\] \[wrapper\] antigravity read-audit ' "$AGY_STDERR" | tail -1 | sed -E 's/^\[[^]]*\] \[wrapper\] antigravity read-audit //')"
-     else
-       audit_json=""
-     fi
-     if [ -z "$audit_json" ]; then
-       # v0.21.6 (r3/G4): ABSENT is NOT proof the vendor call failed — an
-       # unbound or misbound AGY_STDERR / AGY_RUN_LOG, or a dispatch that never
-       # wrote the capture, is empty in exactly the same way. Check the capture
-       # paths FIRST. This branch is terminal for the round's gate (it used to
-       # fall through and ALSO print the VOID verdict below — two verdict lines
-       # for one condition).
-       echo "[review] agy leg read-audit ABSENT — no digest in either artifact. Cause is EITHER a vendor call that never completed OR a capture problem (AGY_STDERR/AGY_RUN_LOG unbound, pointing elsewhere, or never written). Verify the capture paths; only once they are sound does this mean the leg did not run — then treat as VOID (leg-not-run) and re-dispatch once." >&2
-     elif ! printf '%s\n' "$audit_json" | jq -e 'type == "object"' >/dev/null 2>&1; then
-       # v0.21.6 (r3/G1): a payload that does not parse is a BROKEN READING of
-       # the evidence, not evidence. Never silently VOID (or PASS) on it.
-       echo "[review] agy leg read-audit INCONCLUSIVE — a digest was extracted but does not parse as a JSON object (mangled extraction, truncated line, or a corrupted digest). Do NOT read this as VOID and do NOT read it as PASS: re-check the extraction against the raw stderr line, then re-dispatch once." >&2
+     # ONE artifact (v0.22.0 — replaces the two-artifact stderr/run-log split):
+     # AGY_READ_AUDIT_FILE = the path the dispatch bound to TRIAD_READ_AUDIT_FILE
+     #                       (`triad-antigravity-dispatch` Step 1 env; the wrapper
+     #                       writes here on EVERY completed call, ok or not — no
+     #                       stderr capture, no grep/sed extraction, no validity
+     #                       pre-check separate from the coverage check itself).
+     AGY_READ_AUDIT_FILE="$PACKET_DIR/agy-read-audit.json"
+     if [ ! -f "$AGY_READ_AUDIT_FILE" ]; then
+       # ABSENT is NOT proof the vendor call failed — TRIAD_READ_AUDIT_FILE
+       # unset/misbound at dispatch time is empty in exactly the same way as a
+       # call that never completed. Check the dispatch env FIRST; only once
+       # that is sound does an absent file mean the leg did not run.
+       echo "[review] agy leg read-audit ABSENT — no digest file at \$AGY_READ_AUDIT_FILE. Cause is EITHER a vendor call that never completed OR TRIAD_READ_AUDIT_FILE was never set at dispatch time. Verify the dispatch env; only once it is sound does this mean the leg did not run — then treat as VOID (leg-not-run) and re-dispatch once." >&2
      else
        # 200 = bin/_common.py's _AGY_DIGEST_VALUE_CAP (the digest's own params-value
        # truncation) — coupled to that constant; a wrapper-side cap change must
        # update this literal too, or a real match can silently false-VOID.
        p_trunc="${PACKET_ABS_PATH:0:200}"
-       matched="$(printf '%s\n' "$audit_json" | jq -r --arg p "$p_trunc" \
-         '[.files_read[]?.params // {} | to_entries[]?.value | select(type == "string")] | any(. == $p)')"
-       if [ "$matched" != true ]; then
-         omitted="$(printf '%s\n' "$audit_json" | jq -r '.files_read_omitted // 0')"
-         # Diagnostic (v0.21.4): a BLOCKED read is recorded in read_attempts, not
+       jq -e --arg p "$p_trunc" \
+         '[.digest.files_read[]?.params // {} | to_entries[]?.value | select(type == "string")] | any(. == $p)' \
+         "$AGY_READ_AUDIT_FILE" >/dev/null 2>/dev/null
+       jq_rc=$?
+       if [ "$jq_rc" -ge 2 ]; then
+         # jq itself failed (invalid/partial JSON, rc>=2) — a BROKEN reading of
+         # the evidence, not evidence. Never silently VOID (or PASS) on it. This
+         # is now a NARROW case (a corrupted/partially-written file), not a
+         # mangled shell extraction.
+         echo "[review] agy leg read-audit INCONCLUSIVE — \$AGY_READ_AUDIT_FILE does not parse as JSON (rc=$jq_rc). Do NOT read this as VOID and do NOT read it as PASS: inspect the file directly, then re-dispatch once." >&2
+       elif [ "$jq_rc" -eq 1 ]; then
+         omitted="$(jq -r '.digest.files_read_omitted // 0' "$AGY_READ_AUDIT_FILE")"
+         # Diagnostic: a BLOCKED read is recorded in read_attempts, not
          # files_read — print it so a VOID verdict says whether the leg tried.
-         # v0.21.5: filter on `.class == "read"` — read_attempts also carries
-         # failed WRITES / run_commands / web fetches, and one of those merely
-         # NAMING the packet is not "the leg failed to read the packet".
-         # COUPLING (v0.21.6, r3/G8 — same class as the 200 literal above):
-         # `class` is written by `_common._agy_tool_class`, so a digest produced
-         # by a pre-v0.21.5 wrapper has NO `class` key and this filter yields
-         # nothing, and a read tool outside `_AGY_READ_TOOLS` is classed `other`
-         # and is missed. Both losses are DIAGNOSTIC-ONLY: the VOID/PASS
-         # decision is the `matched` + `files_read_omitted` pair above, never
-         # this line, so a miss costs explanatory text and never a verdict.
-         printf '%s\n' "$audit_json" | jq -r --arg p "$p_trunc" \
-           '[.read_attempts[]? | select(.class == "read")
+         # Filter on `.class == "read"` — read_attempts also carries failed
+         # WRITES / run_commands / web fetches, and one of those merely NAMING
+         # the packet is not "the leg failed to read the packet". This filter
+         # is DIAGNOSTIC-ONLY: the VOID/PASS decision is jq_rc + `omitted`
+         # above, never this line, so a miss costs explanatory text and never
+         # a verdict.
+         jq -r --arg p "$p_trunc" \
+           '[.digest.read_attempts[]? | select(.class == "read")
             | select([.params // {} | to_entries[]?.value
               | select(type == "string")] | any(. == $p))
             | "\(.tool):\(.outcome)"] | select(length > 0)
-            | "[review] agy leg ATTEMPTED but failed to read the packet: \(join(", "))"' >&2
+            | "[review] agy leg ATTEMPTED but failed to read the packet: \(join(", "))"' \
+           "$AGY_READ_AUDIT_FILE" >&2
          if [ "${omitted:-0}" -gt 0 ]; then
-           echo "[review] agy leg read-audit INCONCLUSIVE ($omitted files_read entries capped) — weigh read_audit.attempts[] (per-attempt totals) + read_audit.read_attempts[] before voiding; there is NO fuller digest (the run-log's read_audit is this same object) and only the FINAL attempt's raw stream is retained, so re-dispatch with a narrower packet if the census does not settle it" >&2
+           echo "[review] agy leg read-audit INCONCLUSIVE ($omitted files_read entries capped) — weigh read_audit.digest.attempts[] (per-attempt totals) + read_audit.digest.read_attempts[] before voiding; there is no fuller digest and only the FINAL attempt's raw stream is retained, so re-dispatch with a narrower packet if the census does not settle it" >&2
          else
-           echo "[review] agy leg VOID — packet path not in read_audit.files_read; re-dispatch once with the containment block; still VOID after that re-dispatch is terminally missing this round (2-family + owner decision, rule 1 degraded mode — no second re-dispatch)" >&2
+           echo "[review] agy leg VOID — packet path not in read_audit.digest.files_read; re-dispatch once with the containment block; still VOID after that re-dispatch is terminally missing this round (2-family + owner decision, rule 1 degraded mode — no second re-dispatch)" >&2
          fi
        fi
+       # jq_rc == 0 -> PASS (fall through; no message needed).
      fi
      ```
      STILL verify any surviving agy finding's file:line against the packet
@@ -1002,8 +980,8 @@ the lab's standing cross-family review rule.
     defects while every ≥79s run found ≥1; treat <60s on a ≥100KB packet as the
     signal (the older sub-30s guide was too lenient). **For the agy leg
     specifically, this latency check is now a SECONDARY signal,
-    demoted behind rule 1's MECHANICAL read-audit gate (v0.21.0:
-    `read_audit.files_read` coverage is the PRIMARY, deterministic evidence —
+    demoted behind rule 1's MECHANICAL read-audit gate (v0.21.0, FILE-based
+    since v0.22.0: `read_audit.digest.files_read` coverage is the PRIMARY, deterministic evidence —
     a leg the gate rules VOID never reaches this latency check at all); for
     codex, which has no read-audit instrumentation, latency stays the
     PRIMARY rubber-stamp heuristic.** The criteria enumeration in
@@ -1261,7 +1239,7 @@ the lab's standing cross-family review rule.
 | Reviewers all pass a leader blind-spot | claude leg was leader-inline, or suspect framed as fact | Use a fresh-eye Agent; frame as questions (rules 1-2) |
 | claude leg keeps returning SAFE while codex/agy escalate residuals | claude prompt under-reasoned / not adversarial / shallow tier | Max-thinking + adversarial prompt + no severity-deflation (rule 10); legs at the rule-1 review tier |
 | A vendor leg (codex/agy) returns a fast bare SAFE/none despite MAX tier | Tier was set but the leg got no adversarial framing — it rubber-stamped | Give EVERY leg the rule-11 framing (assume a defect, enumerate checks, reject bare SAFE, no deflation); a <60s pass on a ≥100KB packet → re-dispatch adversarially (measured 2026-07-31, secondary check for agy since v0.21.0); an agy pass is ADVISORY for gating regardless (rule 1) |
-| agy leg's `read_audit.files_read` never lists a packet file's path (`files_read_omitted` is 0 — a nonzero count means INCONCLUSIVE, not VOID) | The agy HARNESS wandered outside the packet dir (or never opened it) before answering | Rule 1's MECHANICAL read-audit gate: treat the leg as VOID (not run), re-dispatch ONCE with the containment block, do not count it toward the gate; still VOID after that re-dispatch → terminally missing this round, 2-family (claude+codex) + owner decision (rule 1 degraded mode), no second re-dispatch (v0.21.0) |
+| agy leg's `read_audit.digest.files_read` never lists a packet file's path (`files_read_omitted` is 0 — a nonzero count means INCONCLUSIVE, not VOID) | The agy HARNESS wandered outside the packet dir (or never opened it) before answering | Rule 1's MECHANICAL read-audit gate: treat the leg as VOID (not run), re-dispatch ONCE with the containment block, do not count it toward the gate; still VOID after that re-dispatch → terminally missing this round, 2-family (claude+codex) + owner decision (rule 1 degraded mode), no second re-dispatch (v0.21.0, FILE-based since v0.22.0) |
 | Merged on 2-of-3 SAFE | Averaged instead of consolidated | ANY Critical/DO-NOT-MERGE blocks (rule 4) |
 | First-pass fixes assumed sufficient | No re-confirm | Re-run the 3-way on the fixed branch (rule 5) |
 | Vendor leg times out with no verdict | Reviewer live-ran the code → hung on a real vendor call, sandbox couldn't reap it | Add "READ-only, do NOT execute" + generous timeout to the leg prompt (rule 7) |
