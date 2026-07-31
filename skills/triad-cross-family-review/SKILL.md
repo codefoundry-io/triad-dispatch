@@ -1,8 +1,72 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.23.0
+version: 0.24.1
 # changelog:
+#   0.24.1 (2026-08-01): final-gate fix round on the 0.24.0 verdict-schema
+#     wiring (pre-merge cross-family gate: MERGE WITH FIXES, codex+claude
+#     converged, agy's must-fix probe-refuted). agy leg dispatch step
+#     (`references/leg-contracts.md` § agy leg) gains a leader-side
+#     `rm -f "$PACKET_DIR/agy-read-audit.json"` immediately before EACH
+#     dispatch — the wrapper's own pre-clear
+#     (`_common.preclear_read_audit_file`, called at `antigravity_wrapper.py`
+#     main()'s call START) closes a stale-file-survives-a-swallowed-write-
+#     failure path INSIDE the wrapper, but not a MISBOUND env (dispatch names
+#     the wrong path, or the var was never exported) — this leader-side line
+#     closes that remaining case. The byte-frozen agy read-audit jq gate
+#     3-LINE LIFT TARGET (t41/f9) is untouched. No other SKILL.md/reference
+#     content changed in this round; the schema tightening (empty/whitespace-
+#     only fields, line<1) and the validator hardening (dist-then-dev
+#     resolution order, distinct schema-load-failure class, UTF-8 decode
+#     handling) live entirely in `verdict_schema.py` / `lib/validate_verdict.py`,
+#     which this SKILL already documents by reference rather than by value.
+#     Re-confirm round 2 (claude must-fix G1, same-version fix — the
+#     changelog text above already reflects the corrected line): the FIRST
+#     draft of this line read the bare `$AGY_READ_AUDIT_FILE`, a GATE-local
+#     name first assigned inside the read-audit gate block (below) — unset at
+#     DISPATCH time, so it silently expanded to `rm -f ""` (a no-op; the
+#     misbound-env case stayed open). Fixed to mirror the gate's OWN binding
+#     expression instead of a mismatched variable name.
+#     Re-confirm round 3 (claude Minor H5, same-version fix — the changelog
+#     text above already reflects the final corrected line): the round-2 fix
+#     used a `${TRIAD_READ_AUDIT_FILE:-$PACKET_DIR/agy-read-audit.json}`
+#     fallback expression, which risked clearing an unrelated LEFTOVER
+#     `TRIAD_READ_AUDIT_FILE` some other ambient shell context left set
+#     instead of the packet-relative path THIS dispatch actually binds.
+#     Simplified to the plain literal `rm -f "$PACKET_DIR/agy-read-audit.json"`
+#     — byte-matching the SAME path the bullet's own dispatch sets
+#     unconditionally, removing the ambiguity entirely.
+#     Re-confirm round 5 (claude must-fix, same-version fix): the round-3
+#     simplification left the GATE's own read binding (inside the gate block,
+#     ABOVE the frozen 3-line jq lift) on the old fallback expression, so
+#     pre-clear and gate could target DIFFERENT files under an ambient
+#     exported TRIAD_READ_AUDIT_FILE. All THREE sites (dispatch binding,
+#     leader pre-clear, gate read binding) now carry the byte-identical
+#     plain literal `$PACKET_DIR/agy-read-audit.json` — the shared literal
+#     itself is the anti-drift property.
+#   0.24.0 (2026-08-01): all three legs share ONE pydantic verdict schema
+#     (`bin/verdict_schema.py` — `LegVerdict`/`LegFinding`,
+#     plan `2026-07-31-agy-post-migration-followups` item 4), so the leader
+#     consolidates structured objects instead of re-shaping three legs' free
+#     prose by hand. codex leg: `--pydantic verdict_schema:LegVerdict` added
+#     to the documented invocation (codex-strict `--output-schema`). agy leg:
+#     same flag (native `--json-schema`); the structured output rides the
+#     stream's terminal `result` event, so the `truncated-answer` fold guard
+#     becomes a non-case on this path (kept for the non-schema fallback).
+#     claude leg: no wrapper, so its dispatch prompt now carries the SAME
+#     JSON shape as the output contract, validated by the leader with the new
+#     deterministic (no-AI) `lib/validate_verdict.py` — a reply that fails
+#     validation is the EXISTING INVALID-leg handling (one re-ask, then
+#     INVALID), no new chain. `references/triage.md` gained a
+#     "Consolidating validated LegVerdict objects (jq)" section: the exact jq
+#     commands that map `findings[]` into residual-table rows mechanically,
+#     with a stated fallback — a leg dispatched WITHOUT the schema (older
+#     invocation) still consolidates the old prose way, and the two paths can
+#     coexist within one round. The "empty findings only with SAFE" rule is a
+#     `LegVerdict` model-level pydantic validator, making Flow 4's INVALID-leg
+#     rule (a non-SAFE verdict with no extractable finding) mechanical rather
+#     than a leader-remembered convention. The byte-frozen agy read-audit jq
+#     gate block (t41/f9's lift target) is untouched.
 #   0.23.0 (2026-08-01): body split into one-level `references/`, after an
 #     overlap/dead-content audit, plus a tone and provenance de-scope pass (plan
 #     `docs/superpowers/plans/2026-07-31-agy-post-migration-followups.md` item
@@ -130,7 +194,12 @@ Five references carry the detail — open one only when its column applies.
    leader's three consolidation duties (fact-check → classify the round
    CONVERGING / CONFLICTED / OSCILLATING → call the owner immediately on a
    CONFLICTED item or an OSCILLATING round), the two severity/triage axes, and
-   the release paths in full are in `references/triage.md`.
+   the release paths in full are in `references/triage.md`. A leg wired to the
+   shared `LegVerdict` schema (rule 1's per-leg `--pydantic`/output-contract
+   wiring) returns a validated JSON object, so mapping its `findings[]` into
+   the residual table is mechanical (`jq`, `references/triage.md` §
+   Consolidating validated LegVerdict objects) — a leg dispatched without the
+   schema still consolidates from prose, the fallback stated there.
 5. **Fix→re-confirm loop, no round cap — stops are evidence-based.** Findings →
    fix each (own implementer + per-fix review) → re-run the 3-way on the fixed
    branch. A first-pass DO-NOT-MERGE addressed by a FIX closes only through a

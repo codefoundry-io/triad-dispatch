@@ -87,7 +87,44 @@ the shallow-tier fact for the round record.
   every completed call, success or failure (`emit_read_audit`), and that durable
   file is the gate's only evidence source. Bind it AT DISPATCH TIME: the evidence
   cannot be created after the fact, so a leg dispatched without it is
-  re-dispatched.
+  re-dispatched. Immediately before EACH dispatch,
+  `rm -f "$PACKET_DIR/agy-read-audit.json"` — byte-match the SAME path this
+  bullet's OWN dispatch binds unconditionally (first sentence above), never a
+  bare `$AGY_READ_AUDIT_FILE` (a GATE-local name first assigned inside the
+  read-audit gate block, unset at DISPATCH time — a bare
+  `rm -f "$AGY_READ_AUDIT_FILE"` silently expands to `rm -f ""`, a no-op that
+  clears nothing; re-confirm round 2 / claude must-fix G1) and never an
+  `${TRIAD_READ_AUDIT_FILE:-...}` fallback either (re-confirm round 3 / H5
+  hardening: since the dispatch ALWAYS binds the packet-relative path, not
+  conditionally, a fallback form risks clearing an unrelated LEFTOVER
+  `TRIAD_READ_AUDIT_FILE` some other ambient shell context left set, instead
+  of the path THIS dispatch is actually about to write — the plain literal
+  removes that ambiguity entirely). The wrapper's
+  own `preclear_read_audit_file` closes a stale-file-survives path INSIDE the
+  wrapper, but not a MISBOUND env (the dispatch names the wrong path, or the
+  caller's shell never exported the var the wrapper reads); this leader-side
+  `rm -f` — using the SAME plain literal all THREE sites share (this bullet's
+  dispatch binding, this clear, and the gate's own binding below) — closes
+  that remaining case so a misbound or otherwise unwritten dispatch still
+  yields ABSENT, never a stale prior round's file read as this round's
+  evidence. One shared literal, no env-var indirection anywhere, is what
+  makes that guarantee hold regardless of what an ambient shell happens to
+  have exported.
+- **Structured verdict (`--pydantic verdict_schema:LegVerdict`).** Pass the
+  same flag `triad-antigravity-dispatch` accepts for any `--pydantic` call:
+  native `--json-schema` (`bin/verdict_schema.py`'s
+  `model_json_schema()`), `_validate_structured` preferring the vendor's own
+  schema-checked `structured_output`, one local schema-repair retry, then
+  `schema-fail` (exit 66) — stdout is then the validated JSON object, and the
+  leader consolidates it directly (`references/triage.md` § Consolidating
+  validated LegVerdict objects). **Fold-exemption:** the structured output
+  rides the stream's terminal `result` event's `structured_output` field, not
+  the folded chat body the "Folded verdict" bullet below guards against — an
+  incomplete/folded answer fails `LegVerdict` validation and takes the
+  schema-repair path instead, so the `truncated-answer` re-dispatch below is a
+  NON-CASE on this path. Keep that guard text for the non-schema fallback (a
+  leg dispatched WITHOUT `--pydantic`, per the stated fallback in
+  `references/triage.md`).
 - **Containment block (mandatory, in the leg prompt).** Include verbatim:
   "Read `packet.md` ONCE with your file-view tool (shell readers like `cat` are
   deny-listed under read-only) and base the review on it ALONE. Do NOT read or
@@ -198,13 +235,20 @@ pass:
      # iteration checks (NOT the packet DIR `review_scratch.py open` printed
      # — that is a directory; for a single-file packet this is
      # <packet-dir>/packet.md).
-     # ONE artifact: AGY_READ_AUDIT_FILE = the path the dispatch actually bound
-     # to TRIAD_READ_AUDIT_FILE. Read that variable when it is still in scope and
-     # fall back to the dispatch convention, so the gate can never check a
-     # different file than the wrapper wrote (`triad-antigravity-dispatch`
-     # § Isolation; the wrapper writes on EVERY completed call, ok or not — no
-     # stderr capture, no grep/sed extraction, no separate validity pre-check).
-     AGY_READ_AUDIT_FILE="${TRIAD_READ_AUDIT_FILE:-$PACKET_DIR/agy-read-audit.json}"
+     # ONE literal across all THREE sites (re-confirm round 5 / J1): the
+     # dispatch binding (§ agy leg "Read-audit binding", first sentence),
+     # the leader-side pre-clear immediately before each dispatch, and this
+     # gate binding all read/write the SAME path — "$PACKET_DIR/agy-read-audit.json",
+     # byte-identical, no env-var fallback anywhere. That IS the anti-drift
+     # property: an ambient TRIAD_READ_AUDIT_FILE some OTHER shell context
+     # left exported can no longer make the gate open a file nobody bound or
+     # cleared for THIS round — the earlier `${TRIAD_READ_AUDIT_FILE:-...}`
+     # fallback form aimed at this same property indirectly (by mirroring
+     # whichever value the env var happened to hold); a plain SHARED literal
+     # delivers it directly and unconditionally. The wrapper writes on EVERY
+     # completed call, ok or not — no stderr capture, no grep/sed extraction,
+     # no separate validity pre-check (`triad-antigravity-dispatch` § Isolation).
+     AGY_READ_AUDIT_FILE="$PACKET_DIR/agy-read-audit.json"
      if [ ! -f "$AGY_READ_AUDIT_FILE" ]; then
        # ABSENT is NOT proof the vendor call failed — TRIAD_READ_AUDIT_FILE
        # unset/misbound at dispatch time is empty in exactly the same way as a
@@ -313,10 +357,22 @@ fallback above.
   review_body=/path/to/review-body.txt
   codex_wrapper.py --sandbox read-only \
     --reasoning xhigh --search --timeout 900 \
+    --pydantic verdict_schema:LegVerdict \
     --prompt "$(cat -- "$review_body")"     # <-- substitution fires here
   # (--reasoning max only on a designated escalation round)
   # (--search = live web-grounding, disclosed above — drop it for a sensitive packet)
   ```
+
+  **Structured verdict (`--pydantic verdict_schema:LegVerdict`).** codex-strict
+  `--output-schema` massage enforces the shared `LegVerdict` shape
+  (`bin/verdict_schema.py`) natively; stdout is then the
+  validated JSON object, not free prose — the leader consolidates it directly
+  (`references/triage.md` § Consolidating validated LegVerdict objects). A
+  submit-time schema refusal is `schema-rejected` (exit 67, caller fixes the
+  massage); a post-hoc validation failure that survives the one schema-repair
+  retry is `schema-fail` (exit 66) — either way this leg is then handled as a
+  terminally-missing leg for the round (rule 13), never as a prose reply to
+  fall back to.
 
   Keep `$(cat body.txt)` OUT of a single-quoted heredoc BODY — i.e.
   `--prompt "$(cat <<'PROMPT'` … a line containing `$(cat body.txt)` …
@@ -353,5 +409,20 @@ fallback above.
   frontmatter effort and the PROMPT (rule 10). Without the directive the claude
   leg under-reasons and rubber-stamps. Frame it adversarially and forbid
   severity-deflation per rule 10.
+- **Output contract (structured verdict, no wrapper).** This leg has no
+  `--pydantic` plumbing to enforce a schema, so the LEADER'S dispatch prompt
+  carries the contract instead: append the `LegVerdict` shape
+  (`bin/verdict_schema.py` — `verdict`, `criteria_checked`,
+  `findings[].{file,line,severity,summary,trigger,context_known}`, the exact
+  token sets from `references/triage.md`) as the closing instruction, with an
+  explicit "reply with ONLY that JSON object, no markdown fence, no
+  surrounding prose" directive — the same shape codex/agy get natively,
+  mirroring how the wrapper-repair analyzers carry a static
+  `output_schema (JSON, inline)` contract in their own agent body. The leader
+  validates the reply with `lib/validate_verdict.py <reply-as-a-file>`
+  (Deliverable C) before consolidating it. A reply that fails validation is
+  the EXISTING INVALID-leg handling — one re-ask with the same directive
+  restated, then INVALID if it fails again (`references/triage.md` § Verdict
+  release at the merge gate); this does not invent a new chain.
 - **Agent definitions are session-start snapshots** — a frontmatter change takes
   effect from the NEXT session.

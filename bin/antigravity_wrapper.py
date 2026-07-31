@@ -436,6 +436,18 @@ def main() -> int:
         signal.signal(signal.SIGHUP, _terminate_to_exit)
     except ValueError:
         pass  # not the main thread (in-process test harness): keep defaults
+    # STALE-DIGEST pre-clear (final-gate fix round F1(a)) — call START, before
+    # ANY other logic (argparse, validation, the vendor dispatch), so EVERY
+    # exit path — including an early arg-validation failure that never
+    # reaches emit_read_audit's call site at all — leaves TRIAD_READ_AUDIT_FILE
+    # ABSENT rather than a prior round's stale digest. See
+    # _common.preclear_read_audit_file's own docstring for the full rationale.
+    # `repair_mode` is PEEKED from raw `sys.argv` here (mirrors
+    # `prune_stale_run_logs`'s own repair_mode skip): argparse has not run
+    # yet at this point in main(), so `args.repair_mode` does not exist —
+    # a --repair-mode re-run must skip the clear (G3, re-confirm round 2),
+    # so the peek has to happen BEFORE the parse, not after.
+    _common.preclear_read_audit_file(repair_mode="--repair-mode" in sys.argv)
     p = argparse.ArgumentParser(description="Antigravity (agy) single-shot wrapper",
                                 allow_abbrev=False)
     prompt_group = p.add_mutually_exclusive_group(required=True)

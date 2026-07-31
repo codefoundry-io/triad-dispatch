@@ -15,6 +15,7 @@ the fix queue, and when recording or updating a residual.
 | Scope-expansion gate | sizing a fix for a REAL finding |
 | Loop exit | the round lands no REAL findings |
 | Residual table | recording, updating, or carrying forward a residual |
+| Consolidating validated LegVerdict objects (jq) | a leg was dispatched with `--pydantic verdict_schema:LegVerdict` (or its claude-leg equivalent) and its findings need mapping into the residual table |
 | Reviewer-side instruction | writing the leg prompts |
 
 ## Consolidation duties
@@ -177,6 +178,55 @@ durable record: the COMPLETE table (every row and disposition, not a summary) at
 `docs/reviews/<UTC-date>-<slug>-residuals.md`, with the commit body carrying a
 pointer to it plus the load-bearing rows. Packet close deletes the dir.
 
+## Consolidating validated LegVerdict objects (jq)
+
+Since a leg was wired to the shared schema (`leg-contracts.md` § codex leg /
+§ agy leg / § claude fresh-eye leg — `bin/verdict_schema.py`'s
+`LegVerdict`), its stdout (codex/agy) or its validated reply file (claude, via
+`lib/validate_verdict.py`) is a validated JSON object, not free prose. Mapping
+its `findings[]` into the residual table (above) is mechanical — read it with
+`jq`, never by re-reading the leg's prose:
+
+```bash
+# One validated object per leg, at <packet-dir>/<leg>-verdict.json
+# (codex-verdict.json / agy-verdict.json / claude-verdict.json — the leader
+# names these when it captures each leg's stdout / validated reply). A
+# SAFE-verdict leg with zero findings correctly emits NO rows (`.findings[]`
+# on an empty array is a no-op) — that is not a miss, it is the SAFE leg
+# contributing nothing to the table.
+for leg in codex agy claude; do
+  f="$PACKET_DIR/$leg-verdict.json"
+  [ -f "$f" ] || { echo "-- $leg: no validated object (fallback below)"; continue; }
+  verdict="$(jq -r '.verdict' "$f")"
+  jq -r --arg leg "$leg" --arg verdict "$verdict" --arg round "$ROUND" '
+    .findings[] |
+    "| \(.file):\(.line // "-") | \($leg) | \($round) | <leader-triage-class> | \(.severity) / \($verdict) | <probe-or-repro> | \(.summary) | open |"
+  ' "$f"
+done
+```
+
+Each emitted row is a residual-table row PREFILLED from the leg's own
+structured fields (finding location, raising leg, round, leg severity +
+verdict, one-sentence summary as the rationale seed, disposition `open`); the
+leader still fills in the two fields the schema cannot supply — the triage
+class (REAL / REACHABLE-UNOBSERVED / SPECULATIVE, rule 4's leader-owned
+judgment, never mechanical) and the probe/repro evidence once obtained. The
+`file`/`line` fields also make the cite-verification step (Consolidation duty
+1 — "read the cited lines and reproduce the claim") mechanical to START: `sed
+-n '<line>p' <file>` opens exactly the cited line instead of the leader
+hunting for it in prose, though confirming the claim itself still requires
+reading the surrounding code, and `references/leg-contracts.md` § agy leg
+still requires verifying an agy cite before it enters the table (its cites
+were fabricated in most traced runs even inside a schema-shaped reply).
+
+**Fallback (stated, not hypothetical).** A leg dispatched WITHOUT the schema
+— an older invocation, or a leg whose `--pydantic` call failed closed before
+producing a validated object — has no `<leg>-verdict.json` to read. Consolidate
+that leg the OLD way: read its prose reply directly and triage each finding by
+hand, exactly as rule 4 always has. The two paths are not mutually exclusive
+within one round — one leg's structured object and another leg's prose can
+both feed the SAME residual table in the SAME round.
+
 ## Reviewer-side instruction
 
 Add to every leg's prompt, alongside the rule-11 adversarial framing:
@@ -205,8 +255,14 @@ instead of deferring.
 
 ### What a conforming verdict looks like
 
-Show this shape to each leg — a verdict line, then one block per finding with
-file:line, severity, and the concrete trigger:
+This is the FALLBACK prose shape — for a leg dispatched without the schema
+(§ Consolidating validated LegVerdict objects above). A leg wired to
+`--pydantic verdict_schema:LegVerdict` (codex, agy) or the claude leg's
+JSON output contract (`leg-contracts.md` § claude fresh-eye leg) already
+returns this same information as a validated JSON object instead; show this
+prose shape only when dispatching a leg the old way. Show this shape to each
+leg — a verdict line, then one block per finding with file:line, severity,
+and the concrete trigger:
 
 ```
 VERDICT: MERGE WITH FIXES

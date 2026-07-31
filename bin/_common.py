@@ -2939,6 +2939,16 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
     call its own path (the review SKILL uses one `<packet-dir>/agy-read-audit.json`
     per packet dir, one packet dir per leg).
 
+    The OVERRIDE-path write uses `os.open(..., O_NOFOLLOW)` (final-gate fix
+    round, converged claude must-fix / codex hardening): the override path is
+    CALLER-supplied (an env var a review-leg dispatch sets), so a symlink
+    planted there must be refused rather than followed — the same
+    leader-privileged-write convention `setup_permissions.py`'s
+    `read_settings_nofollow`/lock-file opens already use elsewhere in this
+    repo. The DEFAULT-dir path stays a plain `path.open("w")`: its basename
+    is a fresh uuid8 this function itself mints, so it cannot be
+    pre-planted the way a caller-NAMED override path can.
+
     File content is a single JSON object with exactly two top-level keys, so
     digest keys can never collide with metadata keys:
         {"meta": {"cli", "ts_utc", "classification", "exit_code",
@@ -2986,8 +2996,13 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
             },
             "digest": result.read_audit,
         }
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(rec, f, ensure_ascii=False, indent=2)
+        if override:
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(rec, f, ensure_ascii=False, indent=2)
+        else:
+            with path.open("w", encoding="utf-8") as f:
+                json.dump(rec, f, ensure_ascii=False, indent=2)
 
         if not override:
             _prune_dir_by_caps(
@@ -2998,6 +3013,59 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
     except Exception as e:
         log(f"emit_read_audit: failed to write digest file — {e}")
         return None
+
+
+def preclear_read_audit_file(repair_mode: bool = False) -> None:
+    """STALE-DIGEST close (final-gate fix round, converged codex+claude
+    finding). A review leg's packet dir is REUSED across rounds — if a call's
+    `emit_read_audit` write silently failed (best-effort, § above), a PRIOR
+    round's digest file was left in place at the SAME `TRIAD_READ_AUDIT_FILE`
+    path, where it reads as if it were THIS round's evidence (a stale-but-
+    present file is indistinguishable from a fresh PASS to a consumer that
+    only checks file existence + content, not provenance). Pre-clearing at
+    call START restores the correct degraded state — ABSENT — for a call that
+    fails before ever reaching `emit_read_audit`'s call site, or whose write
+    fails again.
+
+    Called by `antigravity_wrapper.py`'s `main()` at the very top, before ANY
+    other logic (argparse, validation, the vendor dispatch) — so EVERY exit
+    path, including an early arg-validation failure that never reaches
+    `emit_read_audit` at all, still leaves the file ABSENT rather than stale.
+
+    `repair_mode=True` SKIPS the clear entirely (re-confirm round 2 / G3,
+    claude Minor): a `--repair-mode` re-run re-executes the wrapper for
+    VERIFICATION purposes (the repair flow's Step 5d), a call unrelated to
+    the review leg's own evidence collection — if that re-run's environment
+    still carries the SAME `TRIAD_READ_AUDIT_FILE` the original leg used,
+    unconditional clearing DELETED the already-completed leg's digest before
+    the repair attempt even started (fail-closed, but a wasted re-dispatch
+    that then has to re-collect evidence it already had). Mirrors
+    `prune_stale_run_logs`'s own `if not repair_mode` skip inside
+    `_run_agy_with_retry` — a sibling next-run-cleanup step with the exact
+    same concern (a repair-mode call must not disturb ambient artifacts a
+    normal dispatch owns).
+
+    No-op when `TRIAD_READ_AUDIT_FILE` is unset (the default-dir path uses a
+    fresh uuid8-suffixed filename every call, so it can never collide with a
+    stale prior file in the first place — nothing to pre-clear there).
+    `FileNotFoundError` (nothing to clear — the common case) is silently
+    fine. Any OTHER `OSError` (permission denied, a directory sits at the
+    path, ...) logs ONE loud stderr line and CONTINUES: pre-clear is a
+    best-effort hygiene step, not a hard precondition, and failing the whole
+    dispatch over an unlinkable stale file would be worse than the stale-file
+    risk it closes.
+    """
+    if repair_mode:
+        return
+    override = os.environ.get("TRIAD_READ_AUDIT_FILE")
+    if not override:
+        return
+    try:
+        os.unlink(override)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log(f"preclear_read_audit_file: could not clear stale digest at {override} — {e}")
 
 
 # Default age floor for the next-run stale-prune. Must comfortably exceed the

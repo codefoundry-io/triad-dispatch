@@ -1,34 +1,33 @@
 # Changelog
 
-## 0.2.587 — 2026-08-01
+## 0.2.596 — 2026-08-01
 
-**Skill progressive-disclosure split + cross-family hardening —
-cross-family review v0.23.0, antigravity dispatch v0.13.0.** Both
-skill bodies are now lean operating overviews backed by ten
-on-demand `references/*.md` (leg contracts + the read-audit gate,
-packet lifecycle, triage + residual schema, failure modes,
-evidence; isolation, invocation, repair loop, long-answer,
-read-audit) — duplicated rules collapsed to one home each, version
-chronology moved out of live rule text. A 6-leg cross-family
-skill-prompt-review round then drove a hardening pass: the agy
-invocation template's heredoc terminator is collision-resistant
-(a prompt containing a bare terminator line can no longer close
-the heredoc early and execute as shell), the repair-loop run-log
-path check rejects traversal/quote/whitespace shapes before any
-`rm -f` or prompt interpolation, the review skill's degraded-mode
-trigger and codex-inline transport rules are stated unambiguously,
-and the codex `--search` leg gains a dispatch-time sensitivity
-precondition.
+**One structured verdict schema across all three review legs —
+cross-family review v0.24.1.** Every review leg now returns ONE
+validated `LegVerdict` object (verdict token, enumerated
+criteria_checked, findings[] with file/line/severity/trigger/
+context-known) instead of free prose: the codex leg via
+`--pydantic verdict_schema:LegVerdict` (native `--output-schema`,
+strict-massaged), the agy leg via the same flag (native
+`--json-schema`, fold-exempt — a long verdict rides the terminal
+stream event instead of the ~4KB chat fold), and the claude leg
+via a prompt contract validated by the shipped deterministic
+`lib/validate_verdict.py`. Consolidation maps `findings[]` into
+the residual table mechanically with jq. The read-audit digest
+file gained stale-round hardening: the wrapper pre-clears the
+bound path at call start (skipped on `--repair-mode`), the
+override write refuses symlinks (O_NOFOLLOW), and dispatch /
+pre-clear / gate all bind one byte-identical packet-relative
+literal. Schema floors: non-SAFE verdicts need >=1 finding,
+criteria and finding fields reject empty/whitespace, line >= 1.
 
-_(Prior release — **agy read-audit digest = durable FILE artifact
-(`TRIAD_READ_AUDIT_FILE`), cross-family review v0.22.0**: the agy
-wrapper writes its per-call digest to a JSON file on EVERY
-completed call — default `_logs/antigravity/read-audit/` with
-run-log-style prune caps, or the exact path bound via the env
-override — and the review skill's mechanical read-audit gate reads
-that file directly; the stderr-parsing surface is retired. The
-digest remains evidence of reading work, not an authenticated
-control.)_
+_(Prior release — **skill progressive-disclosure split, review
+v0.23.0 / antigravity dispatch v0.13.0**: both bodies became lean
+overviews backed by ten on-demand `references/*.md`, duplicated
+rules collapsed to one home each; a 6-leg skill-prompt-review
+round then hardened the agy heredoc terminator, the repair-loop
+run-log path check, the degraded-mode trigger wording, and added
+a codex `--search` sensitivity precondition.)_
 
 _(Prior release 0.2.572 — **agy transport = native stream-json (agy
 >= 1.1.8)**: the pty + completion-sentinel + transcript-scan stack is
