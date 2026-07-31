@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Single-shot Antigravity CLI (agy) wrapper — pty transport + dedicated driver.
+"""Single-shot Antigravity CLI (agy) wrapper — stream-json transport.
 
-agy -p drops stdout on a non-TTY and has no --output-format json, so this
-wrapper drives agy through a pty (_pty), scrubs control bytes, checks a
-per-call completion sentinel, and classifies via _common pure helpers in a
-dedicated extract-then-classify driver (the generic run_cli_with_retry
-classifies before extracting, which can't host agy's rc=0 auth-banner case).
+agy >= 1.1.8 print mode emits typed NDJSON (`--output-format stream-json`:
+init / step_update / terminal result), so this wrapper spawns agy via the
+shared _common._run_once (scrubbed child env, setsid, SIGTERM->SIGKILL
+killpg escalation), parses the stream with _common.parse_agy_stream, and
+classifies in a dedicated extract-then-classify driver (the generic
+run_cli_with_retry classifies before extracting, which can't host agy's
+answer-quotes-an-error-token cases). A deterministic read-audit digest of
+the stream's tool_info events (_common.digest_agy_stream) is emitted on
+stderr + into the run-log — REPORT-ONLY (policy stays with the caller).
+The pre-2026-07-31 pty + sentinel + transcript-read transport was deleted
+(git history has it); a version floor fails closed on agy < 1.1.8.
 
 Isolation is a per-call global-settings deny transaction (--sandbox
 read-only -> _agy_settings.agy_settings_guard mutates permissions.deny then
@@ -18,7 +24,6 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import secrets
 import signal
 import subprocess
 import sys
@@ -30,10 +35,9 @@ import json
 
 import _agy_settings
 import _common
-import _pty
-from _common import load_pydantic_class, inject_schema_to_prompt, validate_response
+from _common import load_pydantic_class, validate_response
 
-OFFSET_S = 10  # agy --print-timeout = max(timeout - OFFSET, MIN); pty kill is backstop
+OFFSET_S = 10  # agy --print-timeout = max(timeout - OFFSET, MIN); _run_once kill is backstop
 MIN_PRINT_TIMEOUT_S = 5
 SERVER_CAP_RETRIES = 2
 
@@ -44,47 +48,27 @@ class AgyResult:
     classification: str
     exit_code: int
     vendor_exit_code: int
-    # Raw scrubbed pty transcript — preserved on EVERY return path so the
-    # run-log + audit carry it for the agy-wrapper-repair agent (FIX 1).
-    scrubbed_output: str = ""
+    # Raw NDJSON stream text — preserved on EVERY return path (the run-log
+    # transcript: the repair agent reads the literal vendor events).
+    stream_output: str = ""
+    stderr: str = ""
     extraction_error: Optional[str] = None
     validated: Optional[dict] = None
+    # Deterministic fold of the stream's tool_info events (REPORT-ONLY).
+    read_audit: Optional[dict] = None
 
 
-def _make_sentinel() -> str:
-    """Per-INVOCATION identity marker, generated ONCE in main() and held constant
-    across the schema-repair re-run (reproducibility comes from reuse, not from
-    deriving it from the prompt).
-
-    A random 128-bit id (secrets.token_hex(16)) so two concurrent calls — even
-    with an IDENTICAL prompt AND identical cwd — get DISTINCT sentinels, and a
-    marker embedded in a reviewed document/log cannot forge a live call's
-    identity. Randomness defeats prediction and copy-from-a-past-log; the
-    transcript-extractor's structural "the marker is the USER_INPUT footer" check
-    (see _common._scan_transcript) defeats copy-from-a-concurrent-live-prompt.
-    Format AGY_DONE_<32 lowercase hex>; the extractor + fake-agy match the marker
-    length-agnostically."""
-    return f"AGY_DONE_{secrets.token_hex(16)}"
-
-
-def _build_cmd(prompt, sentinel, agy_sandbox, model, timeout, *, pydantic=False,
+def _build_cmd(prompt, agy_sandbox, model, timeout, *, json_schema=None,
                skip_permissions=False):
-    if pydantic:
-        sealed = (
-            f"{prompt}\n\n"
-            f"Respond with the JSON object only — no prose, no markdown fences. "
-            f"Immediately after the closing brace, on its own new line, emit the "
-            f"exact completion marker <<<{sentinel}>>> and nothing after it. "
-            f"The marker line is REQUIRED and is NOT part of the JSON."
-        )
-    else:
-        sealed = (
-            f"{prompt}\n\n"
-            f"End your final answer with the exact marker <<<{sentinel}>>> "
-            f"on its own line."
-        )
+    """Canonical agy invocation — stream-json transport (agy >= 1.1.8).
+    The prompt goes through CLEAN: no sentinel sealing (the 2026-07-31
+    migration removed the pty-era completion marker, so the transport no
+    longer mutates what the model sees)."""
     print_to = max(timeout - OFFSET_S, MIN_PRINT_TIMEOUT_S)
-    cmd = ["agy", "-p", sealed, "--print-timeout", f"{print_to}s"]
+    cmd = ["agy", "-p", prompt, "--output-format", "stream-json",
+           "--print-timeout", f"{print_to}s"]
+    if json_schema:
+        cmd += ["--json-schema", json_schema]
     if agy_sandbox:
         cmd.append("--sandbox")
     if model:
@@ -94,32 +78,43 @@ def _build_cmd(prompt, sentinel, agy_sandbox, model, timeout, *, pydantic=False,
     return cmd
 
 
-def _repair_cmd(cmd, err, sentinel):
-    """Rebuild the agy cmd with a one-shot JSON-repair hint appended to the -p arg.
-
-    RESEALS the prompt (P4 round-3, codex finding): `err` is DYNAMIC text (a
-    pydantic validation message that can echo the failing value — potentially
-    containing a marker-shaped string from reviewed content), and the
-    transcript-identity rule keys on the LAST agy-marker in the USER_INPUT
-    footer. Re-appending this call's own marker after the hint guarantees it
-    stays last, so the repair re-run's transcript is still owned by THIS call
-    and can never be claimed by (or claim) another live call's sentinel."""
+def _repair_cmd(cmd, err):
+    """Rebuild the agy cmd with a one-shot JSON-repair hint appended to the
+    -p arg (the vendor's own --json-schema repair turn failed to satisfy the
+    LOCAL pydantic validation — belt-and-suspenders re-run, exactly once)."""
     new = list(cmd)
     i = new.index("-p") + 1
     new[i] = (new[i] + f"\n\nYour previous output was NOT valid JSON for the "
-              f"schema ({err}). Output ONLY corrected JSON, then the marker "
-              f"line <<<{sentinel}>>> on its own new line.")
+              f"schema ({err}). Output ONLY the corrected JSON object.")
     return new
 
 
-def _classify_no_answer(scrubbed: str, killed: bool, vendor_rc: int) -> tuple:
-    """§6: decide classification for the no-answer case. Returns (cls, exit)."""
-    if killed:
-        return "timeout", _common.EXIT_TIMEOUT
-    if not scrubbed.strip():
+def _classify_no_answer(stderr: str, signals, vendor_rc: int,
+                        status=None) -> tuple:
+    """Decide classification for the no-usable-answer case.
+
+    The classify blob is stderr + STRUCTURAL stream signals + a synthetic
+    status token (so an L2 pattern or a future extension entry can key on an
+    unknown result status). It deliberately does NOT include the raw NDJSON
+    stream (r1/R2): that stream carries model-authored prose, tool OUTPUT and
+    tool PARAMETERS — the reviewed content itself — so a packet quoting a
+    capacity phrase forced spurious `server-capacity` re-dispatches and one
+    quoting an auth banner produced a terminal `oauth-env`. `signals` comes
+    from `_common.agy_classify_signals` (typed error payloads only). The full
+    raw stream still rides in `stream_output` for the run-log, so the repair
+    agent's diagnostics are unchanged.
+    """
+    status_tok = f"agy result status={str(status)[:200]}" if status else ""
+    parts = [stderr, *list(signals or []), status_tok]
+    blob = "\n".join(t for t in parts if t and t.strip())
+    if not blob.strip() and vendor_rc == 0:
+        # Nothing structural to classify AND the vendor exited 0. A nonzero rc
+        # still goes through classify() so the L1 vendor-exit map keeps its
+        # say (a silent vendor failure that only signals through its rc must
+        # not be swallowed by this short-circuit).
         return "extraction-error", _common.EXIT_CLI_FAIL
     cls = _common.classify(
-        "antigravity", stderr=scrubbed, stdout="",
+        "antigravity", stderr=blob, stdout="",
         exit_code=_common.EXIT_CLI_FAIL, vendor_exit_code=vendor_rc,
     )
     return cls, _common.map_classification_to_exit(cls)
@@ -188,208 +183,235 @@ def _parse_agy_version(text):
     return tuple(int(g) for g in m.groups()) if m else None
 
 
-def _agy_needs_skip_permissions(agy_bin) -> bool:
-    """True when the installed agy version soft-denies headless tools and the
-    operator has NOT opted out (AGY_NO_HEADLESS_AUTOAPPROVE=1). Deterministic
-    (version compare, ~instant) — no per-dispatch probe. Version-adaptive: the
-    wrapper follows agy instead of pinning a version, so updates keep flowing.
-    An unparseable/failed `--version` is treated as NOT needing the flag
-    (fail-safe toward the stronger deny-transaction isolation)."""
-    if os.environ.get("AGY_NO_HEADLESS_AUTOAPPROVE") == "1":
-        return False
+# Floor for the stream-json transport (this wrapper's ONLY transport since the
+# 2026-07-31 migration; pty+sentinel deleted). Fail-CLOSED: an older or
+# unprobeable agy stops loudly with a `config-conflict` (Task 6) — a silent
+# fallback would change the prompt shape mid-fleet (the old sentinel sealing
+# mutated the prompt) and mask a vendor regression from the repair loop.
+_STREAM_JSON_FLOOR = (1, 1, 8)
+
+
+def _probe_agy_version(agy_bin):
+    """One `agy --version` probe (scrubbed env, 15s). Returns the parsed
+    (major, minor, patch) tuple, or None on OSError / non-zero rc /
+    unparseable output. Callers interpret None per their own fail
+    direction: the stream floor fail-CLOSES (stop), the skip-permissions
+    gate fail-SAFES (no danger flag)."""
     try:
         proc = subprocess.run([agy_bin, "--version"], capture_output=True,
                               text=True, timeout=15,
                               env=_common.scrubbed_child_env())
     except (OSError, subprocess.SubprocessError):
-        return False
-    # Fail-safe (merge-review F4/Q4): a NON-ZERO `--version` exit is an
-    # unreliable read — even if its stdout happens to carry a semver, do not
-    # trust it to enable the isolation-voiding flag. Only a clean rc=0 counts.
+        return None
+    # Fail-safe (merge-review F4/Q4): a non-zero --version exit is an
+    # unreliable read.
     if proc.returncode != 0:
+        return None
+    return _parse_agy_version(proc.stdout)
+
+
+def _agy_needs_skip_permissions(ver) -> bool:
+    """True when the probed agy version soft-denies headless tools and the
+    operator has NOT opted out (AGY_NO_HEADLESS_AUTOAPPROVE=1). Pure on the
+    version tuple (probed ONCE in main); None fail-safes to False (never
+    enable the isolation-voiding flag on an unreliable read)."""
+    if os.environ.get("AGY_NO_HEADLESS_AUTOAPPROVE") == "1":
         return False
-    ver = _parse_agy_version(proc.stdout)
     return ver is not None and ver >= _HEADLESS_SOFTDENY_FLOOR
 
 
-def _run_agy_with_retry(cmd, prompt, timeout, *, expected_sentinel,
-                        cwd=None, sandbox=False, model=None,
+def _validate_structured(result, answer, pydantic_cls):
+    """Local pydantic validation over the vendor's --json-schema output.
+    PREFER result['structured_output'] (the vendor already schema-checked and
+    self-repaired it — spike P4 showed an internal repair turn); fall back to
+    the raw response text when absent (vendor drift guard). Returns
+    (True, validated_dict) or (False, error_message_str) — same contract the
+    schema-repair re-run and EXIT_SCHEMA_FAIL path consume.
+
+    r1/R11: when structured_output was PRESENT but failed validation, that
+    error is what the schema-repair hint must carry. It used to be discarded
+    in favour of the raw-response fallback's error, which for the normal shape
+    (prose in `response`, the real payload in `structured_output`) is a
+    generic 'Invalid JSON: expecting value' — the repair turn was told its
+    output was not JSON when the actual violation was a missing/invalid FIELD,
+    so it had nothing actionable to fix."""
+    structured = result.get("structured_output") if isinstance(result, dict) else None
+    struct_err = None
+    if structured is not None:
+        ok, payload = validate_response(
+            json.dumps(structured, ensure_ascii=False, default=str), pydantic_cls)
+        if ok:
+            return ok, payload
+        struct_err = str(payload)[:600]
+    ok, payload = validate_response(answer, pydantic_cls)
+    if ok or struct_err is None:
+        return ok, payload
+    # Lead with the real violation; keep the fallback error too (nothing
+    # hidden), both bounded — this string is appended to the repair prompt.
+    return False, (f"structured_output invalid: {struct_err} "
+                   f"| raw-response fallback also invalid: {str(payload)[:300]}")
+
+
+def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                         repair_mode=False, pydantic_cls=None) -> AgyResult:
-    """Dedicated driver (design §6): pty-run -> scrub -> extract -> classify
-    with a bounded server-capacity retry (cap SERVER_CAP_RETRIES).
-
-    Decision table (extract-then-classify so a rc=0 auth banner the model
-    quotes inside a real answer never mis-classifies; ORDER MATTERS):
-      - killed          -> ("timeout", EXIT_TIMEOUT)   [FIRST — P4 round 2:
-                            a killed run has no complete DONE record, so any
-                            pty "answer" is partial, and its rc=128+signal
-                            would otherwise hit the rc gate and mislabel a
-                            retriable timeout as terminal vendor-error]
-      - answer present + non-empty, vendor rc==0, own-line
-        `<truncated N bytes|lines>` marker inside -> ("truncated-answer",
-                            EXIT_TERMINAL)   [agy folded the middle of the
-                            answer CLI-side and kept no full copy anywhere
-                            (transcript DONE record is capped too) — lossy,
-                            never a silent ok, never classify/repair; answer
-                            quarantined like vendor-error; leader re-dispatches
-                            under the output-file contract]
-      - answer present + non-empty, vendor rc==0 -> ("ok", EXIT_OK)
-                                                     [classify NOT called]
-      - answer present + non-empty, vendor rc!=0 -> ("vendor-error",
-                            EXIT_TERMINAL)   [P4 rc gate — never a silent ok,
-                            never via classify; answer quarantined from stdout,
-                            bounded copy in extraction_error -> run-log]
-      - sentinel found, body empty -> ("extraction-error", EXIT_CLI_FAIL)
-                                       [direct — NOT via classify, whose blob
-                                        still holds the marker and would
-                                        misroute an empty answer to unknown]
-      - clean + empty   -> ("extraction-error", EXIT_CLI_FAIL)
-      - else            -> classify(antigravity, scrubbed) -> mapped exit;
-                            server-capacity retries the whole pty run.
-
-    Two INDEPENDENT retry budgets (F-Q2): `server_attempt` governs the
-    server-capacity retry (cap SERVER_CAP_RETRIES), while `schema_repaired`
-    is a one-shot bool for the single schema-repair re-run. They are
-    decoupled — a transient server-capacity blip never consumes the lone
-    schema-repair slot, and a schema repair never reduces the server-cap
-    budget. The schema-repair re-run fires exactly once regardless of
-    `repair_mode` (schema validity is orthogonal to the classifier re-run
-    that `repair_mode` governs).
-
-    `repair_mode` disables the server-capacity retry (the repair agent IS the
-    retry — spec §4 + agy-wrapper-repair.md). `cwd` is a normal kwarg
-    (defaults None) — no instance state, so the t15 monkeypatched calls that
-    omit cwd work unchanged. The scrubbed transcript is carried on EVERY
-    return path (FIX 1) so the run-log feeds the repair agent the literal error.
-    """
-    # Next-run IPC cleanup (owner contract) — see run_cli_with_retry. agy has
-    # its own driver, so the prune-at-START is wired here too. Skipped in
-    # repair_mode (repair agent is inspecting the run-log).
+    """Dedicated extract-then-classify driver over the stream-json transport.
+    See the plan's decision table (2026-07-31) — ORDER MATTERS. Spawn =
+    _common._run_once(classify_and_log=False): shared scrubbed env + setsid +
+    SIGTERM->SIGKILL killpg escalation; classification and the canonical
+    one-line summary stay THIS driver's job."""
     if not repair_mode:
         _common.prune_stale_run_logs("antigravity")
 
+    # F-Q2: these three retry budgets are INDEPENDENT — schema_repaired,
+    # skip_retried, and the server-capacity budget (max_retries/server_attempt)
+    # each gate a different failure shape and do not share state. In
+    # particular, schema repair fires exactly ONCE regardless of repair_mode;
+    # repair_mode only disables the server-capacity retry (max_retries=0),
+    # never the one-shot schema repair or the one-shot soft-deny retry.
     max_retries = 0 if repair_mode else SERVER_CAP_RETRIES
-    server_attempt = 0       # server-capacity retry budget (independent)
-    schema_repaired = False  # one-shot schema-repair (independent of server-cap + repair_mode)
-    skip_retried = False     # one-shot headless soft-deny -> skip-permissions retry
+    server_attempt = 0
+    schema_repaired = False   # one-shot local-validation repair re-run (Task 5)
+    skip_retried = False      # one-shot headless soft-deny -> skip-permissions retry
+    # r1/R4: one digest per ATTEMPT, aggregated on every return path. Emitting
+    # only the LAST attempt's digest let a short-circuiting retry CONCEAL an
+    # earlier attempt's reads — the review SKILL's mechanical read-audit gate
+    # then VOIDed a leg that had demonstrably read the packet.
+    attempt_digests: list = []
     while True:
-        # P4.5 transcript-read transport (spike-verified 2026-07-05): snapshot
-        # agy's per-conversation transcript store BEFORE the run so the new
-        # conversation (this call's) is identifiable afterward.
-        _brain_before = _common.snapshot_agy_transcripts()
-        # env=None => _pty inherits the SCRUBBED child env (loader/interpreter
-        # injection vars dropped via _common.scrubbed_child_env, I-2/I-3) — the
-        # agy-transport equivalent of _run_once's Popen env= scrub.
-        result = _pty.run_via_pty(cmd, cwd=cwd, timeout=timeout, env=None)
-        scrubbed = _common.scrub_agy_output(result.output_bytes)
-        if result.killed:
-            # Killed short-circuit (P4 review round 2, 3-family convergent):
-            # a killed run has no complete DONE record — that is exactly why
-            # transcript-read is skipped for it — so any pty-scrub "answer"
-            # (e.g. an early-echoed marker) is partial and unreliable, and a
-            # kill reaps rc=128+signal, which would otherwise fall into the
-            # rc gate and mislabel a retriable timeout as terminal
-            # vendor-error. The scrubbed partial output still reaches the
-            # run-log for inspection.
+        rr = _common._run_once("antigravity", cmd, cwd, timeout,
+                               classify_and_log=False)
+        stream = rr.stdout
+        events, result = _common.parse_agy_stream(stream)
+        attempt_digests.append(_common.digest_agy_stream(events, result))
+        audit = _common.merge_agy_digests(attempt_digests)
+        if rr.exit_code == _common.EXIT_TIMEOUT:
+            # Killed short-circuit FIRST: a killed run's stream is a partial
+            # prefix — never trust a result event parsed out of it.
             return AgyResult(None, "timeout", _common.EXIT_TIMEOUT,
-                             result.rc, scrubbed_output=scrubbed)
-        # PRIMARY: read the complete answer from agy's own transcript.jsonl
-        # (the identity anchor is the USER_INPUT footer, so a long answer that
-        # drops the trailing marker is still recovered). FALLBACK to
-        # pty-scrub+sentinel.
-        answer = _common.extract_agy_answer_from_transcript(
-            None, _brain_before, sentinel=expected_sentinel)
-        ext_err = None
-        if answer is None:
-            answer, ext_err = _common.extract_antigravity_answer(
-                scrubbed, result.killed, expected_sentinel)
-        if answer is not None and answer.strip():
-            if result.rc != 0:
-                # rc gate (P4). success => rc=0 (agy audit: 36/36 ok at rc=0).
-                # A non-empty answer at a FAILING vendor rc is NOT a silent ok,
-                # and is NOT fed to classify (a real answer can quote error-shaped
-                # tokens -> a spurious server-capacity re-run / oauth-env terminal
-                # that discards a valid answer). A DISTINCT token routed to
-                # surface-not-repair: reusing `extraction-error` would MANDATE a
-                # repair-agent dispatch (SKILL Hard rule 8) and violate its
-                # documented "rc=0, no answer" invariant. The answer is
-                # QUARANTINED from stdout (final_answer=None, like every other
-                # failure); a bounded copy rides in extraction_error so the
-                # RUN-LOG genuinely carries it even when it was recovered from
-                # the transcript (not the pty output) — review round-2 fix.
+                             rr.vendor_exit_code, stream_output=stream,
+                             stderr=rr.stderr, read_audit=audit)
+        # r1/R3: every field below is vendor-controlled. A non-dict result or
+        # a non-string `response` (the model can emit a JSON object there)
+        # must degrade to "no usable answer" — CLASSIFIED, audited, run-logged
+        # — never an AttributeError traceback that costs the caller its
+        # summary line, audit row and run-log.
+        status = result.get("status") if isinstance(result, dict) else None
+        raw_answer = result.get("response") if isinstance(result, dict) else None
+        answer = raw_answer if isinstance(raw_answer, str) else ""
+        bad_answer_type = (raw_answer is not None
+                           and not isinstance(raw_answer, str))
+        if result is not None and answer.strip():
+            if rr.vendor_exit_code != 0 or status != "SUCCESS":
+                # rc gate (kept) + status gate (NEW): the status vocabulary
+                # beyond SUCCESS is unobserved — a non-SUCCESS answer is never
+                # a silent ok and never fed to classify (a real answer can
+                # quote error-shaped tokens). Bounded quarantined copy rides
+                # in extraction_error for the run-log.
+                #
+                # "vendor-error" is a DISTINCT token, deliberately absent from
+                # _common.CLASSIFICATION_TOKENS (surface-not-repair, P4
+                # 2026-07-11): this condition (rc!=0 or non-SUCCESS status
+                # WITH a real answer) is something a classifier patch cannot
+                # express, so it is emitted directly here rather than routed
+                # through classify(). Reusing "extraction-error" for this case
+                # would mandate a MANDATORY repair-agent dispatch per the
+                # dispatch SKILL's Hard rule 8 — wrong: there is nothing for
+                # the repair agent to patch, this is a real answer the caller
+                # should just see.
                 snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
                 return AgyResult(None, "vendor-error", _common.EXIT_TERMINAL,
-                                 result.rc, scrubbed_output=scrubbed,
+                                 rr.vendor_exit_code, stream_output=stream,
+                                 stderr=rr.stderr, read_audit=audit,
                                  extraction_error=(
-                                     f"vendor rc={result.rc} returned a non-empty "
-                                     f"answer; surfaced as vendor-error (not ok, "
-                                     f"not repair). quarantined answer: {snippet}"))
+                                     f"vendor rc={rr.vendor_exit_code} "
+                                     f"status={status!r} returned a non-empty "
+                                     f"answer; surfaced as vendor-error. "
+                                     f"quarantined answer: {snippet}"))
             if _AGY_TRUNCATION_MARKER_RE.search(answer):
-                # Vendor mid-answer fold (see _AGY_TRUNCATION_MARKER_RE note):
-                # the answer LOOKS complete but its middle was replaced by the
-                # marker and the lost bytes exist nowhere agy-side. Never a
-                # silent ok. Driver-emitted terminal token (NOT classify, NOT
-                # repair — deterministic vendor behavior on the answer-present
-                # path, which a classifier patch cannot express; mirrors the
-                # vendor-error quarantine). Leader remediation = re-dispatch
-                # under the SKILL's absolute-path output-file contract
-                # (write_file is not subject to the fold).
                 snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
                 return AgyResult(None, "truncated-answer", _common.EXIT_TERMINAL,
-                                 result.rc, scrubbed_output=scrubbed,
+                                 rr.vendor_exit_code, stream_output=stream,
+                                 stderr=rr.stderr, read_audit=audit,
                                  extraction_error=(
                                      "agy folded the answer mid-body "
-                                     "(own-line <truncated N bytes|lines> marker); "
-                                     "lossy and unrecoverable at this layer. "
+                                     "(own-line <truncated N bytes|lines> marker). "
                                      f"quarantined answer: {snippet}"))
             if pydantic_cls is None:
-                return AgyResult(answer, "ok", _common.EXIT_OK, result.rc,
-                                 scrubbed_output=scrubbed)
-            ok, payload = validate_response(answer, pydantic_cls)
+                return AgyResult(answer, "ok", _common.EXIT_OK,
+                                 rr.vendor_exit_code, stream_output=stream,
+                                 stderr=rr.stderr, read_audit=audit)
+            ok, payload = _validate_structured(result, answer, pydantic_cls)
             if ok:
-                return AgyResult(answer, "ok", _common.EXIT_OK, result.rc,
-                                 scrubbed_output=scrubbed, validated=payload)
-            if not schema_repaired:   # exactly one schema-repair re-run, independent
-                cmd = _repair_cmd(cmd, payload, expected_sentinel)
+                return AgyResult(answer, "ok", _common.EXIT_OK,
+                                 rr.vendor_exit_code, stream_output=stream,
+                                 stderr=rr.stderr, read_audit=audit,
+                                 validated=payload)
+            if not schema_repaired:
+                cmd = _repair_cmd(cmd, payload)
                 schema_repaired = True
                 continue
             return AgyResult(answer, "schema-fail", _common.EXIT_SCHEMA_FAIL,
-                             result.rc, scrubbed_output=scrubbed,
+                             rr.vendor_exit_code, stream_output=stream,
+                             stderr=rr.stderr, read_audit=audit,
                              extraction_error=f"schema: {payload}")
-        if answer is not None:
-            # Sentinel present but the answer body is empty — a real
-            # extraction failure, NOT a silent empty ok. Do not fall through
-            # to classify (the scrubbed blob still carries the marker).
-            return AgyResult(None, "extraction-error", _common.EXIT_CLI_FAIL,
-                             result.rc, scrubbed_output=scrubbed,
-                             extraction_error="empty-answer-body")
-        # agy 1.1.3+ headless soft-deny adaptation (owner-authorized 2026-07-18).
-        # When agy auto-denied a tool because print mode cannot prompt, the ONLY
-        # way the (read-only-intent) dispatch can run its tools is to
-        # auto-approve permissions. Retry ONCE with --dangerously-skip-permissions.
-        # SELF-ADAPTING + TARGETED: keyed on the exact vendor signature, so it
-        # NEVER fires on a version where the allow-list works (<=1.1.2, any future
-        # fix) — the wrapper follows agy's behavior instead of pinning a version.
-        # Opt-out: AGY_NO_HEADLESS_AUTOAPPROVE=1 (strict deployments; agy then
-        # stays unusable headless but no auto-approve).
-        # CAVEAT: --dangerously-skip-permissions VOIDS the deny transaction (write
-        # and command tools become auto-approved too — Deny>Allow no longer holds).
-        # The dispatch's containment then rests on the review INTENT + disposable
-        # --cwd + leader verification, NOT the deny list. Documented in the SKILL
-        # § Isolation + the safety boundary.
-        if (answer is None and not skip_retried
-                and _is_headless_softdeny(scrubbed)
+        # ── no usable answer from here ──
+        # Structural failure signals ONLY (typed tool errors / error_message
+        # steps). The raw stream is deliberately NOT part of either the
+        # soft-deny match or the classify blob (r1/R2 + the adjudicated F2
+        # structural fix): it carries the reviewed content, so quoted text
+        # could steer a retry or a terminal classification.
+        signals = _common.agy_classify_signals(events, result)
+        softdeny_blob = "\n".join([rr.stderr or "", *signals])
+        if (not skip_retried and _is_headless_softdeny(softdeny_blob)
                 and os.environ.get("AGY_NO_HEADLESS_AUTOAPPROVE") != "1"):
-            cmd = _add_skip_permissions(cmd)
+            # P2 evidence: the jetski soft-deny notice coexists with a
+            # SUCCESS+empty result — so this retry covers the empty-response
+            # path, not only the missing-result path.
+            #
+            # SECURITY (owner-authorized 2026-07-18): --dangerously-skip-
+            # permissions VOIDS the per-call deny transaction for this retry
+            # attempt — write_file/command (and everything else the deny
+            # transaction would otherwise block) is auto-approved, not just
+            # the soft-denied read. Containment for this retry then rests on
+            # review INTENT (read-only/research dispatch) + a disposable
+            # --cwd + leader verification of the result, NOT on the deny
+            # list. Opt out with AGY_NO_HEADLESS_AUTOAPPROVE=1 (checked just
+            # above) when that residual is unacceptable for a given call.
+            #
+            # Retry ONLY when the flag actually CHANGES the command (the
+            # adjudicated F2 structural fix). On every dispatchable build the
+            # stream floor (1.1.8) is above the soft-deny floor (1.1.3), so
+            # main() already set the flag on call #1 and _add_skip_permissions
+            # is idempotent — the retry then re-ran a BYTE-IDENTICAL command,
+            # silently doubling the vendor call with no possible change in
+            # outcome. skip_retried is consumed either way (one-shot).
             skip_retried = True
-            continue
-        cls, code = _classify_no_answer(scrubbed, result.killed, result.rc)
+            new_cmd = _add_skip_permissions(cmd)
+            if new_cmd != cmd:
+                cmd = new_cmd
+                continue
+            _common.log("headless soft-deny signature but the flag is already "
+                        "present — skipping an identical re-run")
+        if result is not None and status == "SUCCESS":
+            # SUCCESS + empty response (spike P2, rc=0): a failed task the
+            # vendor reports as success. Never a silent empty ok.
+            note = "empty-answer-body"
+            if bad_answer_type:
+                note += (f" (non-string response payload: "
+                         f"{type(raw_answer).__name__})")
+            return AgyResult(None, "extraction-error", _common.EXIT_CLI_FAIL,
+                             rr.vendor_exit_code, stream_output=stream,
+                             stderr=rr.stderr, read_audit=audit,
+                             extraction_error=note)
+        cls, code = _classify_no_answer(rr.stderr, signals,
+                                        rr.vendor_exit_code, status)
         if cls == "server-capacity" and server_attempt < max_retries:
             _server_cap_backoff(server_attempt)
             server_attempt += 1
             continue
-        return AgyResult(None, cls, code, result.rc, scrubbed_output=scrubbed,
-                         extraction_error=ext_err)
+        return AgyResult(None, cls, code, rr.vendor_exit_code,
+                         stream_output=stream, stderr=rr.stderr,
+                         read_audit=audit)
 
 
 def _server_cap_backoff(attempt: int) -> None:
@@ -407,7 +429,7 @@ def _terminate_to_exit(signum, frame):
 
 def main() -> int:
     # SIGTERM/SIGHUP unwind instead of dying mid-transaction, so the settings
-    # guard restore + pty child kill run on the way out (SIGKILL stays
+    # guard restore + vendor child kill run on the way out (SIGKILL stays
     # uncoverable by design — .agybak + next-call heal owns that window).
     try:
         signal.signal(signal.SIGTERM, _terminate_to_exit)
@@ -434,8 +456,9 @@ def main() -> int:
     p.add_argument("--repair-mode", action="store_true")
     p.add_argument("--debug", action="store_true")
     p.add_argument("--pydantic", default=None,
-                   help="pydantic class spec (module:Class) — prompt-instructed "
-                        "JSON + validate (agy has no native schema)")
+                   help="pydantic class spec (module:Class) — native "
+                        "--json-schema (model_json_schema()) + local "
+                        "validate; one repair re-run then exit 66")
     # NOTE: --dangerously-* are intentionally NOT defined -> argparse rejects
     # them (danger flags are banned).
     args = p.parse_args()
@@ -472,89 +495,117 @@ def main() -> int:
 
     agy_bin = _common.require_binary("agy")
 
-    sandbox_mode = args.sandbox
-    deny_rules = _agy_settings.build_deny_rules(sandbox_mode) if sandbox_mode else []
-    agy_sandbox = sandbox_mode is not None  # read-only passes agy --sandbox (terminal ring)
-    try:
-        settings_lock_timeout = float(os.environ.get("AGY_SETTINGS_LOCK_TIMEOUT", "30"))
-    except ValueError:
-        _common.log("AGY_SETTINGS_LOCK_TIMEOUT must be a number")
-        return _common.EXIT_ARG_ERROR
-
-    sentinel = _make_sentinel()
-    eff_prompt = inject_schema_to_prompt(args.prompt, pydantic_cls) if pydantic_cls else args.prompt
-    # agy 1.1.3+ headless soft-deny adaptation (owner-authorized 2026-07-18):
-    # version-gated auto-approve so a read-only-INTENT dispatch can actually run
-    # its own read tools (the vendor stopped consulting the allow-list in print
-    # mode). See _agy_needs_skip_permissions + § Isolation caveat.
-    skip_permissions = _agy_needs_skip_permissions(agy_bin)
-    cmd = _build_cmd(eff_prompt, sentinel, agy_sandbox, args.model, args.timeout,
-                     pydantic=pydantic_cls is not None,
-                     skip_permissions=skip_permissions)
-    # argv[0] = resolved/pinned agy path (finding #3). _build_cmd stays pure ("agy"
-    # literal) so its unit test is unaffected; the pin is substituted here at the
-    # run site so a PATH shadow cannot win when the pty execs argv[0].
-    cmd[0] = agy_bin
-
-    start = time.monotonic()
     r: Optional[AgyResult] = None
-    try:
-        with _agy_settings.agy_settings_guard(
-            deny_rules,
-            lock_timeout=settings_lock_timeout,
-        ):
-            r = _run_agy_with_retry(cmd, args.prompt, args.timeout,
-                                    expected_sentinel=sentinel, cwd=args.cwd,
-                                    sandbox=agy_sandbox, model=args.model,
-                                    repair_mode=args.repair_mode,
-                                    pydantic_cls=pydantic_cls)
-    except (TimeoutError, json.JSONDecodeError, ValueError, OSError) as e:
-        # Settings-transaction failure (lock timeout / corrupt settings.json /
-        # transient fs error) — surface as classification `config-conflict`
-        # (EXIT_TERMINAL, user escalate), never a traceback. If the vendor run
-        # ALREADY completed and only the transaction release failed, suppress
-        # the completed answer (the deny lease did not close cleanly) but keep
-        # the transcript for the run-log.
-        prior = r
-        extraction_error = f"agy settings/config conflict: {e}"
-        _common.log(extraction_error)
-        if prior is not None:
-            extraction_error = (
-                f"{e}; completed vendor result suppressed because the agy "
-                f"settings transaction did not release cleanly"
+    elapsed = 0.0
+    cmd = [agy_bin]
+
+    # Probe is unconditional BY DESIGN: the stream-json floor gate below needs
+    # the version read even when AGY_NO_HEADLESS_AUTOAPPROVE=1 is set — that
+    # opt-out governs only the skip-permissions flag (_agy_needs_skip_permissions),
+    # never the floor gate.
+    ver = _probe_agy_version(agy_bin)
+    if ver is None or ver < _STREAM_JSON_FLOOR:
+        # Fail-CLOSED floor: the stream-json transport is the only transport
+        # (2026-07-31 migration). Surface as config-conflict (user runs
+        # `agy update`), audited like every other terminal outcome.
+        found = ".".join(map(str, ver)) if ver else "unprobeable"
+        r = AgyResult(None, "config-conflict", _common.EXIT_TERMINAL, -1,
+                      extraction_error=(
+                          f"agy {found} < 1.1.8 — the stream-json transport "
+                          f"requires agy >= 1.1.8; run `agy update`"))
+    else:
+        sandbox_mode = args.sandbox
+        deny_rules = _agy_settings.build_deny_rules(sandbox_mode) if sandbox_mode else []
+        agy_sandbox = sandbox_mode is not None  # read-only passes agy --sandbox (terminal ring)
+        try:
+            settings_lock_timeout = float(os.environ.get("AGY_SETTINGS_LOCK_TIMEOUT", "30"))
+        except ValueError:
+            _common.log("AGY_SETTINGS_LOCK_TIMEOUT must be a number")
+            return _common.EXIT_ARG_ERROR
+
+        # agy 1.1.3+ headless soft-deny adaptation (owner-authorized 2026-07-18):
+        # version-gated auto-approve so a read-only-INTENT dispatch can actually run
+        # its own read tools (the vendor stopped consulting the allow-list in print
+        # mode). See _agy_needs_skip_permissions + § Isolation caveat. Reuses the
+        # single probe above — no second implicit probe site.
+        skip_permissions = _agy_needs_skip_permissions(ver)
+        json_schema = json.dumps(pydantic_cls.model_json_schema()) if pydantic_cls else None
+        cmd = _build_cmd(args.prompt, agy_sandbox, args.model, args.timeout,
+                         json_schema=json_schema,
+                         skip_permissions=skip_permissions)
+        # argv[0] = resolved/pinned agy path (finding #3). _build_cmd stays pure ("agy"
+        # literal) so its unit test is unaffected; the pin is substituted here at the
+        # run site so a PATH shadow cannot win when the pty execs argv[0].
+        cmd[0] = agy_bin
+
+        start = time.monotonic()
+        try:
+            with _agy_settings.agy_settings_guard(
+                deny_rules,
+                lock_timeout=settings_lock_timeout,
+            ):
+                r = _run_agy_with_retry(cmd, args.prompt, args.timeout,
+                                        cwd=args.cwd,
+                                        repair_mode=args.repair_mode,
+                                        pydantic_cls=pydantic_cls)
+        except (TimeoutError, json.JSONDecodeError, ValueError, OSError) as e:
+            # Settings-transaction failure (lock timeout / corrupt settings.json /
+            # transient fs error) — surface as classification `config-conflict`
+            # (EXIT_TERMINAL, user escalate), never a traceback. If the vendor run
+            # ALREADY completed and only the transaction release failed, suppress
+            # the completed answer (the deny lease did not close cleanly) but keep
+            # the transcript for the run-log.
+            prior = r
+            extraction_error = f"agy settings/config conflict: {e}"
+            _common.log(extraction_error)
+            if prior is not None:
+                extraction_error = (
+                    f"{e}; completed vendor result suppressed because the agy "
+                    f"settings transaction did not release cleanly"
+                )
+                if prior.extraction_error:
+                    # P4 round-3: never DISCARD the prior result's diagnostic —
+                    # for a vendor-error answer this carries the only run-log
+                    # copy of the quarantined answer.
+                    extraction_error += f" | prior: {prior.extraction_error}"
+            r = AgyResult(
+                None,
+                "config-conflict",
+                _common.EXIT_TERMINAL,
+                prior.vendor_exit_code if prior is not None else -1,
+                stream_output=prior.stream_output if prior is not None else "",
+                stderr=prior.stderr if prior is not None else "",
+                read_audit=prior.read_audit if prior is not None else None,
+                extraction_error=extraction_error,
             )
-            if prior.extraction_error:
-                # P4 round-3: never DISCARD the prior result's diagnostic —
-                # for a transcript-recovered vendor-error answer this carries
-                # the only run-log copy of the quarantined answer.
-                extraction_error += f" | prior: {prior.extraction_error}"
-        r = AgyResult(
-            None,
-            "config-conflict",
-            _common.EXIT_TERMINAL,
-            prior.vendor_exit_code if prior is not None else -1,
-            scrubbed_output=prior.scrubbed_output if prior is not None else "",
-            extraction_error=extraction_error,
-        )
-    elapsed = time.monotonic() - start
+        elapsed = time.monotonic() - start
 
     # Build a RunResult for the shared audit / run-log / debug helpers.
-    # Convention (matches the generic run_cli_with_retry): RunResult.stdout =
-    # the RAW vendor transcript (here the scrubbed pty output), final_answer =
-    # the extracted answer (or ""). emit_run_log writes result.stdout, so the
-    # failure run-log now carries the literal transcript for the repair agent
-    # (FIX 1) instead of an empty string on unknown/oauth-env/extraction-error.
     rr = _common.RunResult(
         exit_code=r.exit_code,
-        stdout=r.scrubbed_output,
-        stderr="",
+        stdout=r.stream_output,
+        stderr=r.stderr,
         elapsed_s=elapsed,
         classification=r.classification,
         mode="repair" if args.repair_mode else "normal",
         final_answer=r.final_answer or "",
         extraction_error=r.extraction_error,
         vendor_exit_code=r.vendor_exit_code,
+        read_audit=r.read_audit,
     )
+
+    # Read-audit digest — emitted BEFORE the canonical summary line, on EVERY
+    # completed vendor call (ok or not), so the review SKILL / leader can
+    # consume it even on success (the run-log only exists on failure).
+    if r.read_audit is not None:
+        # ensure_ascii=True (r1/R9): the digest is vendor/model-controlled and
+        # this line carries the TRUSTED `[wrapper] antigravity ` prefix the
+        # review SKILL greps. With ensure_ascii=False a raw U+2028/U+2029 (or
+        # any other line-terminator a consumer's splitlines() honours) rode
+        # straight through, letting the payload forge extra leader-visible
+        # lines. Escaping them keeps the line single-line by construction.
+        _common.log("[wrapper] antigravity read-audit "
+                    + json.dumps(r.read_audit, separators=(",", ":")))
 
     # Canonical 1-line summary — byte-match the format _run_once emits so the
     # dispatch SKILL grep + the parity test see the same shape.

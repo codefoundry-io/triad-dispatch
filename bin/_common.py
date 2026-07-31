@@ -24,6 +24,7 @@ from __future__ import annotations
 import fcntl
 import importlib
 import json
+import math
 import os
 import re
 import shutil
@@ -243,6 +244,506 @@ ANTIGRAVITY_VENDOR_EXIT_MAP: dict[int, str] = {
 AGY_AUTH_BANNER_PATTERNS = ("authentication required. please visit the url",)
 
 
+# ── agy stream-json transport helpers (2026-07-31 migration) ──────────────
+# agy >= 1.1.8 print mode emits typed NDJSON (`init` / `step_update` /
+# terminal `result`). These two pure helpers are the ONLY place that couples
+# to the vendor event schema — consumers (driver, review SKILL) see the
+# stable digest shape, so a vendor schema drift is fixed here + t13 only.
+
+_AGY_READ_TOOLS = {"view_file", "list_dir", "grep_search", "find_by_name",
+                   "code_search", "codebase_search", "skill_search"}
+_AGY_WRITE_TOOLS = {"write_to_file", "replace_file_content",
+                    "multi_replace_file_content", "sed_file", "notebook_edit"}
+_AGY_WEB_TOOLS = {"read_url_content", "search_web", "open_browser_url"}
+_AGY_DIGEST_LIST_CAP = 40
+_AGY_DIGEST_VALUE_CAP = 200
+# Every vendor-controlled STRING that lands in the digest is capped. r1/R6:
+# parameter KEYS and tool NAMES were uncapped (only VALUES were), so a vendor
+# could still balloon the leader-visible read-audit line through either.
+_AGY_DIGEST_KEY_CAP = 64
+_AGY_DIGEST_USAGE_KEY_CAP = 12
+# Per-attempt breakdown kept in the merged aggregate (r1/R4). The union lists
+# carry the evidence; this list is the bounded per-attempt census.
+_AGY_DIGEST_ATTEMPT_CAP = 10
+# Structural failure strings handed to classify() (r1/R2). Bounded count.
+_AGY_SIGNAL_CAP = 12
+# Max signal strings ONE event may contribute (r3/G2). A single malformed
+# `error_message` step could otherwise emit up to 16 (4 text keys on the step
+# itself + 4 on each of its 3 sub-containers) and monopolise its bucket,
+# crowding out every later event's signal.
+_AGY_SIGNAL_EVENT_CAP = 2
+_AGY_ERROR_TEXT_KEYS = ("message", "text", "detail", "description")
+# Tool CLASS recorded on every read_attempts entry (r2/C5). read_attempts
+# collects EVERY unsuccessful tool, but the review SKILL's VOID diagnostic
+# reports a match as "the leg failed to READ the packet" — a failed write or
+# command naming the packet produced a false diagnostic. The class is folded
+# HERE (one source of truth) so the SKILL filters on `.class == "read"`
+# instead of duplicating these tool-name sets into its jq.
+_AGY_TOOL_CLASSES = (("read", _AGY_READ_TOOLS), ("write", _AGY_WRITE_TOOLS),
+                     ("web", _AGY_WEB_TOOLS))
+# The digest's capped lists — each merged pairwise with its _omitted counter.
+_AGY_DIGEST_LISTS = ("files_read", "writes", "commands", "denied", "web",
+                     "read_attempts")
+
+
+def parse_agy_stream(text: str) -> tuple:
+    """Parse agy `--output-format stream-json` NDJSON into (events, result).
+
+    Tolerant by design: non-JSON lines, truncated trailing lines (killed
+    runs), and non-dict payloads are skipped — a partial stream still yields
+    its parsed prefix. `result` is the payload dict of the LAST
+    `{"event":"result"}` line, or None.
+
+    Framing is `"\\n"` ONLY (r1/R7). `str.splitlines()` additionally breaks on
+    U+2028 / U+2029 / U+0085, and V8 (agy's runtime) does NOT escape those in
+    JSON string output — so one legal NDJSON line carrying any of them would
+    be cut in half, both halves would fail to parse, and a COMPLETE answer
+    would vanish silently. A trailing `\\r` is absorbed by the `.strip()`.
+    """
+    events: list = []
+    result = None
+    for line in (text or "").split("\n"):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        events.append(obj)
+        if obj.get("event") == "result" and isinstance(obj.get("result"), dict):
+            result = obj["result"]
+    return events, result
+
+
+def _agy_params_hint(params) -> dict:
+    """Bounded, schema-agnostic copy of a tool_info.parameters dict: scalar
+    values only, keys AND values truncated, at most 6 keys — the digest must
+    never balloon on a huge parameter (e.g. an inline file body) nor on a huge
+    parameter NAME (r1/R6)."""
+    out = {}
+    if not isinstance(params, dict):
+        return out
+    for k, v in list(params.items())[:6]:
+        if isinstance(v, (str, int, float, bool)):
+            out[str(k)[:_AGY_DIGEST_KEY_CAP]] = str(v)[:_AGY_DIGEST_VALUE_CAP]
+    return out
+
+
+def _agy_finite(v) -> bool:
+    """False for a NON-FINITE float — NaN / Infinity / -Infinity (r2/N4).
+
+    `json.loads` ACCEPTS those literals, so a vendor result can carry them, and
+    `json.dumps` writes them back BARE (`NaN`), which is not valid JSON per
+    RFC 8259. Empirically (jq 1.7.1) jq does not reject such a line: it
+    silently COERCES (NaN -> null, Infinity -> 1.797e308), so the damage is a
+    silently corrupted leader-visible audit value plus a hard parse failure on
+    any strict consumer. Dropping the value at the digest boundary is the fix;
+    `allow_nan=False` on the dumps is NOT (it raises inside main(), costing the
+    caller its summary line, audit row and run-log).
+    """
+    return not isinstance(v, float) or math.isfinite(v)
+
+
+def _agy_scalar(v, cap: int = _AGY_DIGEST_VALUE_CAP):
+    """Bounded, JSON-SAFE copy of a vendor-controlled scalar: strings capped,
+    non-finite numerics dropped, anything else -> None."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v[:cap]
+    if isinstance(v, (int, float)):
+        return v if _agy_finite(v) else None
+    return None
+
+
+def _agy_usage_hint(usage) -> dict:
+    """Bounded copy of the terminal result's `usage` object (r1/R6). The whole
+    object used to ride verbatim into a leader-visible line; it is
+    vendor-controlled, so cap the key count, the key length and any string
+    value, and keep scalars only. Non-finite numerics are dropped (r2/N4)."""
+    out: dict = {}
+    if not isinstance(usage, dict):
+        return out
+    for k, v in list(usage.items())[:_AGY_DIGEST_USAGE_KEY_CAP]:
+        key = str(k)[:_AGY_DIGEST_KEY_CAP]
+        if isinstance(v, (bool, int, float)):
+            if _agy_finite(v):
+                out[key] = v
+        elif isinstance(v, str):
+            out[key] = v[:_AGY_DIGEST_VALUE_CAP]
+    return out
+
+
+def _agy_tool_name(info, su) -> str:
+    """Vendor-controlled tool name — type-guarded and capped (r1/R3 + R6)."""
+    for cand in (info.get("name") if isinstance(info, dict) else None,
+                 su.get("tool_name") if isinstance(su, dict) else None):
+        if isinstance(cand, str) and cand:
+            return cand[:_AGY_DIGEST_KEY_CAP]
+    return "?"
+
+
+def _agy_tool_class(name: str) -> str:
+    """Coarse class of an agy tool name — `read` / `write` / `command` /
+    `web` / `other` (r2/C5). Recorded on every read_attempts entry so a
+    consumer can tell an attempted PACKET READ from a blocked write or
+    command that merely named the same path."""
+    for label, names in _AGY_TOOL_CLASSES:
+        if name in names:
+            return label
+    return "command" if name == "run_command" else "other"
+
+
+def digest_agy_stream(events: list, result=None) -> dict:
+    """Fold a parsed event list into a bounded, deterministic read-audit
+    digest. REPORT-ONLY: no policy, no judgment — the caller (leader /
+    review SKILL) decides what a missing packet-read means. Each tool call
+    is counted once, on its terminal DONE/ERROR update (ACTIVE skipped).
+
+    OUTCOME FIDELITY (r1/R1): `files_read` / `writes` / `commands` / `web`
+    record only tool calls that actually SUCCEEDED — terminal state DONE with
+    no `tool_info.error`. The review SKILL's mechanical gate reads a
+    `files_read` hit as PROOF the reviewer received the packet bytes, and its
+    own text declares a `denied` entry non-voiding, so appending errored /
+    permission-denied attempts to that same list made the gate FAIL-OPEN.
+    Nothing is hidden: every non-successful attempt is preserved in
+    `read_attempts` as `{tool, params, outcome, class}` (outcome = `denied` |
+    `error` | the vendor's own terminal state, lowercased; class = `read` |
+    `write` | `command` | `web` | `other`, r2/C5 — read_attempts collects
+    EVERY unsuccessful tool, so a consumer reporting "the leg failed to READ
+    the packet" must filter on the class, not on the path alone).
+
+    Every nested vendor field is type-guarded (r1/R3): a non-dict
+    `tool_info` / `parameters` / `error`, or a non-string `name` / `state`,
+    folds to a bounded default instead of raising — a traceback here would
+    cost the caller its classification, summary line, audit row and run-log.
+    """
+    files_read: list = []
+    writes: list = []
+    commands: list = []
+    denied: list = []
+    web: list = []
+    read_attempts: list = []
+    tool_steps = 0
+    error_steps = 0
+    for ev in events or []:
+        su = ev.get("step_update") if isinstance(ev, dict) else None
+        if not isinstance(su, dict):
+            continue
+        stype = su.get("step_type")
+        if stype == "error_message":
+            error_steps += 1
+            continue
+        state = su.get("state")
+        state_s = state if isinstance(state, str) else ""
+        if stype != "tool" or state_s == "ACTIVE":
+            continue
+        info = su.get("tool_info")
+        if not isinstance(info, dict):
+            info = {}
+        name = _agy_tool_name(info, su)
+        params = info.get("parameters")
+        hint = _agy_params_hint(params)
+        tool_steps += 1
+        raw_err = info.get("error")
+        err_present = bool(raw_err)
+        err = raw_err if isinstance(raw_err, dict) else {}
+        if state_s == "ERROR":
+            error_steps += 1
+        err_msg = err.get("message")
+        is_denied = "denied permission" in (
+            err_msg if isinstance(err_msg, str) else "").lower()
+        if is_denied:
+            denied.append({"tool": name, "params": hint})
+        if state_s == "DONE" and not err_present:
+            if name in _AGY_READ_TOOLS:
+                files_read.append({"tool": name, "params": hint})
+            elif name in _AGY_WRITE_TOOLS:
+                writes.append({"tool": name, "params": hint})
+            elif name == "run_command":
+                cmdline = params.get("CommandLine", "") if isinstance(params, dict) else ""
+                commands.append(str(cmdline)[:_AGY_DIGEST_VALUE_CAP])
+            elif name in _AGY_WEB_TOOLS:
+                web.append({"tool": name, "params": hint})
+            continue
+        if is_denied:
+            outcome = "denied"
+        elif err_present or state_s == "ERROR":
+            outcome = "error"
+        else:
+            outcome = (state_s.lower() or "unknown")[:_AGY_DIGEST_KEY_CAP]
+        read_attempts.append({"tool": name, "params": hint, "outcome": outcome,
+                              "class": _agy_tool_class(name)})
+    digest = {
+        "event_count": len(events or []),
+        "tool_steps": tool_steps,
+        "error_steps": error_steps,
+    }
+    # EVERY capped list carries its own omitted counter (r1/R6 — only
+    # files_read did, so a truncated writes/commands/denied/web list looked
+    # complete to the leader).
+    for key, values in (("files_read", files_read), ("writes", writes),
+                        ("commands", commands), ("denied", denied),
+                        ("web", web), ("read_attempts", read_attempts)):
+        digest[key] = values[:_AGY_DIGEST_LIST_CAP]
+        digest[key + "_omitted"] = max(0, len(values) - _AGY_DIGEST_LIST_CAP)
+    if isinstance(result, dict):
+        # r2/C3: `status` was the ONE uncapped vendor string left in the
+        # digest, and it is replicated into the merged terminal fields AND
+        # into every per-attempt census row — three copies of an unbounded
+        # vendor value on a leader-visible line. Capped like `outcome`.
+        digest["status"] = _agy_scalar(result.get("status"),
+                                       _AGY_DIGEST_KEY_CAP)
+        dur = result.get("duration_seconds")
+        digest["duration_seconds"] = (dur if isinstance(dur, (int, float))
+                                      and _agy_finite(dur) else None)
+        if isinstance(result.get("usage"), dict):
+            digest["usage"] = _agy_usage_hint(result["usage"])
+    return digest
+
+
+def _agy_entry_key(v) -> str:
+    """Order-stable identity for a digest list entry, for dedupe (r2/C4).
+    Entries are either bounded dicts (`{tool, params, ...}`) or bounded
+    strings (commands), so a canonical JSON rendering is a total, cheap key;
+    anything unexpected falls back to `repr` rather than raising."""
+    try:
+        return json.dumps(v, sort_keys=True, ensure_ascii=True, default=str)
+    except (TypeError, ValueError):
+        return repr(v)
+
+
+def merge_agy_digests(digests) -> Optional[dict]:
+    """Aggregate per-ATTEMPT digests into ONE bounded read-audit record (r1/R4).
+
+    The driver retries (soft-deny escalation, server-capacity backoff, schema
+    repair) and each attempt produces its own digest. Emitting only the LAST
+    one let a short-circuiting retry CONCEAL the earlier attempt's evidence —
+    a leg that demonstrably read the review packet on attempt 1 reported zero
+    reads, which the review SKILL's mechanical gate treats as a VOID leg. The
+    aggregate unions every attempt's lists (no evidence lost, DEDUPED in
+    first-seen order per r2/C4 so a path re-read on every retry cannot consume
+    the cap), carries a bounded per-attempt census under `attempts` (which
+    keeps each attempt's own pre-dedupe totals), and takes the terminal fields
+    (status / duration / usage) from the LAST attempt — the one whose
+    classification the caller returns. Returns None for an empty input (no
+    completed vendor call ⇒ no digest, as before).
+    """
+    items = [d for d in (digests or []) if isinstance(d, dict)]
+    if not items:
+        return None
+    merged: dict = {
+        "event_count": sum(int(d.get("event_count") or 0) for d in items),
+        "tool_steps": sum(int(d.get("tool_steps") or 0) for d in items),
+        "error_steps": sum(int(d.get("error_steps") or 0) for d in items),
+    }
+    for key in _AGY_DIGEST_LISTS:
+        union: list = []
+        seen: set = set()
+        omitted = 0
+        for d in items:
+            vals = d.get(key)
+            if isinstance(vals, list):
+                # r2/C4: DEDUPE, first-seen order. A plain extend let the same
+                # path/tool re-read on every retry consume the 40-entry cap and
+                # push a DISTINCT later entry (e.g. a packet read that only
+                # happened on the final attempt) out of the emitted union —
+                # exactly the shape that VOIDs a leg which did read the packet.
+                # A dropped duplicate is not hidden evidence, so it does NOT
+                # count toward `_omitted`; the per-attempt census below still
+                # carries each attempt's own totals.
+                for v in vals:
+                    k = _agy_entry_key(v)
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    union.append(v)
+            omitted += int(d.get(key + "_omitted") or 0)
+        omitted += max(0, len(union) - _AGY_DIGEST_LIST_CAP)
+        merged[key] = union[:_AGY_DIGEST_LIST_CAP]
+        merged[key + "_omitted"] = omitted
+    last = items[-1]
+    for key in ("status", "duration_seconds", "usage"):
+        if key in last:
+            merged[key] = last[key]
+    attempts = []
+    for i, d in enumerate(items[:_AGY_DIGEST_ATTEMPT_CAP]):
+        entry: dict = {"attempt": i + 1, "status": d.get("status"),
+                       "tool_steps": d.get("tool_steps", 0),
+                       "error_steps": d.get("error_steps", 0)}
+        for key in _AGY_DIGEST_LISTS:
+            vals = d.get(key)
+            entry[key] = (len(vals) if isinstance(vals, list) else 0) \
+                + int(d.get(key + "_omitted") or 0)
+        attempts.append(entry)
+    merged["attempts"] = attempts
+    merged["attempts_omitted"] = max(0, len(items) - _AGY_DIGEST_ATTEMPT_CAP)
+    return merged
+
+
+def _agy_first_line(v: str) -> str:
+    """First NON-EMPTY, stripped line of a typed error message (r3/G5).
+
+    r2/N2 took `split("\\n", 1)[0]` blindly, which DROPS a message whose first
+    line is empty: `"\\nUser denied permission to run command:\\n<arg>"`
+    contributed nothing at all, losing the structural head the pre-N2 code
+    kept. Scanning for the first non-empty line keeps the head and still leaves
+    the model-authored echo (which follows it) out.
+    """
+    for ln in (v or "").split("\n"):
+        ln = ln.strip()
+        if ln:
+            return ln
+    return ""
+
+
+def _agy_emit_signals(buckets, cap: int = _AGY_SIGNAL_CAP) -> list:
+    """Flatten priority-ordered signal buckets under ONE global cap, RESERVING
+    a floor for every non-empty bucket (r3/G2).
+
+    r2/C1 fixed the ORDER (terminal error first) but kept a single global cap
+    consumed in bucket order, so an earlier bucket could still STARVE a later
+    one: 12 `error_message` step strings — or one terminal error plus eleven
+    steps — exhaust the cap before a single per-tool error is emitted, and a
+    capacity/auth indication present ONLY in `tool_info.error` never reaches
+    classify() at all. Each non-empty bucket now gets `cap // <non-empty>`
+    slots first (never more than `cap` in total), then the leftovers are handed
+    out in priority order — terminal-first is preserved.
+
+    Scope of the guarantee (r4/H1 correction — narrowed from a prior claim
+    that "starvation is not possible"): this floor protects only a bucket
+    that is ALREADY non-empty by the time this function runs. It says
+    nothing about whether a signal reaches a bucket in the first place —
+    `agy_classify_signals`'s per-event COLLECTION can still drop a signal
+    before it is ever handed to a bucket (see that function's r4/H2 fix for
+    a case where it did). The floor is also blind to informativeness: a
+    reserved slot can go to a low-value string ahead of a more useful one
+    waiting later in the same bucket.
+    """
+    live = sum(1 for b in buckets if b)
+    if not live:
+        return []
+    floor = max(1, cap // live)
+    out: list = []
+    for b in buckets:
+        out.extend(b[:floor])
+    for b in buckets:
+        for s in b[floor:]:
+            if len(out) >= cap:
+                return out[:cap]
+            out.append(s)
+    return out[:cap]
+
+
+def agy_classify_signals(events: list, result=None) -> list:
+    """STRUCTURAL failure strings from an agy stream, for classify() (r1/R2).
+
+    The no-answer classify blob used to be `stderr + the RAW NDJSON stream`,
+    which carries model-authored prose, tool OUTPUT and tool PARAMETERS — the
+    reviewed content itself. A packet quoting a capacity phrase therefore
+    forced spurious `server-capacity` retries, and one quoting an auth banner
+    produced a terminal `oauth-env`. This helper returns ONLY typed error
+    payloads: `step_type == "error_message"` step text, `tool_info.error`
+    message strings, and a result-level typed error. The full raw stream is
+    still preserved verbatim in the run-log — diagnostics are unchanged; only
+    what CLASSIFICATION sees is narrowed.
+
+    PRIORITY (r2/C1): the cap used to be filled in EVENT order with the
+    result-level error appended LAST and then sliced away, so a run whose tools
+    failed repeatedly reached classify() carrying only per-tool noise — the one
+    signal that decides the class (capacity / auth / quota, reported at the
+    RESULT level) was discarded and the call landed on `unknown`. Signals are
+    now collected into three buckets and emitted terminal-first: the
+    result-level typed error, then `error_message` steps, then per-tool errors.
+    Emission goes through `_agy_emit_signals`, which RESERVES a floor for
+    every bucket that is non-empty BY THE TIME emission runs (r3/G2) — see
+    that function's docstring for the r4/H1 correction: this narrows
+    starvation, it does not eliminate it, because it cannot protect a
+    bucket a signal never reached in the first place.
+
+    PER-EVENT BUDGET, SPLIT PER SINK (r3/G2, corrected r4/H2): each event
+    contributes at most `_AGY_SIGNAL_EVENT_CAP` strings to the STEP sink
+    and, INDEPENDENTLY, up to `_AGY_SIGNAL_EVENT_CAP` more to the TOOL
+    sink — two separate per-event budgets, not one shared between them.
+    r3 gave the whole event a single shared budget: a `step_type ==
+    "error_message"` step carrying its own `message`/`text`/`detail`/
+    `description` (or nested `content`/`error`/`error_message`) fields
+    could exhaust that shared budget on the STEPS sink before the SAME
+    event's `tool_info.error` was ever examined, silently dropping the
+    tool error — if that string was the only capacity/auth phrase in the
+    whole run, classification degraded to `unknown`. Splitting the budget
+    per sink means a step-heavy event can no longer spend its own
+    tool-error slot.
+
+    FIRST LINE ONLY (r2/N2), and what it does NOT close (r3/G6): a typed error
+    message ECHOES a model-authored argument — the observed denial shape is
+    `"User denied permission to run command:\\n<the model's own command line>"`
+    — so a model-chosen argument quoting a classifier phrase re-entered the
+    blob through the channel that is supposed to be structural. Taking only the
+    first non-empty line removes an echo that FOLLOWS a newline. It does NOT
+    close the channel: a typed error that INLINES the argument on line 1
+    (`"Denied: run_command(find / -name 'model overloaded')"`) still carries
+    model-authored text into the classify blob, and the r1/R2 damage direction
+    (a quoted capacity/auth phrase forcing a spurious retry or a wrong terminal
+    class) remains reachable through that shape. The channel is NARROWED to
+    typed error fields and to line 1 of each — not eliminated. Second residual:
+    a genuine classifier phrase appearing ONLY on a later line is lost, which
+    degrades to `unknown` → the repair agent (the safe direction).
+    """
+    terminal: list = []   # result-level typed error — THE terminal signal
+    steps: list = []      # error_message step payloads
+    tools: list = []      # per-tool typed errors
+
+    def _take(container, sink: list, budget: list) -> None:
+        def _add(v: str) -> None:
+            # budget = this EVENT's remaining contribution (r3/G2).
+            if budget[0] <= 0 or len(sink) >= _AGY_SIGNAL_CAP:
+                return
+            head = _agy_first_line(v)
+            if head:
+                sink.append(head[:_AGY_DIGEST_VALUE_CAP])
+                budget[0] -= 1
+
+        if isinstance(container, str):
+            _add(container)
+            return
+        if not isinstance(container, dict):
+            return
+        for k in _AGY_ERROR_TEXT_KEYS:
+            v = container.get(k)
+            if isinstance(v, str):
+                _add(v)
+
+    for ev in events or []:
+        if len(steps) >= _AGY_SIGNAL_CAP and len(tools) >= _AGY_SIGNAL_CAP:
+            break
+        if not isinstance(ev, dict):
+            continue
+        su = ev.get("step_update")
+        if not isinstance(su, dict):
+            continue
+        # r4/H2: SEPARATE per-event budgets per sink. A budget SHARED across
+        # the error_message arm below and the tool_info arm let the former
+        # spend both slots on `steps` and starve THIS SAME EVENT's
+        # `tool_info.error` before it was ever examined.
+        step_budget = [_AGY_SIGNAL_EVENT_CAP]
+        if su.get("step_type") == "error_message":
+            _take(su, steps, step_budget)
+            for k in ("content", "error", "error_message"):
+                _take(su.get(k), steps, step_budget)
+        info = su.get("tool_info")
+        if isinstance(info, dict):
+            tool_budget = [_AGY_SIGNAL_EVENT_CAP]
+            _take(info.get("error"), tools, tool_budget)
+    if isinstance(result, dict):
+        _take(result.get("error"), terminal, [_AGY_SIGNAL_EVENT_CAP])
+
+    return _agy_emit_signals((terminal, steps, tools))
+
+
 # ─── Retry policy ─────────────────────────────────────────────────────────
 SERVER_CAP_BACKOFF_S: tuple[int, ...] = (15, 45)
 SERVER_CAP_MAX_RETRIES = len(SERVER_CAP_BACKOFF_S)
@@ -288,6 +789,10 @@ class RunResult:
     validation_error: Optional[str] = None
     # Vendor raw exit code — the repair agent's web-search key for unobserved codes.
     vendor_exit_code: int = -1
+    # Antigravity stream-json read-audit digest (Task 6) — None for every other
+    # CLI/wrapper (zero behavior change); antigravity fills it from
+    # AgyResult.read_audit on every completed vendor call.
+    read_audit: Optional[dict] = None
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
@@ -1093,238 +1598,14 @@ def extract_claude_answer(stdout: str, stderr: str) -> Tuple[str, Optional[str]]
     return result, None
 
 
-# ─── Antigravity (agy) pty scrub + sentinel extraction ────────────────────
-
-_AGY_ANSI_RE = re.compile(
-    r"\x1b\[[0-9;?]*[ -/]*[@-~]"       # CSI
-    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC
-    r"|\x1b[()][AB0]|\x1b[=>]"          # charset / other 2-byte
-)
-
-
-def scrub_agy_output(raw_bytes: bytes) -> str:
-    """Pure scrub of agy pty output: decode, strip EOT/backspace, CRLF->LF,
-    strip ANSI/control. No sentinel logic (see extract_antigravity_answer)."""
-    text = raw_bytes.decode("utf-8", errors="replace")
-    text = text.replace("\x04", "").replace("\x08", "")
-    text = text.replace("\r\n", "\n").replace("\r", "")
-    text = _AGY_ANSI_RE.sub("", text)
-    return text
-
-
-import glob as _glob
-
-
-_AGY_BRAIN_GLOB = "*/.system_generated/logs/transcript.jsonl"
-
-
-def _agy_brain_dir() -> str:
-    """The agy conversation-store root (override via AGY_BRAIN_DIR for tests)."""
-    return os.environ.get(
-        "AGY_BRAIN_DIR",
-        os.path.expanduser("~/.gemini/antigravity-cli/brain"),
-    )
-
-
-def snapshot_agy_transcripts(brain_dir: str | None = None) -> dict:
-    """{transcript_path: mtime} for every conversation transcript, BEFORE a run.
-
-    Paired with extract_agy_answer_from_transcript to BOUND the candidate set to
-    conversations created/touched during this call. Identity within that set is
-    by the per-invocation sentinel (see extract_agy_answer_from_transcript), NOT
-    by mtime — several agy calls may be in flight concurrently. Missing brain dir
-    -> {} (first-ever run)."""
-    base = brain_dir or _agy_brain_dir()
-    out: dict = {}
-    for pth in _glob.glob(os.path.join(base, _AGY_BRAIN_GLOB)):
-        try:
-            out[pth] = os.path.getmtime(pth)
-        except OSError:
-            # The path EXISTS (glob saw it) — record its presence with a 0.0
-            # mtime rather than dropping it (P4 round-3): a transiently
-            # stat-failing PRE-EXISTING transcript must never look "new" to
-            # the post-run candidate rule, which keys on path presence.
-            out[pth] = 0.0
-    return out
-
-
-_AGY_MARKER_RE = re.compile(r"<<<AGY_DONE_[0-9a-f]+>>>")
-
-# Scan refusal threshold for one transcript candidate (see _scan_transcript).
-_AGY_TRANSCRIPT_MAX_BYTES = 50 * 1024 * 1024
-
-
-def _scan_transcript(pth: str, marker: str) -> Tuple[bool, Optional[str]]:
-    """Stream ONE transcript once (context-managed, UTF-8-safe). Returns
-    (owns, final_done_content):
-
-      - `owns` = a USER_INPUT/USER_EXPLICIT record's content has `marker` as its
-        LAST agy-marker (the wrapper-appended sealed-prompt footer). A foreign
-        call that merely QUOTES `marker` mid-prompt has its OWN footer marker
-        last, so it does NOT own this sentinel (replay defense).
-      - `final_done_content` = the last PLANNER_RESPONSE/MODEL/DONE record's
-        content (str), or None.
-
-    Malformed/partial JSON lines, valid-JSON non-object records, and non-str
-    content are all skipped so a concurrently-appended foreign transcript can
-    never crash the scan (errors='replace' handles a truncated multi-byte char;
-    the isinstance guards handle `null`/`[]`/`123`/dict-content). (False, None)
-    on OSError. Streaming (not `.read()`) bounds memory on a large transcript.
-
-    ASSUMPTION (ground-truthed 500/500 real transcripts, 2026-07-11): a
-    single-shot `agy -p` conversation holds EXACTLY ONE USER_INPUT/USER_EXPLICIT
-    record, so `owns` and the global last-DONE `final` always belong to the same
-    turn. If a future agy multiplexes several turns into one transcript.jsonl
-    (e.g. a --resume path), bind `final` to the segment FOLLOWING the owning
-    USER_INPUT record instead of the whole file before routing such calls here."""
-    owns = False
-    final: Optional[str] = None
-    try:
-        # Resource bound (P4 round-2): a real agy transcript is KB-MB scale;
-        # refuse to scan a pathological/foreign multi-GB candidate rather than
-        # buffer it — skipping fails closed (not an owner -> pty-scrub path).
-        if os.path.getsize(pth) > _AGY_TRANSCRIPT_MAX_BYTES:
-            return (False, None)
-        with open(pth, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(rec, dict):
-                    continue
-                content = rec.get("content")
-                if not isinstance(content, str):
-                    continue
-                if (rec.get("type") == "USER_INPUT"
-                        and rec.get("source") == "USER_EXPLICIT"):
-                    ms = _AGY_MARKER_RE.findall(content)
-                    if ms and ms[-1] == marker:
-                        owns = True
-                elif (rec.get("type") == "PLANNER_RESPONSE"
-                        and rec.get("source") == "MODEL"
-                        and rec.get("status") == "DONE"):
-                    final = content
-    except OSError:
-        return (False, None)
-    return (owns, final)
-
-
-def extract_agy_answer_from_transcript(
-    brain_dir: str | None,
-    before: dict,
-    sentinel: str,
-) -> Optional[str]:
-    """Read THIS call's final answer from agy's own transcript.jsonl (P4.5
-    transport, concurrency-hardened 2026-07-11).
-
-    agy has no native JSON/-o-file output; every run writes a per-conversation
-    transcript whose last `PLANNER_RESPONSE/MODEL/DONE` record carries the
-    complete ANSI-free answer. A long agentic run drops the trailing marker from
-    the ANSWER, but the wrapper-sealed marker is ALWAYS present in the USER_INPUT
-    record — that (not the answer, not mtime) is the identity anchor.
-
-    `before` = snapshot_agy_transcripts() taken BEFORE the run bounds the
-    candidate set to conversations CREATED during this call (new paths only —
-    a single-shot `agy -p` always starts a new conversation). Among those, THIS
-    call's transcript is the one that OWNS `sentinel` (_scan_transcript: its
-    USER_INPUT footer's LAST marker == this sentinel). EXACTLY ONE owner with a
-    DONE record -> return its answer; ZERO owners (crash before USER_INPUT / not
-    yet flushed / schema drift) or MORE THAN ONE (a genuine collision) -> None,
-    and the caller falls back to the per-call pty-scrub (which reads THIS
-    process's own bytes and can NEVER return a foreign answer). Selection is
-    NEVER by mtime.
-
-    Concurrency contract: the identity guarantee covers calls dispatched
-    THROUGH this wrapper (each seals its own footer marker last). A concurrent
-    RAW/manual agy call that quotes a live wrapper call's sealed prompt
-    verbatim while that call's own transcript is absent is outside the
-    contract — documented residual, not a supported flow.
-
-    `sentinel` is REQUIRED — the wrapper always supplies its per-invocation id."""
-    base = brain_dir or _agy_brain_dir()
-    after = snapshot_agy_transcripts(base)
-    # Ownership candidates are NEW conversations only (P4 round-2 tightening):
-    # a single-shot `agy -p` ALWAYS creates a new conversation dir (ground-
-    # truthed across the whole brain store), so a pre-existing transcript can
-    # never be this call's — excluding mtime-bumped old paths removes both the
-    # stale-schema-repair corner and needless scanning of foreign transcripts
-    # that were created before the snapshot and are still being appended.
-    fresh = [pth for pth in after if pth not in before]
-    if not fresh:
-        return None
-    marker = f"<<<{sentinel}>>>"
-    owner_count = 0
-    owner_final: Optional[str] = None
-    for pth in fresh:
-        owns, final = _scan_transcript(pth, marker)
-        if owns:
-            owner_count += 1
-            owner_final = final
-    if owner_count != 1 or owner_final is None:
-        return None
-    content = owner_final.rstrip()
-    if content.endswith(marker):
-        content = content[:-len(marker)].rstrip()
-    return content or None
-
-
-def extract_antigravity_answer(
-    scrubbed: str, killed: bool, expected_sentinel: str
-) -> Tuple[Optional[str], Optional[str]]:
-    """Find the exact per-call sentinel in already-scrubbed text. Present and
-    TERMINAL -> (answer_without_sentinel, None). Absent -> (None, 'no-sentinel').
-
-    Uses the LAST marker occurrence (rfind) so an early echoed marker — e.g.
-    the model quoting the closing instruction back at the top — does not
-    truncate a real answer that ends at the genuine terminal marker.
-
-    P4.c strictness (spec 3-way 2026-07-11): the accepted marker must be
-    TERMINAL — the tail after it is whitespace only (the sealed prompt says
-    "and nothing after it"; the live-spike healthy tail is a single '\\n')
-    AND the marker is newline-preceded (own-line floor, re-confirm round-2:
-    the sealed prompt instructs the marker "on its own line", so an INLINE
-    early echo at the exact end of a truncated capture must not pass).
-    Either violation means the genuine terminal marker never arrived
-    -> (None, 'non-terminal-marker'), never a partial prefix as ok. Widen to
-    a residue allowlist ONLY on captured real-fixture evidence (anchored
-    full-tail match, <=1024 chars), never a broad pattern.
-
-    killed=True fails closed here as belt-and-suspenders — the driver
-    already short-circuits killed -> timeout BEFORE extraction; this guards
-    a future caller that skips that ordering.
-    """
-    if killed:
-        return None, "killed-partial"
-    marker = f"<<<{expected_sentinel}>>>"
-    idx = scrubbed.rfind(marker)
-    if idx == -1:
-        return None, "no-sentinel"
-    if scrubbed[idx + len(marker):].strip():
-        return None, "non-terminal-marker"
-    if idx > 0 and not scrubbed[:idx].endswith("\n"):
-        # Own-line floor (re-confirm round-2, both families): the sealed
-        # prompt instructs the marker "on its own line", so a genuine
-        # terminal marker is newline-preceded. An INLINE marker at the exact
-        # end of a truncated capture ("I will end with <<<S>>>") would
-        # otherwise pass the whitespace-tail check and surface the partial
-        # prefix as ok. idx==0 stays allowed: an empty body routes to the
-        # driver's empty-answer-body, not here.
-        return None, "non-terminal-marker"
-    return scrubbed[:idx].rstrip(), None
-
-
 # ─── Subprocess core ──────────────────────────────────────────────────────
 
 # Loader / interpreter injection env vars scrubbed from the vendor child (I-2/I-3).
-# `_run_once` is the one `subprocess.Popen` site (codex/gemini/claude), and
-# `_pty.run_via_pty` (the agy transport) is a SEPARATE vendor-child spawn — agy
-# does NOT go through Popen. BOTH spawn sites apply the SAME scrub via the shared
-# `scrubbed_child_env()` below, so a poisoned parent env cannot reach the vendor
-# CLI (gemini/claude/agy are Node runtimes; codex/agy spawn tools). The classic
+# `_run_once` is the SINGLE vendor-child spawn site (codex/gemini/claude/agy —
+# the pre-2026-07-31 pty transport, agy's former SEPARATE spawn site, is
+# deleted). It applies the scrub via the shared `scrubbed_child_env()` below,
+# so a poisoned parent env cannot reach the vendor CLI (gemini/claude/agy are
+# Node runtimes; codex/agy spawn tools). The classic
 # vectors: the dynamic loader (LD_PRELOAD / LD_AUDIT / the macOS DYLD_* family),
 # the Node runtime (NODE_OPTIONS=--require=<evil.js> would run workspace code
 # OUTSIDE any sandbox; NODE_PATH), the Python / shell / Perl / Ruby interpreters
@@ -1343,10 +1624,10 @@ _CHILD_ENV_SCRUB = (
 
 def scrubbed_child_env(base=None) -> dict:
     """The single-source vendor-child env: `base` (default `os.environ`) minus the
-    `_CHILD_ENV_SCRUB` injection vars. Applied at BOTH vendor-child spawn sites —
-    `_run_once` (Popen) and `_pty.run_via_pty` (agy pty transport, env=None) — so
-    the scrub policy lives in exactly ONE place. Returns a fresh dict (safe to
-    mutate, e.g. the pty transport's `setdefault("TERM", "dumb")`)."""
+    `_CHILD_ENV_SCRUB` injection vars. Applied at the single vendor-child spawn
+    site (`_run_once`, Popen — codex/gemini/claude/agy all go through it since
+    the 2026-07-31 pty-transport deletion), so the scrub policy lives in
+    exactly ONE place. Returns a fresh dict (safe to mutate)."""
     src = base if base is not None else os.environ
     return {k: v for k, v in src.items() if k not in _CHILD_ENV_SCRUB}
 
@@ -1370,12 +1651,98 @@ def _drain(stream, accum: list[str], passthrough) -> None:
         log(f"reader thread error: {e}")
 
 
+def _kill_proc_group(proc: subprocess.Popen, pgid: Optional[int] = None) -> None:
+    """SIGTERM->SIGKILL escalation against the child's own process GROUP.
+
+    `pgid` is captured by the CALLER at SPAWN time (r1/R10) — right after
+    `Popen` returns, which is after the child has already run the `setsid`
+    preexec_fn, and while the child is still unreaped. Resolving it inside
+    this function instead meant calling `getpgid` on a child that the very
+    next line may already have reaped, i.e. reading a pgid that could have
+    been recycled. `pgid=None` means "no usable group" (no `setsid` on this
+    platform, the spawn-time lookup failed, or the child never got its own
+    group): the escalation then falls back to the DIRECT CHILD
+    (`terminate()`/`kill()` + the wait-timeout gate), never to a killpg on a
+    group we did not verify is the child's own.
+
+    The escalation gate is the GROUP, not the direct child: `proc.wait()`
+    only reaps the direct child, so a grandchild reparented within the same
+    group (e.g. a backgrounded sub-process the vendor CLI spawned) can still
+    be alive after the direct child has exited. After SIGTERM + a bounded
+    wait, the group is re-probed with `killpg(pgid, 0)` and SIGKILL escalates
+    whenever the probe indicates members remain — `ProcessLookupError` means
+    the group is empty (done); `PermissionError` cannot confirm emptiness, so
+    it is treated conservatively as "members remain" (escalate).
+
+    RESIDUAL (disclosure carried over from the retired `_pty._killpg`, whose
+    text was dropped in the 2026-07-31 transport migration): this narrows but
+    does NOT close the pid-recycle hazard. The group-empty probe and the
+    SIGKILL both run AFTER `proc.wait()` reaped the direct child, so between
+    the reap and the signal the OS may recycle that pid — and therefore the
+    pgid — for an unrelated group. If the recycled group is a same-uid group
+    we are permitted to signal, `killpg` SUCCEEDS and mis-signals it with no
+    exception raised. The window is microseconds and requires pid wraparound
+    under load; a pidfd-based implementation would be the stronger fix if it
+    is ever observed. `EPERM` on either call is the OTHER arm of the same
+    hazard (a recycled group we may not signal) and is handled above.
+
+    Shared by both `_run_once` callers: our own timeout, and an abnormal
+    unwind (a signal-raised SystemExit/KeyboardInterrupt while `proc.wait()`
+    is blocked) — the vendor subtree must never be left orphaned in either
+    case.
+    """
+    has_pg = pgid is not None and hasattr(os, "killpg")
+
+    try:
+        if has_pg:
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except (ProcessLookupError, PermissionError) as e:
+        log(f"SIGTERM failed: {e}")
+
+    child_timed_out = False
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        child_timed_out = True
+        log("direct child still alive 5s after SIGTERM")
+
+    if has_pg:
+        try:
+            os.killpg(pgid, 0)  # group-empty probe (signal 0, no side effect)
+            escalate = True  # probe succeeded: at least one member remains
+        except ProcessLookupError:
+            escalate = False  # group empty: nothing left to escalate against
+        except PermissionError:
+            escalate = True  # cannot confirm empty: treat as members remain
+    else:
+        escalate = child_timed_out  # no group primitives: fall back to child gate
+
+    if not escalate:
+        return
+
+    log("group still has members after SIGTERM; sending SIGKILL")
+    try:
+        if has_pg:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        log("zombie: SIGKILL also unresponsive")
+
+
 def _run_once(
     cli: str,
     cmd: list[str],
     cwd: Optional[str],
     timeout: int,
     stdin_text: Optional[str] = None,
+    classify_and_log: bool = True,
 ) -> RunResult:
     """One Popen invocation.
 
@@ -1385,6 +1752,11 @@ def _run_once(
     prompt cannot deadlock against a full OS pipe before the child starts
     reading. When None (default), stdin is DEVNULL (gemini/claude behavior
     unchanged).
+    classify_and_log: default True keeps codex/gemini/claude byte-identical
+    (classify() + the "[wrapper] <cli> ..." summary line run here as before).
+    False skips BOTH — the agy stream-json driver decides classification and
+    emits its own canonical summary line later; a premature line here would
+    duplicate the one the dispatch SKILL greps.
     """
     log(f"exec cwd={cwd or os.getcwd()} timeout={timeout}s argv={cmd}")
     start = time.monotonic()
@@ -1392,7 +1764,7 @@ def _run_once(
     # Scrub loader/interpreter injection vars so a poisoned parent env cannot
     # reach the vendor child (I-2/I-3). Explicit env= replaces the implicit
     # full-os.environ inheritance. scrubbed_child_env() is the shared
-    # single-source scrub (the agy pty transport applies the same one).
+    # single-source scrub; _run_once is the single vendor-child spawn site.
     child_env = scrubbed_child_env()
 
     popen_kwargs: dict = dict(
@@ -1416,6 +1788,25 @@ def _run_once(
             EXIT_ARG_ERROR, "", f"spawn failed: {e}\n", elapsed,
             classification="unknown",
         )
+
+    # Capture the child's process group NOW (r1/R10), while it is guaranteed
+    # to be the child's own and the child is still unreaped. Popen only
+    # returns after the child ran preexec_fn (setsid) and reached exec — the
+    # parent blocks on the exec-error pipe — so the group is already
+    # established here. Doing this inside _kill_proc_group instead meant a
+    # post-reap getpgid on a possibly-recycled pid.
+    pgid: Optional[int] = None
+    if popen_kwargs.get("preexec_fn") is not None and hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(proc.pid)
+        except OSError as e:
+            log(f"getpgid at spawn failed: {e}")
+        else:
+            # Defensive: if setsid did not take effect the child shares OUR
+            # group, and a killpg would signal the wrapper itself.
+            if hasattr(os, "getpgrp") and pgid == os.getpgrp():
+                log("child shares the parent process group; group kill disabled")
+                pgid = None
 
     if stdin_text is not None and proc.stdin is not None:
         def _feed_stdin() -> None:
@@ -1448,28 +1839,29 @@ def _run_once(
     except subprocess.TimeoutExpired:
         timed_out = True
         log(f"timeout after {timeout}s; sending SIGTERM")
+        _kill_proc_group(proc, pgid)
+    except BaseException:
+        # Abnormal unwind while the vendor child is still running (e.g. a
+        # signal-raised SystemExit from a caller's own SIGTERM/SIGHUP
+        # handler — antigravity_wrapper.py's _terminate_to_exit interrupts
+        # exactly this wait()) must not leave the vendor subtree orphaned:
+        # kill+reap before the exception propagates. Never swallowed —
+        # the caller's unwind (settings-guard restore, exit code) still runs
+        # as the exception continues up the stack.
+        #
+        # The cleanup is itself exception-safe (r1/R5): an unexpected raise
+        # from _kill_proc_group must NEVER replace the in-flight exception.
+        # It did — an OSError here displaced the signal-raised SystemExit,
+        # and antigravity_wrapper.main() maps OSError to `config-conflict`,
+        # so an operator SIGTERM was reported as a settings conflict. The
+        # BaseException catch is deliberate: a KeyboardInterrupt arriving
+        # DURING cleanup must not win over the original either.
+        log("abnormal unwind mid-wait; killing vendor subtree")
         try:
-            if hasattr(os, "killpg") and hasattr(os, "getpgid"):
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            else:
-                proc.terminate()
-        except (ProcessLookupError, PermissionError) as e:
-            log(f"SIGTERM failed: {e}")
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            log("SIGTERM ignored; sending SIGKILL")
-            try:
-                if hasattr(os, "killpg") and hasattr(os, "getpgid"):
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                else:
-                    proc.kill()
-            except (ProcessLookupError, PermissionError):
-                pass
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                log("zombie: SIGKILL also unresponsive")
+            _kill_proc_group(proc, pgid)
+        except BaseException as cleanup_exc:  # noqa: BLE001 — see above
+            log(f"vendor-subtree cleanup failed during unwind: {cleanup_exc!r}")
+        raise
 
     t_out.join(timeout=2)
     t_err.join(timeout=2)
@@ -1488,18 +1880,27 @@ def _run_once(
         result = RunResult(ec, stdout, stderr, elapsed)
 
     result.vendor_exit_code = rc
-    result.classification = classify(
-        cli, stderr, stdout, result.exit_code, vendor_exit_code=rc,
-    )
-
-    # One-line deterministic summary (immediately visible to leader/user).
-    # SEMANTIC stderr classification (tool-not-installed / vendor warning)
-    # stays the leader's judgment over the mirrored raw stderr.
-    log(
-        f"[wrapper] {cli} {result.classification} "
-        f"exit={result.exit_code} vendor={result.vendor_exit_code} "
-        f"elapsed={elapsed:.1f}s"
-    )
+    if classify_and_log:
+        # SEMANTIC stderr classification (tool-not-installed / vendor warning)
+        # stays the leader's judgment over the mirrored raw stderr.
+        result.classification = classify(
+            cli, stderr, stdout, result.exit_code, vendor_exit_code=rc,
+        )
+        # One-line deterministic summary (immediately visible to leader/user).
+        log(
+            f"[wrapper] {cli} {result.classification} "
+            f"exit={result.exit_code} vendor={result.vendor_exit_code} "
+            f"elapsed={elapsed:.1f}s"
+        )
+    else:
+        # r1/R8: do NOT leave the field at its "ok" default — a shared struct
+        # reading "ok" for a run that was never classified is a trap for any
+        # future consumer of this RunResult. NOT a new classify() token
+        # (CLASSIFICATION_TOKENS is unchanged and this value never reaches
+        # audit, the summary line or a repair proposal): the sole
+        # classify_and_log=False caller is the agy stream-json driver, which
+        # sets the real classification on its own AgyResult/RunResult.
+        result.classification = "unclassified"
 
     return result
 
@@ -2410,6 +2811,7 @@ def emit_run_log(
         "final_answer": result.final_answer,
         "extraction_error": result.extraction_error,
         "validation_error": result.validation_error,
+        **({"read_audit": result.read_audit} if result.read_audit is not None else {}),
     }
     with path.open("w", encoding="utf-8") as f:
         json.dump(rec, f, ensure_ascii=False, indent=2)

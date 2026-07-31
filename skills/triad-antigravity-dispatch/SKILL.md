@@ -1,8 +1,35 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.10.1
+version: 0.11.2
 # changelog:
+#   0.11.2 (2026-07-31): skill-prompt-review round-1 fixes (PART A1-A8) —
+#     single-valued the agy version range (dispatch floor >= 1.1.8, above the
+#     1.1.3 skip-permissions floor); Step 5d control-flow + run-log
+#     read-audit-boundary wording fixed; run-log extraction hardened against a
+#     forged `run-log:` line; invocation argv quoting for `--repair-mode`
+#     replay. A7 refuted, no change. See spr/fix-report.md.
+#   0.11.1 (2026-07-31): task-10 fix round — the § NOT produced by agy
+#     footnote still said "agy has no native schema"; corrected the
+#     rationale: `schema-rejected` is a codex-side submit-time rejection
+#     class, agy's native --json-schema failures surface as `schema-fail`
+#     (66) after the wrapper's local validation, never as `schema-rejected`.
+#     No behavior change.
+#   0.11.0 (2026-07-31): stream-json migration doc resync — the pty +
+#     completion-sentinel + agy-transcript-read transport is RETIRED (git
+#     history has it); the wrapper now drives agy >= 1.1.8 via
+#     `--output-format stream-json` through the SAME shared `_common._run_once`
+#     subprocess core codex/gemini/claude use, parsed by
+#     `_common.parse_agy_stream`/`digest_agy_stream`. `main()` fails CLOSED
+#     with `config-conflict` on an agy build below `_STREAM_JSON_FLOOR`
+#     (1,1,8) — no vendor dispatch, `agy update` remediation. `--pydantic` is
+#     now NATIVE `--json-schema` (no more prompt-side JSON instruction or
+#     completion marker). A per-call REPORT-ONLY read-audit stderr line +
+#     run-log `read_audit` key (bounded fold of the stream's tool calls) is
+#     new. Driver decision-table v2 adds a status gate alongside the
+#     pre-existing rc gate for `vendor-error`, and a `SUCCESS`+empty-response
+#     case now surfaces as `extraction-error` (`empty-answer-body`). Token set
+#     / exit codes / Hard rules / Self-healing structure unchanged.
 #   0.10.1 (2026-07-31): abnormal-exit hardening doc resync — wrapper installs
 #     SIGTERM/SIGHUP unwind handlers (settings restore + pty child kill run on
 #     the way out), pty exception unwind now kills the vendor subtree instead
@@ -97,13 +124,16 @@ name is pinned — agy uses the vendor default.
 
 ## Headless soft-deny adaptation (agy ≥1.1.3, owner-authorized 2026-07-18)
 
-> **Enforcement re-verified on current agy (1.1.7, live differential probe):
-> the `read-only` deny BLOCKED `write_file` headless while the permissive
-> baseline wrote — the skip-perms void below appears VENDOR-FIXED at some
-> version ≤1.1.7 (exact boundary unknown). Treat this section's
-> "INTENT-only" caveats as the conservative floor for older builds; agy also
-> SELF-REPORTED the denied write as done ("WROTE"), so deterministic
-> arrival checks stay mandatory.
+> **Containment probe status:** the differential probe that found `read-only`
+> BLOCKING `write_file` headless (while the permissive baseline wrote) ran on
+> agy 1.1.7 — a build now BELOW `_STREAM_JSON_FLOOR` (1.1.8), the version this
+> wrapper requires for ANY dispatch (§ Isolation below). Every build the
+> wrapper actually dispatches is therefore >= 1.1.8, a version this
+> write/exec finding has NOT been re-probed on — treat write/exec containment
+> as UNCONFIRMED at the current dispatch floor until re-probed there. agy
+> also SELF-REPORTED the denied write as done ("WROTE") on the probed build,
+> so deterministic arrival checks stay mandatory regardless of containment
+> status.
 
 agy **1.1.3 flipped headless (`-p`) permission policy**: a tool needing a
 confirmation is soft-denied UNCONDITIONALLY — the `permissions.allow` list is
@@ -115,8 +145,11 @@ is dead. The wrapper therefore **version-gates auto-approve**: when
 `agy --version` ≥ `_HEADLESS_SOFTDENY_FLOOR` (1.1.3), and `--version` exits
 rc=0 (a nonzero exit fails safe to no-flag), it inserts
 `--dangerously-skip-permissions` so a read-only-INTENT dispatch can actually run
-its own read tools. **No version pin** (updates keep flowing); on ≤1.1.2 the
-gate does not fire and the deny transaction (below) keeps its full force.
+its own read tools. Because the wrapper's dispatch floor (`_STREAM_JSON_FLOOR`,
+1.1.8) is itself ABOVE this soft-deny floor (1.1.3), the gate fires
+UNCONDITIONALLY (opt-out aside) on every build the wrapper actually
+dispatches — there is no reachable dispatched version below 1.1.3 to compare
+against. **No version pin** (updates keep flowing).
 **Floor, NOT a range — a known over-application**: once agy eventually RESTORES
 the headless allow-list in some future ≥1.1.3 release, this floor STILL fires
 (voiding isolation) until a human narrows it to a bounded range; `agy-daily-check.sh`
@@ -129,26 +162,35 @@ This is the ONLY internal caller of the danger flag; user argv can never supply
 it (argparse defines no such option).
 
 **ISOLATION CAVEAT (must understand before relying on `--sandbox`):**
-In the **1.1.3-era soft-deny window** `--dangerously-skip-permissions`
-**VOIDED the deny transaction AND agy's own `--sandbox` OS-ring** (agy issue
-#36) — agy auto-approved ALL tools: `write_file`, `command` (arbitrary
-shell), and network. Deny>Allow no longer held (verified: a write BREACH file
-was created under deny+skip-perms), so a `--sandbox read-only` dispatch THERE
-had **NO enforced containment** — read-only by **INTENT** only.
-**Current builds re-enforce the write/exec half** (1.1.7 differential probes
-2026-07-25: `write_file` + `command` DENIED). What NO build contains is the
-read/network half — `read_file` and `read_url`/`search_web` are never denied
-by design, probe-confirmed reading across the `--cwd` boundary and fetching a
-live URL on 1.1.7. So the standing posture on current builds = write/exec
-mechanically denied, reads + network open; the review prompt + disposable
-`--cwd` + leader verification remain the only bound on the latter.
+`--dangerously-skip-permissions` **VOIDS the deny transaction AND agy's own
+`--sandbox` OS-ring** (agy issue #36) — the flag auto-approves ALL tools:
+`write_file`, `command` (arbitrary shell), and network. Deny>Allow does not
+hold while the flag is set (verified: a write BREACH file was created under
+deny+skip-perms), so a `--sandbox read-only` dispatch gets **NO enforced
+containment from the wrapper's deny transaction** — read-only by **INTENT**
+only. A 2026-07-25 differential probe on agy 1.1.7 (a build now BELOW the
+1.1.8 dispatch floor) found `write_file` + `command` DENIED despite the flag
+— agy's OWN engine, separately from the wrapper's deny transaction,
+re-enforcing those two actions on that build. **That result has NOT been
+re-probed at the current 1.1.8+ dispatch floor — treat write/exec containment
+as UNCONFIRMED until re-probed there.** What no probed build contains, BY
+DESIGN, is the read/network half — `read_file` and `read_url`/`search_web`
+are never denied, probe-confirmed reading across the `--cwd` boundary and
+fetching a live URL on 1.1.7. So the standing posture is: write/exec
+containment unconfirmed at the actual dispatch floor (last probed on a
+now-unreachable 1.1.7), reads + network open by design on every build
+regardless; the review prompt + disposable `--cwd` + leader verification
+remain the only bound on the latter, and — until re-probed — the only
+practical bound on write/exec too.
 
 **What the disposable `--cwd` does NOT contain** (owner-accepted residual for
 the review use case, 2026-07-18) — TWO distinct causes, only one of which the
 vendor re-fix retired:
-1. *Soft-deny window only (1.1.3-era):* under skip-perms agy could also run a
-   `command` that reads sensitive files outside `--cwd` and write anywhere.
-   Probe-CONFIRMED CLOSED on 1.1.7 (`write_file` + `command` both denied).
+1. *Skip-perms window:* under the flag agy could also run a `command` that
+   reads sensitive files outside `--cwd` and write anywhere. A 2026-07-25
+   probe on agy 1.1.7 (below the current 1.1.8 dispatch floor) found this
+   CLOSED (`write_file` + `command` both denied) — NOT yet re-probed at the
+   1.1.8+ floor this wrapper actually dispatches; treat as unconfirmed there.
 2. *BY DESIGN, on every build including enforcing ones:* the deny set covers
    write/exec/mcp — `read_file` and `read_url`/`search_web` are deliberately
    NEVER denied (deny-set inspection; the search leg needs them). So the leg
@@ -169,10 +211,12 @@ close (2).
 transaction (`_agy_settings.agy_settings_guard`): the wrapper merges
 `permissions.deny` into `~/.gemini/antigravity-cli/settings.json`, runs agy, then
 byte-exactly restores (flock-serialized state transitions, `.agybak` crash
-sentinel). **In the 1.1.3-era soft-deny window this was neutered by the
-skip-perms gate above; current builds re-enforce `write_file` + `command`
-(1.1.7 differential probes 2026-07-25) — `execute_url`/`mcp`/OS-ring stay
-INTENT until spiked — see
+sentinel). **The skip-perms gate above (§ Headless) neuters this wrapper-side
+deny transaction on every dispatched build — the flag fires unconditionally
+there, opt-out aside. `write_file` + `command` appear independently
+re-enforced by agy's OWN engine per a 1.1.7 differential probe (2026-07-25) —
+NOT yet re-probed at the current 1.1.8+ dispatch floor, so treat that as
+unconfirmed there; `execute_url`/`mcp`/OS-ring stay INTENT until spiked — see
 the caveat.** Identical **read-only** transactions SHARE the active deny lease via
 a holder registry (per-holder flock liveness files), so concurrent read-only agy
 dispatches are safe; the permissive (no `--sandbox`) baseline stays exclusive.
@@ -188,28 +232,37 @@ per-mode deny lists, spike-verification status, and the operational notes on
 
 - `read-only` — denies the write/command/exec surface (`write_file`, `command`,
   `unsandboxed`, `execute_url`, `mcp`); `read_url`/`search_web` stay allowed —
-  the search leg keeps working. The `write_file` deny is proven headless; deny
-  is a per-verb denylist over the KNOWN agy tool surface, not OS-level process
-  isolation.
+  the search leg keeps working. The `write_file` deny is proven headless
+  (1.1.7 differential probe — a build now below the 1.1.8 dispatch floor, not
+  yet re-probed at the floor); deny is a per-verb denylist over the KNOWN agy
+  tool surface, not OS-level process isolation.
 - omitted — no deny transaction; the owner's permissive global baseline stays
   intact (the call still acquires the lock and heals a stale `.agybak` first).
-  A write-needing dispatch therefore runs with NO deny rules: on agy ≤1.1.2,
-  on current 1.1.7-class builds (deny re-enforced), or with
-  `AGY_NO_HEADLESS_AUTOAPPROVE=1` it lacks the dangerous-path denies the
-  removed workspace-write mode used to add (references/isolation.md). On a
-  HARDENED install (`TRIAD_WRAPPER_HARDENED=1`, the consumer default)
-  omission auto-upgrades to `read-only`, so no write-INTENT agy mode remains
-  there — `read-only` enforcement is VERSION-dependent: enforced on
-  ≤1.1.2 and again on current builds (1.1.7 differential probe;
-  § Headless banner), INTENT-only in the 1.1.3-era soft-deny window —
-  keep the disposable-`--cwd` + leader-verify practice and always
-  verify arrival.
+  A write-needing dispatch therefore runs with NO deny rules on ANY
+  dispatchable agy build (there is no `--sandbox`-triggered deny transaction
+  to omit), and — with `AGY_NO_HEADLESS_AUTOAPPROVE=1` set — it also lacks the
+  dangerous-path denies the removed workspace-write mode used to add
+  (references/isolation.md). On a HARDENED install (`TRIAD_WRAPPER_HARDENED=1`,
+  the consumer default) omission auto-upgrades to `read-only`, so no
+  write-INTENT agy mode remains there — `read-only`'s write/exec enforcement
+  is UNCONFIRMED at the current dispatch floor (last probed on 1.1.7, now
+  below the 1.1.8 floor; § Headless banner) — keep the disposable-`--cwd` +
+  leader-verify practice and always verify arrival regardless.
 
 agy `--sandbox` alone is shell/network OS-ring only (it does NOT block
 `write_file`); the deny transaction is what enforces fs isolation. Reasoning
 tier = `--model` passthrough (no-pin default when omitted) — pass a CATALOG
 selector from `agy models` (e.g. `gemini-3.1-pro-high`); the old display-label
 form ("Gemini 3.1 Pro (High)") is no longer listed by current agy builds.
+
+**Read-audit line (2026-07-31, REPORT-ONLY).** The wrapper emits a per-call
+stderr line before its canonical summary — `[wrapper] antigravity read-audit
+{compact json}` — a bounded fold of the stream's tool calls (`files_read` /
+`writes` / `commands` / `denied` / `web`, each capped at 40 entries) built by
+`_common.digest_agy_stream`. This carries NO policy — it does not gate, deny,
+or judge anything itself; the caller (leader / review SKILL) reads it and
+decides what a missing or unexpected packet-read means for that dispatch.
+The same digest rides into the run-log's `read_audit` key on failure.
 
 ## Hard rules
 
@@ -219,7 +272,7 @@ form ("Gemini 3.1 Pro (High)") is no longer listed by current agy builds.
 4. **Repair agent ONLY on `unknown` / `extraction-error` / `timeout`.** Every other classification carries actionable meaning at the wrapper layer — dispatching the agent on them wastes the call.
 5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. Reasoning: any test framing leaks into the vendor model's behavior and corrupts both the sample and the repair agent's accumulated memory.
 6. **No model name pinning.** agy model names rot every few weeks. Use the vendor default by default; `--model <name>` only when the user explicitly named the model. Date-anchor any pinned model usage.
-7. **Never `--dangerously-*` from user argv.** argparse defines no such option, so a caller can never supply it. ONE scoped internal exception (owner-authorized 2026-07-18): the wrapper itself inserts `--dangerously-skip-permissions` when `agy --version` ≥ 1.1.3, because that vendor release made headless tools unusable otherwise (§ Headless soft-deny adaptation). In the 1.1.3-era window it voided the deny transaction; current builds re-enforce write/exec while reads/network stay open by design (documented caveat there); opt out with `AGY_NO_HEADLESS_AUTOAPPROVE=1`. No OTHER `--dangerously-*` / `--yolo` is ever used.
+7. **Never `--dangerously-*` from user argv.** argparse defines no such option, so a caller can never supply it. ONE scoped internal exception (owner-authorized 2026-07-18): the wrapper itself inserts `--dangerously-skip-permissions` on every build it dispatches (`agy --version` ≥ 1.1.3, and this wrapper's own dispatch floor of 1.1.8 is itself above that — § Headless soft-deny adaptation), because that vendor release made headless tools unusable otherwise. The flag voids the wrapper's deny transaction whenever it fires; write/exec containment beyond that is UNCONFIRMED at the current dispatch floor (last probed on a now-unreachable 1.1.7) while reads/network stay open by design regardless (documented caveat there); opt out with `AGY_NO_HEADLESS_AUTOAPPROVE=1`. No OTHER `--dangerously-*` / `--yolo` is ever used.
 8. **Always spawn the repair agent in parallel — surfacing a failure is not repairing it.** When Step 4 routes a failure (`unknown` / `extraction-error` / `timeout`), spawn the `agy-wrapper-repair` sub-agent with the `Agent` tool's `run_in_background: true`, so it runs alongside your foreground work; parse its inline proposal (Step 5c), apply it, and clean up (Step 5d) when it completes. The payoff is future routing, not this call — the analyzer grows the classifier so the same vendor error auto-routes next time, so a skipped spawn is a silent regression that keeps the error failing un-routed. Reporting the failure to the user is a separate obligation and does not discharge this one. Mechanism: the agent is a read-only analyzer that returns a JSON patch proposal; the leader applies it via the deterministic `apply_patch.py` (no LLM on the write path) and re-runs `--repair-mode` to verify routing. Rule 4 scopes *which* classes route here; this rule says always follow through when they do.
 
 ## Flow
@@ -233,7 +286,7 @@ external/pasted content that could contain such a line, pass it via the
 wrapper's `--prompt-file` instead:
 
 ```bash
-antigravity_wrapper.py \
+AGY_CMD=(antigravity_wrapper.py \
   --prompt "$(cat <<'PROMPT'
 <leader-prompt-verbatim>
 PROMPT
@@ -243,31 +296,46 @@ PROMPT
   [--model <pinned-model-name>] \
   [--pydantic module:Class] \
   [--timeout <seconds>] \
-  [--debug]
+  [--debug])
+"${AGY_CMD[@]}"
 ```
+
+**Retain the invocation as a quoted argv array** (`AGY_CMD` above), not only
+as a flat string — Step 5d replays this SAME array with `--repair-mode`
+appended as a DISTINCT argv element if a repair cycle is needed, instead of
+retyping the invocation from memory or pasting it back as text (an optional
+bracketed value like `[--cwd /absolute/path]` is not quoting-safe once
+flattened to a string).
 
 - `--sandbox read-only` selects the per-call deny transaction (§ Isolation).
   Omit for the permissive baseline.
-- `--pydantic module:Class` forces JSON output. agy has **no native JSON
-  schema**, so the wrapper instructs JSON via a prompt addendum: the completion
-  sentinel is a REQUIRED trailing line emitted on its own NEW line AFTER the JSON
-  object (the marker is NOT part of the JSON). The wrapper validates the
-  pre-marker text with `_common.validate_response`, does ONE schema-repair re-run
-  on failure, then exits `EXIT_SCHEMA_FAIL=66`. Same prompt-instructed approach as
-  the gemini wrapper. The marker-after-JSON adherence is e2e-verified against
-  real agy — `--pydantic _test_schemas:CityResponse` returns schema-valid JSON
-  with the sentinel on its own line after the object.
-- `--timeout` default is `600` seconds. The wrapper derives agy's `--print-timeout` from it (`max(timeout - 10, 5)s`); the pty kill is the backstop.
+- `--pydantic module:Class` forces JSON output. agy >= 1.1.8 has a **native
+  `--json-schema`** flag (2026-07-31 migration): the wrapper passes
+  `json.dumps(cls.model_json_schema())` directly as its argv value — no
+  prompt-side instruction, no completion marker. The driver's
+  `_validate_structured` PREFERS the vendor's own schema-checked
+  `result["structured_output"]`, falling back to the raw response text when
+  absent (vendor-drift guard); local pydantic re-validates either way. On
+  failure it does ONE schema-repair re-run (a text hint appended to the `-p`
+  prompt), then exits `EXIT_SCHEMA_FAIL=66`. This supersedes the earlier
+  prompt-instructed "JSON + completion-marker" approach and is e2e-verified
+  against real agy — `--pydantic _test_schemas:CityResponse` returns
+  schema-valid JSON (`tests/e2e/wrappers/agy-stream/s1-real-stream.sh` case 3).
+- `--timeout` default is `600` seconds. The wrapper derives agy's `--print-timeout` from it (`max(timeout - 10, 5)s`); the wrapper's own SIGTERM→SIGKILL process-group kill (shared with codex/gemini/claude) is the backstop.
 - `--cwd` sets agy's working directory.
 - `--debug` accumulates a markdown debug table.
 
-**`--pydantic` is prompt-instructed, not native** (agy has no `--output-schema`).
-Still **no `--dangerously-*`** (Hard rule 7).
+**`--pydantic` is now native** (agy >= 1.1.8's `--json-schema`, no prompt-side
+schema injection). Still **no `--dangerously-*`** (Hard rule 7).
 
-Transport note (wrapper-internal — the leader just calls the wrapper): agy is
-driven through a **pty** (it drops stdout on a non-TTY and has no
-`--output-format json`) plus a per-call **completion sentinel** the wrapper
-appends to the prompt. The leader does not manage the pty or the sentinel.
+Transport note (wrapper-internal — the leader just calls the wrapper): agy
+>= 1.1.8 emits typed NDJSON via `--output-format stream-json`, so the wrapper
+spawns it through the SAME shared subprocess core codex/gemini/claude use
+(`_common._run_once`) — no pty, no completion sentinel, no prompt mutation.
+The wrapper fails CLOSED with `config-conflict` on an agy build older than
+1.1.8 (§ Isolation below). The pre-2026-07-31 pty+sentinel+transcript-read
+transport is RETIRED — git history has the machinery. The leader does not
+manage any of this; it just calls the wrapper.
 
 ### Step 2 — Run via Bash; capture rc, stdout, stderr
 
@@ -276,7 +344,7 @@ Wrapper stderr contains:
 - 1-line summary: `[<timestamp>] [wrapper] antigravity <classification> exit=<int> vendor=<int> elapsed=<s>` (every wrapper log line, this one included, carries the leading timestamp bracket — the Step 3 grep anchors on it)
 - On failure: `run-log: <absolute-path>`
 
-Wrapper stdout = agy's final answer (sentinel-delimited, scrubbed of control bytes).
+Wrapper stdout = agy's final answer (the stream-json terminal `result` event's `response` field — no marker to strip, no ANSI scrub needed).
 
 ### Step 3 — Read the classification
 
@@ -305,20 +373,24 @@ for it.
 | classification (rc) | Leader action |
 |---|---|
 | `ok` (0) | Return wrapper stdout (agy's final answer text). |
-| terminal (65) — cli-subscription-cap / token-limit / oauth-env / config-conflict / vendor-error | Surface to user with cause (re-login / quota daily reset / prompt size too large / settings deny-transaction failed: lock-lease timeout or corrupt `~/.gemini/antigravity-cli/settings.json` / vendor-error: agy exited rc≠0 yet produced a non-empty answer — the answer is NOT on stdout but IS preserved in the run-log + agy transcript; inspect it there and decide re-dispatch vs accept, P4 rc gate 2026-07-11). **NOT** repair-agent territory (already matched — only `unknown` / `extraction-error` / `timeout` route to repair; `vendor-error` is driver-emitted on the answer-present path, which a classifier patch cannot express). |
-| `truncated-answer` (65) | agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB, 2026-07-22 repro) and keeps NO full copy anywhere — the transcript DONE record is capped too, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader remediation: re-dispatch under § Long-answer output-file contract** (agy's `write_file` is NOT subject to the fold — verified 24KB intact) — but that contract needs the WRITE-CAPABLE permissive baseline, so it is UNAVAILABLE on a hardened install and FORBIDDEN on the cross-family-review agy leg (rule 7 containment): there, re-dispatch once read-only asking for a COMPACT verdict instead. **NOT** repair-agent territory (deterministic vendor behavior on the answer-present path; a classifier patch cannot express it). Retrying the same stdout-shaped dispatch will fold again — do not plain-retry. |
-| `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff (cap 2 pty re-runs). |
+| terminal (65) — cli-subscription-cap / token-limit / oauth-env / config-conflict / vendor-error | Surface to user with cause (re-login / quota daily reset / prompt size too large / settings deny-transaction failed: lock-lease timeout or corrupt `~/.gemini/antigravity-cli/settings.json` — **OR, since 2026-07-31, `agy --version` probed below the `_STREAM_JSON_FLOOR` (1.1.8) — the wrapper fails CLOSED before any vendor dispatch; leader remediation: `agy update`, then re-dispatch** / vendor-error: the stream's terminal `result` event carried a non-empty answer WITH rc≠0 or a non-`SUCCESS` status — the answer is NOT on stdout; it is preserved ONLY in the run-log's quarantined `extraction_error` copy + the raw NDJSON stream, which the leader does NOT open (Hard rule 2 — the leader never reads run-log content). Surface the classification token + exit codes to the user and name the run-log path; a human can read it directly, out of band, to decide re-dispatch vs accept, P4 rc gate 2026-07-11, status gate 2026-07-31). **NOT** repair-agent territory (already matched — only `unknown` / `extraction-error` / `timeout` route to repair; `vendor-error` is driver-emitted on the answer-present path, which a classifier patch cannot express; the floor-gate `config-conflict` is a deterministic pre-dispatch check, also not a repair-agent case). |
+| `truncated-answer` (65) | agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB, 2026-07-22 repro) and keeps NO full copy anywhere — unchanged behavior across the 2026-07-31 transport migration, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader remediation: re-dispatch under § Long-answer output-file contract** (agy's `write_file` is NOT subject to the fold — verified 24KB intact) — but that contract needs the WRITE-CAPABLE permissive baseline, so it is UNAVAILABLE on a hardened install and FORBIDDEN on the cross-family-review agy leg (`triad-cross-family-review` Hard rule 7 — READ-only/no-exec containment; NOT this SKILL's own rule 7, which governs the danger flag): there, re-dispatch once read-only asking for a COMPACT verdict instead. **NOT** repair-agent territory (deterministic vendor behavior on the answer-present path; a classifier patch cannot express it). Retrying the same stdout-shaped dispatch will fold again — do not plain-retry. |
+| `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff (cap 2 stream-json call re-runs). |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 8). Spawn it even when you are busy or also surfacing the failure — never skip.** |
-| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 8).** agy ran but the extractor found no answer (clean output but empty, missing sentinel, vendor refusal text, or a NON-TERMINAL marker — a truncated rc=0 run whose only marker is an early echo; the run-log `extraction_error` field distinguishes `non-terminal-marker` from `no-sentinel`). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
-| `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since a hang (pty killed at the print-timeout backstop) is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
-| arg (3) / binary missing (4) / `schema-fail` (66) | Surface to user with cause (empty prompt / `agy` not on PATH / `--pydantic` output still failed validation after the one schema-repair re-run — fix the schema or prompt and re-dispatch). |
+| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 8).** agy ran but the driver found no usable answer — a `SUCCESS` status with an EMPTY `response` (`extraction_error = "empty-answer-body"`, agy self-reports success on a task it did not actually do), a fully empty capture, or garbage/no-result stream text with no matching pattern. Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
+| `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since a hang (the wrapper's own SIGTERM→SIGKILL process-group kill fired against agy's `--print-timeout`-bounded run) is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
+| arg (3) / binary missing (4) / `schema-fail` (66) | Surface to user with cause (empty prompt / `agy` not on PATH / `--pydantic` output still failed local validation after the one schema-repair re-run — fix the schema or prompt and re-dispatch). |
 
 **NOT produced by agy** (do not branch on these — they belong to other
 CLIs): `schema-rejected` / `fanout-spawn-error` /
-`fanout-partial` / `task-blocked`. agy has **no native schema** (so no
-`schema-rejected`) and **no `--task` layer** (so no fan-out / code-task
-signals). agy's `config-conflict` (unlike codex's config.toml case) means the
-`_agy_settings` deny transaction failed — see the terminal (65) row above.
+`fanout-partial` / `task-blocked`. `schema-rejected` is a **codex-side
+submit-time rejection class** (codex's `--output-schema` is rejected before
+the run even starts); agy's native `--json-schema` failures instead surface
+as `schema-fail` (66) after the wrapper's own local validation — never as
+`schema-rejected`. agy also has **no `--task` layer** (so no fan-out /
+code-task signals). agy's `config-conflict` (unlike codex's config.toml case)
+means the `_agy_settings` deny transaction failed — see the terminal (65) row
+above.
 
 ### Step 5 — Repair branch: read-only analyzer proposes, leader applies (`unknown` / `extraction-error` / `timeout` only)
 
@@ -333,14 +405,25 @@ escalates for those.
 #### 5a. Extract the run-log path
 
 ```bash
-RUN_LOG_PATH=$(sed -n 's/.*run-log: //p' <stderr-text> | tail -1)
+RUN_LOG_PATH=$(grep -E '^\[[^]]*\] run-log: ' <stderr-text> \
+                 | sed -E 's/^\[[^]]*\] run-log: //' | tail -1)
+case "$RUN_LOG_PATH" in
+  */_logs/antigravity/runs/*.json) ;;
+  *) echo "run-log path failed shape validation (expected .../_logs/antigravity/runs/*.json): $RUN_LOG_PATH"; exit 1 ;;
+esac
 [ -f "$RUN_LOG_PATH" ] || { echo "run-log path missing"; exit 1; }
 ```
 
-Take everything after `run-log: ` to the end of that line (last occurrence) — the
-path may contain spaces, so a whitespace-delimited grab would truncate it. Keep
-every later use double-quoted. (The path itself is wrapper-generated —
-`_logs/antigravity/runs/<id>.json`, a safe charset for the JSON template below.)
+Anchor on the wrapper's OWN timestamped log line (`^\[[^]]*\] run-log: `,
+mirroring the Step 3 summary grep's anchor) — a plain `.*run-log: ` substring
+match can be tricked by vendor-influenced stderr text that merely CONTAINS
+that phrase (the stream is untrusted vendor output). Validate the extracted
+path against the expected `_logs/antigravity/runs/…json` shape BEFORE using it
+in `rm -f` or interpolating it into the analyzer prompt — a value that fails
+validation is refused, never passed through. Take everything after the anchor
+to the end of that line (last occurrence) — the path may contain spaces, so a
+whitespace-delimited grab would truncate it. Keep every later use
+double-quoted.
 
 The leader passes this PATH to the analyzer — it does NOT read the run-log content
 itself (Hard rule 2). There is no output file: the analyzer replies inline.
@@ -367,8 +450,9 @@ Input:
   "task": "Read the run-log, extract the literal error, Read/Grep bin/_common.py to see which existing class should catch it, then return the inline JSON proposal matching output_schema. Network is OFF — decide from the run-log + local framework, or escalate. You do NOT apply or verify — the leader does. Single pass."
 }
 
-Example response (return this inline JSON as your entire chat reply):
+Example responses (return ONE of these shapes as your entire chat reply):
 {"outcome": "propose", "reason": "agy emitted a new re-login banner the seed list missed — improves oauth-env routing only", "proposal": {"classification": "oauth-env", "reason": "re-login banner on the no-answer path; auth stays user-managed", "pattern_list": "AGY_AUTH_BANNER_PATTERNS", "substring": "please re-authenticate to continue"}}
+{"outcome": "escalate", "reason": "novel error with no existing classification to extend, or a true extraction bug rather than a classifier gap — recommend manual triage", "proposal": null}
 
 Now do the analysis and return the inline JSON.
 ```
@@ -391,9 +475,17 @@ Schema top-level keys: `outcome` (`propose` | `escalate`), `reason`, `proposal` 
 
 #### 5d. Branch: escalate → surface; propose → leader applies + verifies
 
-Run 5a's path extraction, 5c's parse, and this case block in the SAME Bash
-invocation — shell state (`RUN_LOG_PATH`, `AGENT_JSON`) does not persist across
-separate Bash calls, so a split run silently no-ops the cleanup.
+**Control flow (one reading only):** 5a's extraction runs in its OWN Bash call,
+right after Step 2's failing dispatch — its output (`RUN_LOG_PATH`) is what
+gets substituted into 5b's prompt. Step 5b then spawns the analyzer in the
+BACKGROUND (`run_in_background: true`, Hard rule 8) and the leader WAITS for
+its completion notification — a separate, non-Bash step; never poll. Only
+once the analyzer's inline JSON reply has arrived do 5c's parse and this case
+block run, and they run TOGETHER in ONE Bash invocation — re-supplying
+`RUN_LOG_PATH` there too (re-run 5a's extraction against the same stderr text,
+or inline the already-known path literally), since shell state (`RUN_LOG_PATH`,
+`AGENT_JSON`) does not persist across separate Bash calls and a split run
+silently no-ops the cleanup.
 
 ```bash
 case "$OUTCOME" in
@@ -405,8 +497,11 @@ case "$OUTCOME" in
     if printf '%s' "$PROPOSAL" \
          | apply_patch.py --cli antigravity; then
       # applier exit 0 → patch landed; re-run in --repair-mode to verify routing.
-      antigravity_wrapper.py \
-        --repair-mode <original-args>   # replay the ORIGINAL argv verbatim (same flags/values) — do not retype from memory
+      # Replay the SAME quoted argv array Step 1 built, with --repair-mode
+      # appended as its own DISTINCT element — never reconstruct the
+      # invocation as a pasted/retyped string (A6: an optional bracketed
+      # value is not quoting-safe once flattened).
+      "${AGY_CMD[@]}" --repair-mode
     else
       echo "proposal rejected by applier: $REASON"   # applier exit 3 → treat as escalate
     fi
@@ -436,11 +531,14 @@ Branch summary:
 
 ## Long-answer output-file contract (truncation loophole; 2026-07-22)
 
-agy's print path AND its own transcript store cap every record's content
-(observed ~4KB; own-line `<truncated N bytes|lines>` markers; format strings
-live in the agy binary) — a long single answer is FOLDED mid-body and the
-lost text is preserved NOWHERE agy-side. `write_file` output is NOT subject
-to the fold (verified: 24KB file intact while the chat answer folded).
+agy's print path caps a long answer's content CLI-side (observed ~4KB;
+own-line `<truncated N bytes|lines>` markers; format strings live in the agy
+binary — unchanged behavior across the 2026-07-31 stream-json migration) —
+a long single answer is FOLDED mid-body and the lost text is preserved
+NOWHERE agy-side (the wrapper no longer reads agy's own transcript store at
+all since the migration, so there is no fallback recovery path there either).
+`write_file` output is NOT subject to the fold (verified: 24KB file intact
+while the chat answer folded).
 
 For any dispatch whose answer may exceed ~3KB (review legs, research
 reports, multi-section documents), use the output-file contract:
@@ -452,14 +550,16 @@ reports, multi-section documents), use the output-file contract:
    one-line confirmation (e.g. `DONE <filename>`) to the chat.
 2. The leader reads the file as the deliverable; the chat answer is only a
    completion signal.
-3. Version caveat: wherever the deny ENFORCES — agy ≤1.1.2 AND current
-   builds since the vendor re-fix (enforced on 1.1.7, differential probe;
-   § Headless banner) — a `--sandbox read-only` dispatch CANNOT write the
-   output file, and agy may still SELF-REPORT `DONE` (verify arrival,
-   always): the contract REQUIRES the write-capable permissive baseline
-   (`--sandbox` omitted, non-hardened). Only inside the 1.1.3-era
-   soft-deny window did skip-perms auto-approve the write under
-   read-only. On a HARDENED install (`TRIAD_WRAPPER_HARDENED=1`)
+3. Version caveat: `--dangerously-skip-permissions` voids the WRAPPER's deny
+   transaction on every build the wrapper dispatches (§ Headless — the flag
+   fires unconditionally there, opt-out aside), but agy's OWN engine appeared
+   to independently re-deny `write_file` on the one probed build (1.1.7, now
+   below the 1.1.8 dispatch floor; § Headless banner) — that has NOT been
+   re-probed at the current floor, so do NOT assume a `--sandbox read-only`
+   dispatch can write the output file; agy may still SELF-REPORT `DONE`
+   either way (verify arrival, always). The contract therefore still REQUIRES
+   the write-capable permissive baseline (`--sandbox` omitted, non-hardened)
+   as the reliable path. On a HARDENED install (`TRIAD_WRAPPER_HARDENED=1`)
    omission auto-upgrades to `read-only`, so THERE this contract is
    UNAVAILABLE at any agy version —
    prefer ACCEPTING the chat-answer fold; unsetting
@@ -492,9 +592,12 @@ the other two:
    settings backup left by a crashed transaction before settings are mutated, so
    no call executes against deny-polluted global settings (§ Isolation
    operational notes). The crash window itself is narrowed (2026-07-31): the
-   wrapper unwinds on SIGTERM/SIGHUP (restore + pty child kill run on the way
-   out) and a pty exception unwind kills the vendor subtree instead of blocking
-   in waitpid — only SIGKILL-class death still leaves the sentinel, by design.
+   wrapper unwinds on SIGTERM/SIGHUP (restore + vendor child kill run on the way
+   out) and an abnormal unwind inside `_common._run_once` kills the vendor
+   process group instead of blocking in `waitpid` (the same shared mechanism
+   codex/gemini/claude use since the stream-json migration retired agy's
+   separate pty-kill path) — only SIGKILL-class death still leaves the
+   `.agybak` sentinel, by design.
 3. **`agy-daily-check.sh` (proactive).** A scheduled drift detector with split
    exit semantics — `0` no change / `1` actionable drift / `2` informational
    change — surfaced as a dated report for owner review. Since 2026-07-31 it
@@ -519,4 +622,4 @@ The leader (not the analyzer) is the only writer to the classifier extension —
 - `agents/agy-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
 - `triad-codex-dispatch` — parallel SKILL for Codex.
 - `triad-gemini-dispatch` — parallel SKILL for Gemini (the enterprise-credential lane).
-- `triad-cross-family-review` — final pre-merge cross-family review (the agy leg here is best-effort non-write; the write/exec deny surface is enforced on ≤1.1.2 and again on current builds, INTENT-only in the 1.1.3-era window — while the by-design read/network residual persists on every build — see § Headless soft-deny adaptation + § Isolation).
+- `triad-cross-family-review` — final pre-merge cross-family review (the agy leg here is best-effort non-write; the write/exec deny surface's enforcement is UNCONFIRMED at the current dispatch floor — last probed on 1.1.7, now below the 1.1.8 floor — while the by-design read/network residual persists on every build — see § Headless soft-deny adaptation + § Isolation).
