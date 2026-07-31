@@ -17,6 +17,7 @@ import os
 import pty
 import select
 import signal
+import sys
 import time
 from dataclasses import dataclass
 
@@ -78,7 +79,13 @@ def run_via_pty(cmd, cwd=None, timeout=600, env=None) -> PtyResult:
                 chunks.extend(data)
     finally:
         os.close(master_fd)
-        child_status = _killpg(pid) if killed else None
+        # Abnormal unwind (signal-raised SystemExit, KeyboardInterrupt, OSError)
+        # must kill the subtree too: _reap would otherwise block in waitpid until
+        # the vendor exits on its own whenever the child ignores the master-close
+        # SIGHUP — a hang that invites the SIGKILL that leaks the settings
+        # transaction.
+        abnormal = sys.exc_info()[0] is not None
+        child_status = _killpg(pid) if (killed or abnormal) else None
         rc = _reap(pid, child_status)
     return PtyResult(bytes(chunks), rc, killed)
 

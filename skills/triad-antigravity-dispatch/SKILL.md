@@ -1,8 +1,15 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.10.0
+version: 0.10.1
 # changelog:
+#   0.10.1 (2026-07-31): abnormal-exit hardening doc resync — wrapper installs
+#     SIGTERM/SIGHUP unwind handlers (settings restore + pty child kill run on
+#     the way out), pty exception unwind now kills the vendor subtree instead
+#     of blocking in waitpid, the shared lease's last-exit restore degrades
+#     loudly on a missing/corrupt .agybak, and agy-daily-check.sh gains a
+#     leaked deny-transaction probe (stale sentinel >2h -> ACTIONABLE exit 1)
+#     capping the SIGKILL-class residual window. Wrapper CLI surface unchanged.
 #   0.10.0 (2026-07-25): workspace-write REMOVED per owner directive — never
 #     used in 616 audited agy wrapper calls (0 workspace-write). --sandbox
 #     now takes only `read-only`; the write-mode DENY SET
@@ -484,11 +491,18 @@ the other two:
 2. **`.agybak` crash-recovery (reactive).** Every agy call heals a stale
    settings backup left by a crashed transaction before settings are mutated, so
    no call executes against deny-polluted global settings (§ Isolation
-   operational notes).
+   operational notes). The crash window itself is narrowed (2026-07-31): the
+   wrapper unwinds on SIGTERM/SIGHUP (restore + pty child kill run on the way
+   out) and a pty exception unwind kills the vendor subtree instead of blocking
+   in waitpid — only SIGKILL-class death still leaves the sentinel, by design.
 3. **`agy-daily-check.sh` (proactive).** A scheduled drift detector with split
    exit semantics — `0` no change / `1` actionable drift / `2` informational
-   change — surfaced as a dated report for owner review. Mechanics, scheduling,
-   and flags: the plugin `README.md` § agy daily-check.
+   change — surfaced as a dated report for owner review. Since 2026-07-31 it
+   also fires ACTIONABLE on a leaked deny transaction (stale `.agybak` /
+   shared-lease sentinel >2h — the SIGKILL-class residual, otherwise healed
+   only on the NEXT wrapper call while interactive agy mis-runs silently).
+   Mechanics, scheduling, and flags: the plugin `README.md` § agy
+   daily-check.
 
 ## Path scope
 

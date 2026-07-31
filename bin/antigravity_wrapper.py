@@ -19,6 +19,7 @@ import argparse
 import os
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import time
@@ -400,7 +401,19 @@ def _server_cap_backoff(attempt: int) -> None:
     time.sleep(_common.SERVER_CAP_BACKOFF_S[idx])
 
 
+def _terminate_to_exit(signum, frame):
+    raise SystemExit(128 + signum)
+
+
 def main() -> int:
+    # SIGTERM/SIGHUP unwind instead of dying mid-transaction, so the settings
+    # guard restore + pty child kill run on the way out (SIGKILL stays
+    # uncoverable by design — .agybak + next-call heal owns that window).
+    try:
+        signal.signal(signal.SIGTERM, _terminate_to_exit)
+        signal.signal(signal.SIGHUP, _terminate_to_exit)
+    except ValueError:
+        pass  # not the main thread (in-process test harness): keep defaults
     p = argparse.ArgumentParser(description="Antigravity (agy) single-shot wrapper",
                                 allow_abbrev=False)
     prompt_group = p.add_mutually_exclusive_group(required=True)

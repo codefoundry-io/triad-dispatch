@@ -5,7 +5,8 @@
 # write a dated drift report. Split exit semantics so benign vendor churn does
 # not train operators to ignore the alarm:
 #   0 = no change
-#   1 = ACTIONABLE drift (model list changed, or deep JSON-adherence broke)
+#   1 = ACTIONABLE drift (model list changed, deep JSON-adherence broke, or a
+#       stale deny-transaction sentinel — leaked settings — was detected)
 #   2 = INFORMATIONAL change (changelog version / plugin list / superpowers-available)
 #
 # A failed `agy` subcommand KEEPS the previous snapshot (never overwrites with an
@@ -118,6 +119,22 @@ if [ "${AGY_DAILY_DEEP:-0}" = "1" ]; then
     actionable=1
   fi
 fi
+
+# 6. leaked deny-transaction probe (ACTIONABLE). A wrapper call that died
+#    without cleanup (SIGKILL-class) leaves its per-call deny rules merged in
+#    the global settings until the NEXT wrapper call heals them on entry;
+#    interactive agy in that window mis-runs silently (a denied tool can come
+#    back as an EMPTY answer with status SUCCESS). Age floor 2h so a LIVE
+#    transaction is never flagged. Read-only: report + heal guidance only —
+#    healing stays the wrapper's job.
+AGY_SETTINGS="${AGY_SETTINGS_PATH:-$HOME/.gemini/antigravity-cli/settings.json}"
+AGY_CFG_DIR="$(dirname "$AGY_SETTINGS")"
+for leak in "$AGY_CFG_DIR/.agybak" "$AGY_CFG_DIR/.agy_settings.shared.json"; do
+  if [ -f "$leak" ] && [ -n "$(find "$leak" -mmin +120 2>/dev/null)" ]; then
+    note "- DRIFT (actionable): stale $(basename "$leak") (>2h) — a crashed wrapper call likely left deny rules merged in $AGY_SETTINGS; run any wrapper dispatch (it heals on entry) or verify/remove manually"
+    actionable=1
+  fi
+done
 
 # exit precedence: actionable > informational > none
 if [ "$actionable" -ne 0 ]; then status=1

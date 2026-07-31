@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.538 — 2026-07-30
+## 0.2.542 — 2026-07-31
 
 **Review model-tier policy — cross-family review v0.19.0.** Review
 legs now run xhigh-class depth by DEFAULT; max-class depth is an

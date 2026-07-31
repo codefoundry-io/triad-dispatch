@@ -1,8 +1,45 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until unanimous SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.19.0
+version: 0.20.2
 # changelog:
+#   0.20.2 (2026-07-31): containment-carrier CORRECTION after a Tier-1 check
+#     (antigravity.google/docs/rules-workflows) + 2 more probes: agy 1.1.8
+#     headless DOES load the GLOBAL ~/.gemini/GEMINI.md (verbatim quote +
+#     behavioral marker both fired); what it does NOT load is any
+#     workspace-scoped rule (cwd GEMINI.md/AGENTS.md, .agents/rules at cwd or
+#     git root). Per-call packet scoping stays impossible -> the prompt block
+#     remains the per-call carrier; a mild global rule is an owner option.
+#     The CLI's bundled agy-customizations doc mis-describes names/paths.
+#   0.20.1 (2026-07-31): containment-carrier note — spike (4 probes) showed agy
+#     1.1.8 headless does not load GEMINI.md/.agents directory rules from
+#     --cwd, so the prompt CONTAINMENT block is the only working carrier; do
+#     not plant a packet-dir GEMINI.md (inert = false comfort). Doc-only.
+#     (Partially corrected by 0.20.2 — the global carrier DOES work headless.)
+#   0.20.0 (2026-07-31): agy leg reliability policy, from a planted-defect
+#     replay of the F31 merge-r1 packet (8 production-shape runs + 2
+#     stream-json traced runs; experiments/2026-07-31-agy-review-depth,
+#     project_agy_review_depth_hypothesis_test_2026_07_31): real-defect
+#     recall 21% (3/14), identical-run flip 2/3<->1/3, unstable severity,
+#     file:line cites fabricated 4/5, "Criteria checked" echoed 8/8
+#     regardless of depth. Traced mechanism: the agy agent HARNESS wanders
+#     outside the packet dir before reading it — other projects' review
+#     dirs AND its own conversation logs (a 126KB grep of its prior
+#     verdicts into context), which re-ingested its own round-1 finding as
+#     a recurring false Must-fix (6/8 runs); plus 5x whole-file re-reads
+#     diluting attention. NOT the compact contract (uncapped run stayed
+#     2.3KB), NOT prompt depth (depth-directive arms 0/4 vs 1/4), NOT the
+#     model (pro-high nailed the exact defect+fix twice when context was
+#     clean). Changes: agy verdict = ADVISORY for the unanimous gate
+#     (findings still consolidate; gate = codex+claude; does NOT trigger
+#     the degraded-mode owner-decision when the leg ran); mandatory
+#     CONTAINMENT block in the agy leg prompt; rubber-stamp latency signal
+#     measured (<60s on a >=100KB packet); agy cites verified before
+#     entering the residual table. Stale-fact fix: current agy HAS
+#     --effort (1.1.5+) and print-mode --output-format json/stream-json +
+#     --json-schema (1.1.8) — slug pinning stays the wrapper-supported
+#     mechanism; stream-json tool-trace audit is the flagged wrapper
+#     follow-up.
 #   0.19.0 (2026-07-30): owner model-tier policy — review legs run xhigh-class
 #     depth by DEFAULT; max-class ONLY on rounds the leader designates
 #     very-important AND algorithmically complex. fable is OUT of the review
@@ -269,10 +306,11 @@ the lab's standing cross-family review rule.
                                                  # probe-verified at adoption). gemini path stays unpinned
    # IDENTITY CAVEAT: catalog membership + dispatch acceptance prove the SELECTOR
    # is valid, not which runtime tier actually served the call — agy exposes no
-   # runtime model identity, so record the leg as identity-unexposed. The
-   # practical detector for a silently-shallow resolution is rule 11's
-   # rubber-stamp heuristic: a fast, terse SAFE from this leg → re-dispatch
-   # adversarially or demote the leg to ADVISORY for gating.
+   # runtime model identity, so record the leg as identity-unexposed. (1.1.8
+   # stream-json `init.model` echoes the requested slug — still the REQUEST,
+   # not a serving proof.) The measured shallow-pass detector is rule 11's
+   # latency signal (<60s on a >=100KB packet); the agy verdict is ADVISORY
+   # for gating regardless (rule 1 agy bullet, 0.20.0).
    if [ "$GOOGLE_CLI" = agy ] && ! agy models 2>/dev/null | grep -qxF "$GOOGLE_REVIEW_MODEL"; then
      echo "[review] '$GOOGLE_REVIEW_MODEL' not in 'agy models' — falling back to agy default; Google leg is ADVISORY this round" >&2
      GOOGLE_REVIEW_MODEL=""
@@ -302,8 +340,44 @@ the lab's standing cross-family review rule.
    top tier still rubber-stamps when merely asked to "check if this looks fine"):
    - **agy (Google leg):** when `GOOGLE_REVIEW_MODEL` is non-empty, the dispatch
      MUST pass `--model "$GOOGLE_REVIEW_MODEL"` to `antigravity_wrapper.py` (the
-     Pro/High variant — agy encodes reasoning in the model variant, no `--reasoning`
-     flag; the wrapper pins nothing by default).
+     Pro/High variant — current agy encodes effort in the model SLUG; a separate
+     `--effort low|medium|high` flag exists since agy 1.1.5 but the wrapper does
+     not pass it, so the slug stays the supported mechanism).
+     **agy verdict = ADVISORY for the unanimous gate (STANDING, 2026-07-31).**
+     Its findings enter consolidation like any leg's, but its SAFE does not
+     satisfy the merge gate — gate on codex+claude. An agy-ADVISORY round with
+     the leg RUN and consolidated is NOT degraded mode (no extra owner-decision
+     step); degraded mode remains "a family leg did not run at all". Evidence
+     (planted-defect replay of a real merge packet, 2026-07-31): real-defect
+     recall 21% across 8 production-shape runs, identical-run verdict flip,
+     and a stream-json trace showing the agy HARNESS wandering outside the
+     packet dir before reading it — including grep'ing its OWN conversation
+     logs into context, which re-ingested its own earlier finding as a
+     recurring false Must-fix. Neither the compact contract, prompt depth
+     directives, nor the model tier caused it; pro-high found exact
+     mechanism-plus-fix twice when context stayed clean.
+     **Mandatory CONTAINMENT block in the agy leg prompt:** "Read `packet.md`
+     ONCE with your file-view tool (shell readers like `cat` are deny-listed
+     under read-only) and base the review on it ALONE. Do NOT read or search
+     any other file or directory, do NOT list directories, do NOT search the
+     filesystem or the web, and do NOT consult prior conversations or scratch
+     space. Anything not in the packet is an open question, never an asserted
+     finding." (A traced containment run dropped exploration tool calls to
+     zero.) Before an agy finding enters the residual table, VERIFY its
+     file:line against the packet — cites were fabricated in 4/5 traced-or-
+     scored runs even when the finding class was right.
+     The PROMPT is the only PER-CALL containment carrier: a 2026-07-31 spike
+     (6 probes — behavioral marker + verbatim-quote; GEMINI.md/AGENTS.md at
+     cwd, `.agents/rules` always_on at cwd AND at the git root, global
+     `~/.gemini/GEMINI.md`; file-open trigger included) showed agy 1.1.8
+     headless (`-p`) loads NO workspace-scoped rules — but it DOES load the
+     GLOBAL `~/.gemini/GEMINI.md` (official rules doc:
+     antigravity.google/docs/rules-workflows — the CLI's bundled
+     agy-customizations skill mis-describes both names and paths). So: do NOT
+     plant a packet-dir GEMINI.md expecting enforcement (inert = false
+     comfort); a mild owner-installed GLOBAL rule (e.g. prefer the native
+     file-view tool over shell readers) can reinforce but affects EVERY agy
+     session — hard containment stays in the prompt.
    - **gemini (when it is the selected Google leg):** pass an owner-verified
      `TRIAD_GOOGLE_REVIEW_MODEL` to `gemini_wrapper.py --model` when configured;
      otherwise run the CLI default and log that the review tier is unpinned — an
@@ -586,8 +660,13 @@ the lab's standing cross-family review rule.
     severity-deflation) to the codex and agy legs too, and additionally require every leg
     to (a) ENUMERATE which criteria/rules it checked before concluding and (b) treat a
     bare "SAFE / none / faithful" verdict as a failed review, not a pass. A fast, terse
-    SAFE/none from any leg (e.g. a sub-30s pass over a large packet) is a rubber-stamp
-    signal → re-dispatch that leg with the adversarial framing. The framing, not the
+    SAFE/none from any leg is a rubber-stamp signal → re-dispatch that leg with the
+    adversarial framing. MEASURED threshold (2026-07-31, 134KB packet, 8 runs):
+    under 60s ⇒ shallow pass — both 20s-class runs found ZERO mid-packet real
+    defects while every ≥79s run found ≥1; treat <60s on a ≥100KB packet as the
+    signal (the older sub-30s guide was too lenient). The criteria enumeration in
+    (a) is required but is NOT evidence of depth — agy echoed "Criteria checked:
+    1-5" in 8/8 runs regardless of what it actually verified. The framing, not the
     tier, is the gap: a leg at its top tier still rubber-stamps a bare "faithful/none"
     when it is only asked to check that things look fine (see the changelog).
 12. **Non-convergence is a STOP, not another round.** The fix→re-confirm
@@ -830,7 +909,7 @@ the lab's standing cross-family review rule.
 |---|---|---|
 | Reviewers all pass a leader blind-spot | claude leg was leader-inline, or suspect framed as fact | Use a fresh-eye Agent; frame as questions (rules 1-2) |
 | claude leg keeps returning SAFE while codex/agy escalate residuals | claude prompt under-reasoned / not adversarial / shallow tier | Max-thinking + adversarial prompt + no severity-deflation (rule 10); legs at the rule-1 review tier |
-| A vendor leg (codex/agy) returns a fast bare SAFE/none despite MAX tier | Tier was set but the leg got no adversarial framing — it rubber-stamped | Give EVERY leg the rule-11 framing (assume a defect, enumerate checks, reject bare SAFE, no deflation); a sub-30s terse pass on a large packet → re-dispatch adversarially |
+| A vendor leg (codex/agy) returns a fast bare SAFE/none despite MAX tier | Tier was set but the leg got no adversarial framing — it rubber-stamped | Give EVERY leg the rule-11 framing (assume a defect, enumerate checks, reject bare SAFE, no deflation); a <60s pass on a ≥100KB packet → re-dispatch adversarially (measured 2026-07-31); an agy pass is ADVISORY for gating regardless (rule 1) |
 | Merged on 2-of-3 SAFE | Averaged instead of consolidated | ANY Critical/DO-NOT-MERGE blocks (rule 4) |
 | First-pass fixes assumed sufficient | No re-confirm | Re-run the 3-way on the fixed branch (rule 5) |
 | Vendor leg times out with no verdict | Reviewer live-ran the code → hung on a real vendor call, sandbox couldn't reap it | Add "READ-only, do NOT execute" + generous timeout to the leg prompt (rule 7) |

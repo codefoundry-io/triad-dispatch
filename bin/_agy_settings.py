@@ -429,7 +429,16 @@ def _shared_readonly_guard(
                             state["holders"] = holders
                             _atomic_write(state_path, json.dumps(state, indent=2))
                         else:
-                            _restore(p, json.loads(bak.read_text()))
+                            snap = None
+                            try:
+                                snap = json.loads(bak.read_text())
+                            except (OSError, ValueError) as e:
+                                sys.stderr.write(
+                                    f"[agy_settings] last-exit snapshot unreadable: {e}; "
+                                    f"{p} may retain leaked deny rules from this "
+                                    "transaction — verify/remove manually\n")
+                            if snap is not None:
+                                _restore(p, snap)  # OSError propagates, .agybak kept for a later heal
                             try:
                                 bak.unlink()
                             except FileNotFoundError:
