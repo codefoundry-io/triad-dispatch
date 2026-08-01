@@ -1,8 +1,23 @@
 ---
 name: triad-gemini-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Gemini CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 gemini_wrapper.py` raw; the user asks to call gemini once, have gemini handle a task, or run a one-shot gemini analysis; a higher-level orchestration SKILL needs the Gemini leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (`triad-codex-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.6.0
+version: 0.6.1
 # changelog:
+#   0.6.1 (2026-08-01): Step 1 heredoc terminator is now collision-resistant
+#     (`TRIAD_GEMINI_PROMPT_EOF`, replacing the bare `PROMPT`) and
+#     `--prompt-file <absolute-path>` is the STANDING path for content the
+#     leader did not author AND for any body that QUOTES a dispatch template
+#     or a SKILL body (quoted text carries the house terminator verbatim —
+#     that is how this defect was first observed); it REPLACES the heredoc,
+#     the two being argparse-mutually-exclusive. A bare `PROMPT`
+#     line inside the body closed the heredoc early, and because the heredoc
+#     sits inside `$( … )` the remainder of the prompt then parsed as SHELL in
+#     the leader's own session — outside every worker-side sandbox. The prior
+#     wording asked the leader to predict whether pasted content might contain
+#     such a line, which is a gate that fails silently. Same fix as
+#     `triad-antigravity-dispatch` 0.13.0 (terminator) + 0.13.1 (the widened
+#     rule above), found by its skill-prompt-review round: the review packet
+#     quoting this very template tripped it.
 #   0.6.0: Step 5b SECURITY note — address the read-only repair analyzer by its
 #     plugin-scoped identity (`triad-dispatch:gemini-wrapper-repair`, export-
 #     injected) so a same-named project `agents/` agent cannot shadow the
@@ -46,14 +61,25 @@ makes the `unknown`-classification path correctly route to the repair sub-agent.
 
 ### Step 1 — Build the wrapper invocation
 
-Single-quoted heredoc for the prompt body so Korean / emoji / `$variables` / backticks / quotes survive intact. One caution: a line consisting of exactly `PROMPT` inside the body terminates the heredoc early — when the prompt embeds external/pasted content that could contain such a line, pass it via the wrapper's `--prompt-file` instead:
+Single-quoted heredoc for the prompt body so Korean / emoji / `$variables` /
+backticks / quotes survive intact, with a collision-resistant terminator: a line
+consisting of exactly the terminator word ends the heredoc early, and a bare
+`PROMPT` is a word real prompt bodies contain. `TRIAD_GEMINI_PROMPT_EOF` is the
+house terminator. Use `--prompt-file <absolute-path>` INSTEAD of the heredoc
+(the two are mutually exclusive — argparse rejects both together) for either of
+these bodies: **content the leader did not author** (pasted files, vendor
+output, a diff, a packet), or **any body that quotes a dispatch template or a
+SKILL body** — a quoted template carries the house terminator as literal text,
+which is exactly how this defect was first observed. `--prompt-file` removes
+the terminator collision entirely and is the standing path for both.
 
 ```bash
 gemini_wrapper.py \
-  --prompt "$(cat <<'PROMPT'
+  --prompt "$(cat <<'TRIAD_GEMINI_PROMPT_EOF'
 <leader-prompt-verbatim>
-PROMPT
+TRIAD_GEMINI_PROMPT_EOF
 )" \
+  [--prompt-file /absolute/path/to/prompt.txt] \
   [--cwd /absolute/path] \
   [--sandbox read-only|workspace-write] \
   [--approval-mode default|auto_edit] \
@@ -62,6 +88,9 @@ PROMPT
   [--timeout <seconds>] \
   [--pydantic module:Class]
 ```
+
+`--prompt-file` REPLACES the `--prompt` heredoc — argparse rejects both
+together, so delete the heredoc when switching to a file body.
 
 Defaults: no `--sandbox` policy and `--approval-mode default` (read auto, write/shell prompt). `--sandbox read-only` attaches the wrapper-adjacent `policies/gemini-readonly.toml` for that call only. `auto_edit` = write/shell auto (only on explicit leader request) and conflicts with `--sandbox read-only`. `--approval-mode plan/yolo` is rejected by argparse.
 

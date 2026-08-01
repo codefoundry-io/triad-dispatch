@@ -1,9 +1,23 @@
 # Changelog
 
-## 0.2.596 — 2026-08-01
+## 0.2.601 — 2026-08-01
 
-**One structured verdict schema across all three review legs —
-cross-family review v0.24.1.** Every review leg now returns ONE
+**Prompt-transport hardening across every dispatch skill.** The
+Step 1 invocation template's heredoc terminator is now
+collision-resistant (`TRIAD_<CLI>_PROMPT_EOF`, replacing a bare
+`PROMPT`): a prompt body containing the terminator word on its own
+line closed the heredoc early, and because the heredoc sits inside
+`$( … )` the remainder then parsed as SHELL in the caller's own
+session — outside every worker-side sandbox. Each dispatch skill
+pins its own terminator, and `--prompt-file <absolute-path>` is
+named as the standing path (REPLACING the heredoc — the two are
+mutually exclusive) for content the caller did not author AND for
+any body that quotes a dispatch template or a skill body, since
+quoted text carries the terminator verbatim.
+
+_(Prior release — **one structured verdict schema across all three
+review legs, cross-family review v0.24.x**: every review leg
+returns ONE
 validated `LegVerdict` object (verdict token, enumerated
 criteria_checked, findings[] with file/line/severity/trigger/
 context-known) instead of free prose: the codex leg via
@@ -19,7 +33,7 @@ bound path at call start (skipped on `--repair-mode`), the
 override write refuses symlinks (O_NOFOLLOW), and dispatch /
 pre-clear / gate all bind one byte-identical packet-relative
 literal. Schema floors: non-SAFE verdicts need >=1 finding,
-criteria and finding fields reject empty/whitespace, line >= 1.
+criteria and finding fields reject empty/whitespace, line >= 1.)_
 
 _(Prior release — **skill progressive-disclosure split, review
 v0.23.0 / antigravity dispatch v0.13.0**: both bodies became lean

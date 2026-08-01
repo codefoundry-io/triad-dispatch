@@ -1,8 +1,19 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.13.0
+version: 0.13.1
 # changelog:
+#   0.13.1 (2026-08-01): Step 1 prompt-transport rule widened and the
+#     `--prompt-file` relationship stated. The 0.13.0 rule routed only content
+#     the leader did NOT author to `--prompt-file`, but the defect's own
+#     observed trigger was a LEADER-authored review packet that QUOTED this
+#     template — quoted text carries the house terminator verbatim, so that
+#     case still collided. The rule now also covers any body quoting a
+#     dispatch template or a SKILL body, and a line after the flag block says
+#     `--prompt-file` REPLACES the heredoc (argparse rejects both together)
+#     rather than reading as one more additive option. Applied identically to
+#     the three sibling dispatch skills (codex 0.9.1 / gemini 0.6.1 /
+#     claude 0.4.1), which took the 0.13.0 terminator fix in the same change.
 #   0.13.0 (2026-08-01): body split into one-level `references/` after an
 #     overlap/dead-content audit, plus a tone and provenance de-scope pass (plan
 #     `docs/superpowers/plans/2026-07-31-agy-post-migration-followups.md` item
@@ -195,10 +206,13 @@ Single-quoted heredoc for the prompt body so Korean / emoji / `$variables` /
 backticks / quotes survive intact, with a collision-resistant terminator: a line
 consisting of exactly the terminator word ends the heredoc early, and a bare
 `PROMPT` is a word real prompt bodies contain. `TRIAD_AGY_PROMPT_EOF` is the
-house terminator. For **any content the leader did not author** — pasted files,
-vendor output, a diff, a packet — use `--prompt-file <absolute-path>` instead:
-it removes the terminator collision entirely and is the standing path for
-non-leader-authored content.
+house terminator. Use `--prompt-file <absolute-path>` INSTEAD of the heredoc
+(the two are mutually exclusive — argparse rejects both together) for either of
+these bodies: **content the leader did not author** (pasted files, vendor
+output, a diff, a packet), or **any body that quotes a dispatch template or a
+SKILL body** — a quoted template carries the house terminator as literal text,
+which is exactly how this defect was first observed. `--prompt-file` removes
+the terminator collision entirely and is the standing path for both.
 
 ```bash
 AGY_CMD=(antigravity_wrapper.py \
@@ -216,13 +230,17 @@ TRIAD_AGY_PROMPT_EOF
 "${AGY_CMD[@]}"
 ```
 
+`--prompt-file` REPLACES the `--prompt` heredoc — argparse rejects both
+together, so delete the heredoc when switching to a file body.
+
 **Retain the invocation as a quoted argv array** (`AGY_CMD` above): Step 5d
 replays that SAME array with `--repair-mode` appended as a DISTINCT element, and
 an optional bracketed value like `[--cwd /absolute/path]` stops being
 quoting-safe once flattened to a string.
 
 Flags at a glance: `--sandbox read-only` (per-call deny transaction, § Isolation)
-· `--prompt-file <abs>` (non-leader-authored bodies, above) · `--pydantic
+· `--prompt-file <abs>` (replaces the heredoc: non-leader-authored bodies,
+or a body quoting a template — Step 1) · `--pydantic
 module:Class` (native `--json-schema`) · `--timeout <s>` (default 600) · `--cwd
 <abs>` · `--model <selector>` · `--debug`. Still **no `--dangerously-*`** (Hard
 rule 7). What each flag actually does, and the wrapper-internal transport note:

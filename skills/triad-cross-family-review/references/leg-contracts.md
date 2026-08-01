@@ -375,11 +375,15 @@ fallback above.
   fall back to.
 
   Keep `$(cat body.txt)` OUT of a single-quoted heredoc BODY — i.e.
-  `--prompt "$(cat <<'PROMPT'` … a line containing `$(cat body.txt)` …
-  `PROMPT)"`. The heredoc is literal, so that inner `$(...)` is never expanded
-  and codex receives the uninterpreted string `$(cat ...)`. (The outer heredoc
-  shape stays valid for a literal prompt body — the sibling dispatch skills'
-  Step 1 uses exactly that.) Inlining is a codex-leg requirement rather than a
+  `--prompt "$(cat <<'TRIAD_CODEX_PROMPT_EOF'` … a line containing
+  `$(cat body.txt)` … `TRIAD_CODEX_PROMPT_EOF)"`. The heredoc is literal, so
+  that inner `$(...)` is never expanded and codex receives the uninterpreted
+  string `$(cat ...)`. (The sibling dispatch skills' Step 1 uses the heredoc
+  shape for a literal prompt body, each with its own collision-resistant
+  `TRIAD_<CLI>_PROMPT_EOF` terminator. THIS leg uses neither that heredoc nor
+  `--prompt-file`: it inlines the packet through `$(cat -- "$review_body")`
+  per the bullet heading above, which is collision-free precisely because
+  there is no heredoc to terminate early.) Inlining is a codex-leg requirement rather than a
   universal one, since gemini and agy read the repo-relative packet file — though
   inlining a small packet works for every leg. For a LARGE diff the inlined body
   must ALSO be the focused, high-risk subset: same focused content agy/gemini get

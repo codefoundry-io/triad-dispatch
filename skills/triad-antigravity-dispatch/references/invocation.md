@@ -18,9 +18,12 @@ terminator, `--prompt-file` rule, argv-array retention) stays in Step 1 itself.
   prompt), then exits `EXIT_SCHEMA_FAIL=66`. e2e-verified against real agy
   (`tests/e2e/wrappers/agy-stream/s1-real-stream.sh` case 3).
 - `--timeout` default is `600` seconds. The wrapper derives agy's `--print-timeout` from it (`max(timeout - 10, 5)s`); the wrapper's own SIGTERM→SIGKILL process-group kill (shared with codex/gemini/claude) is the backstop.
-- `--prompt-file <absolute-path>` reads the prompt body from a file instead of
-  `--prompt`. Use it whenever the body is not leader-authored (see above); the
-  path is absolute, and a hardened install gates it against the allowed roots.
+- `--prompt-file <absolute-path>` reads the prompt body from a file INSTEAD of
+  `--prompt` (the two are mutually exclusive — argparse rejects both together).
+  Use it whenever the body is not leader-authored, OR whenever the body quotes
+  a dispatch template or a SKILL body — quoted text carries the house heredoc
+  terminator verbatim and would close the heredoc early (Step 1). The path is
+  absolute, and a hardened install gates it against the allowed roots.
 - `--cwd` sets agy's working directory.
 - `--debug` accumulates a markdown debug table.
 

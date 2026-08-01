@@ -1,8 +1,18 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.24.1
+version: 0.24.2
 # changelog:
+#   0.24.2 (2026-08-01): `references/leg-contracts.md` § codex leg — the
+#     inline-packet caution quoted the sibling dispatch skills' OLD bare
+#     `PROMPT` heredoc terminator, which those skills replaced with
+#     per-CLI `TRIAD_<CLI>_PROMPT_EOF` forms (codex 0.9.1 / gemini 0.6.1 /
+#     claude 0.4.1, same defect class as antigravity 0.13.0/0.13.1). Text
+#     resynced, and corrected on a point the round-1 review refuted: THIS leg
+#     uses neither that heredoc nor `--prompt-file` — it inlines the packet
+#     through `$(cat -- "$review_body")` per its own bullet heading, which is
+#     collision-free because there is no heredoc to terminate early.
+#     Doc-only; no gate block, no jq, no contract semantics touched.
 #   0.24.1 (2026-08-01): final-gate fix round on the 0.24.0 verdict-schema
 #     wiring (pre-merge cross-family gate: MERGE WITH FIXES, codex+claude
 #     converged, agy's must-fix probe-refuted). agy leg dispatch step
