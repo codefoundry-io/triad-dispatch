@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.601 — 2026-08-01
+## 0.2.603 — 2026-08-07
 
 **Prompt-transport hardening across every dispatch skill.** The
 Step 1 invocation template's heredoc terminator is now

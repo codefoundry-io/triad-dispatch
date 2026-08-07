@@ -25,6 +25,16 @@ terminator, `--prompt-file` rule, argv-array retention) stays in Step 1 itself.
   terminator verbatim and would close the heredoc early (Step 1). The path is
   absolute, and a hardened install gates it against the allowed roots.
 - `--cwd` sets agy's working directory.
+- `--model <selector>` passes a CATALOG selector from `agy models` (no-pin
+  default when omitted). **Pin floor: agy >= 1.1.10** — before 1.1.10 the
+  vendor applied `--model`/`--effort` after model configuration had already
+  initialized, so `-p` runs silently fell back to the persisted/default model
+  (vendor changelog, 1.1.10 2026-08-03). The wrapper fail-closes a pinned
+  dispatch below the floor (`_MODEL_FLAG_FLOOR`) as `config-conflict` (65)
+  rather than dispatching a voided pin; pinless dispatches are not gated.
+- `--effort low|medium|high` passes agy's own `--effort` (reasoning effort;
+  ships in 1.1.10, retiring the stripped/buggy `thinkingLevel` era of issue
+  #1675). Same pin floor as `--model`; omit for the vendor default.
 - `--debug` accumulates a markdown debug table.
 
 Still **no `--dangerously-*`** (Hard rule 7).

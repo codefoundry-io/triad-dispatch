@@ -40,11 +40,19 @@ if [ -z "$GOOGLE_CLI" ]; then
 fi
 # REASONING TIER (a review-only override of the no-model-pin rule): the agy/gemini
 # default is a fast shallow model (Gemini Flash class), empirically useless for
-# adversarial review — it finds nothing the deeper tier catches. agy encodes
-# reasoning in the MODEL VARIANT (there is no --reasoning flag; the separate
-# thinkingLevel param is stripped/buggy — antigravity issue #1675), so force the
-# Pro/High variant via --model. Env-overridable; verify it still exists (Google
-# renames tiers) and fall back to the default + log if absent.
+# adversarial review — it finds nothing the deeper tier catches. agy's catalog
+# encodes reasoning in the MODEL VARIANT slug, so force the Pro/High variant via
+# --model. (Since agy 1.1.10 a working --effort low|medium|high also exists —
+# the wrapper passes it through — but the catalog still lists effort-suffixed
+# selectors, so the slug stays this leg's pinned mechanism; the pre-1.1.10
+# thinkingLevel param was stripped/buggy — antigravity issue #1675, now fixed.)
+# Env-overridable; verify it still exists (Google renames tiers) and fall back
+# to the default + log if absent.
+# PIN-FLOOR NOTE (2026-08-07): before agy 1.1.10, --model was silently IGNORED
+# in -p runs (default-model fallback) — so a pre-1.1.10 "pinned" leg may have
+# been served by the shallow default (identity caveat below was LIVE). The
+# wrapper now fail-closes a --model/--effort dispatch on agy < 1.1.10
+# (config-conflict 65) instead of dispatching a voided pin.
 GOOGLE_REVIEW_MODEL="${TRIAD_GOOGLE_REVIEW_MODEL:-}"
 if [ "$GOOGLE_CLI" = agy ] && [ -z "$GOOGLE_REVIEW_MODEL" ]; then
   GOOGLE_REVIEW_MODEL="gemini-3.1-pro-high"   # agy-leg default = the catalog's stable
@@ -78,8 +86,14 @@ the shallow-tier fact for the round record.
 
 - **Model.** When `GOOGLE_REVIEW_MODEL` is non-empty, the dispatch passes
   `--model "$GOOGLE_REVIEW_MODEL"` to `antigravity_wrapper.py` (the Pro/High
-  variant — agy encodes effort in the model slug; an `--effort` flag exists but
-  the wrapper does not pass it, so the slug stays the supported mechanism).
+  variant — agy's catalog encodes effort in the model slug, so the slug stays
+  this leg's pinned mechanism; the wrapper also passes `--effort` through since
+  agy 1.1.10 fixed it, but the catalog lists effort-suffixed selectors, so the
+  leg does not add a separate `--effort`). The wrapper fail-closes a `--model`
+  dispatch on agy < 1.1.10 (`config-conflict` 65 — the pin was silently VOID
+  there, see the pin-floor note above): treat that exit as leg-not-run and
+  surface "run `agy update`", never re-dispatch pinless to squeeze a verdict
+  out of the shallow default.
 - **Read-audit binding.** The SAME dispatch sets
   `TRIAD_READ_AUDIT_FILE="$PACKET_DIR/agy-read-audit.json"` in the wrapper
   invocation's environment — one packet dir per leg, so a parallel fan-out never

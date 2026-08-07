@@ -59,11 +59,13 @@ class AgyResult:
 
 
 def _build_cmd(prompt, agy_sandbox, model, timeout, *, json_schema=None,
-               skip_permissions=False):
+               skip_permissions=False, effort=None):
     """Canonical agy invocation — stream-json transport (agy >= 1.1.8).
     The prompt goes through CLEAN: no sentinel sealing (the 2026-07-31
     migration removed the pty-era completion marker, so the transport no
-    longer mutates what the model sees)."""
+    longer mutates what the model sees). `effort` (low|medium|high) rides
+    agy's own --effort flag (working since 1.1.10 — see _MODEL_FLAG_FLOOR);
+    None omits the flag (vendor default)."""
     print_to = max(timeout - OFFSET_S, MIN_PRINT_TIMEOUT_S)
     cmd = ["agy", "-p", prompt, "--output-format", "stream-json",
            "--print-timeout", f"{print_to}s"]
@@ -73,6 +75,8 @@ def _build_cmd(prompt, agy_sandbox, model, timeout, *, json_schema=None,
         cmd.append("--sandbox")
     if model:
         cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", effort]
     if skip_permissions:
         cmd = _add_skip_permissions(cmd)
     return cmd
@@ -189,6 +193,17 @@ def _parse_agy_version(text):
 # fallback would change the prompt shape mid-fleet (the old sentinel sealing
 # mutated the prompt) and mask a vendor regression from the repair loop.
 _STREAM_JSON_FLOOR = (1, 1, 8)
+
+# Floor for HONORED --model/--effort flags. Before 1.1.10 agy applied both
+# flags AFTER model configuration had already initialized, so an interactive
+# OR headless (-p) run silently fell back to the persisted/default model —
+# a requested tier pin dispatched the shallow default with no error (vendor
+# changelog, 1.1.10 2026-08-03; --effort itself also ships there). Fail-CLOSED
+# like the stream floor, but ONLY when the caller actually passed --model or
+# --effort: a pin that would be silently VOID is refused loudly
+# (`config-conflict`, run `agy update`), while pinless dispatches keep working
+# on 1.1.8/1.1.9.
+_MODEL_FLAG_FLOOR = (1, 1, 10)
 
 
 def _probe_agy_version(agy_bin):
@@ -464,6 +479,8 @@ def main() -> int:
                         "(workspace-write removed 2026-07-25 — owner directive, never "
                         "used in 616 audited calls.)")
     p.add_argument("--model", default=None)
+    p.add_argument("--effort", choices=["low", "medium", "high"], default=None,
+                   help="agy reasoning effort (--effort passthrough; agy >= 1.1.10)")
     p.add_argument("--timeout", type=int, default=600)
     p.add_argument("--repair-mode", action="store_true")
     p.add_argument("--debug", action="store_true")
@@ -525,6 +542,16 @@ def main() -> int:
                       extraction_error=(
                           f"agy {found} < 1.1.8 — the stream-json transport "
                           f"requires agy >= 1.1.8; run `agy update`"))
+    elif (args.model or args.effort) and ver < _MODEL_FLAG_FLOOR:
+        # Fail-CLOSED pin floor (see _MODEL_FLAG_FLOOR): below 1.1.10 these
+        # flags were silently IGNORED (default-model fallback) — dispatching
+        # would void the requested tier with no error.
+        found = ".".join(map(str, ver))
+        r = AgyResult(None, "config-conflict", _common.EXIT_TERMINAL, -1,
+                      extraction_error=(
+                          f"agy {found} < 1.1.10 — --model/--effort were "
+                          f"silently ignored (default-model fallback) before "
+                          f"1.1.10; run `agy update` or drop the pin"))
     else:
         sandbox_mode = args.sandbox
         deny_rules = _agy_settings.build_deny_rules(sandbox_mode) if sandbox_mode else []
@@ -544,7 +571,8 @@ def main() -> int:
         json_schema = json.dumps(pydantic_cls.model_json_schema()) if pydantic_cls else None
         cmd = _build_cmd(args.prompt, agy_sandbox, args.model, args.timeout,
                          json_schema=json_schema,
-                         skip_permissions=skip_permissions)
+                         skip_permissions=skip_permissions,
+                         effort=args.effort)
         # argv[0] = resolved/pinned agy path (finding #3). _build_cmd stays pure ("agy"
         # literal) so its unit test is unaffected; the pin is substituted here at the
         # run site so a PATH shadow cannot win when the pty execs argv[0].

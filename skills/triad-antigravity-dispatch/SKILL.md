@@ -1,7 +1,7 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.13.1
+version: 0.14.0
 # changelog:
 #   0.13.1 (2026-08-01): Step 1 prompt-transport rule widened and the
 #     `--prompt-file` relationship stated. The 0.13.0 rule routed only content
@@ -155,7 +155,12 @@ status and `.agybak` recovery are in
 agy `--sandbox` alone is a shell/network OS-ring only (it does not block
 `write_file`); the deny transaction is what enforces fs isolation. Reasoning tier
 = `--model` passthrough (no-pin default when omitted) — pass a CATALOG selector
-from `agy models` — any selector that listing carries.
+from `agy models` — any selector that listing carries — and/or `--effort
+low|medium|high` (agy's own flag, working since 1.1.10). **Pin floor: `--model`
+/ `--effort` require agy >= 1.1.10** — older builds silently IGNORED both flags
+in `-p` runs (default-model fallback, vendor changelog 1.1.10), so the wrapper
+fail-closes a pinned dispatch below the floor as `config-conflict` (65) instead
+of dispatching a voided pin; pinless dispatches are not gated.
 
 **Read-audit digest (REPORT-ONLY).** On every completed call the wrapper folds
 the stream's tool calls into a bounded digest, emits it on stderr before its
@@ -224,6 +229,7 @@ TRIAD_AGY_PROMPT_EOF
   [--cwd /absolute/path] \
   [--sandbox read-only] \
   [--model <pinned-model-name>] \
+  [--effort low|medium|high] \
   [--pydantic module:Class] \
   [--timeout <seconds>] \
   [--debug])
@@ -242,7 +248,8 @@ Flags at a glance: `--sandbox read-only` (per-call deny transaction, § Isolatio
 · `--prompt-file <abs>` (replaces the heredoc: non-leader-authored bodies,
 or a body quoting a template — Step 1) · `--pydantic
 module:Class` (native `--json-schema`) · `--timeout <s>` (default 600) · `--cwd
-<abs>` · `--model <selector>` · `--debug`. Still **no `--dangerously-*`** (Hard
+<abs>` · `--model <selector>` · `--effort low|medium|high` (both pin-floored at
+agy >= 1.1.10) · `--debug`. Still **no `--dangerously-*`** (Hard
 rule 7). What each flag actually does, and the wrapper-internal transport note:
 [references/invocation.md](references/invocation.md).
 
