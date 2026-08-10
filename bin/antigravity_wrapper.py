@@ -35,7 +35,8 @@ import json
 
 import _agy_settings
 import _common
-from _common import load_pydantic_class, validate_response
+from _common import (_content_nonrepairable, load_pydantic_class,
+                     strip_markdown_fences)
 
 OFFSET_S = 10  # agy --print-timeout = max(timeout - OFFSET, MIN); _run_once kill is backstop
 MIN_PRINT_TIMEOUT_S = 5
@@ -235,13 +236,16 @@ def _agy_needs_skip_permissions(ver) -> bool:
     return ver is not None and ver >= _HEADLESS_SOFTDENY_FLOOR
 
 
-def _validate_structured(result, answer, pydantic_cls):
+def _validate_structured_with_trigger(result, answer, pydantic_cls):
     """Local pydantic validation over the vendor's --json-schema output.
     PREFER result['structured_output'] (the vendor already schema-checked and
     self-repaired it — spike P4 showed an internal repair turn); fall back to
-    the raw response text when absent (vendor drift guard). Returns
-    (True, validated_dict) or (False, error_message_str) — same contract the
-    schema-repair re-run and EXIT_SCHEMA_FAIL path consume.
+    the raw response text ONLY when it is ABSENT (vendor drift guard — see r4
+    below for why "absent", not "unusable"). Returns
+    (True, validated_dict, False, NonrepairableTrigger.NONE) or
+    (False, error_message_str, nonrepairable, trigger) — same contract the
+    schema-repair re-run and EXIT_SCHEMA_FAIL path consume, plus the
+    non-repairable bit and WHICH trigger produced it.
 
     r1/R11: when structured_output was PRESENT but failed validation, that
     error is what the schema-repair hint must carry. It used to be discarded
@@ -249,22 +253,110 @@ def _validate_structured(result, answer, pydantic_cls):
     (prose in `response`, the real payload in `structured_output`) is a
     generic 'Invalid JSON: expecting value' — the repair turn was told its
     output was not JSON when the actual violation was a missing/invalid FIELD,
-    so it had nothing actionable to fix."""
+    so it had nothing actionable to fix.
+
+    r2 (3-family): the `nonrepairable` bit is THREADED from the live pydantic
+    exception (`_common.validate_response_detail`), never recomputed by
+    re-scanning the error STRING this function returns. That string embeds
+    pydantic's `input_value=...` AND is truncated and concatenated here, so a
+    substring test over it both false-POSITIVES on a reply that merely quotes
+    the marker and could false-NEGATIVE on a genuine arm whose message fell
+    past the 600-char cap.
+
+    r4 (codex must-fix + agy Critical, 2-family same-defect convergence) —
+    the GENERAL rule, superseding r3's arm-scoped form: the raw-response
+    fallback is allowed ONLY when `structured_output` is ABSENT. Once the
+    vendor emitted a schema-checked object, that object IS the answer channel;
+    a raw string that parses is a DIVERGENT second answer, never a recovery
+    for the first. r3 suppressed the fallback only on a NON-REPAIRABLE
+    structured failure, which left the other cell of the cross-product open:
+    a structured payload with BLOCKING content plus a merely REPAIRABLE shape
+    slip, next to a clean SAFE raw string, still returned ok/exit 0 with the
+    raw object — the blocking payload discarded with no repair turn, no skip
+    log, no exit 66 and no run-log at all (`emit_run_log` writes on failure
+    only), i.e. the silent leg loss leg-contracts § Verdict binding
+    obligation 4 forbids. Both cells now fail LOUD, and they differ only in
+    what happens next:
+
+      - REPAIRABLE  -> (False, err, False): the ONE schema-repair retry runs.
+        That retry re-dispatches the vendor and re-validates STRUCT-FIRST, so
+        it is the recovery channel — the raw string is never promoted into
+        one.
+      - NON-REPAIRABLE -> (False, err, True): the caller skip-logs and takes
+        EXIT_SCHEMA_FAIL (unchanged r3 behavior — replaying that error would
+        invite a severity downgrade).
+
+    Struct ABSENT is unchanged: the raw string is the only payload, so it is
+    validated directly and its own non-repairable bit is threaded out.
+
+    r7 (claude must-fix) — BOTH CHANNELS are CONTENT-probed. r4's divergence
+    rule is UNCHANGED (a present-but-invalid structured payload never resolves
+    through the raw string), but "never resolve through it" had silently become
+    "never LOOK at it": on the struct-PRESENT path only `json.dumps(structured)`
+    reached `validate_response_detail`, so the raw `response` was content-probed
+    on the struct-ABSENT path alone. A blocker legible ONLY in the raw channel —
+    a non-blocking structured payload with a merely repairable shape slip, next
+    to a raw string carrying a must-fix finding — therefore bought the one
+    repair turn, and a clean attempt 2 was accepted exit 0 with the blocker
+    recorded nowhere (`emit_run_log` is failure-only). The raw answer is now run
+    through the same duck-typed `_content_nonrepairable` hook and OR'd into
+    `nonrepairable`. This only ever WIDENS refusal: it is reached solely after
+    the structured payload has already FAILED, and it cannot turn a failure into
+    an acceptance.
+
+    r8 (claude must-fix) — the refusal LABEL is trigger-accurate. It read
+    `" (non-repairable arm)"` whenever the OR'd bit was true, so a
+    CONTENT-triggered refusal (a field slip suppresses the marked arm; an
+    unparseable envelope never reaches one; a blocker legible only in the raw
+    channel) was reported as the ARM in `extraction_error` — the very field a
+    consumer inspects when deciding how to re-ask the leg. The two bits now
+    come through from `_common.validate_response_with_trigger`, the raw
+    channel's blocker composes in as a CONTENT bit, and the label is rendered
+    by the shared `_common.nonrepairable_log_marker` so this driver and the
+    shared engine cannot spell the token differently."""
     structured = result.get("structured_output") if isinstance(result, dict) else None
-    struct_err = None
     if structured is not None:
-        ok, payload = validate_response(
+        ok, payload, nonrepairable, trigger = _common.validate_response_with_trigger(
             json.dumps(structured, ensure_ascii=False, default=str), pydantic_cls)
         if ok:
-            return ok, payload
+            return ok, payload, False, _common.NonrepairableTrigger.NONE
+        # Bounded (this string is appended to the repair prompt) and
+        # attributed to the right source (r1/R11): the structured violation is
+        # the actionable one, the raw fallback's generic "Invalid JSON:
+        # expecting value" is not. The suppression NOTE is part of the message
+        # so the run-log records WHY only one payload was judged.
         struct_err = str(payload)[:600]
-    ok, payload = validate_response(answer, pydantic_cls)
-    if ok or struct_err is None:
-        return ok, payload
-    # Lead with the real violation; keep the fallback error too (nothing
-    # hidden), both bounded — this string is appended to the repair prompt.
-    return False, (f"structured_output invalid: {struct_err} "
-                   f"| raw-response fallback also invalid: {str(payload)[:300]}")
+        # r7: probe the OTHER channel's content too. Same cleaning the
+        # struct-ABSENT path applies, so both channels are judged on identical
+        # input; the hook itself is failure-tolerant (absent / raising -> False).
+        raw_blocking = _content_nonrepairable(
+            strip_markdown_fences(answer or ""), pydantic_cls)
+        if raw_blocking:
+            trigger |= _common.NonrepairableTrigger.CONTENT
+        label = f" {_common.nonrepairable_log_marker(trigger)}" if trigger else ""
+        note = " (raw channel carries blocking content)" if raw_blocking else ""
+        return False, (f"structured_output invalid: {struct_err} "
+                       f"| raw-response fallback suppressed: structured_output "
+                       f"present{label}{note}"), bool(trigger), trigger
+    return _common.validate_response_with_trigger(answer, pydantic_cls)
+
+
+def _validate_structured_detail(result, answer, pydantic_cls):
+    """(ok, validated_dict_or_error_string, nonrepairable) — 3-tuple façade
+    over `_validate_structured_with_trigger`, for callers that drive the
+    schema-repair retry but do not report the trigger."""
+    ok, payload, nonrepairable, _ = _validate_structured_with_trigger(
+        result, answer, pydantic_cls)
+    return ok, payload, nonrepairable
+
+
+def _validate_structured(result, answer, pydantic_cls):
+    """(ok, validated_dict_or_error_string) — 2-tuple façade over
+    `_validate_structured_with_trigger` for callers that do not drive the
+    schema-repair retry."""
+    ok, payload, _, _ = _validate_structured_with_trigger(
+        result, answer, pydantic_cls)
+    return ok, payload
 
 
 def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
@@ -355,16 +447,67 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                 return AgyResult(answer, "ok", _common.EXIT_OK,
                                  rr.vendor_exit_code, stream_output=stream,
                                  stderr=rr.stderr, read_audit=audit)
-            ok, payload = _validate_structured(result, answer, pydantic_cls)
+            ok, payload, nonrepairable, trigger = _validate_structured_with_trigger(
+                result, answer, pydantic_cls)
             if ok:
                 return AgyResult(answer, "ok", _common.EXIT_OK,
                                  rr.vendor_exit_code, stream_output=stream,
                                  stderr=rr.stderr, read_audit=audit,
                                  validated=payload)
-            if not schema_repaired:
+            # Same non-repairable opt-out `_common.py`'s Layer 4 honours (see
+            # `_common.NONREPAIRABLE_MARKER`): this driver is a SECOND copy of
+            # the schema-repair loop, and it is the one the review legs
+            # actually run `--pydantic verdict_schema:LegVerdict` through — a
+            # guard only on the shared engine would leave the hole open
+            # exactly where it matters. `_repair_cmd` replays `payload` (the
+            # validation error) into the re-dispatch, so a marked arm must
+            # never reach it.
+            #
+            # STRUCTURAL, not a substring over `payload` (r2 3-family
+            # finding): the rendered pydantic error embeds the vendor's own
+            # `input_value=...`, so a reply that merely QUOTES the marker
+            # would steal its own repair turn. See
+            # `_validate_structured_detail`.
+            if not schema_repaired and not nonrepairable:
                 cmd = _repair_cmd(cmd, payload)
                 schema_repaired = True
                 continue
+            if nonrepairable:
+                # Same MECHANICAL token as the shared engine's Layer 4 (r8
+                # claude must-fix), rendered by the same shared helper so the
+                # two loops cannot drift: this branch fires for a CONTENT-gated
+                # refusal where NO arm ran as readily as for a marked arm, and
+                # r6's honest-but-vague disjunction still made the consumer
+                # guess which. The `[NONREPAIRABLE` prefix is preserved, so
+                # every pre-r8 grep keeps matching.
+                _common.log("schema validation non-repairable "
+                            f"{_common.nonrepairable_log_marker(trigger)} "
+                            "— skipping repair retry")
+            # r4 (claude Minor) — STDOUT QUARANTINE. `main()` writes
+            # `final_answer` to stdout on this path, so the very reply
+            # `_validate_structured_detail` refused to ACCEPT still rode the
+            # channel a consumer captures (`agy-r<N>.out`): a clean SAFE
+            # verdict readable as admissible evidence, while the blocking
+            # payload sat only in the run-log. Same idiom the vendor-error /
+            # truncated-answer paths use — no answer, a bounded copy in
+            # `extraction_error`, the full stream still in the run-log.
+            #
+            # Scope = exactly the two shapes where the stdout reply is NOT the
+            # vendor's schema-checked channel: a MARKED arm (whatever payload
+            # carried it), or a SUPPRESSED raw fallback (structured_output
+            # present). A struct-ABSENT repairable failure keeps the
+            # pre-existing pass-through: there the failing text is the
+            # vendor's only answer, with no second payload to diverge from,
+            # and surfacing it stays a debugging aid.
+            structured_present = (isinstance(result, dict)
+                                  and result.get("structured_output") is not None)
+            if nonrepairable or structured_present:
+                snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
+                return AgyResult(None, "schema-fail", _common.EXIT_SCHEMA_FAIL,
+                                 rr.vendor_exit_code, stream_output=stream,
+                                 stderr=rr.stderr, read_audit=audit,
+                                 extraction_error=(f"schema: {payload} "
+                                                   f"quarantined answer: {snippet}"))
             return AgyResult(answer, "schema-fail", _common.EXIT_SCHEMA_FAIL,
                              rr.vendor_exit_code, stream_output=stream,
                              stderr=rr.stderr, read_audit=audit,

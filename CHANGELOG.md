@@ -1,19 +1,33 @@
 # Changelog
 
-## 0.2.603 — 2026-08-07
+## 0.2.634 — 2026-08-11
 
-**Prompt-transport hardening across every dispatch skill.** The
-Step 1 invocation template's heredoc terminator is now
-collision-resistant (`TRIAD_<CLI>_PROMPT_EOF`, replacing a bare
-`PROMPT`): a prompt body containing the terminator word on its own
-line closed the heredoc early, and because the heredoc sits inside
-`$( … )` the remainder then parsed as SHELL in the caller's own
-session — outside every worker-side sandbox. Each dispatch skill
-pins its own terminator, and `--prompt-file <absolute-path>` is
-named as the standing path (REPLACING the heredoc — the two are
-mutually exclusive) for content the caller did not author AND for
-any body that quotes a dispatch template or a skill body, since
-quoted text carries the terminator verbatim.
+**Cross-family review hardening — verdict binding, mechanized round
+integrity, and a read-grant for the codex/agy legs** (adopted from
+the codex-host 0.2.533 toolchain). Every review leg's `LegVerdict` is
+now BOUND to its round and leg (`review_id`/`family`/`content_digest`,
+all required) and admitted with `lib/validate_verdict.py`
+`--expected-review-id`/`--expected-family`/`--expected-packet` (the
+digest is recomputed from the packet file, not a hand-carried
+string); a bidirectional validator rejects a `SAFE TO MERGE` verdict
+that still carries a Critical/must-fix finding. Round integrity is
+mechanized in `skills/triad-cross-family-review/lib/review_scratch.py`
+(`capture`/`verify`): a per-round evidence snapshot plus a
+git-config-independent worktree fingerprint gate every round with
+`ROUND_INTEGRITY_OK`. The codex and agy review legs get a READ-GRANT
+— read the repo to verify a packet claim — while the packet is still
+read FIRST and mutation stays denied, with capture/verify as the
+compensating control. The schema-repair retry no longer lets a leg
+launder a blocking finding into a clean `SAFE` on the re-ask (the
+retry is gated on the reply's parsed CONTENT, not on which validator
+arm fired).
+
+_(Prior release — **prompt-transport hardening across every dispatch
+skill**: the Step 1 heredoc terminator is collision-resistant
+(`TRIAD_<CLI>_PROMPT_EOF`) and `--prompt-file <absolute-path>` is the
+standing path for content the caller did not author or that quotes a
+template, so a prompt body can no longer close the heredoc early and
+parse as SHELL in the caller's own session.)_
 
 _(Prior release — **one structured verdict schema across all three
 review legs, cross-family review v0.24.x**: every review leg

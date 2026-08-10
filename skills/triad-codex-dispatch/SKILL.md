@@ -1,8 +1,12 @@
 ---
 name: triad-codex-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Codex CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 codex_wrapper.py` raw; the user asks to call codex once, have codex handle a task, or run a one-shot codex analysis; a higher-level orchestration SKILL needs the Codex leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Gemini (`triad-gemini-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.9.1
+version: 0.9.2
 # changelog:
+#   0.9.2 (2026-08-08): `--model <catalog-slug>` dispatch-time model pin
+#     (free-form passthrough to `-c model="<slug>"`; config-alive when
+#     omitted; no slug ever hardcoded). Origin: config-alive default moved
+#     review legs off the recorded review policy silently.
 #   0.9.1 (2026-08-01): Step 1 heredoc terminator is now collision-resistant
 #     (`TRIAD_CODEX_PROMPT_EOF`, replacing the bare `PROMPT`) and
 #     `--prompt-file <absolute-path>` is the STANDING path for content the
@@ -80,6 +84,7 @@ TRIAD_CODEX_PROMPT_EOF
   [--cwd /absolute/path] \
   [--sandbox read-only|workspace-write] \
   [--reasoning low|medium|high|xhigh|max] \
+  [--model <catalog-slug>] \
   [--search] \
   [--timeout <seconds>] \
   [--pydantic module:Class] \
@@ -102,6 +107,8 @@ When OFF, the wrapper pins `web_search="disabled"` in config, so no search tool 
 exposed to the run — the no-search contract is enforced, not just advertised.
 
 **Reasoning-effort guideline.** `--reasoning` overrides `model_reasoning_effort` for this dispatch; omit it to inherit the config-alive value (the user's `~/.codex/config.toml`). Set it by intent, not by default: `high` for **review / planning / non-trivial `code` or `analyze` tasks** (bug-hunting, design/spec review, multi-file reasoning); `xhigh` for **deep architecture review or long refactors**; `max` (the top pure-depth tier the wrapper exposes) only for **the hardest multi-step problems**; `low` for trivial/mechanical work where speed matters. Leave it unset for routine dispatches — config-alive already supplies a sensible default, and over-setting `xhigh`/`max` burns latency/quota. **`ultra` is NOT exposed and MUST NOT be used** for a codex worker dispatch: it is `max` reasoning **plus automatic subagent delegation**, which makes a single-shot dispatch runaway and over-long (observed), and not every model variant supports it (an auto-routed dispatch could hit an ultra-less model). The wrapper's enum stops at `max`; do not add `-c model_reasoning_effort="ultra"` by hand. (`minimal` is likewise not exposed — no leader/user use case.)
+
+**`--model` (dispatch-time model pin, 2026-08-08).** Omit for routine dispatches — the config-alive model (`~/.codex/config.toml`) applies. Pass a CATALOG slug (from `codex debug models`, Tier-2 lookup at dispatch time) when a house policy pins a review/worker tier — e.g. a review-policy leg that must run a specific variant regardless of the owner's interactive config default. The wrapper carries NO slug anywhere (free-form passthrough, `-c model="<slug>"`); slugs rot, so never copy one from memory or docs — read the catalog first. Origin: a config-alive default silently moved review legs off the recorded review policy; dispatch-time pinning restores "model/effort are set at dispatch time" without touching the owner's config.
 
 The prompt is delivered to codex via **stdin** internally (caller still passes `--prompt`). `--pydantic` drives codex's native `--output-schema` (the class is massaged to codex-strict shape); a submit-time refusal surfaces as `schema-rejected` (rc 67). `--image` (repeatable) passes vision inputs as codex `-i` (bad path → `EXIT_ARG_ERROR` pre-spawn). `--format` is output intent — explicit `markdown`/`text` is mutually exclusive with `--pydantic`. `--task` activates the read-only multi-agent fan-out worker layer: it augments the prompt with a deterministic framing + fan-out tier (`--fanout N` 1-12 default 3, or `auto` to let codex decide via the dispatching-parallel-agents skill), pins `--sandbox read-only`, and writes a report — `codex-<task>-synthesis.md` (codex's consolidated answer) + per-agent `codex-<task>-agentN-raw.md` — to `--report-dir` (optional; defaults to a temp dir whose path is logged to stderr). A partial fan-out (a subagent that never completes) carries an `INCOMPLETE` banner in the synthesis. Exception: `--task code` is a write-enabled single TDD implementer (sandbox `workspace-write`, `default_fanout=1`, STATUS-line output) — see § Code task.
 

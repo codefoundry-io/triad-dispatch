@@ -21,6 +21,7 @@ the maintenance agent's responsibility.
 """
 from __future__ import annotations
 
+import enum
 import fcntl
 import importlib
 import json
@@ -61,6 +62,86 @@ EXIT_SCHEMA_FAIL = 66    # pydantic validation failed even after 1 retry
 EXIT_SCHEMA_REJECTED = 67  # codex refused --output-schema at submit (massage/strict-rule drift)
 EXIT_FANOUT_PARTIAL = 68   # --task fan-out incomplete (partial / zero / fewer-than-requested subagents) — surfaced, never silent
 EXIT_TASK_BLOCKED = 69   # --task code: codex self-reported BLOCKED / NEEDS_CONTEXT (no edit to commit)
+
+# ─── Non-repairable schema-validation contract ─────────────────────────────
+# A `--pydantic module:Class` schema marks a validator arm NON-REPAIRABLE by
+# leading its ValueError message with this token. The schema-repair path
+# (Layer 4 below, and `antigravity_wrapper.py`'s own copy of the same loop)
+# then SKIPS the one-shot repair re-dispatch and promotes straight to
+# schema-fail (66).
+#
+# Why the engine needs an opt-out at all (cross-family review r1-claude-1,
+# 2026-08-11): the repair re-dispatch replays the validation error VERBATIM
+# back to the model. For most violations that is harmless — the model fixes a
+# missing field. But for an arm that encodes a CONTENT contradiction (the
+# review-verdict schema's "SAFE TO MERGE must not carry a blocking finding"),
+# the cheapest way to satisfy the replayed error is to weaken the CONTENT —
+# downgrade the blocking finding and keep the SAFE verdict. The caller only
+# ever sees the repaired object, so the automated retry silently launders the
+# very signal the schema exists to protect.
+#
+# Deliberately a plain SUBSTRING contract, not an exception subclass or an
+# import of any schema module: `_common.py` validates against whatever class
+# `--pydantic` names and must stay schema-agnostic.
+NONREPAIRABLE_MARKER = "[NONREPAIRABLE]"
+
+
+class NonrepairableTrigger(enum.IntFlag):
+    """WHICH of the two independent refusal reasons fired (r8 claude must-fix).
+
+    Both bits are computed on every validation failure and were then OR'd into
+    a single bool, so a CONTENT-triggered refusal was indistinguishable from —
+    and, in the agy driver's refusal label, actively MISREPORTED as — the
+    marked ARM. That distinction is load-bearing downstream: the review skill's
+    verdict-binding obligation branches on it, and telling a leader "the arm
+    fired" for a content-only refusal orders it to RAISE a verdict that may
+    already be non-SAFE, manufacturing the mirror image of the laundering this
+    machinery exists to stop.
+
+      ARM      the live pydantic error carries `NONREPAIRABLE_MARKER` in a
+               validator's own message (`_validation_error_nonrepairable`).
+      CONTENT  the failed payload's own content is blocking per the schema's
+               duck-typed probe (`_content_nonrepairable`) — this fires where
+               NO arm ran at all (a co-occurring field error suppresses
+               `mode="after"` validators; an unparseable envelope never reaches
+               one).
+
+    A flag rather than two bools so the two producers (the shared engine, and
+    `antigravity_wrapper`'s second copy of the loop, which ORs in a probe of
+    the RAW channel) compose with `|` instead of re-deriving the pairing.
+    """
+
+    NONE = 0
+    ARM = 1
+    CONTENT = 2
+
+
+# The ONE grep-stable token every consumer binds to. Rendered into the
+# wrapper's own TIMESTAMPED stderr log line, so a consumer anchors on the
+# wrapper's line and never on vendor-mirrored bytes (same discipline the
+# read-audit digest gate follows). The `[NONREPAIRABLE` prefix is deliberately
+# preserved from the pre-r8 wording so existing greps keep matching.
+_TRIGGER_LABELS = {
+    NonrepairableTrigger.NONE: "",
+    NonrepairableTrigger.ARM: "arm",
+    NonrepairableTrigger.CONTENT: "content",
+    NonrepairableTrigger.ARM | NonrepairableTrigger.CONTENT: "arm+content",
+}
+
+
+def nonrepairable_trigger_label(trigger: NonrepairableTrigger) -> str:
+    """`"arm"` / `"content"` / `"arm+content"`, or `""` when nothing fired."""
+    return _TRIGGER_LABELS.get(NonrepairableTrigger(trigger), "")
+
+
+def nonrepairable_log_marker(trigger: NonrepairableTrigger) -> str:
+    """`[NONREPAIRABLE trigger=<label>]` — the exact token a consumer greps.
+
+    Kept a single function so the two repair loops cannot spell it differently:
+    a leader that reads `trigger=` off the WRONG loop's line would branch on a
+    trigger that never fired.
+    """
+    return f"[NONREPAIRABLE trigger={nonrepairable_trigger_label(trigger)}]"
 
 
 def map_classification_to_exit(cls: str) -> int:
@@ -1288,14 +1369,143 @@ def strip_markdown_fences(text: str) -> str:
     return s.strip()
 
 
-def validate_response(answer_text: str, cls) -> Tuple[bool, Any]:
-    """(ok, validated_dict_or_error_string)."""
+def _validation_error_nonrepairable(exc: Exception) -> bool:
+    """STRUCTURAL `[NONREPAIRABLE]` detection — over pydantic's ERROR LIST,
+    never over the rendered `str(exc)`.
+
+    `str(ValidationError)` embeds `input_value=<the vendor's own bytes>`, so a
+    reply whose CONTENT happens to carry the literal marker (reflected back out
+    of the schema text it was shown, or planted) makes an UNRELATED, perfectly
+    repairable SHAPE error match a substring test over the rendered string —
+    and the leg silently loses its one repair turn (r2 3-family finding;
+    probe-confirmed: `errors()[0]["msg"]` was `Input should be a valid integer`
+    while the rendered string carried the marker). `errors()[i]["msg"]` carries
+    only the validator's own text — for a `model_validator`'s `ValueError` that
+    is `"Value error, <the schema's static message>"` — and pydantic never
+    interpolates the input value into it.
+
+    Schema-agnostic on purpose (see `NONREPAIRABLE_MARKER`): the contract is
+    the token inside a validator's MESSAGE, not an exception subclass and not
+    an import of any schema module. Anything that is not a pydantic
+    `ValidationError` (a JSON decode error, say) is repairable by definition
+    here — a shape/parse slip is exactly what the one repair turn exists for.
+    """
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return False
+    try:
+        items = errors()
+    except Exception:
+        # A vendored/duck-typed exception whose errors() misbehaves must not
+        # take the wrapper down; fall back to "repairable" (the pre-marker
+        # default), never to a silent skip of the repair turn.
+        return False
+    for item in items:
+        msg = item.get("msg") if isinstance(item, dict) else None
+        if isinstance(msg, str) and NONREPAIRABLE_MARKER in msg:
+            return True
+    return False
+
+
+def _content_nonrepairable(cleaned: str, cls) -> bool:
+    """The schema's own CONTENT probe, applied to a payload that FAILED
+    validation. True when the reply must never be replayed into the one
+    schema-repair re-dispatch because of WHAT IT SAYS, independent of which
+    validator arm fired.
+
+    Duck-typed exactly like the `NONREPAIRABLE_MARKER` token contract, and for
+    the same reason: this engine validates against whatever
+    `--pydantic module:Class` names, so it must not import or know any schema.
+    A class that exposes no `nonrepairable_content` (every generic schema) is
+    unaffected — the probe is skipped and the retry behaves as before.
+
+    Needed because the marker alone gates on the ARM, one level too low
+    (cross-family review r5, 3-family convergence + probe P7):
+
+      - a payload carrying a BLOCKING finding can fail for a merely REPAIRABLE
+        reason, take the repair turn, and come back a valid CLEAN reply that
+        is accepted exit 0 — and since `emit_run_log` writes on FAILURE only,
+        attempt 1's blocker is then recorded NOWHERE (retry-turn laundering);
+      - pydantic v2 runs `mode="after"` model validators ONLY when every FIELD
+        validated, so ANY co-occurring field error suppresses a marked arm
+        entirely (P7) and the marker never appears in the error list at all.
+
+    The engine hands the probe the CLEANED RAW STRING — always, unconditionally
+    (r7). It used to pre-parse with `json.loads` and pass the parsed object,
+    falling back to the string only when that raised (r6). ONE parsing brain is
+    the point: the schema's probe owns whole-parse / duplicate-member / brace-
+    slice / regex semantics as a single authority ladder, and an engine-side
+    pre-parse silently stripped the evidence the schema needs to run it — a
+    repeated member (which `json.loads` resolves by keeping the LAST value) is
+    unrecoverable once the object exists, so a payload spelling a blocking
+    severity and then a non-blocking one arrived looking clean. The engine
+    still makes no attempt to INTERPRET the bytes; it just stops deciding for
+    the schema which of them survive. The hook keeps accepting a dict or a list
+    for direct callers.
+
+    Every remaining failure mode resolves to False (repairable — the pre-probe
+    default): no hook, or a probe that raises. A probe must never be able to
+    take the wrapper down or silently swallow a repair turn.
+    """
+    probe = getattr(cls, "nonrepairable_content", None)
+    if not callable(probe):
+        return False
+    try:
+        return bool(probe(cleaned))
+    except Exception:
+        return False
+
+
+def validate_response_with_trigger(
+    answer_text: str, cls
+) -> Tuple[bool, Any, bool, NonrepairableTrigger]:
+    """(ok, validated_dict_or_error_string, nonrepairable, trigger) — the
+    canonical form; `validate_response_detail` / `validate_response` are thin
+    façades over it.
+
+    `nonrepairable` is True when EITHER the live exception carries the schema's
+    `[NONREPAIRABLE]` marker (`_validation_error_nonrepairable`, decided BEFORE
+    the exception is stringified) OR the failed payload's own CONTENT says so
+    (`_content_nonrepairable` — the r5 gate that survives a suppressed arm).
+    Always False when `ok`. Callers that drive a schema-repair retry MUST
+    branch on this flag, never on a substring of the error string they render
+    or forward.
+
+    `trigger` (r8 claude must-fix) reports WHICH of those two fired — the
+    distinction the bool destroys. Both probes now run unconditionally on a
+    failure instead of short-circuiting: the OR'd answer was identical, but the
+    second bit is exactly what a consumer needs, and the content probe is a
+    pure bounded read. See `NonrepairableTrigger` for why the difference is
+    load-bearing, and `nonrepairable_log_marker` for the emitted token.
+    """
     cleaned = strip_markdown_fences(answer_text)
     try:
         obj = cls.model_validate_json(cleaned)
-        return True, obj.model_dump(mode="json")
+        return True, obj.model_dump(mode="json"), False, NonrepairableTrigger.NONE
     except Exception as e:
-        return False, str(e)
+        trigger = NonrepairableTrigger.NONE
+        if _validation_error_nonrepairable(e):
+            trigger |= NonrepairableTrigger.ARM
+        if _content_nonrepairable(cleaned, cls):
+            trigger |= NonrepairableTrigger.CONTENT
+        return False, str(e), bool(trigger), trigger
+
+
+def validate_response_detail(answer_text: str, cls) -> Tuple[bool, Any, bool]:
+    """(ok, validated_dict_or_error_string, nonrepairable). 3-tuple façade over
+    `validate_response_with_trigger`, kept for callers that drive a repair
+    retry but do not report the trigger. The third element stays a plain bool
+    — several callers identity-test it."""
+    ok, payload, nonrepairable, _ = validate_response_with_trigger(answer_text, cls)
+    return ok, payload, nonrepairable
+
+
+def validate_response(answer_text: str, cls) -> Tuple[bool, Any]:
+    """(ok, validated_dict_or_error_string). Thin 2-tuple façade over
+    `validate_response_with_trigger`, kept for callers that do not drive a
+    repair retry and so do not need the non-repairable bit."""
+    ok, payload, _, _ = validate_response_with_trigger(answer_text, cls)
+    return ok, payload
 
 
 # ─── CLI-aware answer extraction (NEW) ────────────────────────────────────
@@ -2151,13 +2361,41 @@ def run_cli_with_retry(
         if pydantic_cls is None:
             return result
 
-        ok, validated_or_err = validate_response(answer, pydantic_cls)
+        ok, validated_or_err, nonrepairable, trigger = (
+            validate_response_with_trigger(answer, pydantic_cls))
         if ok:
             result.validated = validated_or_err
             return result
 
         result.validation_error = str(validated_or_err)
         log(f"schema validation failed: {validated_or_err}")
+
+        # The schema opted this arm out of automated repair — see
+        # NONREPAIRABLE_MARKER at the top of this module. Replaying such an
+        # error into the repair prompt below invites the model to weaken its
+        # own CONTENT until validation passes (for the review-verdict schema:
+        # downgrade a Critical/must-fix finding to Minor and keep SAFE), and
+        # the caller only ever sees the repaired object. Fail loud instead:
+        # exit 66, handled by the leader's INVALID-leg path, where a re-ask is
+        # explicit and visible.
+        #
+        # The decision is STRUCTURAL (`validate_response_detail`'s third
+        # value, read off pydantic's error list) — never a substring of
+        # `result.validation_error`, which embeds the vendor's own
+        # `input_value=...` bytes and so lets a reply REFLECT the marker back
+        # to steal its own repair turn (r2 3-family finding).
+        if nonrepairable:
+            # The line states WHICH trigger fired, MECHANICALLY (r8 claude
+            # must-fix). r6 already corrected "on a [NONREPAIRABLE] arm" to the
+            # honest disjunction "(marked arm or blocking content)", but a
+            # disjunction still leaves the consumer guessing — and the review
+            # skill's verdict-binding obligation BRANCHES on the answer, so a
+            # guess there manufactures verdict inflation. `trigger=` is that
+            # answer as an exact token; the `[NONREPAIRABLE` prefix is kept so
+            # every pre-r8 grep still matches.
+            log(f"schema validation non-repairable "
+                f"{nonrepairable_log_marker(trigger)} — skipping repair retry")
+            return promote_schema_fail(result)
 
         if schema_repair_attempt >= 1 or repair_mode:
             return promote_schema_fail(result)

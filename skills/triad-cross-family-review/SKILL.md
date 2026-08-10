@@ -1,118 +1,54 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.24.3
+version: 0.25.10
 # changelog:
-#   0.24.2 (2026-08-01): `references/leg-contracts.md` § codex leg — the
-#     inline-packet caution quoted the sibling dispatch skills' OLD bare
-#     `PROMPT` heredoc terminator, which those skills replaced with
-#     per-CLI `TRIAD_<CLI>_PROMPT_EOF` forms (codex 0.9.1 / gemini 0.6.1 /
-#     claude 0.4.1, same defect class as antigravity 0.13.0/0.13.1). Text
-#     resynced, and corrected on a point the round-1 review refuted: THIS leg
-#     uses neither that heredoc nor `--prompt-file` — it inlines the packet
-#     through `$(cat -- "$review_body")` per its own bullet heading, which is
-#     collision-free because there is no heredoc to terminate early.
-#     Doc-only; no gate block, no jq, no contract semantics touched.
-#   0.24.1 (2026-08-01): final-gate fix round on the 0.24.0 verdict-schema
-#     wiring (pre-merge cross-family gate: MERGE WITH FIXES, codex+claude
-#     converged, agy's must-fix probe-refuted). agy leg dispatch step
-#     (`references/leg-contracts.md` § agy leg) gains a leader-side
-#     `rm -f "$PACKET_DIR/agy-read-audit.json"` immediately before EACH
-#     dispatch — the wrapper's own pre-clear
-#     (`_common.preclear_read_audit_file`, called at `antigravity_wrapper.py`
-#     main()'s call START) closes a stale-file-survives-a-swallowed-write-
-#     failure path INSIDE the wrapper, but not a MISBOUND env (dispatch names
-#     the wrong path, or the var was never exported) — this leader-side line
-#     closes that remaining case. The byte-frozen agy read-audit jq gate
-#     3-LINE LIFT TARGET (t41/f9) is untouched. No other SKILL.md/reference
-#     content changed in this round; the schema tightening (empty/whitespace-
-#     only fields, line<1) and the validator hardening (dist-then-dev
-#     resolution order, distinct schema-load-failure class, UTF-8 decode
-#     handling) live entirely in `verdict_schema.py` / `lib/validate_verdict.py`,
-#     which this SKILL already documents by reference rather than by value.
-#     Re-confirm round 2 (claude must-fix G1, same-version fix — the
-#     changelog text above already reflects the corrected line): the FIRST
-#     draft of this line read the bare `$AGY_READ_AUDIT_FILE`, a GATE-local
-#     name first assigned inside the read-audit gate block (below) — unset at
-#     DISPATCH time, so it silently expanded to `rm -f ""` (a no-op; the
-#     misbound-env case stayed open). Fixed to mirror the gate's OWN binding
-#     expression instead of a mismatched variable name.
-#     Re-confirm round 3 (claude Minor H5, same-version fix — the changelog
-#     text above already reflects the final corrected line): the round-2 fix
-#     used a `${TRIAD_READ_AUDIT_FILE:-$PACKET_DIR/agy-read-audit.json}`
-#     fallback expression, which risked clearing an unrelated LEFTOVER
-#     `TRIAD_READ_AUDIT_FILE` some other ambient shell context left set
-#     instead of the packet-relative path THIS dispatch actually binds.
-#     Simplified to the plain literal `rm -f "$PACKET_DIR/agy-read-audit.json"`
-#     — byte-matching the SAME path the bullet's own dispatch sets
-#     unconditionally, removing the ambiguity entirely.
-#     Re-confirm round 5 (claude must-fix, same-version fix): the round-3
-#     simplification left the GATE's own read binding (inside the gate block,
-#     ABOVE the frozen 3-line jq lift) on the old fallback expression, so
-#     pre-clear and gate could target DIFFERENT files under an ambient
-#     exported TRIAD_READ_AUDIT_FILE. All THREE sites (dispatch binding,
-#     leader pre-clear, gate read binding) now carry the byte-identical
-#     plain literal `$PACKET_DIR/agy-read-audit.json` — the shared literal
-#     itself is the anti-drift property.
-#   0.24.0 (2026-08-01): all three legs share ONE pydantic verdict schema
-#     (`bin/verdict_schema.py` — `LegVerdict`/`LegFinding`,
-#     plan `2026-07-31-agy-post-migration-followups` item 4), so the leader
-#     consolidates structured objects instead of re-shaping three legs' free
-#     prose by hand. codex leg: `--pydantic verdict_schema:LegVerdict` added
-#     to the documented invocation (codex-strict `--output-schema`). agy leg:
-#     same flag (native `--json-schema`); the structured output rides the
-#     stream's terminal `result` event, so the `truncated-answer` fold guard
-#     becomes a non-case on this path (kept for the non-schema fallback).
-#     claude leg: no wrapper, so its dispatch prompt now carries the SAME
-#     JSON shape as the output contract, validated by the leader with the new
-#     deterministic (no-AI) `lib/validate_verdict.py` — a reply that fails
-#     validation is the EXISTING INVALID-leg handling (one re-ask, then
-#     INVALID), no new chain. `references/triage.md` gained a
-#     "Consolidating validated LegVerdict objects (jq)" section: the exact jq
-#     commands that map `findings[]` into residual-table rows mechanically,
-#     with a stated fallback — a leg dispatched WITHOUT the schema (older
-#     invocation) still consolidates the old prose way, and the two paths can
-#     coexist within one round. The "empty findings only with SAFE" rule is a
-#     `LegVerdict` model-level pydantic validator, making Flow 4's INVALID-leg
-#     rule (a non-SAFE verdict with no extractable finding) mechanical rather
-#     than a leader-remembered convention. The byte-frozen agy read-audit jq
-#     gate block (t41/f9's lift target) is untouched.
-#   0.23.0 (2026-08-01): body split into one-level `references/`, after an
-#     overlap/dead-content audit, plus a tone and provenance de-scope pass (plan
-#     `docs/superpowers/plans/2026-07-31-agy-post-migration-followups.md` item
-#     3). Then a 6-leg skill-prompt-review round (round 2, post-split) drove a
-#     PART A fix list into this same unreleased version: the degraded-mode
-#     predicate corrected to "fewer than three families RETURN a consolidated
-#     verdict", a `--search` sensitivity precondition at dispatch, the
-#     failure-mode index moved to its own reference, and the remaining
-#     multi-home restatements collapsed to pointers. The
-#     body now carries the frontmatter, when-to-use, a Contents map, the 14 hard
-#     rules each stated ONCE, and the Flow. Per-leg
-#     dispatch contracts (including the agy read-audit gate and its jq block,
-#     moved VERBATIM), the packet lifecycle, the triage/residual machinery, and
-#     the measurement evidence moved to `references/`. Historical changelog
-#     entries older than the three kept here were dropped (git history is the
-#     archive), as were provenance dates and version pins inside rule text.
-#     No contract changed meaning: the gate expression, the
-#     ABSENT/INCONCLUSIVE/VOID semantics, the three block-release paths, the
-#     degraded-mode rules, and every exit code are the v0.22.0 ones. Consumers
-#     that lift the gate block by grep (`tests/unit/wrappers/t41-review-gate-jq.sh`,
-#     `tests/integration/wrappers/flow/f9-agy-flow.sh`) now read it from
-#     `references/leg-contracts.md`.
-#   0.22.0 (2026-07-31): the agy read-audit gate became FILE-based instead of
-#     stderr-based — the wrapper writes the `{meta, digest}` JSON to a path the
-#     dispatch names up front via `TRIAD_READ_AUDIT_FILE`, on EVERY completed
-#     call, and the gate reads that file with `jq` re-rooted at `.digest`,
-#     branching on jq's own exit code (0=covered, 1=coverage-miss, >=2=jq could
-#     not produce a usable answer=INCONCLUSIVE). That retires the transport-level
-#     late-append / first-match-forgery / anchored-extraction class of findings.
-#     The owner ruling stands unchanged and is restated in the gate: this is
-#     evidence a leg did the reading work, not an authenticated control.
-#   0.20.0 (2026-07-31): agy leg reliability policy, from a planted-defect
-#     replay of a real merge packet (see `references/evidence.md`): agy verdict
-#     = ADVISORY for the unanimous gate, a mandatory CONTAINMENT block in the
-#     agy leg prompt, a measured rubber-stamp latency signal, and agy cites
-#     verified before entering the residual table.
+#   0.25.10 (2026-08-11): codex-host 0.2.533 adoption — CLOSED (owner
+#     decision C). ADOPTED and solid: LegVerdict round/leg BINDING
+#     (review_id/family/content_digest, REQUIRED) + bidirectional SAFE
+#     validator (SAFE must not carry Critical/must-fix; Minor/HS may) +
+#     strict/forbid + POSIX finding paths, admitted via
+#     validate_verdict.py --expected-review-id/--expected-family/
+#     --expected-packet (all-or-nothing; digest recomputed from the
+#     packet file); mechanized round integrity (review_scratch.py
+#     capture/verify — per-round evidence snapshot + git-config-
+#     independent worktree fingerprint incl. index-flag/uncovered-file
+#     guards, ROUND_INTEGRITY_OK); codex AND agy READ-GRANT (packet read
+#     FIRST, then repo verification reads; mutation denied + capture/
+#     verify belt); Review-metadata packet head + per-round excerpt
+#     policy + per-round digest-r<N> / agy-read-audit-r<N> naming. The
+#     schema-repair-retry "severity laundering" channel was hardened
+#     across a fix loop and STOPPED at round 9 (rule 12): a detection
+#     probe does not converge over the adversarial JSON-encoding space,
+#     and the path fired ZERO times in 18 real dispatches (all valid
+#     JSON), so per owner decision C the realistic cooperative-model
+#     failure is closed (marker-skip + content probe + a canonical
+#     json.dumps regex backstop, terminating for the parseable space)
+#     and three residuals are ACCEPTED/disclosed: the trigger token is a
+#     non-authoritative hint (authority = the run-log structured
+#     payload), unparseable escape-spelled content stays fail-open, and
+#     the content-agnostic class-close (run-log on every retried call +
+#     leader attempt-1 inspection) is a recorded FUTURE option. Declined
+#     from the reference: severity/verdict token collapse, context_known
+#     removal, round-scoped invalidation, no-schema-repair sentinel.
+#     Full gate ledger + round-by-round history:
+#     docs/reviews/2026-08-10-adopt-02533-gate-STATE.md + git log. This
+#     version also folds a skill-prompt-review polish (obligation-4
+#     discriminator reconciled to one source, provenance dates stripped
+#     from rule bodies, changelog pruned to the file's own convention).
+#   0.24.0-0.24.2 (2026-08-01): all three legs share ONE pydantic verdict
+#     schema (verdict_schema.py LegVerdict/LegFinding); codex/agy via
+#     native --output-schema / --json-schema, claude via its prompt's
+#     output contract + the deterministic lib/validate_verdict.py; the
+#     leader consolidates validated objects (references/triage.md § jq)
+#     instead of reshaping three legs' prose. (Binding admission
+#     superseded by 0.25.10; interim re-confirm fixes in git log.)
+#   0.23.0 (2026-08-01): body split into one-level references/ after an
+#     overlap/dead-content audit + a tone/provenance de-scope pass — the
+#     body now carries frontmatter, when-to-use, a Contents map, the hard
+#     rules stated ONCE, and the Flow; per-leg contracts, packet
+#     lifecycle, triage machinery and measurement evidence moved to
+#     references/. No contract changed meaning. (Older entries: git log.)
 ---
 
 # triad-cross-family-review
@@ -142,7 +78,7 @@ Five references carry the detail — open one only when its column applies.
 
 | Reference | Open it when |
 |---|---|
-| `references/leg-contracts.md` | dispatching legs, or weighing an agy verdict — Google-leg selection, per-leg flags/prompts, the agy containment block, **the MECHANICAL read-audit gate and its jq block**, the agy read/network residual |
+| `references/leg-contracts.md` | dispatching legs, or weighing an agy verdict — Google-leg selection, per-leg flags/prompts, the agy READ-GRANT block, **the MECHANICAL read-audit gate and its jq block**, the agy read/network residual |
 | `references/packet-lifecycle.md` | opening/closing a packet dir, assembling a LARGE packet, ordering and fencing a packet, or freezing a round |
 | `references/triage.md` | consolidating a round — release paths, REAL / REACHABLE-UNOBSERVED / SPECULATIVE, the scope-expansion gate, the residual table, the reviewer-side severity instruction |
 | `references/failure-modes.md` | a round misbehaved and you want the rule that already covers it — symptom → cause → rule index |
@@ -180,7 +116,7 @@ Five references carry the detail — open one only when its column applies.
      cannot accept that runs the leg inside an external fs-scoped,
      network-denied OS sandbox.
    Everything per-leg — the deterministic selection snippet, each leg's flags and
-   prompt requirements, the agy containment block, the MECHANICAL read-audit gate
+   prompt requirements, the agy READ-GRANT block, the MECHANICAL read-audit gate
    (run it before weighing that leg's verdict and before any agy finding enters
    the residual table), the folded-verdict re-dispatch, and the egress residual's
    evidence — is in `references/leg-contracts.md`.
@@ -192,8 +128,8 @@ Five references carry the detail — open one only when its column applies.
    decisions. The READING legs (claude `Agent`, agy, gemini) open the packet with
    their OWN READ tools rather than by executing `git diff` or any other
    subprocess (rule 7), which keeps leader context lean; the **codex leg is
-   always inlined** into `--prompt` instead, because under read-only + no-exec it
-   may be unable to open a handed-over file at all (rule 9). For a LARGE packet
+   always inlined** into `--prompt` (its guaranteed view; it ALSO gets
+   `--cwd` + a READ-GRANT for verification reads — rule 9). For a LARGE packet
    the leader pre-assembles ONE focused file: the reading legs open only that
    file, and codex receives the same focused content inlined (rule 8).
 4. **Consolidate, don't average — the LEADER verifies, classifies, then acts.**
@@ -209,7 +145,16 @@ Five references carry the detail — open one only when its column applies.
    wiring) returns a validated JSON object, so mapping its `findings[]` into
    the residual table is mechanical (`jq`, `references/triage.md` §
    Consolidating validated LegVerdict objects) — a leg dispatched without the
-   schema still consolidates from prose, the fallback stated there.
+   schema still consolidates from prose, the fallback stated there. The
+   schema BINDS each verdict to its round and leg
+   (`review_id`/`family`/`content_digest`, required): admission runs
+   `lib/validate_verdict.py --expected-review-id/--expected-family/
+   --expected-packet` for EVERY leg's JSON — the binding flags are
+   all-or-nothing (a flagless run is loudly shape-only, never an
+   admission), `--expected-packet` recomputes the digest from the packet
+   file itself — and a binding mismatch is
+   the INVALID-leg handling, never a pass
+   (`references/leg-contracts.md` § Verdict binding).
 5. **Fix→re-confirm loop, no round cap — stops are evidence-based.** Findings →
    fix each (own implementer + per-fix review) → re-run the 3-way on the fixed
    branch. A first-pass DO-NOT-MERGE addressed by a FIX closes only through a
@@ -225,11 +170,22 @@ Five references carry the detail — open one only when its column applies.
    the codex dispatch path itself, codex reviews the *artifact diff* (e.g.
    Python), not its own reasoning — cross-family + fresh-eye still holds, so the
    full 3-way is valid. Use judgment; when in doubt, keep all three.
-7. **Vendor review legs: READ-only, no-exec, generous timeout.** Every leg prompt
-   — codex / agy / gemini, and the claude `Agent` leg, which also enforces
-   no-exec mechanically through its tool allowlist (rule 1a) — instructs the
-   reviewer to review by READING (`git diff`, file reads): "Do NOT run
-   scripts/tests or spawn subprocesses / vendor CLIs." An agentic sandboxed
+7. **Vendor review legs: READ-only, no-mutation/no-execution, generous
+   timeout.** Every leg prompt — codex / agy / gemini, and the claude `Agent`
+   leg, which also enforces no-exec mechanically through its tool allowlist
+   (rule 1a) — instructs the reviewer to review by READING (`git diff`, file
+   reads): forbidden are file MUTATION, external-state change, and CANDIDATE
+   EXECUTION (running tests/scripts/builds or the code under review, spawning
+   vendor CLIs). TWO legs' directives are SCOPED to a READ-GRANT: the CODEX
+   leg (read-only shell commands explicitly PERMITTED; the old blanket
+   wording banned the very commands codex reads files with; trailer in
+   `references/leg-contracts.md` § codex leg) and the AGY leg (packet read
+   FIRST, still the mechanical read-audit gate's required entry, then repo
+   verification reads via its file-view tool with file:line cites;
+   `references/leg-contracts.md` § agy leg). For both, the round's
+   capture/verify integrity gate (`references/packet-lifecycle.md` § Round
+   integrity) is the compensating control — mutation detection, not a
+   sandbox claim alone, decides admission. An agentic sandboxed
    reviewer otherwise live-runs the code under review, hangs on a real vendor API
    call, and under its read-only sandbox cannot reap the hung child — burning the
    whole timeout with no verdict. Pair the no-exec directive with a **timeout
@@ -249,14 +205,21 @@ Five references carry the detail — open one only when its column applies.
    sandboxed leg to self-assemble burns its whole wall-time budget and returns no
    verdict. The packet's canonical order is deployment-context → fenced diff
    subset → suspect questions LAST, with any per-leg containment block riding
-   immediately before that closing instruction. Before dispatching, digest the
-   packet and every reviewed file, and FREEZE the tree for the round. Lifecycle
-   commands, the ownership fences, the fencing text, and the digest procedure:
-   `references/packet-lifecycle.md`.
-9. **codex leg: INLINE the packet into `--prompt`; never hand it only a file
-   path.** A codex leg under `--sandbox read-only` plus rule 7's no-exec
-   directive may be unable to open a handed-over file at all and returns no
-   verdict. The call-site substitution shape, the single-quoted-heredoc pitfall
+   immediately before that closing instruction. Before dispatching, run the
+   round's `capture` (per-round evidence snapshot + canonical worktree
+   fingerprint — `lib/review_scratch.py capture`) and
+   FREEZE the tree; after every required leg terminates, `verify` must print
+   `ROUND_INTEGRITY_OK` before consolidation. Lifecycle commands, the
+   ownership fences, the fencing text, the `Review metadata:` block, and the
+   capture/verify procedure: `references/packet-lifecycle.md`.
+9. **codex leg: INLINE the packet into `--prompt` AND grant read-only repo
+   access (`--cwd` + READ-GRANT trailer).** The
+   inlined packet stays the leg's guaranteed view; the read grant restores its
+   ability to VERIFY claims against the repo (the historical
+   cannot-open-a-file failure was the old blanket no-exec directive, not the
+   sandbox — reads were never sandbox-blocked, writes still are). The revised
+   contract, its trailer text, the rescoped fast-SAFE heuristic, the call-site
+   substitution shape, the single-quoted-heredoc pitfall
    it must avoid, and the large-diff focused-subset requirement are in
    `references/leg-contracts.md` § codex leg.
 10. **claude fresh-eye leg = a TRUE fresh-eye Agent, MAX thinking, adversarial.**
@@ -349,7 +312,25 @@ Five references carry the detail — open one only when its column applies.
    diff subset) inside that dir, e.g. `<packet-dir>/packet.md`; the agy/gemini
    leg reads only that, codex inlines the same focused body. At review end,
    `… close <packet-dir>`.
-2. Resolve the Google-family leg, then dispatch the reviewers in parallel, each
+2. Assemble EVERY leg's input file in the packet dir FIRST — the packet
+   itself, the round's digest record (`digest-r<N>.txt` — one per
+   round, never an appended round-invariant file:
+   `references/packet-lifecycle.md` § Round integrity), and each
+   per-leg prompt-body file
+   (`codex-body.txt`,
+   `agy-prompt.txt`, …): the bytes a leg actually reviews must be part of
+   the round's evidence census, and `verify` fails on uncovered non-output
+   files (adopt-gate r1 lesson: bodies built after capture sat outside the
+   census while two legs certified them). On a round N>=2 in a REUSED
+   packet dir, also preserve-and-clear any round-invariant leg output
+   BEFORE capture (`agy-read-audit.json` →
+   `agy-read-audit-r<N-1>.json`; `references/packet-lifecycle.md`
+   § Round integrity — a censused copy the next dispatch rewrites is a
+   guaranteed false round-INVALID). ONLY THEN run the round's
+   `capture` (`lib/review_scratch.py capture <packet-dir> <worktree-root>
+   r<N>` — evidence snapshot + worktree fingerprint,
+   `references/packet-lifecycle.md` § Round integrity), then resolve the
+   Google-family leg and dispatch the reviewers in parallel, each
    at its family's default review tier (rule 1; max-class only on a designated
    escalation round) — `Agent` with
    `subagent_type: triad-dispatch:cross-family-review-reviewer` (escalation round →
@@ -368,7 +349,11 @@ Five references carry the detail — open one only when its column applies.
    record the choice. The default stays ON, and the egress itself is a disclosed
    residual (`references/leg-contracts.md` § codex leg).
    Per-leg flags and prompts: `references/leg-contracts.md`.
-3. Collect the three verdicts + findings, then run rule 4's consolidation:
+3. Once every required leg has terminated, run `verify` for the round — it
+   must print `ROUND_INTEGRITY_OK r<N>` (a mismatch INVALIDATES the round:
+   mutation detected, never released) — validate every leg's JSON with
+   `lib/validate_verdict.py --expected-*` (rule 4's binding admission), then
+   collect the three verdicts + findings and run rule 4's consolidation:
    fact-check each finding against the source with a deterministic probe, TRIAGE
    each finding REAL / REACHABLE-UNOBSERVED / SPECULATIVE (rule 14 — SPECULATIVE
    → DISCLOSED residual, no code), and classify the round CONVERGING /

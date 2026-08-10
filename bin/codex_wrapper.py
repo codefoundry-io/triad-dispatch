@@ -134,6 +134,13 @@ def main() -> int:
         help="Override model_reasoning_effort (default: vendor default)",
     )
     p.add_argument(
+        "--model",
+        default=None,
+        help="Override model for this dispatch (`-c model=\"<slug>\"`); free-form "
+             "catalog slug from `codex debug models` (default: config-alive model). "
+             "No slug is ever hardcoded here — dispatch-time pin only",
+    )
+    p.add_argument(
         "--search",
         action="store_true",
         help="Enable codex live web search (codex's top-level --search, inserted before "
@@ -363,6 +370,8 @@ def main() -> int:
             # TOML string value (canonical -c form). Bare `=high` would rely on
             # codex's literal-string fallback; the quoted form is unambiguous.
             cmd += ["-c", f'model_reasoning_effort="{args.reasoning}"']
+        if args.model:
+            cmd += ["-c", f'model="{args.model}"']
         if schema_path is not None:
             cmd += ["--output-schema", schema_path]
         if args.image:

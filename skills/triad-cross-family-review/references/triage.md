@@ -188,14 +188,19 @@ its `findings[]` into the residual table (above) is mechanical — read it with
 `jq`, never by re-reading the leg's prose:
 
 ```bash
-# One validated object per leg, at <packet-dir>/<leg>-verdict.json
-# (codex-verdict.json / agy-verdict.json / claude-verdict.json — the leader
-# names these when it captures each leg's stdout / validated reply). A
+# One validated object per leg, at <packet-dir>/<leg>-r<N>-verdict.json
+# (codex-r2-verdict.json / agy-r2-verdict.json / claude-r2-verdict.json — the
+# leader names these when it captures each leg's stdout / validated reply).
+# ROUND-SUFFIXED on purpose (adopt-gate r2): a round-free name would be
+# censused by the NEXT round's capture and then rewritten by that round's
+# consolidation — a guaranteed false "round evidence changed". The suffixed
+# names ride verify's `*-verdict.json` leg-output allowlist as post-capture
+# arrivals, and each round's file is frozen history thereafter. A
 # SAFE-verdict leg with zero findings correctly emits NO rows (`.findings[]`
 # on an empty array is a no-op) — that is not a miss, it is the SAFE leg
 # contributing nothing to the table.
 for leg in codex agy claude; do
-  f="$PACKET_DIR/$leg-verdict.json"
+  f="$PACKET_DIR/$leg-r$ROUND-verdict.json"   # ROUND=the round number, e.g. 2
   [ -f "$f" ] || { echo "-- $leg: no validated object (fallback below)"; continue; }
   verdict="$(jq -r '.verdict' "$f")"
   jq -r --arg leg "$leg" --arg verdict "$verdict" --arg round "$ROUND" '

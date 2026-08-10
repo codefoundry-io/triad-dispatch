@@ -4,11 +4,65 @@ fresh-eye leg's reply against the shared cross-family-review verdict schema
 (`verdict_schema.LegVerdict`).
 
 Usage: python3 validate_verdict.py <json-file>
-  exit 0  valid  — nothing on stdout (a gate, not a formatter).
-  exit 1  invalid, missing, or malformed — ONE line on stderr; the three
-          failure classes carry visibly distinct wording (missing file /
-          not valid JSON / fails LegVerdict validation) so the leader's
-          consolidation step does not have to guess which one happened.
+           [--expected-review-id ID]
+           [--expected-family claude|google|codex]
+           [--expected-content-digest HEX64 | --expected-packet FILE]
+  exit 0  valid — and, when binding admission is REQUESTED (any one of the
+          four --expected-* flags below is present), the parsed verdict's
+          review_id/family/content_digest ALSO match — nothing on stdout (a
+          gate, not a formatter), EXCEPT a flagless (shape-only) success,
+          which prints a one-line NOTICE to stderr (see below).
+  exit 1  invalid, missing, or malformed — ONE line on stderr; the failure
+          classes carry visibly distinct wording (missing file / not valid
+          JSON / not a regular file — symlink refused / fails LegVerdict
+          validation / review ID mismatch / family mismatch / content
+          digest mismatch / incomplete binding flag set / mutually
+          exclusive digest flags) so the leader's consolidation step does
+          not have to guess which one happened.
+
+Binding admission (2026-08-10 hardening, adopted alongside
+`verdict_schema.py`'s round/leg-binding fields — see that module's
+docstring) binds a verdict to the round/leg it was produced for:
+`--expected-review-id`/`--expected-family` name the round and leg, and the
+digest names the exact packet bytes the leg reviewed — together they let
+the leader refuse a reply that is structurally a valid LegVerdict but was
+produced for a DIFFERENT round or a DIFFERENT leg (replay / leg-mixup),
+which schema validation alone cannot catch since the fields are
+self-reported inside the very payload being checked. Two ways to supply the
+digest:
+  --expected-content-digest HEX64   a caller-supplied hex string — the
+                                     caller is trusted to have derived it
+                                     correctly.
+  --expected-packet <path>          this tool derives the digest ITSELF by
+                                     hashing the named file's own bytes (the
+                                     SAME symlink-refusing hardened read
+                                     `_read_regular_file_no_symlink` uses
+                                     for the reply file) — closing the gap
+                                     where a stale or hand-typed digest
+                                     string could pass even though the
+                                     packet on disk moved. Mutually
+                                     exclusive with --expected-content-digest
+                                     (passing both is a usage error).
+
+2026-08-11 hardening (finding r1-C1 — codex must-fix + agy
+hardening-suggestion + claude must-fix, converging on the SAME gap
+independently; probe: a flagless run on a real verdict file returned rc=0
+with no signal binding was skipped). The three original --expected-* flags
+were fully independent and optional, so (a) a caller could supply just ONE
+and get a PARTIAL check indistinguishable from a full one, and (b) a caller
+that omitted all three got a SILENT shape-only pass. Two changes:
+  1. The four binding flags now form an ALL-OR-NOTHING group: presence of
+     ANY one of them REQUIRES --expected-review-id AND --expected-family
+     AND exactly one digest source (--expected-content-digest OR
+     --expected-packet) — a partial set is a usage error (exit 1), not a
+     weaker partial check.
+  2. A flagless call keeps the ORIGINAL shape-only rc contract byte-for-byte
+     (exit 0 on a valid file, existing shape-only callers — e.g. this
+     module's own unit suite and the export-invariants system test — keep
+     working unchanged) but now prints a one-line NOTICE to stderr on that
+     success path, since silence is exactly what let the fail-open probe
+     through undetected. This is the ONE deliberate stderr-on-success
+     carve-out in this module; every other success path stays silent.
 
 Deliverable C, plan `2026-07-31-agy-post-migration-followups` item (4): the
 codex and agy legs get `LegVerdict` enforced by their `--pydantic` wrapper
@@ -52,8 +106,11 @@ matches and resolution falls through to the dev candidate.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -182,47 +239,224 @@ def _load_verdict_schema_module(here: Path) -> ModuleType:
     )
 
 
-def validate(json_path: Path) -> tuple[bool, str | None]:
-    """(ok, reason). reason is None on success, else a one-line string."""
+def _read_regular_file_no_symlink(json_path: Path) -> tuple[bytes | None, str | None]:
+    """(data, reason). Reads `json_path` as raw bytes, refusing anything
+    that is not a plain regular file — most importantly a SYMLINK (2026-08-10
+    hardening: a symlink planted at the expected reply-file path would
+    otherwise let this validator read and pass an arbitrary target file the
+    caller never intended). `lstat` (never follows a symlink) makes the
+    reject decision; the actual `open` ALSO passes `O_NOFOLLOW`
+    (belt-and-suspenders against a TOCTOU swap between the `lstat` and the
+    `open`), and the opened descriptor's own `fstat` re-checks `S_ISREG`
+    before any byte is read. `os.O_NOFOLLOW` is POSIX and present on both
+    macOS and Ubuntu 24.04 — no platform branch needed."""
     try:
-        text = json_path.read_text(encoding="utf-8")
+        st = json_path.lstat()
     except OSError as e:
-        return False, f"cannot read {json_path}: {e}"
+        return None, f"cannot read {json_path}: {e}"
+    if stat.S_ISLNK(st.st_mode):
+        return None, f"{json_path} is a symlink, refusing to read"
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    try:
+        fd = os.open(json_path, flags)
+    except OSError as e:
+        return None, f"cannot read {json_path}: {e}"
+    try:
+        fst = os.fstat(fd)
+        if not stat.S_ISREG(fst.st_mode):
+            return None, f"{json_path} is not a regular file"
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks), None
+    finally:
+        os.close(fd)
+
+
+def _validate_and_load(json_path: Path) -> tuple[bool, str | None, object | None]:
+    """(ok, reason, verdict). `verdict` (a `LegVerdict` instance) is set
+    only when `ok` is True; `reason` is set only when `ok` is False.
+    Internal — `validate()` below is the STABLE public 2-tuple contract
+    existing direct-import callers (this module's own CLI `main()`, and
+    e.g. the t2 test suite's `vv.validate(...)` axes) already depend on;
+    `main()` additionally needs the parsed object for the --expected-*
+    binding checks, so this function is the one place both share."""
+    data, err = _read_regular_file_no_symlink(json_path)
+    if err is not None:
+        return False, err, None
+    try:
+        text = data.decode("utf-8")
     except UnicodeDecodeError as e:
         # UnicodeDecodeError is a ValueError subclass, NOT an OSError — a
         # separate except clause (distinct message class) is required;
-        # `encoding="utf-8"` (rather than the platform default) makes this
-        # reachable and deterministic across dev (macOS) and dist (Ubuntu).
-        return False, f"{json_path} is not valid UTF-8: {e}"
+        # decoding explicitly as UTF-8 (rather than the platform default)
+        # makes this reachable and deterministic across dev (macOS) and
+        # dist (Ubuntu).
+        return False, f"{json_path} is not valid UTF-8: {e}", None
     try:
         obj = json.loads(text)
     except json.JSONDecodeError as e:
-        return False, f"{json_path} is not valid JSON: {e}"
+        return False, f"{json_path} is not valid JSON: {e}", None
     here = Path(__file__).resolve()
     try:
         mod = _load_verdict_schema_module(here)
     except VerdictSchemaNotFound as e:
-        return False, str(e)
+        return False, str(e), None
     except VerdictSchemaLoadError as e:
-        return False, str(e)
+        return False, str(e), None
     try:
-        mod.LegVerdict.model_validate(obj)
+        verdict = mod.LegVerdict.model_validate(obj)
     except Exception as e:  # pydantic.ValidationError — kept broad on purpose:
         # this module must stay import-light (no top-level pydantic import),
         # since verdict_schema's own dependency is resolved dynamically above.
-        return False, f"{json_path} fails LegVerdict validation: {_flatten(str(e))}"
-    return True, None
+        return False, f"{json_path} fails LegVerdict validation: {_flatten(str(e))}", None
+    return True, None, verdict
+
+
+def validate(json_path: Path) -> tuple[bool, str | None]:
+    """(ok, reason). reason is None on success, else a one-line string.
+    STABLE 2-tuple public contract, unchanged since before the 2026-08-10
+    hardening — see `_validate_and_load` for the 3-tuple internal form the
+    CLI path uses to also get the parsed object for --expected-* binding."""
+    ok, reason, _ = _validate_and_load(json_path)
+    return ok, reason
+
+
+_BINDING_FLAGS = (
+    "--expected-review-id",
+    "--expected-family",
+    "--expected-content-digest",
+    "--expected-packet",
+)
+
+_USAGE = (
+    "usage: validate_verdict.py <json-file> "
+    "[--expected-review-id ID] [--expected-family claude|google|codex] "
+    "[--expected-content-digest HEX64 | --expected-packet FILE]"
+)
+
+# Distinct one-line messages for the two NEW usage-error classes (2026-08-11
+# hardening) — kept as module-level constants so both `main()` and the t2
+# test suite that greps for them stay anchored to the same literal text.
+_BINDING_INCOMPLETE_MSG = (
+    "binding admission requires all of --expected-review-id, "
+    "--expected-family, and exactly one digest source "
+    "(--expected-content-digest or --expected-packet)"
+)
+_DIGEST_MUTEX_MSG = (
+    "usage: --expected-content-digest and --expected-packet are "
+    "mutually exclusive"
+)
+_SHAPE_ONLY_NOTICE = (
+    "NOTICE: shape-only validation — binding admission NOT performed "
+    "(gate admission requires --expected-review-id/--expected-family/"
+    "--expected-packet)"
+)
+
+
+def _parse_argv(
+    argv: list[str],
+) -> tuple[str, str | None, str | None, str | None, str | None] | None:
+    """Returns (json_file, expected_review_id, expected_family,
+    expected_content_digest, expected_packet), or None on a malformed argv
+    (`main()` turns that into the usage message + exit 1). This function only
+    checks argv SHAPE (each flag has a value, exactly one positional) — the
+    ALL-OR-NOTHING binding-admission rule and the --expected-content-digest /
+    --expected-packet mutual exclusion are semantic checks `main()` applies
+    to the parsed result, not this pure shape parse."""
+    positional: list[str] = []
+    values: dict[str, str] = {}
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in _BINDING_FLAGS:
+            if i + 1 >= len(argv):
+                return None
+            values[arg] = argv[i + 1]
+            i += 2
+        else:
+            positional.append(arg)
+            i += 1
+    if len(positional) != 1:
+        return None
+    return (
+        positional[0],
+        values.get("--expected-review-id"),
+        values.get("--expected-family"),
+        values.get("--expected-content-digest"),
+        values.get("--expected-packet"),
+    )
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 1:
-        print("usage: validate_verdict.py <json-file>", file=sys.stderr)
+    parsed = _parse_argv(argv)
+    if parsed is None:
+        print(_USAGE, file=sys.stderr)
         return 1
-    ok, reason = validate(Path(argv[0]))
-    if ok:
+    (
+        json_file,
+        expected_review_id,
+        expected_family,
+        expected_content_digest,
+        expected_packet,
+    ) = parsed
+
+    if expected_content_digest is not None and expected_packet is not None:
+        print(_DIGEST_MUTEX_MSG, file=sys.stderr)
+        return 1
+
+    # --expected-packet derives the expected digest FROM THE PACKET BYTES
+    # (same hardened symlink-refusing read the reply file gets) instead of
+    # trusting a caller-supplied string — this is what closes the
+    # trusted-string gap the digest flag alone left open.
+    expected_digest = expected_content_digest
+    if expected_packet is not None:
+        packet_bytes, err = _read_regular_file_no_symlink(Path(expected_packet))
+        if err is not None:
+            print(f"--expected-packet: {err}", file=sys.stderr)
+            return 1
+        expected_digest = hashlib.sha256(packet_bytes).hexdigest()
+
+    binding_requested = (
+        expected_review_id is not None
+        or expected_family is not None
+        or expected_content_digest is not None
+        or expected_packet is not None
+    )
+    if binding_requested and (
+        expected_review_id is None
+        or expected_family is None
+        or expected_digest is None
+    ):
+        print(_BINDING_INCOMPLETE_MSG, file=sys.stderr)
+        return 1
+
+    ok, reason, verdict = _validate_and_load(Path(json_file))
+    if not ok:
+        print(reason, file=sys.stderr)
+        return 1
+
+    if not binding_requested:
+        # The ONE deliberate stderr-on-success carve-out in this module —
+        # see the module docstring's 2026-08-11 hardening note (finding
+        # r1-C1: silence here is exactly what let a flagless caller admit an
+        # unbound verdict without noticing binding was never checked).
+        print(_SHAPE_ONLY_NOTICE, file=sys.stderr)
         return 0
-    print(reason, file=sys.stderr)
-    return 1
+
+    if verdict.review_id != expected_review_id:
+        print("review ID mismatch", file=sys.stderr)
+        return 1
+    if verdict.family != expected_family:
+        print("family mismatch", file=sys.stderr)
+        return 1
+    if verdict.content_digest != expected_digest:
+        print("content digest mismatch", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

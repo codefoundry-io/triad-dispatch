@@ -12,7 +12,7 @@ deciding whether an edit made mid-round invalidates it.
 | Packet dir lifecycle | opening, refreshing, or closing a packet dir — `review_scratch.py` and its ownership fences |
 | Large packet — pre-assemble one focused file | the diff is big or the review spans several documents |
 | Packet order and fencing | assembling the packet itself — block order, the data fence, containment placement |
-| Round integrity — digest and freeze | a fix is ready while legs are still out, or a leg certified text that may have changed |
+| Round integrity — capture / verify | before dispatching any round, after its legs return, or when a fix is ready while legs are still out |
 
 ## Where packet files live
 
@@ -89,6 +89,23 @@ tree. codex inlines the same focused subset instead of reading the file
 
 Canonical for EVERY leg, inline or file:
 
+0. ONE canonical **`Review metadata:` JSON line** at the head of the
+   PACKET FILE — a single compact-serialized object stating the
+   LEG-INDEPENDENT facts only: `review_id` (e.g. `<slug>-r<N>`),
+   `round`, and the packet path. Two binding values CANNOT live in this
+   line and ride each leg's PROMPT instead, as one per-leg binding line
+   ("Your binding values: review_id=…, family=…, content_digest=…"):
+   `content_digest` is the sha256 OF the packet file — writing it inside
+   packet.md is self-referentially impossible — and `family` is per-leg
+   while the packet is one file for all legs (adopt-gate r1 made this
+   explicit; the first live round had improvised placeholders). The
+   closing instruction requires the leg to ECHO
+   `review_id`/`family`/`content_digest` verbatim in its LegVerdict
+   (`references/leg-contracts.md` § Verdict binding), and admission
+   recomputes the digest FROM the packet file
+   (`validate_verdict.py --expected-packet`) — the leader never compares
+   two hand-carried strings, which is what keeps the field a content
+   binding (cross-round comparable) rather than a nonce.
 1. a **deployment-context block** first — platforms, trust boundaries,
    threat-model exclusions: the facts the triage reviewer instruction depends on
    (`references/triage.md`). Each exclusion carries a dated evidence pointer — a
@@ -99,6 +116,15 @@ Canonical for EVERY leg, inline or file:
 3. the **suspect questions** (rule 2) and the required output shape LAST,
    anchored "based on the material above".
 
+**Per-round excerpt policy (FU10 plan-gate lesson, 2026-08-10).** Every
+round's packet — NARROW re-confirm rounds included — carries the code
+excerpts its questions ride on. The FU10 gate dropped the excerpts from
+its narrow rounds and the packet-only leg went blind exactly there (a
+missed defect and a refuted trigger, both traceable to absent code).
+The marginal size of two or three functions is noise; the blind spot is
+not. The codex leg's READ-GRANT (leg-contracts § codex leg) is the
+verification channel, not a substitute for carrying the evidence.
+
 Any per-leg CONTAINMENT block (e.g. the agy leg's mandatory containment text)
 rides immediately before that closing instruction, never leading the packet. This
 matches the documented Gemini constraint-drop shape: an instruction placed at the
@@ -106,17 +132,78 @@ START of a long prompt is the one most likely to be dropped by the time the mode
 starts acting. Recency is exactly what the "LAST, anchored" placement protects,
 and containment needs the same protection.
 
-## Round integrity — digest and freeze
+## Round integrity — capture / verify (MECHANIZED 2026-08-10)
 
-Owner directive, after a round in which the leader edited the tree mid-round and
-the legs had certified a stale snapshot:
+Origin: an owner directive after a round in which the leader edited the
+tree mid-round and the legs had certified a stale snapshot. The manual
+`shasum` procedure that implemented it is superseded by two
+`lib/review_scratch.py` subcommands (adopted from codex-host 0.2.533,
+adapted to this skill's REUSED packet-dir model — python3 stdlib,
+identical on macOS and Ubuntu 24.04):
 
-- Before dispatching a round, record a content digest (`shasum -a 256`;
-  `sha256sum` on a minimal Ubuntu image without perl's shasum) of the packet AND
-  every file the round reviews.
-- After every required leg terminates, re-compare. Any mismatch invalidates the
-  round — a leg certified text that no longer exists.
-- The reviewed tree is FROZEN for the round's duration: fixes for returned
-  findings are STAGED and applied only after the last leg returns. An edit
-  adopted while closing a probe-refuted finding is still an edit; it ships only
-  through a round that reviewed it (rule 5).
+- **Before dispatching round N** (packet assembled, prompts built):
+  `python3 <skill>/lib/review_scratch.py capture <abs-packet-dir>
+  <abs-worktree-root> r<N>` — freezes an exclusive-create snapshot
+  (`.snapshot-r<N>.json`): a per-file sha256 census of every regular
+  file then in the packet dir, one prepared digest over that census
+  (length-prefixed framing), and a canonical WORKTREE fingerprint
+  (HEAD + status + staged/unstaged diffs under pinned flags +
+  untracked-file hashes, `LC_ALL=C` — deterministic across git
+  configs). One label per round, never re-captured.
+- **After every required leg terminates, BEFORE consolidation**:
+  `… verify <abs-packet-dir> <abs-worktree-root> r<N>` must print
+  `ROUND_INTEGRITY_OK r<N>`. A packet-evidence mismatch = a leg
+  certified text that changed under it; a WORKTREE-fingerprint
+  mismatch = the code under review mutated while legs ran — either way
+  the round is INVALID, never released. This verify is the
+  COMPENSATING CONTROL for legs with native read tools (the codex
+  leg's 2026-08-10 READ-GRANT contract, and the agy leg's
+  intent-not-enforcement residual): mutation detection, not a sandbox
+  claim alone, decides admission.
+- Leg INPUT files must ALL exist before capture — the packet, the
+  round's digest record, and every per-leg prompt-body file
+  (`codex-body.txt`, `agy-prompt.txt`,
+  `*-prompt.txt`): the bytes a leg actually reviews must sit inside the
+  census (adopt-gate r1: bodies built after capture left two legs' real
+  input uncensused while verify still passed). SKILL Flow step 2 orders
+  assembly-then-capture; `verify` mechanically FAILS on any uncovered
+  non-output regular file in the packet dir.
+- The round-invariant rule covers INPUTS too (adopt-gate r3 Minor): a
+  censused file that CHANGES per round must carry the round in its
+  NAME — the digest record is `digest-r<N>.txt`, one per round, written
+  pre-capture and immutable after. An APPENDED round-invariant file
+  (the old single `digest.txt`) silently breaks RE-verification of
+  every EARLIER round's census: each append changes the bytes that an
+  older snapshot froze, so `verify` of a closed round reports "round
+  evidence changed" on an unmutated packet. SCOPE THE BENEFIT HONESTLY
+  (adopt-gate r4, codex+claude convergence): per-round naming fixes the
+  BYTE-MUTATION half only — the censused bytes of a closed round stay
+  immutable and independently recomputable — but a FULL `verify` of a
+  CLOSED round is UNSUPPORTED in the reused-dir model: the NEXT round's
+  input files (`packet-r<N+1>.md`, `digest-r<N+1>.txt`, prompt bodies)
+  are uncovered non-outputs for the old census, so verify structurally
+  refuses before it ever recomputes — read that refusal as the model's
+  boundary, not as tampering. `verify` is a CURRENT-round gate; a
+  closed round's evidence audit recomputes the snapshot-listed hashes /
+  prepared digest directly (the .snapshot-r<N>.json is the durable
+  record).
+- Leg OUTPUT files landing in the packet dir after capture are BY DESIGN
+  outside the snapshot census — integrity binds the round's evidence
+  set, not the dir's later accumulation. "Output" is a NARROW allowlist
+  (`*.out`, `*.err`, `*-read-audit.json`, `claude-r*.json`,
+  `*-verdict.json`); anything
+  else appearing post-capture fails `verify` as an uncovered file.
+- A leg OUTPUT whose NAME is round-invariant — today the agy read-audit
+  literal `agy-read-audit.json` — must be PRESERVED-AND-CLEARED to its
+  round-suffixed name BEFORE the next round's capture
+  (`references/leg-contracts.md` § agy leg, Read-audit binding): a
+  censused copy that a later dispatch rewrites is a guaranteed false
+  "round evidence changed" on an unmutated tree (adopt-gate r2
+  must-fix). Per-leg consolidation artifacts avoid the same trap by
+  carrying the round in their name (`<leg>-r<N>-verdict.json`,
+  `references/triage.md`).
+- The reviewed tree stays FROZEN for the round's duration: fixes for
+  returned findings are STAGED and applied only after the last leg
+  returns and `verify` passes. An edit adopted while closing a
+  probe-refuted finding is still an edit; it ships only through a
+  round that reviewed it (rule 5).

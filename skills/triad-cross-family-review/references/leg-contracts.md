@@ -8,6 +8,7 @@ its verdict may be weighed only after the read-audit gate below passes.
 
 | Section | Open it when |
 |---|---|
+| Verdict binding — all legs | dispatching any leg, or admitting a returned verdict |
 | Google-family leg selection | choosing between `agy` and `gemini` for this round |
 | agy leg | dispatching agy — model selector, read-audit binding, containment block |
 | agy read-audit gate | an agy leg returned and you are about to weigh it |
@@ -15,6 +16,105 @@ its verdict may be weighed only after the read-audit gate below passes.
 | gemini leg | gemini is the resolved Google leg |
 | codex leg | dispatching codex — tier, `--search`, inline packet |
 | claude fresh-eye leg | dispatching the claude `Agent` leg |
+
+## Verdict binding — all legs (adopted 2026-08-10, codex-host 0.2.533)
+
+`LegVerdict` carries three REQUIRED binding fields — `review_id`,
+`family` (`claude` | `google` | `codex`), `content_digest` (64-hex,
+lowercase) — so a verdict is admissible only for the exact round and
+leg it was produced for (no cross-round reuse, no leg mixups). The
+leader's obligations, every round, every leg:
+
+1. The PACKET FILE's head carries ONE canonical `Review metadata:`
+   JSON line with the LEG-INDEPENDENT facts only — `review_id` (e.g.
+   `<slug>-r<N>`), `round`, packet path. `family` and `content_digest`
+   ride each leg's PROMPT as one per-leg binding line — the digest is
+   the sha256 OF the packet file (it cannot live inside it) and family
+   is per-leg while the packet is one file for all legs
+   (`references/packet-lifecycle.md` § Packet order item 0; adopt-gate
+   r2 removed the older wording that put all three in the packet
+   line). Instructions tell the leg to ECHO
+   `review_id`/`family`/`content_digest` verbatim in its LegVerdict.
+   Per-leg `family` token mapping (fixed):
+   the claude fresh-eye leg echoes `"claude"`, the codex leg `"codex"`,
+   and the Google-family leg — WHICHEVER CLI resolved, agy or gemini —
+   echoes `"google"` (the token names the model family, not the CLI).
+2. Admission is MECHANICAL: `lib/validate_verdict.py <reply-file>
+   --expected-review-id <id> --expected-family <token>
+   --expected-packet <abs-packet-path>` — for EVERY leg's JSON, not only
+   claude's (the codex/agy wrappers' `--pydantic` enforces SHAPE at
+   dispatch; the binding values are checked leader-side because the
+   wrapper cannot know them). `--expected-packet` makes the tool compute
+   sha256 over the packet FILE itself (adopt-gate r1: a leader-supplied
+   digest string could be stale/cross-round; `--expected-content-digest
+   <hex>` remains as the mutually-exclusive raw form). The binding flags
+   are all-or-nothing — any one present requires all three, and a
+   flagless run is loudly labeled shape-only (NOT a gate admission). A
+   mismatch is the existing INVALID-leg
+   handling (one re-ask, then INVALID) — never a hand-waved pass.
+3. The schema also rejects a "SAFE TO MERGE" verdict carrying a
+   Critical/must-fix finding (bidirectional validator, engine commit
+   `397fade`); Minor / HARDENING-SUGGESTION findings MAY accompany
+   SAFE — a deliberate difference from the codex-host reference, which
+   has no suggestion severity.
+4. **A non-repairable schema-fail preserves the blocker — it is
+   never a silent leg loss (adopt-gate r2, generalized r5/r6).** Two
+   triggers, one handling: the marked `[NONREPAIRABLE]` SAFE-arm, OR
+   the BLOCKING-CONTENT probe (the failed payload's parsed-or-scanned
+   content carries a Critical/must-fix finding — this fires even when
+   NO validator arm ran, e.g. a co-occurring field error or a
+   non-parseable envelope). Either way the wrapper
+   deliberately SKIPS its schema-repair replay (a replay invites the
+   leg to launder the blocker by downgrading or dropping it) and exits
+   schema-fail 66 with a stderr log carrying the `[NONREPAIRABLE]`
+   token and stating which trigger fired (marked arm or blocking
+   content) — so grep for the token, but do not expect the ARM's
+   prescriptive message on a content-triggered refusal.
+   On seeing that log the leader re-dispatches ONCE with an explicit
+   instruction BRANCHED on the leg's ACTUAL verdict — an unconditional
+   "raise the verdict" order to a leg whose verdict was already non-SAFE
+   (or whose refusal was a false-positive on quoted code) would
+   MANUFACTURE verdict inflation, the mirror image of the laundering this
+   rule exists to stop. The discriminator is the run-log's STRUCTURED
+   payload, not a log grep: on any `[NONREPAIRABLE]`-token 66, READ the
+   verdict + finding severities in the run-log's `stdout` stream (the
+   vendor's `structured_output`) and branch on what they ARE. A
+   `[NONREPAIRABLE trigger=…]` token also rides the wrapper's stderr, but
+   it is only a HINT that a non-repairable refusal occurred — the wrapper
+   later mirrors vendor bytes on its own timestamped lines (the
+   read-audit digest can carry a planted `[NONREPAIRABLE trigger=arm]`
+   substring), so a bare token grep is forgeable; the structured payload
+   is content-agnostic and sidesteps it. Branch: the payload's verdict is
+   SAFE TO MERGE while it carries a Critical/must-fix finding → "raise
+   the verdict to MERGE WITH FIXES or DO NOT MERGE — NEVER downgrade a
+   finding's severity"; the payload's verdict is already non-SAFE
+   (a shape slip the content probe caught) → "re-emit the SAME verdict,
+   findings and severities as strictly valid JSON — do NOT change the
+   verdict and do NOT change any severity". Not hardening the token
+   further is an accepted residual (adopt-gate r9, owner decision C):
+   this whole 66 path is empirically near-never exercised — across the
+   adopt-gate's 18 real schema-bound review dispatches, 18 returned valid
+   JSON, the repair retry fired ONCE (a benign field-slip recovery,
+   verdict intact), and the laundering path fired ZERO times; every
+   laundering "occurrence" was a synthetic fixture. The run-log preserves
+   the FULL vendor evidence as the leader-visible unconsolidated signal —
+   on a DUAL-PAYLOAD leg (adopt-gate r4/r5) the blocking object rides
+   the run-log's `stdout` stream (the vendor's `structured_output`);
+   `final_answer` is EMPTIED on these paths (the wrapper quarantines
+   it), and the bounded copy of the divergent raw string lives in the
+   run-log's `extraction_error` as "quarantined answer: …" — so
+   inspect the structured payload in the stdout stream plus
+   `extraction_error`, never `final_answer` (guaranteed empty exactly
+   where this obligation applies). A 66 is NEVER a
+   reply to fall back to: the leg's captured `.out` is quarantined
+   whenever the arm is non-repairable OR the raw fallback was
+   suppressed (structured_output present — the r4 widening), and must
+   not be consolidated on any 66
+   regardless. Only a
+   leg still failing after that one re-dispatch is terminally missing
+   (rule 13), and the round record then names the run-log so the
+   blocking content is never dropped on the floor — for the ADVISORY
+   Google leg as much as for a gating leg.
 
 ## Google-family leg selection
 
@@ -101,7 +201,20 @@ the shallow-tier fact for the round record.
   every completed call, success or failure (`emit_read_audit`), and that durable
   file is the gate's only evidence source. Bind it AT DISPATCH TIME: the evidence
   cannot be created after the fact, so a leg dispatched without it is
-  re-dispatched. Immediately before EACH dispatch,
+  re-dispatched. **Round-invariant name vs the reused packet dir
+  (adopt-gate r2 must-fix — every round from r3 on would otherwise be
+  deterministically INVALID):** the digest file keeps ONE round-free
+  literal at all three sites, so at round N>=2 the PRIOR round's file
+  is still on disk when round N captures — a CENSUSED file the round-N
+  dispatch then overwrites, which verify reports as "round evidence
+  changed" on an unmutated tree. Therefore BEFORE round N's capture,
+  preserve-and-clear it:
+  `mv "$PACKET_DIR/agy-read-audit.json" "$PACKET_DIR/agy-read-audit-r<N-1>.json"`
+  (suffixed with the round it BELONGED to). The literal path is then
+  ABSENT at capture; the file the round-N dispatch writes arrives
+  post-capture and rides verify's `*-read-audit.json` leg-output
+  allowlist, while the preserved copy is censused and frozen as
+  history. Additionally, immediately before EACH dispatch,
   `rm -f "$PACKET_DIR/agy-read-audit.json"` — byte-match the SAME path this
   bullet's OWN dispatch binds unconditionally (first sentence above), never a
   bare `$AGY_READ_AUDIT_FILE` (a GATE-local name first assigned inside the
@@ -139,13 +252,45 @@ the shallow-tier fact for the round record.
   NON-CASE on this path. Keep that guard text for the non-schema fallback (a
   leg dispatched WITHOUT `--pydantic`, per the stated fallback in
   `references/triage.md`).
-- **Containment block (mandatory, in the leg prompt).** Include verbatim:
-  "Read `packet.md` ONCE with your file-view tool (shell readers like `cat` are
-  deny-listed under read-only) and base the review on it ALONE. Do NOT read or
-  search any other file or directory, do NOT list directories, do NOT search the
-  filesystem or the web, and do NOT consult prior conversations or scratch
-  space. Anything not in the packet is an open question, never an asserted
-  finding." A traced containment run dropped exploration tool calls to zero.
+- **READ-GRANT block (mandatory, in the leg prompt; rewritten 2026-08-10
+  by owner directive — same method as the codex leg).** Include verbatim:
+  "Read `packet.md` FIRST and ONCE with your file-view tool (shell readers
+  like `cat` are deny-listed under read-only) — it is the round's framing
+  and your review's required entry point. You MAY then read files under
+  the repo with your file-view tool to VERIFY the packet's claims — cite
+  file:line for anything you assert from a repo file. Do NOT read files
+  outside the repo, do NOT search the web, and do NOT consult prior
+  conversations or scratch space. Do NOT modify any file, do NOT change
+  external state, and do NOT run commands, tests, scripts, builds, or
+  vendor CLIs. Anything you did not verify against the
+  packet or a repo file is an open question, never an asserted finding."
+  The mutation/exec sentence is part of the verbatim block on purpose
+  (adopt-gate r2): this leg's write/exec containment is UNCONFIRMED
+  intent at the dispatched version and the prompt is its only per-call
+  carrier — dropping the sentence would ship the one
+  unconfirmed-containment leg with no intent carrier at all.
+  Packet-FIRST is load-bearing twice over: it is the mechanical read-audit
+  gate's required entry (the gate below runs UNCHANGED — the packet path
+  must appear in `files_read`), and reading it before any repo browsing
+  keeps the gate decisive under the digest's 40-entry `files_read` cap.
+  DISCLOSURE (adopt-gate r2): with repo browsing granted,
+  `files_read_omitted > 0` becomes the NORM for a leg doing real
+  verification work, and the gate's confirmed-VOID arm requires
+  `omitted == 0` — so VOID stays decisive only when the leg complied
+  with packet-FIRST, an INSTRUCTION-LEVEL property, the same class as
+  the codex read boundary (§ codex leg). A non-compliant leg lands
+  INCONCLUSIVE — never a silent pass, but no longer the mechanical
+  leg-not-run proof the packet-ONLY diet gave; the round notes carry
+  that judgment. Mutation
+  is denied by INTENT via the per-call deny transaction — enforcement
+  is UNCONFIRMED at the dispatched version (§ agy standing residuals) —
+  so the round's capture/verify integrity gate is the ACTUAL
+  mutation-detection control, not a redundant belt
+  (`references/packet-lifecycle.md` § Round integrity); the read/network
+  egress residual is UNCHANGED (§ agy standing residuals — owner-owned).
+  Rationale: agy's detection record earned the wider view, and the old
+  packet-ONLY diet made the leader's packet assembly this leg's ceiling —
+  the same blindness the codex READ-GRANT fixed.
   Placement: immediately before the closing instruction, never leading the packet
   (`references/packet-lifecycle.md` § Packet order and fencing).
 - **Verdict weight.** ADVISORY for the unanimous gate — SKILL rule 1.
@@ -357,22 +502,59 @@ fallback above.
   search backend — the same class of egress residual as the agy read/network leak
   above, on a different leg. For a SENSITIVE packet, drop `--search` to keep the
   leg fully offline.
-- **INLINE the packet into `--prompt`; never hand codex only a file path.**
-  A codex leg under `--sandbox read-only` plus the rule-7 no-exec directive may
-  be unable to open a handed-over file at all — it has no shell to `cat` and its
-  file-read route can come back empty ("non-CLI file access routes did not expose
-  the files"), returning no verdict. Embed the full diff + suspect questions
-  directly in the prompt string. Mechanically: assemble the entire prompt BODY
-  into a file, then pass it with command substitution AT THE CALL SITE:
+- **INLINE the packet into `--prompt` AND grant read-only repo access
+  (contract revised 2026-08-10, adopted from codex-host 0.2.533).** The
+  packet stays inlined — the leg's guaranteed view and its framing.
+  ADDITIONALLY pass `--cwd <abs repo root>` and include the READ-GRANT
+  trailer below. The historical "cannot open a handed-over file"
+  failure was the rule-7 blanket no-exec directive banning the
+  read-only shell commands codex uses to open files — `--sandbox
+  read-only` never blocked reads, only writes. With reads granted the
+  leg verifies packet claims against the repo the way the claude leg
+  does (the FU10 plan gate measured the cost of NOT granting this: the
+  codex leg's r3 SAFE(0) missed a defect that required reading one
+  function outside the packet, and its r2 refuted trigger came from
+  reasoning without code access). Containment posture: file WRITES stay
+  mechanically blocked by `--sandbox read-only`; execution/network
+  limits ride the trailer; the round's capture/verify integrity gate
+  (`references/packet-lifecycle.md` § Round integrity) is the belt —
+  mutation detection, not a sandbox claim alone, decides admission.
+  The READ boundary itself is INSTRUCTION-LEVEL (adopt-gate r1,
+  codex+claude converged must-fix): neither `--cwd` nor the read-only
+  sandbox mechanically confines what the leg can READ, and `--search`
+  is an outbound channel — so the trailer's outside-repo prohibition
+  below is a directive the integrity gate cannot verify, the same
+  residual class § agy standing residuals discloses for the agy leg.
+  For a sensitive packet drop `--search` (disclosure bullet above).
+  READ-GRANT trailer (verbatim; it REPLACES the old blanket no-exec
+  line for THIS leg only): "You MAY read files under the working
+  directory with read-only commands (cat, sed -n, rg, ls, git diff,
+  git show, git log) to verify claims beyond the packet — cite
+  file:line for anything you assert from them. Do NOT read files
+  outside the working directory — no home-directory or dotfiles, no
+  credentials, no system paths: nothing outside the repository is
+  review material. Do NOT modify any file,
+  do NOT change external state, do NOT run tests, scripts, builds, or
+  the code under review, and do NOT invoke vendor CLIs; network only
+  through your search tool." Fast-SAFE heuristic RESCOPED with this
+  contract: a fast terse SAFE is a re-dispatch signal when the leg HAD
+  code access and substantive questions; a narrow text-only re-confirm
+  may legitimately return fast — criteria-enumeration quality stays the
+  primary rubber-stamp check (rule 11). Mechanically: assemble the
+  entire prompt BODY into a file, then pass it with command
+  substitution AT THE CALL SITE:
 
   ```bash
   # build the full review body in a file (packet-lifecycle.md canonical order);
   # --timeout 900 fits a focused packet, LARGE packet → 1500 (rule 7):
   review_body=/path/to/review-body.txt
   codex_wrapper.py --sandbox read-only \
+    --cwd /abs/repo/root \
     --reasoning xhigh --search --timeout 900 \
     --pydantic verdict_schema:LegVerdict \
     --prompt "$(cat -- "$review_body")"     # <-- substitution fires here
+  # --cwd = the repo the READ-GRANT trailer opens for verification reads
+  # (contract revision 2026-08-10 above); writes stay sandbox-blocked.
   # (--reasoning max only on a designated escalation round)
   # (--search = live web-grounding, disclosed above — drop it for a sensitive packet)
   ```
@@ -384,9 +566,22 @@ fallback above.
   (`references/triage.md` § Consolidating validated LegVerdict objects). A
   submit-time schema refusal is `schema-rejected` (exit 67, caller fixes the
   massage); a post-hoc validation failure that survives the one schema-repair
-  retry is `schema-fail` (exit 66) — either way this leg is then handled as a
-  terminally-missing leg for the round (rule 13), never as a prose reply to
-  fall back to.
+  retry is `schema-fail` (exit 66). EXCEPTION first (adopt-gate r3,
+  generalized r7; § Verdict binding obligation 4): a 66 whose wrapper
+  stderr carries the `[NONREPAIRABLE]` token — the marked SAFE-arm OR a
+  BLOCKING-CONTENT refusal (the dominant post-r5 trigger: the reply's
+  content carries a Critical/must-fix finding, e.g. a DO-NOT-MERGE
+  verdict with a shape slip; NO arm message appears in that case) — is
+  a reply whose blocking content must be preserved: the leader owes the
+  obligation-4 TRIGGER-BRANCHED re-dispatch (SAFE-arm → "raise the
+  verdict"; content-triggered → "re-emit the SAME verdict and
+  severities as valid JSON"), with the reply evidence preserved in the
+  run-log (inspect the structured payload in the run-log's stdout
+  stream, not only final_answer), BEFORE the
+  leg may be logged terminally missing. Every OTHER 67/66 — one with NO
+  `[NONREPAIRABLE]` token in the stderr evidence — is handled as
+  a terminally-missing leg for the round (rule 13), never as a prose
+  reply to fall back to.
 
   Keep `$(cat body.txt)` OUT of a single-quoted heredoc BODY — i.e.
   `--prompt "$(cat <<'TRIAD_CODEX_PROMPT_EOF'` … a line containing
@@ -430,15 +625,23 @@ fallback above.
 - **Output contract (structured verdict, no wrapper).** This leg has no
   `--pydantic` plumbing to enforce a schema, so the LEADER'S dispatch prompt
   carries the contract instead: append the `LegVerdict` shape
-  (`bin/verdict_schema.py` — `verdict`, `criteria_checked`,
+  (`bin/verdict_schema.py` — the REQUIRED binding fields
+  `review_id`/`family`/`content_digest` (this leg echoes
+  `family="claude"`; § Verdict binding above), then `verdict`,
+  `criteria_checked`,
   `findings[].{file,line,severity,summary,trigger,context_known}`, the exact
   token sets from `references/triage.md`) as the closing instruction, with an
   explicit "reply with ONLY that JSON object, no markdown fence, no
   surrounding prose" directive — the same shape codex/agy get natively,
   mirroring how the wrapper-repair analyzers carry a static
-  `output_schema (JSON, inline)` contract in their own agent body. The leader
-  validates the reply with `lib/validate_verdict.py <reply-as-a-file>`
-  (Deliverable C) before consolidating it. A reply that fails validation is
+  `output_schema (JSON, inline)` contract in their own agent body. The
+  prompt also carries this leg's binding values (review_id, family,
+  content_digest) to echo verbatim. The leader
+  validates the reply with the BOUND admission — `lib/validate_verdict.py
+  <reply-as-a-file> --expected-review-id <id> --expected-family claude
+  --expected-packet <abs-packet-path>` (§ Verdict binding obligation 2;
+  a flagless call is shape-only and is NOT an admission) — before
+  consolidating it. A reply that fails validation or binding is
   the EXISTING INVALID-leg handling — one re-ask with the same directive
   restated, then INVALID if it fails again (`references/triage.md` § Verdict
   release at the merge gate); this does not invent a new chain.
