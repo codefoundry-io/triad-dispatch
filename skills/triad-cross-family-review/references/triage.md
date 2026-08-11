@@ -145,6 +145,23 @@ deployment fact (a probe or a document); if the fact is unavailable or
 inconclusive, the finding becomes a DISCLOSED residual recording the fact gap and
 routes to the owner — it is never guessed into a class.
 
+**Self-recording review targets do not converge to literal SAFE.** A target
+document that records its own review — a plan carrying its fold history,
+round tables, or gate-cost counters — regenerates the non-blocking
+prose-tail finding class at review time by construction: every fold ADDS
+text, each fix sentence becomes next-round review surface, and
+self-referential records (a round counter, a cost tally) lag one round no
+matter how carefully they are folded. Recognize the pattern once (a) two or
+more consecutive rounds confirm every prior fold faithful AND (b) each
+round's findings are exclusively non-blocking prose tails on the recording
+artifact itself. The structural remedy is then a class-level MECHANICAL
+census obligation at IMPLEMENTATION time — a deterministic script over the
+falsifiable prose classes, its hit-list committed as evidence, verified by
+the merge-stage gate against the actual diff — plus the codified
+non-blocking release above; never more plan-time enumeration rounds
+(precedent: an 11-round plan gate whose final rounds' findings were half the
+leader's own fold-edit slips).
+
 ## Residual table
 
 `<packet-dir>/residuals.md`, one row per finding: finding / raising leg / round /
@@ -258,6 +275,25 @@ missing validation on those IS in scope. Any leg may challenge a
 deployment-context claim it holds to be factually wrong: state the evidence
 instead of deferring.
 
+**Verdict selection (state it in every leg prompt — the `prepare` templates
+carry it verbatim).** The verdict tracks the BLOCKING axis: report every
+finding, then set the verdict from what blocks. Zero Critical/must-fix
+findings means SAFE TO MERGE — even when Minor or HARDENING-SUGGESTION
+findings are present. MERGE WITH FIXES asserts at least one Critical/must-fix
+fix is required before merge. DO NOT MERGE means the change must not land in
+its current shape. Never inflate a non-blocking finding's severity to justify
+a non-SAFE verdict, and never deflate a blocking one to keep SAFE TO MERGE.
+If you judge the change must not merge, that judgment itself is a blocking
+finding — report it as Critical/must-fix with its concrete trigger; never
+return DO NOT MERGE carrying only non-blocking findings.
+(Origin: across one 21-verdict gate whose prompts LACKED this rule, every leg
+holding only Minor findings returned MERGE WITH FIXES — the schema explicitly
+permits SAFE with non-blocking findings, so the omission alone made a literal
+unanimous SAFE structurally unreachable. A drift guard in
+tests/unit/skills/t4-prepare.sh pins the load-bearing clauses of this section
+and of the paragraphs above into the rendered templates — edit BOTH sides
+together.)
+
 ### What a conforming verdict looks like
 
 This is the FALLBACK prose shape — for a leg dispatched without the schema
@@ -287,4 +323,8 @@ FINDING 2 — HARDENING-SUGGESTION — skills/x/SKILL.md:57
 ```
 
 A bare "SAFE / none / faithful" with no criteria enumeration and no findings is a
-failed review, not a pass (rule 11).
+failed review, not a pass (rule 11). The converse composition is VALID and
+expected: `VERDICT: SAFE TO MERGE` followed by Minor / HARDENING-SUGGESTION
+finding blocks is the CORRECT verdict when nothing blocking was found — per
+the verdict-selection rule above, and per the schema's own bidirectional
+validator (only Critical/must-fix findings are incompatible with SAFE).

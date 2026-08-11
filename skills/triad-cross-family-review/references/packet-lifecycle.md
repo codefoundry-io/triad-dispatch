@@ -12,6 +12,7 @@ deciding whether an edit made mid-round invalidates it.
 | Packet dir lifecycle | opening, refreshing, or closing a packet dir — `review_scratch.py` and its ownership fences |
 | Large packet — pre-assemble one focused file | the diff is big or the review spans several documents |
 | Packet order and fencing | assembling the packet itself — block order, the data fence, containment placement |
+| Deterministic round preparation — prepare | building a round's packet + leg bodies (the normal path — one command) |
 | Round integrity — capture / verify | before dispatching any round, after its legs return, or when a fix is ready while legs are still out |
 
 ## Where packet files live
@@ -132,6 +133,70 @@ START of a long prompt is the one most likely to be dropped by the time the mode
 starts acting. Recency is exactly what the "LAST, anchored" placement protects,
 and containment needs the same protection.
 
+## Deterministic round preparation — prepare
+
+`lib/review_scratch.py prepare` is the NORMAL path for building a round
+(owner directive 2026-08-11): the leader authors ONE brief and names the
+evidence; everything else — the packet in the canonical order above, the
+digest record, and all three leg bodies — is rendered by code. Hand
+assembly remains a legitimate fallback (e.g. a data block `prepare` cannot
+express), but a hand-built round still owes every § Round integrity
+obligation below by hand.
+
+```bash
+python3 <skill>/lib/review_scratch.py prepare <abs-packet-dir> \
+  <abs-worktree-root> r<N> \
+  --brief /abs/brief.md \
+  [--file <worktree-relative-path>]... \
+  [--diff <git-range>] [--diff-path <worktree-relative-path>]... \
+  [--excerpt <worktree-relative-path>:<start>-<end>]...
+```
+
+- **The brief is the leader's ONLY per-round authored text**: deployment
+  context above one `=====QUESTIONS=====` marker line, suspect questions
+  below it. No other fence-like line is allowed in it (fence forgery).
+  **The brief's home is OUTSIDE the packet dir** (leader scratch space) —
+  `prepare` embeds its parts into the packet, so the brief file itself is
+  not round evidence; a brief placed INSIDE the packet dir under a fixed
+  name becomes a censused round-invariant INPUT, and editing it for the
+  next round while legs are still out fires a false "round evidence
+  changed" (r1 finding, claude). If it must live inside, round-suffix it
+  (`brief-r<N>.md`).
+- **Every bulk byte moves FILE-TO-FILE.** `--file` embeds a worktree file
+  verbatim (UTF-8 text only; symlinks — including a symlink DIRECTORY
+  component, refused by a dir_fd open chain — escapes, control-character
+  paths, and binary refused),
+  `--diff` runs `git diff` with pinned flags itself (`--diff-path`
+  pathspecs scope it — a working-tree diff can then carry the reviewed
+  CODE only, per the packet-is-CODE-only rule), `--excerpt` slices a
+  line range — none of it is ever streamed through the leader's context.
+  Embedded content may not carry any of the round's LIVE fence lines or
+  the brief marker, on any renderable line separator (fence forgery
+  refused loud — excerpt around such a line); after `capture`, every
+  embedded source is re-read and compared, so a source mutating during
+  preparation invalidates the round instead of silently shipping stale
+  bytes.
+  This is the token-discipline rule as much as a convenience: content the
+  leader re-types into a packet costs context AND invites transcription
+  slips; content a program copies costs neither.
+- **Rendered outputs are ROUND-SUFFIXED** (`packet-r<N>.md`,
+  `digest-r<N>.txt`, `codex-body-r<N>.txt`, `agy-prompt-r<N>.txt`,
+  `claude-prompt-r<N>.txt`) and written exclusive-create — a duplicate
+  round fails loud. The leg bodies carry the binding values, the per-leg
+  READ-GRANT blocks, the reviewer-side severity instruction, and the
+  verdict-selection rule (`references/triage.md` § Reviewer-side
+  instruction — the doc text stays the SoT; a doc-side revision updates
+  the templates in the same change).
+- **`prepare` ends by running `capture` for the same label**, after
+  auto-preserving round-invariant leg outputs — so the census freezes
+  exactly the bytes the legs are handed, by construction.
+- Dispatch transports: codex takes `--prompt-file <abs
+  codex-body-r<N>.txt>`; agy takes `--prompt-file <abs
+  agy-prompt-r<N>.txt>`; the claude `Agent` prompt is the rendered
+  `claude-prompt-r<N>.txt` content (small — paste it, or hand the agent
+  the file path to Read first). Per-leg flags:
+  `references/leg-contracts.md`.
+
 ## Round integrity — capture / verify (MECHANIZED 2026-08-10)
 
 Origin: an owner directive after a round in which the leader edited the
@@ -162,12 +227,14 @@ identical on macOS and Ubuntu 24.04):
   claim alone, decides admission.
 - Leg INPUT files must ALL exist before capture — the packet, the
   round's digest record, and every per-leg prompt-body file
-  (`codex-body.txt`, `agy-prompt.txt`,
-  `*-prompt.txt`): the bytes a leg actually reviews must sit inside the
-  census (adopt-gate r1: bodies built after capture left two legs' real
-  input uncensused while verify still passed). SKILL Flow step 2 orders
-  assembly-then-capture; `verify` mechanically FAILS on any uncovered
-  non-output regular file in the packet dir.
+  (`codex-body-r<N>.txt`, `agy-prompt-r<N>.txt`,
+  `claude-prompt-r<N>.txt`): the bytes a leg actually reviews must sit
+  inside the census (adopt-gate r1: bodies built after capture left two
+  legs' real input uncensused while verify still passed). The `prepare`
+  subcommand (§ Deterministic round preparation) guarantees this by
+  construction — it writes every input and THEN captures; a hand-built
+  round owes the same order manually. `verify` mechanically FAILS on any
+  uncovered non-output regular file in the packet dir.
 - The round-invariant rule covers INPUTS too (adopt-gate r3 Minor): a
   censused file that CHANGES per round must carry the round in its
   NAME — the digest record is `digest-r<N>.txt`, one per round, written
@@ -199,7 +266,15 @@ identical on macOS and Ubuntu 24.04):
   (`references/leg-contracts.md` § agy leg, Read-audit binding): a
   censused copy that a later dispatch rewrites is a guaranteed false
   "round evidence changed" on an unmutated tree (adopt-gate r2
-  must-fix). Per-leg consolidation artifacts avoid the same trap by
+  must-fix). MECHANIZED since 2026-08-11: both `prepare` and `capture`
+  auto-rename it to the suffix of the round that PRODUCED it — the
+  latest captured `.snapshot-r<K>.json`, never label-minus-one, so an
+  operator label skip cannot stamp false provenance — and fail loud on
+  an unparseable label, a leftover with no captured round to attribute
+  it to, or a rename-target collision; the manual `mv` is now the
+  fallback for hand-built rounds only (the leader did it by hand 7x in
+  one gate; one slip = a deterministic false round-INVALID). Per-leg
+  consolidation artifacts avoid the same trap by
   carrying the round in their name (`<leg>-r<N>-verdict.json`,
   `references/triage.md`).
 - The reviewed tree stays FROZEN for the round's duration: fixes for

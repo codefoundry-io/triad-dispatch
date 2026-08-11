@@ -39,6 +39,10 @@ leader's obligations, every round, every leg:
    the claude fresh-eye leg echoes `"claude"`, the codex leg `"codex"`,
    and the Google-family leg — WHICHEVER CLI resolved, agy or gemini —
    echoes `"google"` (the token names the model family, not the CLI).
+   The `prepare` subcommand renders the per-leg binding line and the
+   echo instruction into every leg body mechanically
+   (`references/packet-lifecycle.md` § Deterministic round preparation);
+   a hand-built body owes the same line by hand.
 2. Admission is MECHANICAL: `lib/validate_verdict.py <reply-file>
    --expected-review-id <id> --expected-family <token>
    --expected-packet <abs-packet-path>` — for EVERY leg's JSON, not only
@@ -207,10 +211,14 @@ the shallow-tier fact for the round record.
   literal at all three sites, so at round N>=2 the PRIOR round's file
   is still on disk when round N captures — a CENSUSED file the round-N
   dispatch then overwrites, which verify reports as "round evidence
-  changed" on an unmutated tree. Therefore BEFORE round N's capture,
-  preserve-and-clear it:
+  changed" on an unmutated tree. Therefore BEFORE round N's capture it is
+  preserve-and-cleared to `agy-read-audit-r<N-1>.json` (suffixed with the
+  round it BELONGED to). MECHANIZED since 2026-08-11:
+  `review_scratch.py prepare` and `capture` both perform this rename
+  automatically for an `r<N>` label (fail-loud on an unparseable label, a
+  round-1 leftover, or a rename-target collision); the manual
   `mv "$PACKET_DIR/agy-read-audit.json" "$PACKET_DIR/agy-read-audit-r<N-1>.json"`
-  (suffixed with the round it BELONGED to). The literal path is then
+  remains only for hand-built rounds. The literal path is then
   ABSENT at capture; the file the round-N dispatch writes arrives
   post-capture and rides verify's `*-read-audit.json` leg-output
   allowlist, while the preserved copy is censused and frozen as
@@ -293,6 +301,10 @@ the shallow-tier fact for the round record.
   the same blindness the codex READ-GRANT fixed.
   Placement: immediately before the closing instruction, never leading the packet
   (`references/packet-lifecycle.md` § Packet order and fencing).
+- **Prompt body.** The rendered `agy-prompt-r<N>.txt` (`prepare` output —
+  READ-GRANT block with the round packet filename interpolated, severity
+  instruction, verdict-selection rule, binding line): pass it with
+  `--prompt-file <abs>`; a hand-built prompt owes the same blocks.
 - **Verdict weight.** ADVISORY for the unanimous gate — SKILL rule 1.
 - **Cites.** Verify any surviving agy finding's file:line against the packet
   before it enters the residual table. The gate proves the packet was read, not
@@ -392,8 +404,10 @@ pass:
      # for a multi-file packet, loop this block once per file — every file must pass.
      # PACKET_ABS_PATH = the absolute path of the ONE packet FILE this loop
      # iteration checks (NOT the packet DIR `review_scratch.py open` printed
-     # — that is a directory; for a single-file packet this is
-     # <packet-dir>/packet.md).
+     # — that is a directory; for a `prepare`-built round this is
+     # <packet-dir>/packet-r<N>.md — the ROUND-SUFFIXED name; a stale
+     # generic `packet.md` here never matches and false-VOIDs a compliant
+     # leg).
      # ONE literal across all THREE sites (re-confirm round 5 / J1): the
      # dispatch binding (§ agy leg "Read-audit binding", first sentence),
      # the leader-side pre-clear immediately before each dispatch, and this
@@ -540,24 +554,30 @@ fallback above.
   contract: a fast terse SAFE is a re-dispatch signal when the leg HAD
   code access and substantive questions; a narrow text-only re-confirm
   may legitimately return fast — criteria-enumeration quality stays the
-  primary rubber-stamp check (rule 11). Mechanically: assemble the
-  entire prompt BODY into a file, then pass it with command
-  substitution AT THE CALL SITE:
+  primary rubber-stamp check (rule 11). Mechanically: the `prepare`
+  subcommand renders this leg's entire body —
+  `codex-body-r<N>.txt`, the packet inlined between PACKET fences plus
+  the READ-GRANT trailer, severity instruction, verdict-selection rule,
+  and binding line (`references/packet-lifecycle.md` § Deterministic
+  round preparation) — so the dispatch passes the FILE:
 
   ```bash
-  # build the full review body in a file (packet-lifecycle.md canonical order);
+  # body rendered by `review_scratch.py prepare` (canonical order inside);
   # --timeout 900 fits a focused packet, LARGE packet → 1500 (rule 7):
-  review_body=/path/to/review-body.txt
   codex_wrapper.py --sandbox read-only \
     --cwd /abs/repo/root \
     --reasoning xhigh --search --timeout 900 \
     --pydantic verdict_schema:LegVerdict \
-    --prompt "$(cat -- "$review_body")"     # <-- substitution fires here
+    --prompt-file "$PACKET_DIR/codex-body-r<N>.txt"
   # --cwd = the repo the READ-GRANT trailer opens for verification reads
   # (contract revision 2026-08-10 above); writes stay sandbox-blocked.
   # (--reasoning max only on a designated escalation round)
   # (--search = live web-grounding, disclosed above — drop it for a sensitive packet)
   ```
+
+  For a HAND-BUILT body (the fallback path) the equivalent inline form is
+  `--prompt "$(cat -- "$review_body")"` — command substitution at the
+  call site:
 
   **Structured verdict (`--pydantic verdict_schema:LegVerdict`).** codex-strict
   `--output-schema` massage enforces the shared `LegVerdict` shape
@@ -589,9 +609,10 @@ fallback above.
   that inner `$(...)` is never expanded and codex receives the uninterpreted
   string `$(cat ...)`. (The sibling dispatch skills' Step 1 uses the heredoc
   shape for a literal prompt body, each with its own collision-resistant
-  `TRIAD_<CLI>_PROMPT_EOF` terminator. THIS leg uses neither that heredoc nor
-  `--prompt-file`: it inlines the packet through `$(cat -- "$review_body")`
-  per the bullet heading above, which is collision-free precisely because
+  `TRIAD_<CLI>_PROMPT_EOF` terminator. THIS leg's normal path is
+  `--prompt-file` on the rendered `codex-body-r<N>.txt`; the hand-built
+  fallback inlines through `$(cat -- "$review_body")` — both are
+  collision-free precisely because
   there is no heredoc to terminate early.) Inlining is a codex-leg requirement rather than a
   universal one, since gemini and agy read the repo-relative packet file — though
   inlining a small packet works for every leg. For a LARGE diff the inlined body
@@ -645,5 +666,22 @@ fallback above.
   the EXISTING INVALID-leg handling — one re-ask with the same directive
   restated, then INVALID if it fails again (`references/triage.md` § Verdict
   release at the merge gate); this does not invent a new chain.
+- **Rendered prompt + reply transcription.** `prepare` renders this leg's
+  full prompt as `claude-prompt-r<N>.txt` — adversarial preamble, packet
+  path, severity instruction, verdict-selection rule, binding line, and
+  the inline LegVerdict contract above — so the leader dispatches the
+  `Agent` with that content (it is small: paste it, or have the agent
+  Read the file first; either way the file is the censused input).
+  TRANSCRIPTION CAVEAT: the Agent completion notification HTML-escapes
+  the reply (`>` → `&gt;`, `&` → `&amp;`, quotes likewise); DE-ESCAPE
+  EXACTLY ONCE (`html.unescape`) before writing `claude-r<N>.json` for
+  admission, then validate — over/under-de-escape fails schema or
+  binding admission, which is the check. DISCLOSED residual: a reply
+  whose string fields INTENTIONALLY spell HTML entities is
+  indistinguishable from transport escaping after one unescape — when a
+  finding's exact bytes matter, resolve against the agent transcript.
+  (The reviewer agent is Read/Grep/Glob-only, so a
+  write-your-reply-to-a-file contract is NOT available — leader-side
+  transcription is the only path, hence the caveat.)
 - **Agent definitions are session-start snapshots** — a frontmatter change takes
   effect from the NEXT session.

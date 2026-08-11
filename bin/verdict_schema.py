@@ -544,7 +544,12 @@ class LegVerdict(BaseModel):
     # EMPTY list is itself already a schema violation, not just an
     # underspecified one.
     criteria_checked: List[str] = Field(min_length=1)
-    findings: List[LegFinding]                  # empty ONLY when verdict == "SAFE TO MERGE"
+    findings: List[LegFinding]  # empty REQUIRES verdict == "SAFE TO MERGE"; the
+    # converse does NOT hold — SAFE MAY carry Minor/HARDENING-SUGGESTION
+    # findings (only Critical/must-fix are incompatible with SAFE; see
+    # _verdict_findings_consistency). The old one-directional comment here
+    # ("empty ONLY when SAFE") read as bidirectional and helped seed the
+    # verdict-inflation bias the 2026-08-11 review-skill fix closed.
 
     # The engine's retry gate resolves the content probe off the CLASS it was
     # handed (`getattr(pydantic_cls, "nonrepairable_content", None)`), so bind

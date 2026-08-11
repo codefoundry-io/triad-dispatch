@@ -1,8 +1,66 @@
 ---
 name: triad-cross-family-review
-description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.25.10
+description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE (a MERGE WITH FIXES carrying only non-blocking findings satisfies the gate). Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
+version: 0.26.0
 # changelog:
+#   0.26.0 (2026-08-11): FU10-gate lessons — verdict-inflation fix +
+#     deterministic round preparation. (1) BUG-1: the verdict-selection
+#     rule ("verdict tracks the BLOCKING axis — zero Critical/must-fix
+#     => SAFE TO MERGE even with Minor/HARDENING-SUGGESTION findings")
+#     now rides EVERY leg prompt: stated in triage.md § Reviewer-side
+#     instruction and baked into the rendered templates. Across the
+#     21-verdict FU10 plan gate no leg ever returned SAFE+Minor although
+#     the schema permits it (spike-confirmed through binding admission),
+#     which alone made a literal unanimous SAFE unreachable. (2) Flow 4
+#     and Hard rule 4 restate the non-blocking-MWF carve-out INLINE (the
+#     literal-SAFE misread cost an owner call at FU10). (3) triage.md
+#     § Loop exit codifies the self-recording-target non-convergence
+#     pattern + the mechanical-census remedy. (4) NEW review_scratch.py
+#     `prepare` subcommand (owner directive — token discipline): the
+#     leader authors ONE brief (context / =====QUESTIONS===== marker /
+#     questions) and NAMES evidence (--file/--diff/--excerpt); the tool
+#     assembles packet-r<N>.md canonically FILE-TO-FILE, writes
+#     digest-r<N>.txt, renders all three round-suffixed leg bodies
+#     (binding lines + per-leg READ-GRANT + severity instruction +
+#     verdict-selection rule), auto-preserves round-invariant leg
+#     outputs (agy-read-audit.json -> -r<N-1>; capture too), then
+#     captures — replacing the manual per-round assembly that burned
+#     leader context and produced the FU10 fold-edit slips. codex/agy
+#     dispatch via --prompt-file on the rendered bodies. (5) claude-leg
+#     reply HTML-escape transcription caveat (de-escape before
+#     admission). Tests: tests/unit/skills/t4-prepare.sh (22 axes);
+#     verdict_schema.py findings comment made explicitly bidirectional.
+#     This version itself passed a THREE-ROUND 3-family gate, every
+#     round PREPARED BY the new subcommand (dogfood). r1 (3x MWF, 25
+#     findings) landed: severity instruction restored to the full
+#     triage.md SoT text (3-family convergence — the condensed template
+#     had dropped the untrusted-input scope / anti-over-hardening /
+#     may-challenge clauses, the BUG-1 defect class reintroduced inside
+#     BUG-1's own fix) + a t4 drift-guard axis pinning template<->doc
+#     clauses both directions; a DO-NOT-MERGE clause (a must-not-merge
+#     judgment is itself a blocking finding); review_id validated
+#     against the LegVerdict contract at prepare time; preserve suffix
+#     derived from the latest captured snapshot (true provenance) with
+#     os.link no-clobber; fence-set + QUESTIONS-marker refusal over all
+#     embedded content; dir_fd O_NOFOLLOW component chain for
+#     --file/--excerpt; capture-refusal prechecks +
+#     render-all-before-write; post-capture embedded-source recheck
+#     (embed-vs-capture TOCTOU). r2 (codex MWF 1C+3m; claude SAFE+5m —
+#     the FIRST SAFE-with-Minors composition, the BUG-1 fix observed
+#     working live; agy MWF) landed: fence scan moved to
+#     str.splitlines() (full boundary set incl. VT/FF/FS/GS/RS); brief
+#     refuses alternate line separators outright; path guard also
+#     rejects NEL/U+2028/U+2029 + empty paths; readability
+#     open/close-probe on untracked + packet-dir files; --diff-path
+#     disk-or-HEAD existence gate (git exits 0 on a no-match pathspec —
+#     probe-confirmed); untracked-omission stderr NOTE; agy binding line
+#     above the READ-GRANT. r3 (codex SAFE+2m, claude SAFE+3m, agy
+#     SAFE(0) — gate CLOSED): pathspec gate gained a per-spec range-diff
+#     third arm; in-scope untracked WARNING with repr()-escaped names;
+#     unborn-HEAD precheck. Slice bundling (verdict policy + prepare
+#     subsystem in one gate) = accepted residual per the owner's
+#     explicit same-session bundle order; ledger =
+#     docs/reviews/2026-08-11-skill-0260-gate-residuals.md.
 #   0.25.10 (2026-08-11): codex-host 0.2.533 adoption — CLOSED (owner
 #     decision C). ADOPTED and solid: LegVerdict round/leg BINDING
 #     (review_id/family/content_digest, REQUIRED) + bidirectional SAFE
@@ -133,7 +191,12 @@ Five references carry the detail — open one only when its column applies.
    the leader pre-assembles ONE focused file: the reading legs open only that
    file, and codex receives the same focused content inlined (rule 8).
 4. **Consolidate, don't average — the LEADER verifies, classifies, then acts.**
-   Any reviewer's Critical / must-fix, or a DO-NOT-MERGE verdict, blocks merge.
+   Any reviewer's Critical / must-fix, or a DO-NOT-MERGE verdict, blocks merge —
+   and ONLY those do: a MERGE WITH FIXES whose findings are all non-blocking
+   (Minor / HARDENING-SUGGESTION) imposes no block (`references/triage.md`
+   § Verdict release), and every leg prompt carries the verdict-selection rule
+   so a leg with nothing blocking says SAFE outright instead of a
+   Minor-only MERGE WITH FIXES.
    A block is released only by a probe that refutes the finding, a fix the
    re-confirm pass clears, or a recorded owner decision — the three paths are
    exhaustive and a leader-side triage never clears a block on its own. The
@@ -307,29 +370,34 @@ Five references carry the detail — open one only when its column applies.
 1. Scope the review: branch ref + base SHA + the list of suspect/omitted/
    simplified decisions (phrased as questions). Open the packet dir with the
    rule-8 helper (`python3 <skill>/lib/review_scratch.py open <abs>/_runs/review
-   <slug>`, which also prunes stale packets from crashed past reviews). If the
-   packet is LARGE, pre-assemble the focused packet file (framing + high-risk
-   diff subset) inside that dir, e.g. `<packet-dir>/packet.md`; the agy/gemini
-   leg reads only that, codex inlines the same focused body. At review end,
-   `… close <packet-dir>`.
-2. Assemble EVERY leg's input file in the packet dir FIRST — the packet
-   itself, the round's digest record (`digest-r<N>.txt` — one per
-   round, never an appended round-invariant file:
-   `references/packet-lifecycle.md` § Round integrity), and each
-   per-leg prompt-body file
-   (`codex-body.txt`,
-   `agy-prompt.txt`, …): the bytes a leg actually reviews must be part of
-   the round's evidence census, and `verify` fails on uncovered non-output
-   files (adopt-gate r1 lesson: bodies built after capture sat outside the
-   census while two legs certified them). On a round N>=2 in a REUSED
-   packet dir, also preserve-and-clear any round-invariant leg output
-   BEFORE capture (`agy-read-audit.json` →
-   `agy-read-audit-r<N-1>.json`; `references/packet-lifecycle.md`
-   § Round integrity — a censused copy the next dispatch rewrites is a
-   guaranteed false round-INVALID). ONLY THEN run the round's
-   `capture` (`lib/review_scratch.py capture <packet-dir> <worktree-root>
-   r<N>` — evidence snapshot + worktree fingerprint,
-   `references/packet-lifecycle.md` § Round integrity), then resolve the
+   <slug>`, which also prunes stale packets from crashed past reviews). Author
+   the round's BRIEF — deployment context above one `=====QUESTIONS=====`
+   marker line, the suspect questions below it — as a standalone file; that
+   brief is the ONLY per-round text the leader writes. Keep the packet
+   FOCUSED: for a LARGE diff name only the high-risk subset (a narrowed
+   `--diff` range, `--excerpt` hot functions, `--file` load-bearing
+   documents) — `references/packet-lifecycle.md` § Large packet. At review
+   end, `… close <packet-dir>`.
+2. Prepare the round with ONE deterministic command:
+   `python3 <skill>/lib/review_scratch.py prepare <packet-dir>
+   <worktree-root> r<N> --brief <abs-brief.md> [--file <rel>]...
+   [--diff <range>] [--diff-path <rel>]...
+   [--excerpt <rel>:<start>-<end>]...` — `--diff-path` pathspecs keep a
+   working-tree `--diff` inside the packet-is-CODE-only rule (no
+   test/catalog churn). It
+   preserve-and-clears round-invariant leg outputs (`agy-read-audit.json`
+   → its PRODUCING round's suffixed name, derived from the latest
+   captured snapshot), assembles `packet-r<N>.md` in the
+   canonical order with every diff/file/excerpt byte moved FILE-TO-FILE
+   (never streamed through leader context), writes `digest-r<N>.txt`,
+   renders the three round-suffixed leg bodies (`codex-body-r<N>.txt`
+   inlines the packet; `agy-prompt-r<N>.txt` / `claude-prompt-r<N>.txt`
+   point at it) carrying the binding values, the per-leg READ-GRANT, and
+   the verdict-selection rule, and runs the round's `capture` (evidence
+   snapshot + worktree fingerprint) — so every byte a leg reviews sits
+   inside the census by construction (adopt-gate r1 lesson;
+   `references/packet-lifecycle.md` § Round integrity + § Deterministic
+   round preparation). Then resolve the
    Google-family leg and dispatch the reviewers in parallel, each
    at its family's default review tier (rule 1; max-class only on a designated
    escalation round) — `Agent` with
@@ -360,7 +428,11 @@ Five references carry the detail — open one only when its column applies.
    CONFLICTED / OSCILLATING.
 4. Merge when the round is CONVERGING — a CONFLICTED item or an OSCILLATING round
    routes to the owner FIRST, and merge never passes one — AND the GATING legs
-   (codex + claude) are unanimously SAFE TO MERGE with no must-fix, AND no
+   (codex + claude) are unanimously SAFE TO MERGE with no must-fix — where a
+   gating leg's MERGE WITH FIXES whose findings are ALL non-blocking
+   (Minor / HARDENING-SUGGESTION) SATISFIES this clause (`references/triage.md`
+   § Verdict release: it does not block merge; its findings still triage and
+   carry residual rows) — AND no
    BLOCKING residual row is still `open` or `fix-ordered`, AND every rule-14
    obligation is discharged (owed repros run; SPECULATIVE / UNKNOWN-CONTEXT
    residuals recorded — a non-blocking row needs recording, not an owner
