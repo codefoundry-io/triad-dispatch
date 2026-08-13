@@ -1,8 +1,35 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE (a MERGE WITH FIXES carrying only non-blocking findings satisfies the gate). Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.26.0
+version: 0.27.0
 # changelog:
+#   0.27.0 (2026-08-13): agy read-audit gate -> ONE executable lib helper
+#     (owner approval; backlog record 2026-08-07 — the leader re-typed the
+#     canonical jq block inline once per round, ~6x/gate observed). NEW
+#     `lib/read_audit_gate.sh <abs-packet-dir> <abs-packet-file>...`:
+#     digest path DERIVED as the shared "$PACKET_DIR/agy-read-audit.json"
+#     literal (J1 anti-drift, no env fallback), exit 0 PASS / 2 ABSENT /
+#     3 VOID / 4 INCONCLUSIVE / 64 usage (a nonexistent packet-file arg
+#     fails LOUD instead of false-VOIDing on a stale name), greppable
+#     READ_AUDIT_GATE_<VERDICT> summary line (+' unevaluated=<n>' when
+#     some argument was not evaluated), symlinked-digest check-then-open
+#     refusal (weaker than validate_verdict.py's O_NOFOLLOW read;
+#     compensated by the gate running strictly post-reap on a path only
+#     the wrapper writes). Gate-review waves (3-family, ledger
+#     docs/reviews/2026-08-13-read-audit-helper-residuals.md): OVER-CAP
+#     packet paths (>=200 chars, -ge) refused INCONCLUSIVE — a capped digest
+#     stores only a prefix-identity, indistinguishable from any
+#     same-prefix file incl. a stale prior-round packet (2-family
+#     convergence; -ge boundary — an exactly-cap value could be a longer
+#     path's truncation) — and the jq match TOOL+KEY-RESTRICTED to
+#     view_file.AbsolutePath (a grep_search whose Query VALUE equals the
+#     packet path is reference, not a read — live-corroborated; a
+#     non-view_file entry carrying AbsolutePath is refused too); bash-4+
+#     POLICY-floor guard (a 3.x death would alias exit 2 = ABSENT).
+#     leg-contracts.md § agy read-audit gate keeps the SPEC and points at
+#     the helper; the canonical liftable jq block now lives ONLY in the
+#     helper (t41/f9 lift from it; t5-read-audit-gate.sh owns the CLI
+#     contract; export ships lib/*.sh next to lib/*.py).
 #   0.26.0 (2026-08-11): FU10-gate lessons — verdict-inflation fix +
 #     deterministic round preparation. (1) BUG-1: the verdict-selection
 #     rule ("verdict tracks the BLOCKING axis — zero Critical/must-fix
@@ -136,7 +163,7 @@ Five references carry the detail — open one only when its column applies.
 
 | Reference | Open it when |
 |---|---|
-| `references/leg-contracts.md` | dispatching legs, or weighing an agy verdict — Google-leg selection, per-leg flags/prompts, the agy READ-GRANT block, **the MECHANICAL read-audit gate and its jq block**, the agy read/network residual |
+| `references/leg-contracts.md` | dispatching legs, or weighing an agy verdict — Google-leg selection, per-leg flags/prompts, the agy READ-GRANT block, **the MECHANICAL read-audit gate (executable form = `lib/read_audit_gate.sh`)**, the agy read/network residual |
 | `references/packet-lifecycle.md` | opening/closing a packet dir, assembling a LARGE packet, ordering and fencing a packet, or freezing a round |
 | `references/triage.md` | consolidating a round — release paths, REAL / REACHABLE-UNOBSERVED / SPECULATIVE, the scope-expansion gate, the residual table, the reviewer-side severity instruction |
 | `references/failure-modes.md` | a round misbehaved and you want the rule that already covers it — symptom → cause → rule index |
@@ -175,9 +202,9 @@ Five references carry the detail — open one only when its column applies.
      network-denied OS sandbox.
    Everything per-leg — the deterministic selection snippet, each leg's flags and
    prompt requirements, the agy READ-GRANT block, the MECHANICAL read-audit gate
-   (run it before weighing that leg's verdict and before any agy finding enters
-   the residual table), the folded-verdict re-dispatch, and the egress residual's
-   evidence — is in `references/leg-contracts.md`.
+   (run `lib/read_audit_gate.sh` before weighing that leg's verdict and before
+   any agy finding enters the residual table), the folded-verdict re-dispatch,
+   and the egress residual's evidence — is in `references/leg-contracts.md`.
 2. **Frame suspect decisions as QUESTIONS, not settled facts.** "Is X actually
    safe to omit?" — never "X is a no-op." A biased framing propagates into the
    reviewers and defeats the purpose.

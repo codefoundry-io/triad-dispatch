@@ -351,19 +351,38 @@ reads it; the run-log stays the repair-agent's input artifact.)
 
 Then apply:
 
-1. every packet file's absolute path must appear among
-   `read_audit.digest.files_read[*].params` values (`read_audit` here names the
-   loaded `{meta, digest}` object — see the code below). `files_read` records
-   only tool calls that SUCCEEDED (terminal DONE with no `tool_info.error`), so
-   a hit is real proof the leg received the bytes; an ERRORED or
-   permission-DENIED read attempt appears instead under
+1. every packet file's absolute path must appear as the `AbsolutePath` param
+   of a `read_audit.digest.files_read[*]` entry (`read_audit` here names the
+   loaded `{meta, digest}` object). The match is KEY-RESTRICTED (review r2,
+   codex must-fix — live-corroborated by a real `grep_search {Query,
+   SearchPath}` entry in that round's own digest): `files_read` holds every
+   successful READ-CLASS call, so a `grep_search` whose `Query` VALUE equals
+   the packet path is tool traffic that merely REFERENCED the path — only
+   the file-view tool's `AbsolutePath` param evidences a read of the packet
+   itself. The key name is a VENDOR coupling (disclosed): empirically pinned
+   from real digests + the t41/f9/t5 fixtures; an agy param rename fails
+   toward VOID/INCONCLUSIVE (loud, conservative), never a silent PASS.
+   `files_read` records only tool calls that SUCCEEDED (terminal DONE with
+   no `tool_info.error`), so a hit is real proof the leg's view_file call on
+   the packet succeeded (one disclosed limit: a RANGE-limited view — if the
+   dispatched build ever emits range params — would satisfy this on a
+   partial read; no range params have been observed in real digests,
+   recorded as residual r3-1);
+   an ERRORED or permission-DENIED read attempt appears instead under
    `read_audit.digest.read_attempts[*]` with an `outcome` of `error`/`denied`
    and does not satisfy this gate. The digest is CAPPED (every `params` value
    truncated at 200 chars; `files_read` itself capped at the first 40 entries,
-   with `files_read_omitted` counting the rest), so match the packet path
-   truncated the same way — equality once truncated is sufficient, since both
-   sides carry the same 200-char cap, so a prefix/`startswith` comparison adds
-   only false positives and never coverage. If that capped match fails AND
+   with `files_read_omitted` counting the rest). WITHIN the cap the stored
+   value IS the full path, so equality is exact; a packet path AT OR BEYOND
+   the cap (an exactly-cap stored value could equally be a LONGER path's
+   truncation) is a PREFIX-identity the digest cannot tell apart from
+   any same-prefix file (a sibling argument, a digest-side file that was
+   never an argument, or a stale `packet-r<N-1>.md` whose round-suffix the
+   cap erases) — the helper refuses such arguments INCONCLUSIVE outright
+   (review r2, 2-family convergence) instead of over-claiming a match, and
+   this refusal also subsumes the arg-side collision case (two DISTINCT
+   within-cap arguments can never share a capped identity). If a within-cap
+   match fails AND
    `files_read_omitted > 0`, the result is INCONCLUSIVE rather than VOID. The
    digest is the merged aggregate over every retry attempt — there is no bigger
    digest to open. Recoverable evidence is the per-attempt census
@@ -396,84 +415,110 @@ Then apply:
    deterministic evidence.
 
 agy verdict weight is unchanged (rule 1).
-MECHANICAL means extract-and-gate deterministically, with no AI judgment. For a
-multi-file packet, loop this whole check once per packet file; every file must
-pass:
+MECHANICAL means extract-and-gate deterministically, with no AI judgment. Run
+the skill's own helper — ONE call per round covers a multi-file packet (every
+file must pass):
 
      ```bash
-     # for a multi-file packet, loop this block once per file — every file must pass.
-     # PACKET_ABS_PATH = the absolute path of the ONE packet FILE this loop
-     # iteration checks (NOT the packet DIR `review_scratch.py open` printed
-     # — that is a directory; for a `prepare`-built round this is
-     # <packet-dir>/packet-r<N>.md — the ROUND-SUFFIXED name; a stale
-     # generic `packet.md` here never matches and false-VOIDs a compliant
-     # leg).
-     # ONE literal across all THREE sites (re-confirm round 5 / J1): the
-     # dispatch binding (§ agy leg "Read-audit binding", first sentence),
-     # the leader-side pre-clear immediately before each dispatch, and this
-     # gate binding all read/write the SAME path — "$PACKET_DIR/agy-read-audit.json",
-     # byte-identical, no env-var fallback anywhere. That IS the anti-drift
-     # property: an ambient TRIAD_READ_AUDIT_FILE some OTHER shell context
-     # left exported can no longer make the gate open a file nobody bound or
-     # cleared for THIS round — the earlier `${TRIAD_READ_AUDIT_FILE:-...}`
-     # fallback form aimed at this same property indirectly (by mirroring
-     # whichever value the env var happened to hold); a plain SHARED literal
-     # delivers it directly and unconditionally. The wrapper writes on EVERY
-     # completed call, ok or not — no stderr capture, no grep/sed extraction,
-     # no separate validity pre-check (`triad-antigravity-dispatch` § Isolation).
-     AGY_READ_AUDIT_FILE="$PACKET_DIR/agy-read-audit.json"
-     if [ ! -f "$AGY_READ_AUDIT_FILE" ]; then
-       # ABSENT is NOT proof the vendor call failed — TRIAD_READ_AUDIT_FILE
-       # unset/misbound at dispatch time is empty in exactly the same way as a
-       # call that never completed. Check the dispatch env FIRST; only once
-       # that is sound does an absent file mean the leg did not run.
-       echo "[review] agy leg read-audit ABSENT — no digest file at \$AGY_READ_AUDIT_FILE. Cause is EITHER a vendor call that never completed OR TRIAD_READ_AUDIT_FILE was never set at dispatch time. Verify the dispatch env; only once it is sound does this mean the leg did not run — then treat as VOID (leg-not-run) and re-dispatch once." >&2
-     else
-       # 200 = bin/_common.py's _AGY_DIGEST_VALUE_CAP (the digest's own params-value
-       # truncation) — coupled to that constant; a wrapper-side cap change must
-       # update this literal too, or a real match can silently false-VOID.
-       p_trunc="${PACKET_ABS_PATH:0:200}"
-       jq -e --arg p "$p_trunc" \
-         '[.digest.files_read[]?.params // {} | to_entries[]?.value | select(type == "string")] | any(. == $p)' \
-         "$AGY_READ_AUDIT_FILE" >/dev/null 2>/dev/null
-       jq_rc=$?
-       if [ "$jq_rc" -ge 2 ]; then
-         # jq could not produce a usable answer — a BROKEN reading of the
-         # evidence, not evidence. Never silently VOID (or PASS) on it. rc>=2
-         # covers every jq failure mode, not just malformed JSON: a read error,
-         # a parse error, a program error, or a runtime error all land here.
-         echo "[review] agy leg read-audit INCONCLUSIVE — jq could not produce a usable answer from \$AGY_READ_AUDIT_FILE (rc=$jq_rc: read, parse, program, or runtime error). Do NOT read this as VOID and do NOT read it as PASS: inspect the file directly, then re-dispatch once." >&2
-       elif [ "$jq_rc" -eq 1 ]; then
-         omitted="$(jq -r '.digest.files_read_omitted // 0' "$AGY_READ_AUDIT_FILE")"
-         # Diagnostic: a BLOCKED read is recorded in read_attempts, not
-         # files_read — print it so a VOID verdict says whether the leg tried.
-         # Filter on `.class == "read"` — read_attempts also carries failed
-         # WRITES / run_commands / web fetches, and one of those merely NAMING
-         # the packet is not "the leg failed to read the packet". This filter
-         # is DIAGNOSTIC-ONLY: the VOID/PASS decision is jq_rc + `omitted`
-         # above, never this line, so a miss costs explanatory text and never
-         # a verdict.
-         jq -r --arg p "$p_trunc" \
-           '[.digest.read_attempts[]? | select(.class == "read")
-            | select([.params // {} | to_entries[]?.value
-              | select(type == "string")] | any(. == $p))
-            | "\(.tool):\(.outcome)"] | select(length > 0)
-            | "[review] agy leg ATTEMPTED but failed to read the packet: \(join(", "))"' \
-           "$AGY_READ_AUDIT_FILE" >&2
-         if [ "${omitted:-0}" -gt 0 ]; then
-           echo "[review] agy leg read-audit INCONCLUSIVE ($omitted files_read entries capped) — weigh read_audit.digest.attempts[] (per-attempt totals) + read_audit.digest.read_attempts[] before voiding; there is no fuller digest and only the FINAL attempt's raw stream is retained, so re-dispatch with a narrower packet if the census does not settle it" >&2
-         else
-           echo "[review] agy leg VOID — packet path not in read_audit.digest.files_read; re-dispatch once with the containment block; still VOID after that re-dispatch is terminally missing this round (2-family + owner decision, rule 1 degraded mode — no second re-dispatch)" >&2
-         fi
-       fi
-       # jq_rc == 0 -> PASS (fall through; no message needed).
-     fi
+     bash <skill>/lib/read_audit_gate.sh "$PACKET_DIR" "$PACKET_DIR/packet-r<N>.md" [<more-abs-packet-files>...]
      ```
 
-One shape to know: a file that is valid JSON but carries no `.digest` key yields
-rc 1, not rc>=2, so it lands in the coverage-miss branch and — with `omitted` 0 —
-reads as a confirmed VOID. That is intended: a digest-less file is a leg that
-produced no read evidence.
+The helper is the gate's single EXECUTABLE form (skill v0.27.0 — the leader
+used to re-type the block inline once per round): the canonical jq invocation
+LIVES in `lib/read_audit_gate.sh`, where the t41/f9 self-tests lift it
+verbatim and `t5-read-audit-gate.sh` owns the CLI contract. This section
+stays the SPEC the helper implements. What each outcome means:
+
+- **Digest path is DERIVED**, never accepted: the shared literal
+  `$PACKET_DIR/agy-read-audit.json` — the same ONE literal the § agy leg
+  dispatch binding and the leader-side pre-clear use (re-confirm round 5 /
+  J1 anti-drift: no env-var fallback anywhere, so an ambient
+  `TRIAD_READ_AUDIT_FILE` some OTHER shell context left exported can never
+  make the gate open a file nobody bound or cleared for THIS round). The
+  wrapper writes it on EVERY completed call, ok or not — no stderr capture,
+  no grep/sed extraction (`triad-antigravity-dispatch` § Isolation).
+- **Packet-file args are the ROUND-SUFFIXED names** (for a `prepare`-built
+  round, `<packet-dir>/packet-r<N>.md` — never the packet DIR itself). Argv
+  discipline is LOUD (exit 64), never a verdict: the packet dir and EVERY
+  packet file must be absolute paths, the dir must exist, and every packet
+  file must exist — a stale generic `packet.md` would otherwise false-VOID
+  a compliant leg.
+- **Exit 0 PASS** — every packet file's absolute path matched the
+  `AbsolutePath` of a successful `view_file` entry in `files_read` (the
+  rule-1 tool+key restriction; arguments that survive to this comparison
+  are within the cap, so the stored value is the FULL path and equality is
+  exact — no truncation is applied to a surviving argument). Proceed to
+  weigh the verdict.
+- **Exit 2 ABSENT** — no digest file. NOT proof the vendor call failed:
+  `TRIAD_READ_AUDIT_FILE` unset/misbound at dispatch time is empty in
+  exactly the same way as a call that never completed. Check the dispatch
+  env FIRST; only once it is sound, treat as VOID (leg-not-run) and
+  re-dispatch once.
+- **Exit 3 VOID** — a confirmed miss (`files_read_omitted == 0`):
+  re-dispatch ONCE with the containment block; still VOID after that
+  re-dispatch is terminally missing this round (rule 13 → rule 1 degraded
+  2-family + owner-decision mode, no second re-dispatch).
+- **Exit 4 INCONCLUSIVE** — never read as VOID and never as PASS. Four
+  causes, each named on stderr: a CAPPED digest (`files_read_omitted > 0` —
+  weigh `digest.attempts[]` per-attempt totals + `digest.read_attempts[]`,
+  and re-dispatch with a narrower packet if the census does not settle it;
+  there is no fuller digest, and only the FINAL attempt's raw stream is
+  retained anywhere), BROKEN evidence (jq could not produce a usable
+  answer — read, parse, program, or runtime error: inspect the file
+  directly, then re-dispatch once), a SYMLINKED digest file (refused,
+  never followed — the wrapper writes a regular file it alone owns, so a
+  symlink at that path is a redirect nobody's dispatch bound; note this is
+  a check-then-open guard, WEAKER than `validate_verdict.py`'s
+  O_NOFOLLOW read — acceptable here because the gate runs strictly after
+  the agy child is reaped and no other round participant writes that path),
+  or an at-or-over-cap packet path (200 characters or longer — stored in
+  the digest as a PREFIX-identity that cannot be told apart from any
+  same-prefix file, an exactly-cap value being possibly a longer path's
+  truncation, so the gate refuses to over-claim; shorten the packet path
+  and re-run; this refusal subsumes the arg-side collision case, and the
+  same argument passed twice remains ONE identity, legitimately
+  confirmable).
+- **Multi-file aggregation is pinned and LOAD-BEARING**: any INCONCLUSIVE
+  file → exit 4; else any VOID file → exit 3; else exit 0. The per-ARGUMENT
+  over-cap refusal CAN mix with a digest-side VOID in a single run (only
+  the capped/broken digest states are digest-global), so the precedence is
+  what keeps a mixed round deterministic — never remove it as dead logic.
+  BROKEN evidence stops the loop — later files are never evaluated. The
+  summary counters count EVALUATED files only, and whenever any argument
+  was NOT evaluated (the broken-evidence stop; the ABSENT/symlink refusals
+  evaluate none) the summary line appends ` unevaluated=<n>` so the token
+  and the counters cannot disagree silently.
+- **The verdict inputs are the jq gate's rc + `files_read_omitted` ONLY.**
+  The stderr `ATTEMPTED but failed to read the packet` line — a read-class
+  `read_attempts` entry naming a packet file, i.e. the leg TRIED and was
+  blocked — is diagnostic text for the round notes, never a verdict input
+  (`read_attempts` also carries failed writes/run_commands/web fetches; one
+  of those merely NAMING the packet is not a failed read, which is why the
+  helper scopes the note with the SAME tool+key restriction as the verdict
+  jq — `.class == "read" and .tool == "view_file"`, AbsolutePath-only value
+  scan (review r4); the trade — a rename-induced VOID loses the "it tried"
+  note too — is recorded as residual r5-1).
+- **The 200-char cap is COUPLED to `bin/_common.py`'s `_AGY_DIGEST_VALUE_CAP`**
+  (t5 drift-guards the pair and the helper's one-literal property). Within
+  the cap the stored value is the FULL path, so equality is exact; over-cap
+  arguments are refused INCONCLUSIVE (rule 1 above) — which also retires
+  the earlier locale-unit caveat by refusal (a length that units could
+  disagree about is over-cap in at least one unit and lands in the refusal,
+  conservative in both directions).
+- **The stdout contract** for round notes: one `[gate] <VERDICT> <file>`
+  line per EVALUATED packet file (the ABSENT/symlink refusals evaluate
+  none; the broken-evidence stop evaluates no later file), then the final
+  greppable summary
+  `READ_AUDIT_GATE_<PASS|VOID|INCONCLUSIVE|ABSENT> checked=<n> pass=<n>
+  void=<n> inconclusive=<n>[ unevaluated=<n>]` — the `unevaluated` field
+  appears exactly when some argument was not evaluated (ABSENT/symlink
+  refusals, the broken-evidence stop), so anchor on the token, not on a
+  four-field-only pattern.
+
+One shape to know: a digest file that is valid JSON but carries no `.digest`
+key yields jq rc 1, not rc>=2, so it lands in the coverage-miss branch and —
+with `omitted` 0 — reads as a confirmed VOID (exit 3). That is intended: a
+digest-less file is a leg that produced no read evidence.
 
 ## agy standing residuals
 
