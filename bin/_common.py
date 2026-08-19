@@ -874,6 +874,15 @@ class RunResult:
     # CLI/wrapper (zero behavior change); antigravity fills it from
     # AgyResult.read_audit on every completed vendor call.
     read_audit: Optional[dict] = None
+    # Vendor CLI's own dotted version string (agy telemetry slice,
+    # 2026-08-19 — origin: agy 1.1.15's release-day vendor-error outage was
+    # investigated with the wrapper's binary MTIME standing in for a version
+    # record). None for every other CLI/wrapper (zero behavior change);
+    # antigravity threads it from the SAME _probe_agy_version() call the
+    # stream-json floor gate already runs on every dispatch — no second probe.
+    # Rendered from the PARSED numeric triple, so a pre-release/build suffix
+    # the CLI prints (e.g. "-rc1") is not captured (r2 claude m2, disclosed).
+    vendor_version: Optional[str] = None
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
@@ -2482,6 +2491,13 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
         "extraction_error": _redact_cap(result.extraction_error),
         "validation_error": _redact_cap(result.validation_error),
     }
+    if result.vendor_version is not None:
+        # Not prompt-bearing (the vendor CLI's own dotted version string, no
+        # user/model content) — exempt from the custody taxonomy above (P4.b,
+        # spec 3-way 2026-07-11), unlike every other field in this record.
+        # Key omitted (not null) when absent, so codex/gemini/claude records
+        # keep their existing shape byte-for-byte (agy-only today).
+        rec["vendor_version"] = result.vendor_version
     if redact:
         rec["stderr_len"] = len(result.stderr or "")
     if ok:
@@ -3050,6 +3066,13 @@ def emit_run_log(
         "extraction_error": result.extraction_error,
         "validation_error": result.validation_error,
         **({"read_audit": result.read_audit} if result.read_audit is not None else {}),
+        # vendor_version (fix wave W1 item 3, claude m3, 2026-08-19): same
+        # omit-when-None spread pattern as read_audit above. The repair
+        # analyzer reads ONLY this run-log (barred from audit.jsonl by its
+        # Scope boundary), and the motivating failure class — agy 1.1.15's
+        # release-day vendor-error outage — is version-correlated, so the
+        # version needs to ride the artifact the analyzer can actually see.
+        **({"vendor_version": result.vendor_version} if result.vendor_version is not None else {}),
     }
     with path.open("w", encoding="utf-8") as f:
         json.dump(rec, f, ensure_ascii=False, indent=2)
@@ -3065,6 +3088,7 @@ def _prune_dir_by_caps(
     max_bytes: int,
     preserve: Optional[Path],
     glob_patterns: tuple[str, ...],
+    extra_preserve: Optional[Path] = None,
 ) -> None:
     """Shared oldest-first prune-by-cap logic (file count + total bytes).
 
@@ -3082,8 +3106,18 @@ def _prune_dir_by_caps(
     large fresh artifact IS the current call's own IPC and must survive even
     when it alone exceeds the byte cap (mtime order alone did not protect
     the only-file case).
+
+    `extra_preserve` (fix wave W1 item 5, claude m1, 2026-08-19) — an
+    OPTIONAL second path to protect in the SAME call, additive to
+    `preserve`. `emit_read_audit`'s default-location copy needed this: when
+    a caller parks `TRIAD_READ_AUDIT_FILE` INSIDE the default read-audit
+    dir, that override file sits in the SAME glob the copy-write's own
+    prune walks, and `preserve` alone (the fresh copy's path) left the
+    override file — written moments earlier by the SAME call — as the one
+    unprotected candidate. Every other caller (`_prune_run_logs`, the
+    override-unset default-dir prune) passes `None` here and is unaffected.
     """
-    preserve_resolved = preserve.resolve(strict=False) if preserve else None
+    preserve_paths = {p.resolve(strict=False) for p in (preserve, extra_preserve) if p is not None}
     # Race-resilient listing: a concurrent unlink (or a dangling symlink) makes
     # p.stat() raise mid-sort. Materialize (path, mtime) per-file, skipping any
     # entry that vanishes — a single bad entry must NOT abort the whole prune
@@ -3118,7 +3152,7 @@ def _prune_dir_by_caps(
     for f in files:
         if over_count <= 0 and over_bytes <= 0:
             break
-        if preserve_resolved is not None and f.resolve(strict=False) == preserve_resolved:
+        if f.resolve(strict=False) in preserve_paths:
             continue
         try:
             sz = f.stat().st_size
@@ -3156,7 +3190,16 @@ def _prune_run_logs(runs_dir: Path, preserve: Optional[Path] = None) -> None:
 # READING WORK, not an authenticated control — no nonce, no dedicated fd,
 # nothing framed as authentication. The digest's CONTENT is still folded
 # from vendor-supplied stream events regardless of transport.
-_READ_AUDIT_MAX_FILES = 100
+# 100 -> 200 (fix wave W1 item 6, claude m2, 2026-08-19; precision r2): the
+# dir now holds TWO record classes (override-unset PRIMARY digests and
+# override-set copies -- each call writes exactly ONE file in either mode),
+# so the cap doubles to grow the shared retention window; how many of the
+# 200 are primaries depends on the workload mix (a review-dominated mix
+# retains mostly copies). No consumer binds to this dir, so the caps bound
+# operator-forensics depth only. The 20 MB byte cap is untouched -- digest
+# values are already capped at 200 chars (_AGY_DIGEST_VALUE_CAP), so the
+# extra writer's byte impact is small relative to the file-count pressure.
+_READ_AUDIT_MAX_FILES = 200
 _READ_AUDIT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB total cap, same policy shape as run-logs
 
 
@@ -3176,6 +3219,18 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
     override names ONE file, so a caller running parallel legs must give each
     call its own path (the review SKILL uses one `<packet-dir>/agy-read-audit.json`
     per packet dir, one packet dir per leg).
+
+    Default-location copy (task-1, 2026-08-19 telemetry slice, behavior 2):
+    when the override is set, this function ALSO writes the SAME record to
+    the default location (below) — origin: a review packet dir is deleted at
+    gate close, so the override was the ONLY copy of a round's digest and it
+    was lost along with the packet. The override write stays PRIMARY: this
+    function's return value and the caller's `read-audit-file:` stderr
+    contract are UNCHANGED (still the override path). The copy runs the SAME
+    self-prune the default dir already runs, and logs one additional stderr
+    line via `log()`: `read-audit-copy: <abs-path>`. Best-effort exactly like
+    every other clause here — a copy-write failure never touches the
+    (already-succeeded) override write or the wrapper's exit code/classification.
 
     The OVERRIDE-path write uses `os.open(..., O_NOFOLLOW)` (final-gate fix
     round, converged claude must-fix / codex hardening): the override path is
@@ -3204,8 +3259,17 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
     never mutated on this path.
 
     The default dir self-prunes after write (`_READ_AUDIT_MAX_FILES` /
-    `_READ_AUDIT_MAX_BYTES`, same shape as `_prune_run_logs`). The env-override
-    path is caller-owned and is NEVER pruned by this function.
+    `_READ_AUDIT_MAX_BYTES`, same shape as `_prune_run_logs`). PRECISE prune
+    invariant (fix wave W1 item 5, claude m1, 2026-08-19 — narrows the prior
+    unconditional "never pruned" claim): the override path is never pruned
+    BY THE CALL THAT WROTE IT — this function protects its own override
+    write even when that path happens to sit inside the default dir (an
+    edge case: `TRIAD_READ_AUDIT_FILE` parked under `_LOG_DIR/<cli>/read-audit/`).
+    An override path PARKED inside the default dir is, however, subject to
+    LATER calls' caps, same as any other file there — a caller that needs
+    durability for an override path independent of subsequent calls uses a
+    path OUTSIDE the default dir (the `triad-cross-family-review` packet-dir
+    convention already does this).
     """
     if result.read_audit is None:
         return None
@@ -3247,6 +3311,64 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
                 read_audit_dir, _READ_AUDIT_MAX_FILES, _READ_AUDIT_MAX_BYTES,
                 preserve=path, glob_patterns=("*.json",),
             )
+        else:
+            # Telemetry copy for post-hoc forensics (fix wave W1 item 7,
+            # claude HS1, reworded 2026-08-19 to not overclaim bindability):
+            # the binding artifact REMAINS the override path written above —
+            # consumers never bind to this dir. This is a best-effort
+            # ADDITIONAL copy at the default location a non-override call
+            # would have used, so a consumer that scans the default dir for
+            # post-hoc forensics (e.g. after a packet dir was already
+            # deleted) still finds the digest. Own try/except: a copy
+            # failure must never affect the override write already on disk
+            # or the wrapper's exit code/classification.
+            try:
+                copy_dir = _LOG_DIR / cli / "read-audit"
+                copy_dir.mkdir(parents=True, exist_ok=True)
+                copy_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                copy_suffix = uuid.uuid4().hex[:8]
+                copy_path = copy_dir / f"{copy_ts}-{os.getpid()}-{copy_suffix}.json"
+                # copied_from (fix wave W1 item 4, claude m4): the COPY's own
+                # meta gains provenance — which override path it was copied
+                # from — so two same-day gates/rounds can be told apart once
+                # their packet dir (and its override path) is gone. Built as
+                # a SEPARATE dict from the override's `rec["meta"]` (never
+                # mutated in place): the primary override file's shape is a
+                # consumer contract and must stay byte-unchanged.
+                copy_rec = {
+                    "meta": {**rec["meta"], "copied_from": override},
+                    "digest": rec["digest"],
+                }
+                # Explicit mode 0600 (fix wave W1 item 1, codex must-fix /
+                # claude HS — was a plain `path.open("w")`, umask-dependent
+                # mode): the SAME bits the override write above uses. No
+                # O_NOFOLLOW here (unlike the override write): this
+                # basename is a fresh uuid8 THIS function mints, so — same
+                # reasoning as the plain default-path write a few lines up —
+                # it cannot be pre-planted the way a caller-NAMED override
+                # path can; the sensitivity of the DATA (the same digest)
+                # still warrants the same explicit permission bits.
+                copy_fd = os.open(str(copy_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(copy_fd, "w", encoding="utf-8") as f:
+                    json.dump(copy_rec, f, ensure_ascii=False, indent=2)
+                # extra_preserve (fix wave W1 item 5, claude m1): protect
+                # THIS call's own override write too, when it happens to sit
+                # inside `copy_dir` (TRIAD_READ_AUDIT_FILE parked under the
+                # default read-audit dir) — see the docstring's PRECISE
+                # prune invariant above. `preserve=copy_path` alone left
+                # that override file, written moments earlier by this SAME
+                # call, as the one candidate this prune step didn't know to
+                # protect.
+                extra = (path if path.resolve(strict=False).parent
+                         == copy_dir.resolve(strict=False) else None)
+                _prune_dir_by_caps(
+                    copy_dir, _READ_AUDIT_MAX_FILES, _READ_AUDIT_MAX_BYTES,
+                    preserve=copy_path, glob_patterns=("*.json",),
+                    extra_preserve=extra,
+                )
+                log(f"read-audit-copy: {copy_path}")
+            except Exception as e:
+                log(f"emit_read_audit: failed to write default-location copy — {e}")
         return path
     except Exception as e:
         log(f"emit_read_audit: failed to write digest file — {e}")

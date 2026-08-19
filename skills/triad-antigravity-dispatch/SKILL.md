@@ -1,8 +1,22 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.14.0
+version: 0.14.2
 # changelog:
+#   0.14.2 (2026-08-19): fix wave W1 (telemetry gate r1 findings) — the
+#     `read-audit-file:` adjacency claims (the § Isolation read-audit
+#     paragraph and the Step 2 stderr-contract bullet; content anchors --
+#     line numbers drift) are corrected: under `TRIAD_READ_AUDIT_FILE`
+#     a `read-audit-copy:` line now sits BETWEEN the digest line and
+#     `read-audit-file:` (logged from inside `emit_read_audit`, before it
+#     returns). `references/read-audit.md` gains the copy's `copied_from`
+#     provenance note and its 0600 write mode.
+#   0.14.1 (2026-08-19): `references/read-audit.md` notes the engine-side
+#     default-location copy `emit_read_audit` now writes under
+#     `TRIAD_READ_AUDIT_FILE` (agy telemetry slice, task-1) — a courtesy
+#     for a consumer that always looks in the default dir. The consumer
+#     CONTRACT is unchanged: a gate still binds to the override path, never
+#     the copy (whose filename the caller cannot predict a priori).
 #   0.13.1 (2026-08-01): Step 1 prompt-transport rule widened and the
 #     `--prompt-file` relationship stated. The 0.13.0 rule routed only content
 #     the leader did NOT author to `--prompt-file`, but the defect's own
@@ -164,10 +178,14 @@ of dispatching a voided pin; pinless dispatches are not gated.
 
 **Read-audit digest (REPORT-ONLY).** On every completed call the wrapper folds
 the stream's tool calls into a bounded digest, emits it on stderr before its
-canonical summary as `[wrapper] antigravity read-audit {compact json}`, and
-follows it with `read-audit-file: <absolute-path>`. The digest carries NO policy
-— it gates, denies and judges nothing by itself; the caller reads it and decides
-what a missing or unexpected packet-read means for that dispatch.
+canonical summary as `[wrapper] antigravity read-audit {compact json}`, then
+`read-audit-file: <absolute-path>` — immediately after when no
+`TRIAD_READ_AUDIT_FILE` copy fires; under the override, a `read-audit-copy:`
+line (see below) sits between them, since it is logged from inside
+`emit_read_audit` before `read-audit-file:` is emitted by the caller. The
+digest carries NO policy — it gates, denies and judges nothing by itself; the
+caller reads it and decides what a missing or unexpected packet-read means
+for that dispatch.
 
 **Durable digest FILE (the consumer contract).** A caller that needs the digest
 as a durable, jq-only artifact — e.g. the `triad-cross-family-review` gate —
@@ -258,7 +276,7 @@ rule 7). What each flag actually does, and the wrapper-internal transport note:
 Wrapper stderr contains:
 - Timestamped wrapper log lines
 - 1-line summary: `[<timestamp>] [wrapper] antigravity <classification> exit=<int> vendor=<int> elapsed=<s>` (every wrapper log line, this one included, carries the leading timestamp bracket — the Step 3 grep anchors on it)
-- On every completed call: `[wrapper] antigravity read-audit {…}` (informational digest, § Isolation above) followed by `read-audit-file: <absolute-path>` (the durable file `emit_read_audit` just wrote — `$TRIAD_READ_AUDIT_FILE` if set, else the wrapper's own default location)
+- On every completed call: `[wrapper] antigravity read-audit {…}` (informational digest, § Isolation above), then `read-audit-file: <absolute-path>` (the durable file `emit_read_audit` just wrote — `$TRIAD_READ_AUDIT_FILE` if set, else the wrapper's own default location) — under the override, a `read-audit-copy: <absolute-path>` line sits between the two (§ Isolation above)
 - On failure: `run-log: <absolute-path>`
 
 Wrapper stdout = agy's final answer (the stream-json terminal `result` event's `response` field — no marker to strip, no ANSI scrub needed).

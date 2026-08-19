@@ -764,6 +764,11 @@ def main() -> int:
         elapsed = time.monotonic() - start
 
     # Build a RunResult for the shared audit / run-log / debug helpers.
+    # vendor_version (agy telemetry slice, 2026-08-19): `ver` is the SAME
+    # _probe_agy_version() tuple the stream-json floor gate above already
+    # probed on every dispatch — no second probe call. None on a failed/
+    # unparseable probe (fail-safe path) leaves the field None, same as every
+    # other caller of `ver`.
     rr = _common.RunResult(
         exit_code=r.exit_code,
         stdout=r.stream_output,
@@ -775,6 +780,7 @@ def main() -> int:
         extraction_error=r.extraction_error,
         vendor_exit_code=r.vendor_exit_code,
         read_audit=r.read_audit,
+        vendor_version=".".join(map(str, ver)) if ver is not None else None,
     )
 
     # Read-audit digest — emitted BEFORE the canonical summary line, on EVERY
