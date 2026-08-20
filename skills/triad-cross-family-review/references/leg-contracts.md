@@ -209,6 +209,27 @@ the shallow-tier fact for the round record.
   errored/denied tool step is turn-terminal (upstream #827), so the prompt
   must remove every occasion for one — the codex-host product verified this
   fix class working on agy 1.1.16. Pinned by `t4-prepare.sh`.
+- **Grep-scope pin (2026-08-21, template-rendered — 1.1.17 probe matrix).**
+  The READ-GRANT additionally requires grep_search's `SearchPath` to be a
+  SPECIFIC subdirectory, never the repository root. Empirical basis (three
+  probes on agy 1.1.17, read-audits preserved): a root-wide search on a
+  large tree dies on the tool's internal ~20s timeout — vendor message
+  "Grep command timed out due to the size of the codebase" — and the
+  errored step then voids the turn (#827); the SAME query scoped to
+  `analyzer/` passed clean (error_steps=0, rc 0). This RECHARACTERIZES the
+  2026-08-20/21 gate's "agy grep_search tool errors" (the
+  arm-symmetric-packet gate's r-6 residual): they were SIZE-dependent
+  timeouts on repo-root SearchPaths (Argus-class repos carry multi-app
+  source checkouts under gitignored dirs), not an arg or sandbox problem
+  (the sandbox-off probe failed identically; the audited calls carried
+  only the official Query/SearchPath args). Separately, 1.1.16's hidden
+  toolSummary/toolAction arg errors did NOT reproduce on 1.1.17
+  (codex-host empirical, cross-checked). NEW 1.1.17 observation, policy
+  OWNER-GATED: an ERROR-status turn now CARRIES its complete
+  `result.response` (previously withheld) — the wrapper still classifies
+  rc 65 and discards it by design (record-not-trust); whether a
+  schema-valid LegVerdict inside an ERROR turn should ever be admitted is
+  an owner decision, not a wrapper default. Pinned by `t4-prepare.sh`.
 - **Model.** When `GOOGLE_REVIEW_MODEL` is non-empty, the dispatch passes
   `--model "$GOOGLE_REVIEW_MODEL"` to `antigravity_wrapper.py` (the Pro/High
   variant — agy's catalog encodes effort in the model slug, so the slug stays

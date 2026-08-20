@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.654 — 2026-08-20
+## 0.2.655 — 2026-08-21
 
 **Cross-family review hardening — verdict binding, mechanized round
 integrity, and a read-grant for the codex/agy legs** (adopted from
