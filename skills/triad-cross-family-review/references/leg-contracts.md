@@ -199,6 +199,16 @@ the shallow-tier fact for the round record.
   `20260820T124833Z`/`20260820T125233Z`). The pin rides at the END of the
   prompt per this leg's containment-placement rule. Pinned by
   `tests/unit/skills/t4-prepare.sh`.
+- **Tool-convention pin (2026-08-20, template-rendered — codex-side diagnosis
+  cross-applied).** The READ-GRANT now states the POSITIVE reading convention:
+  grep_search to SEARCH (never a shell command), file-view with the absolute
+  path only — NO deprecated paging args (StartLine/EndLine/ContentOffset;
+  current agy rejects them and the model emits them spontaneously — our A1/A2
+  probes' "ContentOffset 40000" failures were THIS arg-skew, not an agy
+  internal pagination bug as first recorded). Rationale: on agy 1.1.15+ any
+  errored/denied tool step is turn-terminal (upstream #827), so the prompt
+  must remove every occasion for one — the codex-host product verified this
+  fix class working on agy 1.1.16. Pinned by `t4-prepare.sh`.
 - **Model.** When `GOOGLE_REVIEW_MODEL` is non-empty, the dispatch passes
   `--model "$GOOGLE_REVIEW_MODEL"` to `antigravity_wrapper.py` (the Pro/High
   variant — agy's catalog encodes effort in the model slug, so the slug stays
