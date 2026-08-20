@@ -188,6 +188,17 @@ the shallow-tier fact for the round record.
 
 ## agy leg
 
+- **Findings-shape pin (2026-08-20, template-rendered).** The rendered
+  `agy-prompt-r<N>.txt` carries a FINDINGS SHAPE PIN block naming the exact
+  LegVerdict findings keys (`summary`/`trigger`/`context_known`; `line` =
+  integer-or-null; the exact severity enum) and banning the observed aliases
+  (`trigger_scenario`/`description`). Reason: agy treats a finish-schema
+  validation failure as TERMINAL — no model retry; the validation report
+  becomes the turn error and the COMPLETED review is quarantined (EVAL-03
+  attempt, 2x identical deviation on pro-high, run-logs
+  `20260820T124833Z`/`20260820T125233Z`). The pin rides at the END of the
+  prompt per this leg's containment-placement rule. Pinned by
+  `tests/unit/skills/t4-prepare.sh`.
 - **Model.** When `GOOGLE_REVIEW_MODEL` is non-empty, the dispatch passes
   `--model "$GOOGLE_REVIEW_MODEL"` to `antigravity_wrapper.py` (the Pro/High
   variant — agy's catalog encodes effort in the model slug, so the slug stays

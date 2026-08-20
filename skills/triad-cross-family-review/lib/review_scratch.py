@@ -1327,6 +1327,20 @@ def _render_agy_prompt(packet_path: Path, review_id: str, digest: str) -> str:
         f"{_VERDICT_SELECTION_RULE}\n\n"
         f"{_binding_line(review_id, 'google', digest)}\n\n"
         f"{_agy_read_grant(packet_path.name)}\n\n"
+        # FINDINGS SHAPE PIN (2026-08-20, EVAL-03 attempt evidence): the
+        # vendor treats a finish-schema validation failure as TERMINAL (no
+        # model retry — the validation report becomes the turn error and the
+        # completed review is quarantined), and the pro-high model deviated
+        # IDENTICALLY across two runs. Rides at the END per this leg's
+        # containment-placement rule (a trailing instruction survives the
+        # documented Gemini constraint-drop shape).
+        "FINDINGS SHAPE PIN — the vendor treats a finish-schema validation "
+        "failure as TERMINAL, so a shape deviation loses your whole review: "
+        'every findings[] entry uses EXACTLY the keys "file", "line", '
+        '"severity", "summary", "trigger", "context_known" — NEVER '
+        '"trigger_scenario", "description", or any other alias; "line" is '
+        'an integer or null, never a string; "severity" is exactly one of '
+        '"Critical" | "must-fix" | "Minor" | "HARDENING-SUGGESTION".\n\n'
         "Return exactly ONE LegVerdict JSON object matching the provided "
         "schema — no prose around it.\n")
 
