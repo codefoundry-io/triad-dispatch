@@ -19,6 +19,13 @@
 > the review skill selects the available Google-family CLI at runtime. A
 > wrapper dispatch failing with classification `oauth-env` (exit 65) is this
 > auth boundary, not a bug.
+>
+> **agy host setup (once, agy ≥ 1.1.18):** run
+> `python3 <plugin>/bin/antigravity_wrapper.py --setup-agents` — it writes the
+> two read-only agent definitions under `~/.gemini/config/agents/`; a
+> read-only dispatch refuses with `config-conflict` naming this command until
+> it has run. Research dispatches (`--web`) additionally need `read_url(*)`
+> allowed in `~/.gemini/antigravity-cli/settings.json`.
 
 ## Pre-execution discipline
 
@@ -87,7 +94,9 @@ live-run the code and hang). Put any context file at a **repo-relative gitignore
 path**, never `/tmp` (sandboxed reviewers can't read outside the workspace —
 true for gemini; an agy reviewer is NOT path-contained on ANY current build,
 because `read_file` is never denied by design — probe-confirmed reading
-outside `--cwd` on 1.1.7 — so never rely on workspace confinement for agy).
+outside `--cwd` on 1.1.7 — so never rely on workspace confinement for agy;
+since v2 the review agent has no shell / write / web tool at all, so reads are
+the only residual).
 For
 the **Codex** leg specifically, if a read-only sandbox can't read the files,
 **embed the diff/context inline** in the prompt.

@@ -1,8 +1,45 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.14.2
+version: 0.16.0
 # changelog:
+#   0.16.0 (2026-08-22): READ-ONLY PATH v2 (spec docs/superpowers/specs/
+#     2026-08-22-agy-readonly-v2-spec.md; three-family consultation). `--sandbox
+#     read-only` on agy >= 1.1.18 = setup-once tools-allowlisted agents
+#     (`triad-readonly-review` without web tools; `triad-readonly-research`
+#     under --web) + `--add-dir <cwd>` for reads; NO danger flag, NO settings
+#     deny transaction, NO agy --sandbox on this path; admission by what the
+#     stream shows (framing, one result, allowlist census, errored steps only
+#     on allowed reads) — a status=ERROR run with a valid answer is ADMITTED.
+#     New `--setup-agents` (host setup step), `--web`; `TRIAD_AGY_READONLY_MODE`
+#     and the legacy path removed; floor 1.1.18 fail-closed. The permissive
+#     baseline (no --sandbox) is unchanged.
+#   0.15.1 (2026-08-22): gate r8 doc resync — Hard rule 7 no longer carries
+#     the 1.1.3-era "voids the deny transaction" sentence (measured on
+#     1.1.17: Deny > dsp); the non-deniable enumeration names the browser_*
+#     family (no measured permission action) and the indistinguishable
+#     no-forbidden-call fallback; references/isolation.md § Containment
+#     posture / § What the flag costs / tool map and references/long-answer.md
+#     resynced to the same measurement. Wrapper: admission census is
+#     fail-closed over unparseable raw stream lines / payload-less steps,
+#     capped with an omitted counter; guard-entry failure audits a
+#     placeholder argv.
+#   0.15.0 (2026-08-22): READ-ONLY AGENT MODE (spec docs/superpowers/specs/
+#     2026-08-22-agy-readonly-agent-mode-spec.md). `--sandbox read-only` on
+#     agy >= 1.1.17 runs the wrapper-managed custom primary agent
+#     `triad-readonly-review` (`--agent`; tools allowlist view_file /
+#     grep_search / list_dir / find_by_name / read_url_content / search_web /
+#     finish, commandExecutionPolicy: off). v1.2 (gate r2, probes F1-F5):
+#     the settings deny transaction and the headless auto-approve flag are
+#     RETAINED (belt + read-tool approval on preset-less hosts); agy --sandbox
+#     and the soft-deny retry are dropped; admission = fail-closed
+#     forbidden-tool census over every attempt (init.agent is NOT a proof:
+#     agy echoes the requested name on fallback). The former path is the
+#     LEGACY path (`TRIAD_AGY_READONLY_MODE=deny`; agy < 1.1.17 downgrades
+#     to it with a logged line). New § Read-only agent mode; § Headless
+#     soft-deny adaptation and § Isolation re-titled LEGACY; Hard rule 7
+#     scoped to the legacy path. Evidence: docs/spikes/2026-08-22-agy-
+#     permission-ladder/; ledger docs/agy-vendor-workarounds.md W-28.
 #   0.14.2 (2026-08-19): fix wave W1 (telemetry gate r1 findings) — the
 #     `read-audit-file:` adjacency claims (the § Isolation read-audit
 #     paragraph and the Step 2 stderr-contract bullet; content anchors --
@@ -103,78 +140,98 @@ only when its column applies.
 | Reference | Open it when |
 |---|---|
 | `references/invocation.md` | building the call — what each wrapper flag does, and the stream-json transport note |
-| `references/isolation.md` | deciding what a `--sandbox read-only` call actually contains — containment posture, the headless soft-deny mechanism, standing residuals, the deny transaction, the tool→action map, `.agybak` recovery |
+| `references/isolation.md` | deciding what a `--sandbox read-only` call actually contains — the v2 read-only path, containment posture, standing residuals, the permissive baseline's settings guard, the tool→action map, `.agybak` recovery |
 | `references/read-audit.md` | wiring a caller that consumes the read-audit digest — shape, caps, retry-merge, the durable file |
 | `references/repair-loop.md` | a dispatch routed to repair — Step 5a's run-log extraction and Step 5d's apply/verify branch |
 | `references/long-answer.md` | an answer may exceed ~3KB, or a call returned `truncated-answer` (65) |
 
-## Routing — agy is the search/research specialist
+## Routing — agy is the search/research specialist (pass `--web`)
 
-agy's `read_url` action (`read_url_content` / `search_web`) is always allowed —
-never touched by the per-call deny transaction — which makes agy the toolkit's
-external-documentation research leg. It is a routing rule rather than a
-nice-to-have for two reasons: **grounding** (agy pulls the current vendor source
-instead of the leader answering from memory) and **context hygiene** (the raw
-page stays in the agy worker; the leader gets back the grounded answer). So
-prefer agy for web-grounded lookups over a non-search CLI leg, and route
-doc-heavy reads to it rather than pulling the page into leader context.
+agy's `read_url` action (`read_url_content` / `search_web`) is the toolkit's
+external-documentation research reach, which makes agy the research leg. Since
+the read-only path v2 the web tools live ONLY in the research agent: a
+research dispatch MUST pass `--web` (on a hardened install every dispatch is
+read-only, so without `--web` the REVIEW agent runs — it has no web tool at
+all and the model answers from memory, SUCCESS, admitted: a silently
+ungrounded research answer). `--web` outside `--sandbox read-only` is an
+invocation error. Two reasons the routing matters: **grounding** (agy pulls
+the current vendor source instead of the leader answering from memory) and
+**context hygiene** (the raw page stays in the agy worker; the leader gets
+back the grounded answer). Research hosts need `read_url(*)` allowed in
+`~/.gemini/antigravity-cli/settings.json` (the `--setup-agents` hint). No
+model name is pinned.
 
-This is a role preference, not a new capability or an isolation change: a search
-dispatch still runs under whatever `--sandbox` mode the leader picks, and
-`read_url` stays allowed in every mode. No model name is pinned.
+## Read-only path v2 (`--sandbox read-only`, agy >= 1.1.18; spec `docs/superpowers/specs/2026-08-22-agy-readonly-v2-spec.md`)
 
-## Headless soft-deny adaptation
+A read-only dispatch runs agy as a **setup-once** tools-allowlisted custom
+agent: `triad-readonly-review` (`view_file`, `grep_search`, `list_dir`,
+`find_by_name`, `finish`; `commandExecutionPolicy: off`; NO web tool — a
+review has no egress) or, under `--web`, `triad-readonly-research` (the same
+plus `read_url_content`, `search_web`). Forbidden tools are ABSENT rather than
+denied, so an admitted run never produces the errored step that flips agy's
+terminal status (#826 / #839). The call passes `--add-dir <cwd>` (repository
+reads are auto-allowed in print mode — measured 1.1.18, ladder round 2 K2;
+writes stay denied without the danger flag, K5), and NOTHING else: no
+`--dangerously-skip-permissions`, no settings deny transaction, no agy
+`--sandbox`, no soft-deny retry.
 
-Since every dispatchable build sits at or above `_HEADLESS_SOFTDENY_FLOOR`, the wrapper inserts
-`--dangerously-skip-permissions` on every build it dispatches (opt out with
-`AGY_NO_HEADLESS_AUTOAPPROVE=1`), because the vendor made headless tools unusable
-without it. Consequences you must know before relying on `--sandbox`:
+**Host setup (once):** `python3 antigravity_wrapper.py --setup-agents` writes
+both agent files under `~/.gemini/config/agents/` (workspace `.agents/` is NOT
+loaded in print mode — K1). A dispatch only CHECKS the file (byte-identical to
+the embedded body); missing or drifted → `config-conflict` (65) naming
+`--setup-agents`. Research hosts additionally need `read_url(*)` allowed in
+`~/.gemini/antigravity-cli/settings.json` (the setup command prints the hint).
 
-- the flag voids the wrapper's deny transaction AND agy's own `--sandbox`
-  OS-ring, so `--sandbox read-only` is read-only by INTENT from the wrapper's
-  side;
-- write/exec containment is UNCONFIRMED at the current dispatch floor (last
-  probed on a build now below it);
+**Admission = what the stream shows, never the vendor status alone:** every
+non-blank stdout line must be a JSON object (else the run is unusable), exactly
+one `result`, every tool name in any attempt ∈ the agent's allowlist (a
+fallback to agy's full-tool default agent, or a model slip, is rejected as
+`vendor-error` with the name on stderr), and a `status != SUCCESS` run is
+admitted ONLY when every errored step named an allowed read tool — logged as
+`[wrapper] antigravity admitted-with-errored-steps n=<k> tools=[...]`. The
+`init.agent` echo is a diagnostic only (agy echoes the REQUESTED name even on
+fallback). Below 1.1.18 the dispatch is `config-conflict` ("run `agy update`");
+there is no legacy path (`TRIAD_AGY_READONLY_MODE` is gone). Evidence:
+`docs/spikes/2026-08-22-agy-permission-ladder/` (rounds 1-3); ledger
+`docs/agy-vendor-workarounds.md` W-28 (W-05/W-06 now permissive-baseline only,
+W-11 retired on this path). Reads and — for the research agent — network stay
+open BY DESIGN (§ Standing residuals in `references/isolation.md`).
+
+## Headless soft-deny adaptation (PERMISSIVE baseline only)
+
+On the permissive baseline (`--sandbox` omitted, non-hardened install) the
+wrapper still inserts `--dangerously-skip-permissions` on every build it
+dispatches (opt out with `AGY_NO_HEADLESS_AUTOAPPROVE=1`), the 2026-07-18
+adaptation to agy 1.1.3's headless soft-deny. The read-only path v2 never
+carries the flag. Facts that still matter for the baseline:
+
+- on 1.1.17/1.1.18 `permissions.deny` wins over the flag (Deny > dsp: ladder
+  arm A `command(*)`, probe G `write_file(*)`); the 1.1.3-era "voids the
+  transaction" statement is history;
 - reads and network are open BY DESIGN on every build — `read_file` and
-  `read_url` are never denied, so the leg can read outside `--cwd` and ship data
-  out over the network. A deployment that cannot accept that runs the dispatch
-  inside an EXTERNAL fs-scoped, network-denied OS sandbox;
+  `read_url` are never denied;
 - agy has self-reported a denied write as done, so verify arrival, always.
 
-The mechanism, the version chronology, the probe record and both standing
-residuals: [references/isolation.md](references/isolation.md).
+Mechanism, chronology and residuals: [references/isolation.md](references/isolation.md).
 
-## Isolation — per-call deny transaction (codex parity)
+## Isolation — what contains what
 
-`--sandbox read-only` brackets the agy call in a per-call deny transaction over
-the global settings file; a transaction failure surfaces as `config-conflict`
-(exit 65). Concurrent read-only dispatches are safe (they share the deny lease);
-the permissive baseline stays exclusive. Transaction mechanics, the lease
-registry and `AGY_SETTINGS_LOCK_TIMEOUT`:
-[references/isolation.md](references/isolation.md) § Deny transaction.
+- **Read-only path v2**: the agent's tools allowlist (capability removal) +
+  the vendor's own headless denial of anything else (no danger flag) + the
+  wrapper's admission census. No settings transaction. Concurrent read-only
+  dispatches never touch `settings.json`.
+- **Permissive baseline** (`--sandbox` omitted, non-hardened): the exclusive
+  settings guard (heals a stale `.agybak`, empty deny rules) + the version-gated
+  danger flag — unchanged by v2. On a HARDENED install
+  (`TRIAD_WRAPPER_HARDENED=1`, the consumer default) omission auto-upgrades to
+  `read-only`, so every consumer dispatch — research included — takes the v2
+  path (research passes `--web`).
 
-Mode selection — per-mode deny lists, the tool→permission-action map, probe
-status and `.agybak` recovery are in
-[references/isolation.md](references/isolation.md):
-
-- `read-only` — denies the write/command/exec surface (`write_file`, `command`,
-  `unsandboxed`, `execute_url`, `mcp`); `read_url`/`search_web` stay allowed, so
-  the search leg keeps working. Deny is a per-verb denylist over the KNOWN agy
-  tool surface, not OS-level process isolation.
-- omitted — no deny transaction; the owner's permissive global baseline stays
-  intact (the call still acquires the lock and heals a stale `.agybak` first). On
-  a HARDENED install (`TRIAD_WRAPPER_HARDENED=1`, the consumer default) omission
-  auto-upgrades to `read-only`, so no write-INTENT agy mode remains there.
-
-agy `--sandbox` alone is a shell/network OS-ring only (it does not block
-`write_file`); the deny transaction is what enforces fs isolation. Reasoning tier
-= `--model` passthrough (no-pin default when omitted) — pass a CATALOG selector
-from `agy models` — any selector that listing carries — and/or `--effort
-low|medium|high` (agy's own flag, working since 1.1.10). **Pin floor: `--model`
-/ `--effort` require agy >= 1.1.10** — older builds silently IGNORED both flags
-in `-p` runs (default-model fallback, vendor changelog 1.1.10), so the wrapper
-fail-closes a pinned dispatch below the floor as `config-conflict` (65) instead
-of dispatching a voided pin; pinless dispatches are not gated.
+Reasoning tier = `--model` passthrough (no-pin default when omitted) — pass a
+CATALOG selector from `agy models` and/or `--effort low|medium|high` (agy's own
+flag, working since 1.1.10). **Pin floor: `--model` / `--effort` require agy >=
+1.1.10** — older builds silently IGNORED both flags in `-p` runs, so the wrapper
+fail-closes a pinned dispatch below the floor as `config-conflict` (65).
 
 **Read-audit digest (REPORT-ONLY).** On every completed call the wrapper folds
 the stream's tool calls into a bounded digest, emits it on stderr before its
@@ -205,7 +262,7 @@ the notes a consuming gate needs:
 4. **Repair agent ONLY on `unknown` / `extraction-error` / `timeout`.** Every other classification carries actionable meaning at the wrapper layer — dispatching the agent on them wastes the call.
 5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. Reasoning: any test framing leaks into the vendor model's behavior and corrupts both the sample and the repair agent's accumulated memory.
 6. **No model name pinning.** agy model names rot every few weeks. Use the vendor default by default; `--model <name>` only when the user explicitly named the model. Date-anchor any pinned model usage.
-7. **Never `--dangerously-*` from user argv.** argparse defines no such option, so a caller can never supply it. ONE scoped internal exception (owner-authorized): the wrapper itself inserts `--dangerously-skip-permissions` on every build it dispatches, because that vendor release made headless tools unusable otherwise (§ Headless soft-deny adaptation). The flag voids the wrapper's deny transaction whenever it fires; write/exec containment beyond that is UNCONFIRMED at the current dispatch floor while reads/network stay open by design regardless. Opt out with `AGY_NO_HEADLESS_AUTOAPPROVE=1`. No OTHER `--dangerously-*` / `--yolo` is ever used.
+7. **Never `--dangerously-*` from user argv.** argparse defines no such option, so a caller can never supply it. ONE scoped internal exception (owner-authorized 2026-07-18): on the PERMISSIVE baseline only, the wrapper inserts `--dangerously-skip-permissions` because agy 1.1.3 made headless tools unusable otherwise (§ Headless soft-deny adaptation). The read-only path v2 never carries the flag — repository reads come from `--add-dir`, and a fallback run's writes/shell are denied by the vendor's own headless policy (ladder round 2, K1/K5). Measured on 1.1.17 under the flag: `permissions.deny` wins for `command(*)` and `write_file(*)` (arm A, probe G); the other deniable actions are inferred. Reads/network stay open by design regardless (`read_file` / `read_url` are never denied). Opt out with `AGY_NO_HEADLESS_AUTOAPPROVE=1`. No OTHER `--dangerously-*` / `--yolo` is ever used.
 8. **Always spawn the repair agent — surfacing a failure is not repairing it.**
    When Step 4 routes a failure (`unknown` / `extraction-error` / `timeout`),
    spawn the `agy-wrapper-repair` sub-agent with the `Agent` tool's
@@ -246,6 +303,7 @@ TRIAD_AGY_PROMPT_EOF
   [--prompt-file /absolute/path/to/prompt.txt] \
   [--cwd /absolute/path] \
   [--sandbox read-only] \
+  [--web] \
   [--model <pinned-model-name>] \
   [--effort low|medium|high] \
   [--pydantic module:Class] \
@@ -262,7 +320,10 @@ replays that SAME array with `--repair-mode` appended as a DISTINCT element, and
 an optional bracketed value like `[--cwd /absolute/path]` stops being
 quoting-safe once flattened to a string.
 
-Flags at a glance: `--sandbox read-only` (per-call deny transaction, § Isolation)
+Host setup, once: `antigravity_wrapper.py --setup-agents`
+(writes the two read-only agent definitions; § Read-only path v2).
+
+Flags at a glance: `--sandbox read-only` (v2 read-only path, § Read-only path v2) · `--web` (research agent with web tools; default = review agent without)
 · `--prompt-file <abs>` (replaces the heredoc: non-leader-authored bodies,
 or a body quoting a template — Step 1) · `--pydantic
 module:Class` (native `--json-schema`) · `--timeout <s>` (default 600) · `--cwd
@@ -445,4 +506,4 @@ The leader (not the analyzer) is the only writer to the classifier extension —
 - `agents/agy-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
 - `triad-codex-dispatch` — parallel SKILL for Codex.
 - `triad-gemini-dispatch` — parallel SKILL for Gemini (the enterprise-credential lane).
-- `triad-cross-family-review` — final pre-merge cross-family review (the agy leg there is best-effort non-write; write/exec enforcement is UNCONFIRMED at the current dispatch floor and the by-design read/network residual persists on every build — § Headless soft-deny adaptation + § Isolation).
+- `triad-cross-family-review` — final pre-merge cross-family review (the agy leg there runs the setup-once `triad-readonly-review` agent — no shell / write / web tool — with `--add-dir`, admitted by the stream census; the by-design read residual persists — § Read-only path v2 + § Isolation).

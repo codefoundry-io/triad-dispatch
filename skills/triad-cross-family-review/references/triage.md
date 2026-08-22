@@ -130,6 +130,22 @@ autonomy covers REAL findings with minimal diffs.
 
 ## Loop exit
 
+**Countable stop rules (rule 5 / 12 / 14, owner directive 2026-08-22):**
+
+| rule | trigger | what happens |
+|---|---|---|
+| round cap | 3 full-family rounds used | gate ends; a 4th round only on an owner re-budget citing a NEW defect observed in real output |
+| convergence | a round lands zero NEW REAL must-fix | apply the wave → ONE focused re-confirm scoped to the wave's hunks → merge |
+| occurrence gate | a REACHABLE-UNOBSERVED item has no repro from REAL vendor output (capture / run-log / audit row) | DISCLOSED residual, no code — a fixture-only repro does not promote it |
+| docs never gate | a finding is text-only | batched into one post-merge doc-resync commit; never a round trigger |
+| scope freeze | round ≥ 3 and the finding cites no hunk of the gated diff | new slice, not this gate |
+| two-family floor | single-family REACHABLE item, no measured probe | residual |
+
+Precedent: the 2026-08-22 agy v1.2 gate ran nine rounds; rounds 4-9 landed
+one narrower parser shape each (null field → malformed container → dropped
+line → array line), none ever observed in 22 real captures, plus ~15 text
+rows — the shape these rules end.
+
 Distinct from the CONVERGING round class: once every REACHABLE-UNOBSERVED item
 has had its repro run, a round whose remaining findings are all SPECULATIVE or
 repro-failed is TERMINAL. Record each as a DISCLOSED residual in the residual

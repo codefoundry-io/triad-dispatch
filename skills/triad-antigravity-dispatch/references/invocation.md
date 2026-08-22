@@ -6,8 +6,15 @@ terminator, `--prompt-file` rule, argv-array retention) stays in Step 1 itself.
 
 ## Flags
 
-- `--sandbox read-only` selects the per-call deny transaction (§ Isolation).
-  Omit for the permissive baseline.
+- `--sandbox read-only` selects the read-only path v2 (agy >= 1.1.18): the
+  setup-once tools-allowlisted agent (`--agent triad-readonly-review`, or
+  `triad-readonly-research` under `--web`) + `--add-dir <cwd>`; no danger
+  flag, no settings transaction, no agy `--sandbox`; admission by the stream
+  (§ Read-only path v2 in isolation.md). Below 1.1.18 → `config-conflict`.
+  `--setup-agents` writes the two agent files once per host (no prompt
+  needed). `AGY_AGENTS_DIR` is a TEST hook for the file location (default
+  `~/.gemini/config/agents`; logged when set). Omit `--sandbox` for the
+  permissive baseline.
 - `--pydantic module:Class` forces JSON output through agy's **native
   `--json-schema`** flag: the wrapper passes `json.dumps(cls.model_json_schema())`
   as its argv value — no prompt-side instruction, no completion marker. The

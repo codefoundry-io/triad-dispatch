@@ -202,13 +202,45 @@ the shallow-tier fact for the round record.
 - **Tool-convention pin (2026-08-20, template-rendered — codex-side diagnosis
   cross-applied).** The READ-GRANT now states the POSITIVE reading convention:
   grep_search to SEARCH (never a shell command), file-view with the absolute
-  path only — NO deprecated paging args (StartLine/EndLine/ContentOffset;
-  current agy rejects them and the model emits them spontaneously — our A1/A2
-  probes' "ContentOffset 40000" failures were THIS arg-skew, not an agy
-  internal pagination bug as first recorded). Rationale: on agy 1.1.15+ any
+  path only — paging args (StartLine/EndLine/ContentOffset) ONLY within the
+  size the tool reports, never past the end (VALID view_file arguments on
+  1.1.17, corrected 2026-08-22 — the failures were the model paging PAST EOF, `ContentOffset N exceeds line range size N`, an
+  errored step that voids the turn; our A1/A2 probes' "ContentOffset 40000"
+  failures were that overshoot, not a rejected argument nor an agy
+  pagination bug as first recorded). Rationale: on agy 1.1.15+ any
   errored/denied tool step is turn-terminal (upstream #827), so the prompt
   must remove every occasion for one — the codex-host product verified this
   fix class working on agy 1.1.16. Pinned by `t4-prepare.sh`.
+- **Read-only path v2 (2026-08-22, wrapper-side — CFR 0.28.0).** The agy
+  leg runs as the setup-once tools-allowlisted agent `triad-readonly-review`
+  (`--agent`; view_file / grep_search / list_dir / find_by_name / finish —
+  NO web tool) with `--add-dir <cwd>` for repository reads; no danger flag,
+  no settings deny transaction, no agy `--sandbox`. The host runs
+  `antigravity_wrapper.py --setup-agents` once (a missing/drifted file is
+  `config-conflict` naming it). Admission is the wrapper's `admit()`: framing,
+  one result, allowlist census over every attempt, and — the root-cause fix
+  — a `status != SUCCESS` run whose verdict validates and whose errored steps
+  are all allowed reads is ADMITTED (stderr `admitted-with-errored-steps`);
+  the mechanical read-audit gate below runs UNCHANGED over such a run.
+  Evidence: `docs/spikes/2026-08-22-agy-permission-ladder/` rounds 1-3; spec
+  `docs/superpowers/specs/2026-08-22-agy-readonly-v2-spec.md`. Expected
+  read-audit: `commands=0 denied=0 writes=0 web=0`.
+- **Existence pin (2026-08-22, template-rendered — CFR 0.27.4).** The
+  READ-GRANT forbids opening any path that does not exist on disk, naming
+  the plan-stage case explicitly (a file the packet's DESIGN TEXT marks
+  planned / to-be-created does not exist yet) while exempting merge-stage
+  packets' NEW-FILE HUNKS in the fenced diff, which DO exist on disk (gate
+  r4, codex). agy's file-view dies on a missing path
+  at "convert tool call for permissions ... invalid_args" (upstream #826,
+  OPEN, bug-labelled 1.1.15 + 1.1.17; reproduced WITHOUT a sandbox), and the
+  errored step flips the run to ERROR. Origin: symbol-card plan gate r2
+  (Argus `docs/review/2026-08-21-symbol-card-plan-gate.md`). The agent body
+  carries the same rule as system text; the prompt keeps it because the
+  prompt is the round-specific carrier. The paging clause's rationale was
+  corrected in the same wave: StartLine/EndLine/ContentOffset are VALID
+  view_file arguments on 1.1.17 — the observed failures were the model
+  paging past EOF (`ContentOffset N exceeds line range size N`), not a
+  rejected argument. Pinned by `t4-prepare.sh`.
 - **Grep-scope pin (2026-08-21, template-rendered — 1.1.17 probe matrix).**
   The READ-GRANT additionally requires grep_search's `SearchPath` to be a
   SPECIFIC subdirectory, never the repository root. Empirical basis (three
@@ -304,21 +336,42 @@ the shallow-tier fact for the round record.
   `references/triage.md`).
 - **READ-GRANT block (mandatory, in the leg prompt; rewritten 2026-08-10
   by owner directive — same method as the codex leg).** Include verbatim:
-  "Read `packet.md` FIRST and ONCE with your file-view tool (shell readers
-  like `cat` are deny-listed under read-only) — it is the round's framing
-  and your review's required entry point. You MAY then read files under
-  the repo with your file-view tool to VERIFY the packet's claims — cite
-  file:line for anything you assert from a repo file. Do NOT read files
-  outside the repo, do NOT search the web, and do NOT consult prior
-  conversations or scratch space. Do NOT modify any file, do NOT change
-  external state, and do NOT run commands, tests, scripts, builds, or
-  vendor CLIs. Anything you did not verify against the
-  packet or a repo file is an open question, never an asserted finding."
+  "Read `packet.md` FIRST and ONCE with your file-view tool (you have NO
+  usable shell for this review: under the wrapper's read-only containment the
+  command tool is absent or every command is denied — on agy the tools-
+  allowlisted `triad-readonly-review` agent, on gemini the policy-engine deny
+  — so never attempt one) — it is the round's framing and your review's
+  required entry point. You MAY then read files under the repo with your file-
+  view tool to VERIFY the packet's claims — cite file:line for anything you
+  assert from a repo file. TOOL CONVENTION (an errored or denied tool step
+  voids your whole review, so follow it exactly): to SEARCH, use your
+  grep_search tool — never a shell command — and set its SearchPath to a
+  SPECIFIC subdirectory of the repo (for example its analyzer/ or docs/ tree),
+  never the repository root: a root-wide search times out on large trees and
+  the errored step voids your review; to OPEN a file, call your file-view tool
+  with its CURRENT native arguments — the absolute path; paging arguments
+  (StartLine, EndLine, ContentOffset) are allowed only WITHIN the size the
+  tool reports, never past the end of the file (an overshoot is an errored
+  step that voids your review); and OPEN ONLY paths that exist on disk NOW — a
+  file the packet's DESIGN TEXT names as planned or to-be-created does NOT
+  exist yet, so never call your file-view tool on it: review its design from
+  the packet text alone (a does-not-exist open is an errored step and voids
+  your review); a file that appears as a new-file hunk in the fenced diff DOES
+  exist when the reviewed branch is the checked-out tree (the usual case) —
+  otherwise treat it as design text. Do NOT read files outside the repo, do
+  NOT search the web, and do NOT consult prior conversations or scratch space.
+  Do NOT modify any file, do NOT change external state, and do NOT run
+  commands, tests, scripts, builds, or vendor CLIs. Anything you did not
+  verify against the packet or a repo file is an open question, never an
+  asserted finding."
   The mutation/exec sentence is part of the verbatim block on purpose
-  (adopt-gate r2): this leg's write/exec containment is UNCONFIRMED
-  intent at the dispatched version and the prompt is its only per-call
-  carrier — dropping the sentence would ship the one
-  unconfirmed-containment leg with no intent carrier at all.
+  (adopt-gate r2; re-grounded 2026-08-22, v2): on agy the setup-once
+  `triad-readonly-review` agent has no write/shell/web tool and a fallback
+  run's writes/shell are denied by the vendor's headless policy (no danger
+  flag), on gemini the policy engine denies — the sentence is the INTENT
+  carrier the model reads, and it still covers the tools no rule can deny
+  (notebook / subagent / message / browser_* family — census detection
+  only); dropping it would leave those with no intent carrier at all.
   Packet-FIRST is load-bearing twice over: it is the mechanical read-audit
   gate's required entry (the gate below runs UNCHANGED — the packet path
   must appear in `files_read`), and reading it before any repo browsing
@@ -332,10 +385,12 @@ the shallow-tier fact for the round record.
   INCONCLUSIVE — never a silent pass, but no longer the mechanical
   leg-not-run proof the packet-ONLY diet gave; the round notes carry
   that judgment. Mutation
-  is denied by INTENT via the per-call deny transaction — enforcement
-  is UNCONFIRMED at the dispatched version (§ agy standing residuals) —
-  so the round's capture/verify integrity gate is the ACTUAL
-  mutation-detection control, not a redundant belt
+  is ABSENT on the v2 read-only path (the allowlist agent carries no
+  write/shell tool; a fallback's attempts are denied by the vendor's headless
+  policy without the danger flag — ladder round 2 K1/K5; § agy standing
+  residuals), detection-only for the tools no rule can deny — so the
+  round's capture/verify integrity gate stays the mutation-detection
+  control of record, not a redundant belt
   (`references/packet-lifecycle.md` § Round integrity); the read/network
   egress residual is UNCHANGED (§ agy standing residuals — owner-owned).
   Rationale: agy's detection record earned the wider view, and the old
@@ -352,12 +407,24 @@ the shallow-tier fact for the round record.
   before it enters the residual table. The gate proves the packet was read, not
   that a cite is accurate; cites were fabricated in 4 of 5 traced-or-scored runs
   even where the finding class was right (`references/evidence.md`).
-- **Containment carrier.** The prompt is the only PER-CALL carrier: agy 1.1.8
-  headless (`-p`) loads no workspace-scoped rules, so a packet-dir `GEMINI.md`
-  is inert and reads as false comfort. It does load the global
-  `~/.gemini/GEMINI.md`, so a mild owner-installed global rule (e.g. prefer the
-  native file-view tool over shell readers) can reinforce the prompt — at the
-  cost of affecting every agy session. Hard containment stays in the prompt.
+- **Containment carriers (rewritten 2026-08-22, v2).** TWO per-call carriers
+  exist: (1) the setup-once custom agent `triad-readonly-review`
+  (`bin/antigravity_wrapper.py`, `AGENT_BODIES`; written by
+  `--setup-agents` under `~/.gemini/config/agents/`, checked byte-for-byte
+  and selected with `--agent` on every `--sandbox read-only` dispatch, agy >=
+  1.1.18) — its `tools:` ALLOWLIST omits every shell / write / MCP / browser
+  / web tool, so a denied-shell step cannot occur at all, and its body
+  carries the scope / existence / no-paging rules as always-applied system
+  text; the wrapper admits the run by `admit()` (allowlist census over every
+  attempt; a status=ERROR run with a valid answer and only errored reads is
+  admitted; the `init.agent` echo is NOT a proof, agy echoes the requested
+  name even on fallback); (2) the rendered prompt (this block), which still
+  carries every pin — the model can ignore system text but cannot call a
+  tool it was not given. The pre-2026-08-22 sentence "the prompt is the only
+  PER-CALL carrier" was an agy-1.1.8 fact that stayed in this file nine
+  releases too long (3-family cross-check 2026-08-22, ledger
+  `docs/agy-vendor-workarounds.md` W-28). A packet-dir `GEMINI.md` is still
+  inert under `-p`; the global `~/.gemini/GEMINI.md` still loads.
   Provenance: the official rules doc is antigravity.google/docs/rules-workflows
   (6-probe spike); the CLI's own bundled `agy-customizations` skill
   mis-describes both the rule-file names and their paths, so do not author a
@@ -566,14 +633,31 @@ digest-less file is a leg that produced no read evidence.
 
 Two live claims govern whether a deployment can run this leg at all:
 
-- **Write/exec containment is UNCONFIRMED at the version the wrapper
-  dispatches**, and `execute_url` / `mcp` / `unsandboxed` are INTENT.
-- **Reads and network are open BY DESIGN on every build** — `read_file` and
-  `read_url` are never denied, so an adversarial packet can make the leg read
-  OUTSIDE `--cwd` and ship data out over the network (probe-CONFIRMED under
-  `--sandbox read-only --cwd <packet dir>`). A deployment that cannot accept
-  that runs the leg inside an EXTERNAL fs-scoped, network-denied OS sandbox;
-  `AGY_NO_HEADLESS_AUTOAPPROVE=1` does not close it.
+- **Write/exec are ABSENT on the v2 read-only path** (allowlist agent, no
+  danger flag): a fallback run's writes/shell are denied by the vendor's own
+  headless policy (ladder round 2 K1 / K5, agy 1.1.18) and the admission
+  census rejects the run; tools with NO permission action (notebook /
+  subagent / message / browser_* family) are detection-only. A status=ERROR
+  run is admitted when its verdict validates and its errored steps are all
+  allowed reads — the read-audit still shows every errored step. Updated
+  2026-08-22 (v2).
+- **Other disclosed v2 residuals:** a fallback that calls nothing forbidden is
+  indistinguishable and accepted (side-effect-free); two agent files outside
+  the repo per host (`--setup-agents`); a vendor rename of an allowlisted
+  tool blinds the agent (no `files_read` → this gate VOIDs the leg);
+  `_common._run_once` mirrors raw vendor stderr on every path.
+- **Reads are open BY DESIGN on every build** — `read_file` is never denied,
+  so the leg can read ANY file the user can read OUTSIDE `--cwd`
+  (probe-CONFIRMED under `--sandbox read-only --cwd <packet dir>`). Network:
+  the v2 REVIEW agent (`triad-readonly-review`) carries NO web tool, so this
+  leg's own tools cannot ship data out; only the research agent (`--web`)
+  keeps `read_url_content` / `search_web`. A deployment that cannot accept
+  the read residual runs the leg inside an EXTERNAL fs-scoped OS sandbox.
+- **Host hooks (owner-accepted residual, v2 gate r2):** a PreToolUse hook the
+  operator installed in `~/.gemini/config/hooks.json` runs its command on every
+  matching tool call in print mode, outside agy's permission model and outside
+  the stream the census sees; host configuration is inside the trust boundary
+  and no wrapper path (v1.2, legacy or v2) ever governed it.
 
 The version chronology, the probe record and the deny-set inspection behind both
 claims are owned by the `triad-antigravity-dispatch` skill — its § Headless

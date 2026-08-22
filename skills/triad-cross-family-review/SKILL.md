@@ -1,8 +1,37 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE (a MERGE WITH FIXES carrying only non-blocking findings satisfies the gate). Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.27.3
+version: 0.28.0
 # changelog:
+#   0.28.0 (2026-08-22): GATE STOP RULES + agy leg v2. Rules 5 / 12 / 14 now
+#     carry the countable stop rules the three-family consultation proposed
+#     after the 9-round v1.2 gate: a 3-full-round cap (a 4th needs an owner
+#     re-budget citing a NEW defect observed in real output), the occurrence
+#     gate (REACHABLE-UNOBSERVED becomes code only from REAL vendor output; a
+#     fixture-only repro is a residual), convergence on a round with zero new
+#     REAL must-fix (then ONE hunk-scoped focused re-confirm), docs never gate
+#     code (batched post-merge), scope freeze after round 2, two-family floor
+#     for single-family REACHABLE items. agy leg: the wrapper's read-only
+#     path v2 (setup-once allowlist agents, --add-dir, no danger flag / deny
+#     transaction; a status=ERROR run with a valid bound verdict and a clean
+#     census is ADMITTED) — leg-contracts resynced, READ-GRANT block
+#     regenerated from the template.
+#   0.27.4 (2026-08-22): agy leg = tools-allowlisted custom agent + EXISTENCE
+#     pin. (a) The wrapper's `--sandbox read-only` now dispatches agy as the
+#     `triad-readonly-review` custom primary agent (no shell/write/MCP/browser
+#     tool; v1.2: the settings deny transaction and the headless auto-approve
+#     flag are RETAINED as belt + read-tool approval, agy --sandbox is
+#     dropped) — the 2026-08-22 permission-ladder spike measured
+#     every deny/ask shape ending status=ERROR on ONE denied step while the
+#     allowlist ends SUCCESS; the rendered READ-GRANT now says "you have NO
+#     shell tool" instead of the retired "cat is deny-listed" line, and the
+#     agy-leg bullets in leg-contracts.md replace the agy-1.1.8-era "prompt
+#     is the only per-call carrier" sentence (3-family cross-check finding).
+#     (b) EXISTENCE pin: the READ-GRANT forbids opening paths that do not
+#     exist (plan-stage NEW/planned files) — upstream #826 kills the turn at
+#     permission-conversion; the ContentOffset clause's rationale is
+#     corrected (valid arg; the failure is paging past EOF). Pinned by
+#     tests/unit/skills/t4-prepare.sh. Ledger: docs/agy-vendor-workarounds.md.
 #   0.27.0 (2026-08-13): agy read-audit gate -> ONE executable lib helper
 #     (owner approval; backlog record 2026-08-07 — the leader re-typed the
 #     canonical jq block inline once per round, ~6x/gate observed). NEW
@@ -245,17 +274,27 @@ Five references carry the detail — open one only when its column applies.
    file itself — and a binding mismatch is
    the INVALID-leg handling, never a pass
    (`references/leg-contracts.md` § Verdict binding).
-5. **Fix→re-confirm loop, no round cap — stops are evidence-based.** Findings →
-   fix each (own implementer + per-fix review) → re-run the 3-way on the fixed
-   branch. A first-pass DO-NOT-MERGE addressed by a FIX closes only through a
-   re-confirm pass, never by the leader asserting it is fixed; a finding refuted
-   by a probe closes through that path instead, with the probe recorded. There is
-   no round cap (owner directive — the former `TRIAD_REVIEW_MAX_ROUNDS` is
-   retired): rounds continue while they keep landing REAL findings, and they stop
-   on EVIDENCE — rule 12's non-convergence stop, rule 4's CONFLICTED/OSCILLATING
-   owner call, or rule 14's TERMINAL exit. Name the non-termination to the owner
-   rather than looping on autopilot. Rule 14 BOUNDS the loop's autonomy: only
-   REAL-triaged findings with minimal diffs are fixed autonomously.
+5. **Fix→re-confirm loop with a COUNTABLE cap (owner directive 2026-08-22,
+   after the 9-round v1.2 agy gate).** Findings → fix each (own implementer +
+   per-fix review) → re-confirm on the fixed branch. A first-pass DO-NOT-MERGE
+   addressed by a FIX closes only through a re-confirm pass, never by the
+   leader asserting it is fixed; a finding refuted by a probe closes through
+   that path instead, with the probe recorded. Stops: (a) **round cap** — at
+   most THREE full-family rounds per gate (initial, fix re-confirm, final
+   re-confirm); a fourth needs an owner re-budget citing a NEW defect observed
+   in real output, never "one more round"; (b) **convergence** — a round with
+   zero NEW REAL must-fix findings ends the gate: if that round produced a
+   fix wave, apply it and run ONE focused re-confirm scoped to the wave's
+   hunks — the two GATING legs (codex + claude) at minimum, agy optional;
+   this focused pass is NOT a full round and does not count against the cap
+   — a clean round with no wave skips the focused pass; then merge, PROVIDED every prior
+   blocking row already carries a rule-4 release disposition (re-confirmed
+   fix, recorded probe, or owner decision); (c) rule 12's non-convergence stop, rule 4's CONFLICTED/OSCILLATING
+   owner call, rule 14's TERMINAL exit. **Docs never gate code**: text-only
+   findings are batched into one post-merge doc-resync commit and never
+   trigger a round. Name the non-termination to the owner rather than looping
+   on autopilot. Rule 14 BOUNDS the loop's autonomy: only REAL-triaged
+   findings with minimal diffs are fixed autonomously.
 6. **Codex-path caveat (cross-family-rule nuance).** When the work being reviewed IS
    the codex dispatch path itself, codex reviews the *artifact diff* (e.g.
    Python), not its own reasoning — cross-family + fresh-eye still holds, so the
@@ -354,6 +393,12 @@ Five references carry the detail — open one only when its column applies.
     probe-refuted side is not a conflict; close it by recording the probe. One
     healthy signal is not a conflict either: independent legs finding the SAME
     defect is a CONVERGENCE floor — fix it and run one final confirm.
+    **Scope freeze (2026-08-22):** from round 3 on, a finding must cite a hunk
+    of the gated diff; anything else (a pre-existing line, a neighbouring
+    design, a hypothetical input shape) opens a NEW slice rather than another
+    round of this one. **Two-family floor:** a single-family
+    REACHABLE-UNOBSERVED item without a measured probe is a residual, not a
+    fix.
 13. **Leg orchestration: background dispatch, ONE generous wait, no unrelated
     interleaving.** Dispatch every leg in the background and wait event-driven:
     one generous wait per leg, never short repeated polls. A wait that expires is
@@ -379,14 +424,20 @@ Five references carry the detail — open one only when its column applies.
     rule-4 consolidation BEFORE it may enter the fix queue: **REAL** (demonstrated
     — repro, logged occurrence, or cited passages read side by side) →
     minimal-diff fix; **REACHABLE-UNOBSERVED** (mechanism exists, no occurrence
-    evidence) → reproduce FIRST, and a failed repro becomes a DISCLOSED residual
+    evidence) → reproduce FIRST — **from REAL vendor output** (a capture, a
+    run-log, an audit row): a repro that exists only in a fixture records a
+    DISCLOSED residual, it does not earn code (occurrence gate, 2026-08-22 —
+    the v1.2 agy gate spent five rounds on parser shapes that never occurred
+    in 22 real captures); a failed repro likewise becomes a DISCLOSED residual
     rather than a reclassification; **SPECULATIVE** (cannot occur in this
     deployment) → **no code**, record a DISCLOSED residual. Any fix that expands
     design scope — a new guard/fallback/retry/lock/validation layer, a new
     file/dependency/config surface, a spill beyond the finding's file, or more
     than 30 changed lines — STOPS for an explicit owner OK, even mid-round. A
     round whose remaining findings are all SPECULATIVE or repro-failed is
-    TERMINAL: record the residuals and route a BLOCKING one to the owner. Every
+    TERMINAL: record the residuals and route to the owner any repro-failed
+    REACHABLE item whose residual row would be BLOCKING (a SPECULATIVE item
+    cannot block by definition). Every
     finding that is not fixed carries a row in the residual table; rows are
     updated, never deleted. The class definitions, the countable scope-gate
     thresholds, the residual-table schema and dispositions, and the reviewer-side
@@ -479,7 +530,8 @@ Five references carry the detail — open one only when its column applies.
    is BLOCKING, otherwise return to Flow 4. Do not GOTO 2. Otherwise, if the round
    is CONVERGING: fix each REAL finding with a minimal diff (implementer +
    per-fix review; a design-expanding fix stops for an owner OK), then GOTO 2 to
-   re-confirm, with no round cap (rule 5). If any item is CONFLICTED or the round
+   re-confirm within rule 5's three-round cap (a zero-new-REAL-must-fix round
+   ends the gate with one focused re-confirm). If any item is CONFLICTED or the round
    is OSCILLATING, call the owner instead of re-dispatching and hand over the
    conflict table; non-conflicted findings may continue their fix loop meanwhile.
 

@@ -518,7 +518,10 @@ def _agy_read_grant(packet_name: str) -> str:
     round actually wrote."""
     return (
         f"Read `{packet_name}` FIRST and ONCE with your file-view tool "
-        "(shell readers like `cat` are deny-listed under read-only) — it "
+        "(you have NO usable shell for this review: under the wrapper's "
+        "read-only containment the command tool is absent or every command is "
+        "denied — on agy the tools-allowlisted `triad-readonly-review` agent, "
+        "on gemini the policy-engine deny — so never attempt one) — it "
         "is the round's framing and your review's required entry point. "
         "You MAY then read files under the repo with your file-view tool "
         "to VERIFY the packet's claims — cite file:line for anything you "
@@ -530,9 +533,18 @@ def _agy_read_grant(packet_name: str) -> str:
         "a root-wide search times out on large trees and the errored step "
         "voids your review; to "
         "OPEN a file, call your file-view tool with its CURRENT native "
-        "arguments — the absolute path — and do NOT pass paging arguments "
-        "such as StartLine, EndLine, or ContentOffset (deprecated; current "
-        "agy rejects them). Do NOT read files outside the repo, do "
+        "arguments — the absolute path; paging arguments (StartLine, EndLine, "
+        "ContentOffset) are allowed only WITHIN the size the tool reports, "
+        "never past the end of the file (an overshoot is an errored step "
+        "that voids your review); and "
+        "OPEN ONLY paths that exist on disk NOW — a file the packet's DESIGN "
+        "TEXT names as planned or to-be-created does NOT exist yet, so never "
+        "call your file-view tool on it: review its design from the packet "
+        "text alone (a does-not-exist open is an errored step and voids your "
+        "review); a file that appears as a new-file hunk in the fenced diff "
+        "DOES exist when the reviewed branch is the checked-out tree (the "
+        "usual case) — otherwise treat it as design text. Do NOT read files "
+        "outside the repo, do "
         "NOT search the web, and do NOT consult prior conversations or "
         "scratch space. Do NOT modify any file, do NOT change external "
         "state, and do NOT run commands, tests, scripts, builds, or "
@@ -1326,8 +1338,10 @@ def _render_agy_prompt(packet_path: Path, review_id: str, digest: str) -> str:
     containment block — here the READ-GRANT — rides immediately BEFORE the
     closing instruction, never leading the prompt, because an instruction
     at the START of a long prompt is the one most likely dropped by the
-    time the model acts (the documented Gemini constraint-drop shape), and
-    this is the one leg whose write/exec containment is intent-only."""
+    time the model acts (the documented Gemini constraint-drop shape); the
+    block carries the scope / existence / paging conventions the model must
+    follow — write/exec containment itself is mechanical (the v2 allowlist
+    agent has no such tool; gemini's policy engine denies)."""
     return (
         "You are the Google-family leg of a cross-family pre-merge review. "
         f"{_ADVERSARIAL_FRAMING}\n\n"

@@ -28,14 +28,12 @@ multi-section documents):
    only a one-line confirmation (e.g. `DONE <filename>`) to the chat.
 2. The leader reads the file as the deliverable; the chat answer is only a
    completion signal.
-3. **Availability caveat.** `--dangerously-skip-permissions` voids the WRAPPER's
-   deny transaction on every dispatched build (§ Headless soft-deny adaptation —
-   the flag fires unconditionally there, opt-out aside), but agy's OWN engine
-   appeared to re-deny `write_file` independently on the one probed build, which
-   sits below the current dispatch floor and has not been re-probed there
-   (`references/isolation.md` § Containment posture). So do NOT assume a
-   `--sandbox read-only` dispatch can write the output file — and agy may
-   SELF-REPORT `DONE` either way, so verify arrival, always. The contract
+3. **Availability caveat.** On agy 1.1.17 the WRAPPER's deny transaction
+   denies `write_file(*)` even under `--dangerously-skip-permissions` (probe G,
+   2026-08-22 — Deny > dsp; `references/isolation.md` § Containment posture),
+   and under agent mode the `triad-readonly-review` allowlist carries no write
+   tool at all. So a `--sandbox read-only` dispatch CANNOT write the output
+   file — and agy may SELF-REPORT `DONE` either way, so verify arrival, always. The contract
    therefore still REQUIRES the write-capable permissive baseline (`--sandbox`
    omitted, non-hardened) as the reliable path.
 4. If a stdout-shaped dispatch comes back `truncated-answer` (65), re-dispatch
