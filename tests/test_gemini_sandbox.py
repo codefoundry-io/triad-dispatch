@@ -65,8 +65,42 @@ def test_readonly_attaches_policy(tmp_path: Path) -> None:
 
 
 def test_workspace_write_has_no_policy(tmp_path: Path) -> None:
-    _r, argv = _run(tmp_path, "--sandbox", "workspace-write")
+    # --cwd added 2026-08-26 (write-posture guard): the axis intent — no
+    # --policy attached on workspace-write — is unchanged; a write posture
+    # without --cwd is now rejected before spawn (its own test below).
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    _r, argv = _run(tmp_path, "--sandbox", "workspace-write", "--cwd", str(wd))
     assert "--policy" not in argv
+
+
+def test_workspace_write_without_cwd_rejected_before_spawn(tmp_path: Path) -> None:
+    # Owner ruling 2026-08-26 (codex/claude symmetry): a write-enabled
+    # dispatch's blast radius must be an isolated directory, never the
+    # wrapper's inherited cwd — codex --task code and claude workspace-write
+    # already carry this guard; gemini was the one write-capable wrapper
+    # without it.
+    r, argv = _run(tmp_path, "--sandbox", "workspace-write")
+    assert r.returncode != 0, "workspace-write without --cwd must be rejected"
+    assert "requires --cwd" in r.stderr
+    assert argv == "", "gemini must not be spawned on the rejected combo"
+
+
+def test_auto_edit_without_cwd_rejected_before_spawn(tmp_path: Path) -> None:
+    # auto_edit auto-approves writes — same write posture, same guard.
+    r, argv = _run(tmp_path, "--approval-mode", "auto_edit")
+    assert r.returncode != 0, "auto_edit without --cwd must be rejected"
+    assert "requires --cwd" in r.stderr
+    assert argv == "", "gemini must not be spawned on the rejected combo"
+
+
+def test_auto_edit_with_cwd_passes_guard(tmp_path: Path) -> None:
+    # Positive control: the guard keys on the MISSING directory, not on the
+    # posture itself — with --cwd the dispatch proceeds to the vendor.
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    _r, argv = _run(tmp_path, "--approval-mode", "auto_edit", "--cwd", str(wd))
+    assert argv != "", "auto_edit WITH --cwd must reach the vendor spawn"
 
 
 def test_default_unset_has_no_policy(tmp_path: Path) -> None:
@@ -98,6 +132,9 @@ def test_readonly_plus_auto_edit_rejected_before_spawn(tmp_path: Path) -> None:
 TESTS = [
     test_readonly_attaches_policy,
     test_workspace_write_has_no_policy,
+    test_workspace_write_without_cwd_rejected_before_spawn,
+    test_auto_edit_without_cwd_rejected_before_spawn,
+    test_auto_edit_with_cwd_passes_guard,
     test_default_unset_has_no_policy,
     test_yolo_approval_mode_rejected_before_spawn,
     test_plan_approval_mode_rejected_before_spawn,

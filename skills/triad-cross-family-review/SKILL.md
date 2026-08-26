@@ -1,8 +1,12 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE (a MERGE WITH FIXES carrying only non-blocking findings satisfies the gate). Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.28.1
+version: 0.28.2
 # changelog:
+#   0.28.2 (2026-08-26): doc resync — references/leg-contracts.md agy-leg
+#     `--cwd` obligation is now ENFORCED by the wrapper (owner ruling: a
+#     review dispatch without --cwd = EXIT_ARG_ERROR pre-spawn, agy-dispatch
+#     0.16.2); the 0.28.1 "does not yet refuse" clause superseded.
 #   0.28.1 (2026-08-26): doc-only — rule 13 gains the session-cwd-pinning
 #     project_f40_residual_discharge_merged_2026_08_19): the leader's cwd
 #     resets to the primary working directory at context reinitialization

@@ -141,6 +141,20 @@ def main() -> int:
         # on a public install must not be write-capable by omission.
         args.sandbox = "read-only"
 
+    if (args.sandbox == "workspace-write" or args.approval_mode == "auto_edit") \
+            and not args.cwd:
+        # Write-posture directory precondition (owner ruling 2026-08-26,
+        # closing the codex/claude symmetry gap): a write-enabled dispatch's
+        # blast radius must be an isolated directory, never the wrapper's
+        # inherited cwd — codex_wrapper (--task code) and claude_wrapper
+        # (workspace-write) already carry the same guard; gemini was the one
+        # write-capable wrapper without it. The read-only/auto_edit CONFLICT
+        # above still fires first (more specific diagnosis).
+        log("--sandbox workspace-write / --approval-mode auto_edit requires --cwd "
+            "(write-enabled dispatch: the blast radius must be an isolated "
+            "directory, never the wrapper's inherited cwd)")
+        return EXIT_ARG_ERROR
+
     gemini_bin = require_binary("gemini")
 
     pydantic_cls = None

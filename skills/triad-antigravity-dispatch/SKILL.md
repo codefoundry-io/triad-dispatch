@@ -1,8 +1,16 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.16.1
+version: 0.16.2
 # changelog:
+#   0.16.2 (2026-08-26): review-agent `--cwd` guard ENFORCED (owner ruling) —
+#     a `--sandbox read-only` review dispatch (no `--web`) without `--cwd` is
+#     now refused EXIT_ARG_ERROR by the wrapper BEFORE any vendor work
+#     (previously a caller obligation only; the 0.16.1 "does not yet refuse"
+#     clause is superseded). The `--web` research agent stays exempt.
+#     § Read-only path v2 caller obligation + references/invocation.md
+#     resynced. Wrapper: antigravity_wrapper.py main() precondition;
+#     t16 axes V7/V8.
 #   0.16.1 (2026-08-26): doc-only — `--cwd` DECLARED MANDATORY on the read-only
 #     path as a CALLER obligation (the wrapper derives `--add-dir`, the leg's
 #     only read grant, from it and does not yet refuse its absence; audit
@@ -186,13 +194,16 @@ writes stay denied without the danger flag, K5), and NOTHING else: no
 `--dangerously-skip-permissions`, no settings deny transaction, no agy
 `--sandbox`, no soft-deny retry.
 
-**Caller obligation — `--cwd` is MANDATORY on this path.** `--add-dir` is
-derived from `--cwd` and from nothing else, and the wrapper does not (yet)
-refuse its absence. Omit `--cwd` and the dispatch runs with NO repository
-read grant: every read soft-denies, and the read-blind guard catches only a
-run whose reads visibly errored — a leg that never attempted a read is
-admitted `ok` and answers blind. Measured population: 211 of the first 421
-`--agent` dispatches in `_logs/antigravity/audit.jsonl` (all in the
+**Caller obligation — `--cwd` is MANDATORY on this path, and the wrapper
+ENFORCES it (owner ruling 2026-08-26).** `--add-dir` is derived from `--cwd`
+and from nothing else; a review dispatch (no `--web`) without `--cwd` is
+refused `EXIT_ARG_ERROR` BEFORE any vendor work, with the remedy on stderr.
+The `--web` research agent stays exempt (web-only research may legitimately
+run grant-less). Why the guard exists: a grant-less dispatch runs read-blind
+— every read soft-denies, and the admission-side read-blind guard catches
+only a run whose reads visibly errored, so a leg that never attempted a read
+was admitted `ok` and answered blind. Measured population: 211 of the first
+421 `--agent` dispatches in `_logs/antigravity/audit.jsonl` (all in the
 2026-08-22 pre-fix window) carried no `--add-dir`; 94 were admitted `ok`.
 Build the value from the REAL working directory read at dispatch time
 (`pwd`), never from an assumed session cwd (leader CLAUDE.md Pitfall #5).

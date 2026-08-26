@@ -1127,6 +1127,20 @@ def main() -> int:
                     "pass --sandbox read-only (hardened installs do so by default)")
         return _common.EXIT_ARG_ERROR
 
+    if args.sandbox == "read-only" and not args.web and args.cwd is None:
+        # Review-agent grant precondition (owner ruling 2026-08-26): --add-dir
+        # — the leg's ONLY repository read grant — is derived from --cwd, so a
+        # review dispatch without it runs read-blind (the 2026-08-22 pre-fix
+        # window: 211 grant-less dispatches, 94 admitted ok; the read-blind
+        # admission guard catches only a run whose reads visibly errored).
+        # Refuse BEFORE any vendor work; the --web research agent may
+        # legitimately run grant-less (web-only research) and stays ungated.
+        _common.log("--sandbox read-only (review agent) requires --cwd — the wrapper "
+                    "derives --add-dir, the leg's only repository read grant, from "
+                    "it; pass --cwd <abs root the leg's reads must resolve in> "
+                    "(a --web research dispatch is exempt)")
+        return _common.EXIT_ARG_ERROR
+
     pydantic_cls = None
     if args.pydantic:
         try:

@@ -1,8 +1,15 @@
 ---
 name: triad-gemini-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Gemini CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 gemini_wrapper.py` raw; the user asks to call gemini once, have gemini handle a task, or run a one-shot gemini analysis; a higher-level orchestration SKILL needs the Gemini leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (`triad-codex-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.6.1
+version: 0.6.2
 # changelog:
+#   0.6.2 (2026-08-26): write-posture `--cwd` guard ENFORCED (owner ruling,
+#     closing the codex/claude symmetry gap) — `--sandbox workspace-write` or
+#     `--approval-mode auto_edit` without `--cwd` is refused EXIT_ARG_ERROR
+#     before any vendor spawn (gemini was the one write-capable wrapper
+#     without the guard). Defaults paragraph documents it; wrapper:
+#     gemini_wrapper.py main() precondition; test_gemini_sandbox.py +3 cases
+#     (existing workspace-write axis now passes --cwd, intent unchanged).
 #   0.6.1 (2026-08-01): Step 1 heredoc terminator is now collision-resistant
 #     (`TRIAD_GEMINI_PROMPT_EOF`, replacing the bare `PROMPT`) and
 #     `--prompt-file <absolute-path>` is the STANDING path for content the
@@ -92,7 +99,7 @@ TRIAD_GEMINI_PROMPT_EOF
 `--prompt-file` REPLACES the `--prompt` heredoc — argparse rejects both
 together, so delete the heredoc when switching to a file body.
 
-Defaults: no `--sandbox` policy and `--approval-mode default` (read auto, write/shell prompt). `--sandbox read-only` attaches the wrapper-adjacent `policies/gemini-readonly.toml` for that call only. `auto_edit` = write/shell auto (only on explicit leader request) and conflicts with `--sandbox read-only`. `--approval-mode plan/yolo` is rejected by argparse.
+Defaults: no `--sandbox` policy and `--approval-mode default` (read auto, write/shell prompt). `--sandbox read-only` attaches the wrapper-adjacent `policies/gemini-readonly.toml` for that call only. `auto_edit` = write/shell auto (only on explicit leader request) and conflicts with `--sandbox read-only`. `--approval-mode plan/yolo` is rejected by argparse. **Write postures require `--cwd` (owner ruling 2026-08-26, enforced)**: `--sandbox workspace-write` or `--approval-mode auto_edit` without `--cwd` is refused `EXIT_ARG_ERROR` before any vendor spawn — a write-enabled dispatch's blast radius must be an isolated directory, never the wrapper's inherited cwd (the same guard codex `--task code` and claude workspace-write already carry). Build `--cwd` from the real working directory read at dispatch time (`pwd`), never an assumed session cwd (leader CLAUDE.md Pitfall #5).
 
 > **Why `plan` mode is not exposed: it is unreliable for heavy multi-file agentic reads.** On a heavy task (e.g. "read 16 source files in full and review"), the Pro plan-loop emits an empty/malformed turn (vendor `Invalid stream: The model returned an empty response or malformed tool call`), surfacing as `extraction-error` (rc=1) in ~10-25s. So this wrapper no longer exposes `plan`; use `--sandbox read-only` for read-only reviews and `--approval-mode default` for normal reads.
 
