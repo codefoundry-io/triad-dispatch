@@ -215,8 +215,16 @@ the shallow-tier fact for the round record.
   leg runs as the setup-once tools-allowlisted agent `triad-readonly-review`
   (`--agent`; view_file / grep_search / list_dir / find_by_name / finish —
   NO web tool) with `--add-dir <cwd>` for repository reads; no danger flag,
-  no settings deny transaction, no agy `--sandbox`. The host runs
-  `antigravity_wrapper.py --setup-agents` once (a missing/drifted file is
+  no settings deny transaction, no agy `--sandbox`. **Caller obligation:
+  pass `--cwd <absolute root the leg's reads must resolve in>` — the wrapper
+  forwards it as `--add-dir`, the leg's ONLY read grant, and does not yet
+  refuse its absence; an omitted `--cwd` dispatches grant-less and the leg
+  reviews read-blind (2026-08-22 audit: 211/421 pre-fix dispatches, 94
+  admitted ok). Symmetric with the codex leg's rule-9 READ-GRANT + `--cwd`
+  duty; build the value from the real cwd read at dispatch time (`pwd`),
+  never an assumed session directory.** The host runs
+  `antigravity_wrapper.py
+  --setup-agents` once (a missing/drifted file is
   `config-conflict` naming it). Admission is the wrapper's `admit()`: framing,
   one result, allowlist census over every attempt, and — the root-cause fix
   — a `status != SUCCESS` run whose verdict validates and whose errored steps

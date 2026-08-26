@@ -1,8 +1,13 @@
 ---
 name: triad-codex-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Codex CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 codex_wrapper.py` raw; the user asks to call codex once, have codex handle a task, or run a one-shot codex analysis; a higher-level orchestration SKILL needs the Codex leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Gemini (`triad-gemini-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.9.2
+version: 0.9.3
 # changelog:
+#   0.9.3 (2026-08-26): doc-only — § Leader procedure step 3's wrapper
+#     invocation now carries the absolute wrapper path (was relative,
+#     resolvable from exactly one directory; contradicted the Step-1
+#     template's absolute shape). Session-cwd hazard rationale: leader
+#     CLAUDE.md Pitfall #5.
 #   0.9.2 (2026-08-08): `--model <catalog-slug>` dispatch-time model pin
 #     (free-form passthrough to `-c model="<slug>"`; config-alive when
 #     omitted; no slug ever hardcoded). Origin: config-alive default moved

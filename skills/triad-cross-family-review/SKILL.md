@@ -1,8 +1,18 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE (a MERGE WITH FIXES carrying only non-blocking findings satisfies the gate). Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.28.0
+version: 0.28.1
 # changelog:
+#   0.28.1 (2026-08-26): doc-only — rule 13 gains the session-cwd-pinning
+#     project_f40_residual_discharge_merged_2026_08_19): the leader's cwd
+#     resets to the primary working directory at context reinitialization
+#     (probe-measured 2026-08-26 — tied to reinit, NOT to background
+#     dispatch itself), which lands at long-leg wake-up boundaries; at every
+#     wake-up/dispatch boundary re-read the real cwd (`pwd`) and build leg
+#     args absolute at dispatch time. references/leg-contracts.md: the agy
+#     leg's `--cwd` caller obligation stated (symmetric with the codex leg's
+#     rule-9 READ-GRANT duty; audit census 211/421 grant-less pre-fix
+#     dispatches on 2026-08-22). No flow/contract change.
 #   0.28.0 (2026-08-22): GATE STOP RULES + agy leg v2. Rules 5 / 12 / 14 now
 #     carry the countable stop rules the three-family consultation proposed
 #     after the 9-round v1.2 gate: a 3-full-round cap (a 4th needs an owner
@@ -419,6 +429,14 @@ Five references carry the detail — open one only when its column applies.
     by default (`run_in_background` overrides per call) and fires a completion
     task-notification; a completed agent is resumed by id/name via `SendMessage`;
     wrapper legs are background Bash plus their completion notification.
+    **Session-cwd pinning (probe-measured 2026-08-26):** the leader's
+    foreground cwd is NOT durable across the wait — it resets to the primary
+    working directory at context reinitialization, which lands exactly at
+    long-leg wake-up boundaries (both recorded 2026-08-15 F40 occurrences).
+    At every wake-up or dispatch boundary, RE-READ the real cwd (`pwd`)
+    before the first repo-dependent command, and build every leg argument
+    (`--cwd`, `--prompt-file`, packet paths) absolute at dispatch time —
+    never from the memory of an earlier `cd`.
 14. **Finding triage and over-design containment (owner directive).** The loop
     structurally rewards ADDING code, so every finding is classified during
     rule-4 consolidation BEFORE it may enter the fix queue: **REAL** (demonstrated

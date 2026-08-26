@@ -1,8 +1,19 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.16.0
+version: 0.16.1
 # changelog:
+#   0.16.1 (2026-08-26): doc-only — `--cwd` DECLARED MANDATORY on the read-only
+#     path as a CALLER obligation (the wrapper derives `--add-dir`, the leg's
+#     only read grant, from it and does not yet refuse its absence; audit
+#     census: 211/421 `--agent` dispatches ran grant-less in the 2026-08-22
+#     pre-fix window, 94 admitted ok). Step 1 now requires path args built
+#     from the REAL cwd read at dispatch time (`pwd`), never an assumed
+#     session cwd (Pitfall #5 — reset probe-tied to context reinitialization
+#     2026-08-26, not to background dispatch itself). Host-setup line now
+#     carries the absolute wrapper path (was bare, resolvable from exactly
+#     one directory); references/invocation.md `--cwd` entry resynced to the
+#     same obligation. No wrapper/contract change.
 #   0.16.0 (2026-08-22): READ-ONLY PATH v2 (spec docs/superpowers/specs/
 #     2026-08-22-agy-readonly-v2-spec.md; three-family consultation). `--sandbox
 #     read-only` on agy >= 1.1.18 = setup-once tools-allowlisted agents
@@ -175,7 +186,18 @@ writes stay denied without the danger flag, K5), and NOTHING else: no
 `--dangerously-skip-permissions`, no settings deny transaction, no agy
 `--sandbox`, no soft-deny retry.
 
-**Host setup (once):** `python3 antigravity_wrapper.py --setup-agents` writes
+**Caller obligation — `--cwd` is MANDATORY on this path.** `--add-dir` is
+derived from `--cwd` and from nothing else, and the wrapper does not (yet)
+refuse its absence. Omit `--cwd` and the dispatch runs with NO repository
+read grant: every read soft-denies, and the read-blind guard catches only a
+run whose reads visibly errored — a leg that never attempted a read is
+admitted `ok` and answers blind. Measured population: 211 of the first 421
+`--agent` dispatches in `_logs/antigravity/audit.jsonl` (all in the
+2026-08-22 pre-fix window) carried no `--add-dir`; 94 were admitted `ok`.
+Build the value from the REAL working directory read at dispatch time
+(`pwd`), never from an assumed session cwd (leader CLAUDE.md Pitfall #5).
+
+**Host setup (once):** `antigravity_wrapper.py --setup-agents` writes
 both agent files under `~/.gemini/config/agents/` (workspace `.agents/` is NOT
 loaded in print mode — K1). A dispatch only CHECKS the file (byte-identical to
 the embedded body); missing or drifted → `config-conflict` (65) naming
@@ -294,6 +316,13 @@ SKILL body** — a quoted template carries the house terminator as literal text,
 which is exactly how this defect was first observed. `--prompt-file` removes
 the terminator collision entirely and is the standing path for both.
 
+Every path argument (`--cwd`, `--prompt-file`) is ABSOLUTE and is built from
+the REAL working directory read at dispatch time (`pwd`) — never from an
+assumed session cwd. The session cwd resets to the primary working directory
+around context reinitialization (leader CLAUDE.md Pitfall #5; probe-measured
+2026-08-26), so a path built from the memory of an earlier `cd` silently
+targets the wrong repo.
+
 ```bash
 AGY_CMD=(antigravity_wrapper.py \
   --prompt "$(cat <<'TRIAD_AGY_PROMPT_EOF'
@@ -327,7 +356,9 @@ Flags at a glance: `--sandbox read-only` (v2 read-only path, § Read-only path v
 · `--prompt-file <abs>` (replaces the heredoc: non-leader-authored bodies,
 or a body quoting a template — Step 1) · `--pydantic
 module:Class` (native `--json-schema`) · `--timeout <s>` (default 600) · `--cwd
-<abs>` · `--model <selector>` · `--effort low|medium|high` (both pin-floored at
+<abs>` (**REQUIRED with `--sandbox read-only`** — it becomes `--add-dir`, the
+leg's only read grant; § Read-only path v2 caller obligation) · `--model
+<selector>` · `--effort low|medium|high` (both pin-floored at
 agy >= 1.1.10) · `--debug`. Still **no `--dangerously-*`** (Hard
 rule 7). What each flag actually does, and the wrapper-internal transport note:
 [references/invocation.md](references/invocation.md).

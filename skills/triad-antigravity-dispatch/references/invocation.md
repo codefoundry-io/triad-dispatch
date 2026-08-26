@@ -31,7 +31,13 @@ terminator, `--prompt-file` rule, argv-array retention) stays in Step 1 itself.
   a dispatch template or a SKILL body — quoted text carries the house heredoc
   terminator verbatim and would close the heredoc early (Step 1). The path is
   absolute, and a hardened install gates it against the allowed roots.
-- `--cwd` sets agy's working directory.
+- `--cwd` sets agy's working directory. On the read-only path
+  (`--sandbox read-only`) it is ALSO the source of `--add-dir` — the leg's
+  only repository read grant — and is therefore MANDATORY there (SKILL.md
+  § Read-only path v2, caller obligation); the wrapper does not yet refuse
+  its absence. Note agy resolves RELATIVE paths against its own scratch
+  project rather than `--cwd` (isolation.md § Tool to permission-action map,
+  closing note; ledger W-21), so prompt-cited paths stay absolute regardless.
 - `--model <selector>` passes a CATALOG selector from `agy models` (no-pin
   default when omitted). **Pin floor: agy >= 1.1.10** — before 1.1.10 the
   vendor applied `--model`/`--effort` after model configuration had already
