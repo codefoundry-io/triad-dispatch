@@ -883,6 +883,18 @@ class RunResult:
     # Rendered from the PARSED numeric triple, so a pre-release/build suffix
     # the CLI prints (e.g. "-rc1") is not captured (r2 claude m2, disclosed).
     vendor_version: Optional[str] = None
+    # Effective working directory of the vendor spawn (cwd record-integrity
+    # slice, 2026-08-26 — origin: the 2026-08-22 grant-less agy window could
+    # not be adjudicated afterwards because no durable artifact recorded WHICH
+    # directory the vendor child ran in; _run_once computed the value for its
+    # log f-string and threw it away). Set by _run_once on every spawn attempt
+    # (the validated --cwd, or the inherited process cwd when --cwd is absent
+    # — including a failed spawn, where the attempted directory IS the
+    # forensic value). None on a RunResult that never reached a spawn; the
+    # audit/run-log key is then OMITTED (vendor_version shape rule). Never fed
+    # back into Popen(cwd=...) — os.getcwd() returns the PHYSICAL path, which
+    # would silently change a symlinked-cwd child's view.
+    effective_cwd: Optional[str] = None
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
@@ -1977,7 +1989,8 @@ def _run_once(
     emits its own canonical summary line later; a premature line here would
     duplicate the one the dispatch SKILL greps.
     """
-    log(f"exec cwd={cwd or os.getcwd()} timeout={timeout}s argv={cmd}")
+    effective_cwd = cwd or os.getcwd()
+    log(f"exec cwd={effective_cwd} timeout={timeout}s argv={cmd}")
     start = time.monotonic()
 
     # Scrub loader/interpreter injection vars so a poisoned parent env cannot
@@ -2005,7 +2018,7 @@ def _run_once(
         log(f"OSError on spawn: {e}")
         return RunResult(
             EXIT_ARG_ERROR, "", f"spawn failed: {e}\n", elapsed,
-            classification="unknown",
+            classification="unknown", effective_cwd=effective_cwd,
         )
 
     # Capture the child's process group NOW (r1/R10), while it is guaranteed
@@ -2099,6 +2112,7 @@ def _run_once(
         result = RunResult(ec, stdout, stderr, elapsed)
 
     result.vendor_exit_code = rc
+    result.effective_cwd = effective_cwd
     if classify_and_log:
         # SEMANTIC stderr classification (tool-not-installed / vendor warning)
         # stays the leader's judgment over the mirrored raw stderr.
@@ -2498,6 +2512,14 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
         # Key omitted (not null) when absent, so codex/gemini/claude records
         # keep their existing shape byte-for-byte (agy-only today).
         rec["vendor_version"] = result.vendor_version
+    if result.effective_cwd is not None:
+        # Effective spawn directory (cwd record-integrity slice, 2026-08-26).
+        # A filesystem path — the same custody class as the path args already
+        # riding `cmd` un-redacted in redact mode (P4.b strips prompt-bearing
+        # args only), so no redaction. Key omitted when the record never
+        # reached a spawn (pre-spawn guard failures), same shape rule as
+        # vendor_version above.
+        rec["effective_cwd"] = result.effective_cwd
     if redact:
         rec["stderr_len"] = len(result.stderr or "")
     if ok:
@@ -3073,6 +3095,11 @@ def emit_run_log(
         # release-day vendor-error outage — is version-correlated, so the
         # version needs to ride the artifact the analyzer can actually see.
         **({"vendor_version": result.vendor_version} if result.vendor_version is not None else {}),
+        # effective_cwd (cwd record-integrity slice, 2026-08-26): same
+        # omit-when-None spread pattern. The repair analyzer reads ONLY this
+        # run-log, and a wrong-root dispatch is exactly the class it must be
+        # able to see in the artifact it is allowed to open.
+        **({"effective_cwd": result.effective_cwd} if result.effective_cwd is not None else {}),
     }
     with path.open("w", encoding="utf-8") as f:
         json.dump(rec, f, ensure_ascii=False, indent=2)

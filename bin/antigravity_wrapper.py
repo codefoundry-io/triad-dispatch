@@ -70,6 +70,12 @@ class AgyResult:
     # The REAL vendor argv the dispatch ran (set by _dispatch) — main() audits and
     # run-logs this, never its own pre-dispatch placeholder (gate r1, 3 legs).
     cmd: Optional[list] = None
+    # Effective working directory of the vendor spawn — threaded VERBATIM from
+    # RunResult.effective_cwd by every rr-based return in _run_agy_with_retry
+    # (cwd record-integrity slice, 2026-08-26). None on the guard paths that
+    # never spawned (config-conflict etc.), so the audit/run-log key is
+    # omitted there — same shape rule as vendor_version.
+    effective_cwd: Optional[str] = None
 
 
 def _build_cmd(prompt, agy_sandbox, model, timeout, *, json_schema=None,
@@ -683,7 +689,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             # prefix — never trust a result event parsed out of it.
             return AgyResult(None, "timeout", _common.EXIT_TIMEOUT,
                              rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit)
+                             stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd)
         # r1/R3: every field below is vendor-controlled. A non-dict result or
         # a non-string `response` (the model can emit a JSON object there)
         # must degrade to "no usable answer" — CLASSIFIED, audited, run-logged
@@ -723,7 +729,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                     snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
                     return AgyResult(None, "vendor-error", _common.EXIT_TERMINAL,
                                      rr.vendor_exit_code, stream_output=stream,
-                                     stderr=rr.stderr, read_audit=audit,
+                                     stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
                                      extraction_error=(f"admission refused: {adm.reason}; "
                                                        f"quarantined answer: {snippet}"))
                 if degraded or adm.errored_reads:
@@ -751,7 +757,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                 snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
                 return AgyResult(None, "vendor-error", _common.EXIT_TERMINAL,
                                  rr.vendor_exit_code, stream_output=stream,
-                                 stderr=rr.stderr, read_audit=audit,
+                                 stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
                                  extraction_error=(
                                      f"vendor rc={rr.vendor_exit_code} "
                                      f"status={status!r} returned a non-empty "
@@ -761,7 +767,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                 snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
                 return AgyResult(None, "truncated-answer", _common.EXIT_TERMINAL,
                                  rr.vendor_exit_code, stream_output=stream,
-                                 stderr=rr.stderr, read_audit=audit,
+                                 stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
                                  extraction_error=(
                                      "agy folded the answer mid-body "
                                      "(own-line <truncated N bytes|lines> marker). "
@@ -769,13 +775,13 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             if pydantic_cls is None:
                 return AgyResult(answer, "ok", _common.EXIT_OK,
                                  rr.vendor_exit_code, stream_output=stream,
-                                 stderr=rr.stderr, read_audit=audit)
+                                 stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd)
             ok, payload, nonrepairable, trigger = _validate_structured_with_trigger(
                 result, answer, pydantic_cls)
             if ok:
                 return AgyResult(answer, "ok", _common.EXIT_OK,
                                  rr.vendor_exit_code, stream_output=stream,
-                                 stderr=rr.stderr, read_audit=audit,
+                                 stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
                                  validated=payload)
             # Same non-repairable opt-out `_common.py`'s Layer 4 honours (see
             # `_common.NONREPAIRABLE_MARKER`): this driver is a SECOND copy of
@@ -828,12 +834,12 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                 snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
                 return AgyResult(None, "schema-fail", _common.EXIT_SCHEMA_FAIL,
                                  rr.vendor_exit_code, stream_output=stream,
-                                 stderr=rr.stderr, read_audit=audit,
+                                 stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
                                  extraction_error=(f"schema: {payload} "
                                                    f"quarantined answer: {snippet}"))
             return AgyResult(answer, "schema-fail", _common.EXIT_SCHEMA_FAIL,
                              rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit,
+                             stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
                              extraction_error=f"schema: {payload}")
         # ── no usable answer from here ──
         # Structural failure signals ONLY (typed tool errors / error_message
@@ -883,7 +889,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                          f"{type(raw_answer).__name__})")
             return AgyResult(None, "extraction-error", _common.EXIT_CLI_FAIL,
                              rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit,
+                             stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
                              extraction_error=note)
         cls, code = _classify_no_answer(rr.stderr, signals,
                                         rr.vendor_exit_code, status)
@@ -893,7 +899,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             continue
         return AgyResult(None, cls, code, rr.vendor_exit_code,
                          stream_output=stream, stderr=rr.stderr,
-                         read_audit=audit)
+                         read_audit=audit, effective_cwd=rr.effective_cwd)
 
 
 def _server_cap_backoff(attempt: int) -> None:
@@ -1204,6 +1210,7 @@ def main() -> int:
         vendor_exit_code=r.vendor_exit_code,
         read_audit=r.read_audit,
         vendor_version=".".join(map(str, ver)) if ver is not None else None,
+        effective_cwd=r.effective_cwd,
     )
 
     # Read-audit digest — emitted BEFORE the canonical summary line, on EVERY
