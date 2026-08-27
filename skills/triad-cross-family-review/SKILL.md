@@ -1,8 +1,16 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE (a MERGE WITH FIXES carrying only non-blocking findings satisfies the gate). Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.28.3
+version: 0.28.4
 # changelog:
+#   0.28.4 (2026-08-28): doc-only — packet-lifecycle.md § Round integrity
+#     gains two observed-incident rules: (a) consolidation-ledger writes
+#     go BEFORE `prepare` or AFTER `verify`, never during the frozen
+#     round (P4-A2 merge gate r3: a mid-round ledger edit fingerprint-
+#     invalidated a clean focused pass; discarded, re-run as r4); (b) the
+#     verdict-name globs are SUFFIX matches — `<leg>-r<N>-verdict.json`,
+#     never the inverted `<leg>-verdict-r<N>.json` (P4-A merge gate r1:
+#     inverted names matched no glob and failed verify; rename recovered).
 #   0.28.3 (2026-08-27): doc-only — packet-lifecycle.md § Round integrity
 #     gains the leg-OUTPUT naming rule: outputs must match the shipped
 #     _LEG_OUTPUT_GLOBS (*.out, *.err, *-read-audit.json, claude-r*.json,

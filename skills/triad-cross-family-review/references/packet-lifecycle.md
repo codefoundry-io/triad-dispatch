@@ -246,7 +246,12 @@ identical on macOS and Ubuntu 24.04):
   stderr redirect named outside the globs made `verify` report an
   uncovered non-output file; a rename recovered it, but naming outputs
   correctly at dispatch time avoids touching the packet dir after
-  capture at all).
+  capture at all). The globs are SUFFIX matches — a verdict name must
+  END in `-verdict.json`, so the round goes BEFORE `-verdict`
+  (`<leg>-r<N>-verdict.json`). The plausible inversion
+  `<leg>-verdict-r<N>.json` carries the round yet matches NO glob and
+  fails `verify` the same way (observed 2026-08-27, P4-A merge gate r1:
+  both wrapper verdicts named inverted; rename recovered).
 - The round-invariant rule covers INPUTS too (adopt-gate r3 Minor): a
   censused file that CHANGES per round must carry the round in its
   NAME — the digest record is `digest-r<N>.txt`, one per round, written
@@ -293,4 +298,10 @@ identical on macOS and Ubuntu 24.04):
   returned findings are STAGED and applied only after the last leg
   returns and `verify` passes. An edit adopted while closing a
   probe-refuted finding is still an edit; it ships only through a
-  round that reviewed it (rule 5).
+  round that reviewed it (rule 5). The freeze covers EVERY tracked file
+  in the worktree — the gate LEDGER doc included: consolidation-ledger
+  writes go BEFORE `prepare` (pre-capture) or AFTER `verify`, never
+  between. A ledger edit during the frozen round mutates the worktree
+  fingerprint and INVALIDATES an otherwise-clean round (observed
+  2026-08-27, P4-A2 merge gate r3: the leader wrote consolidation rows
+  mid-round; the focused pass was discarded and re-run as r4).
