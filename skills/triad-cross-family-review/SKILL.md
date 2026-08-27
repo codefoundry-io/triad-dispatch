@@ -1,8 +1,13 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE (a MERGE WITH FIXES carrying only non-blocking findings satisfies the gate). Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.28.2
+version: 0.28.3
 # changelog:
+#   0.28.3 (2026-08-27): doc-only — packet-lifecycle.md § Round integrity
+#     gains the leg-OUTPUT naming rule: outputs must match the shipped
+#     _LEG_OUTPUT_GLOBS (*.out, *.err, *-read-audit.json, claude-r*.json,
+#     *-verdict.json) AT DISPATCH TIME (P4 entry gate r1: a mis-named
+#     stderr redirect tripped verify; rename recovered, naming avoids).
 #   0.28.2 (2026-08-26): doc resync — references/leg-contracts.md agy-leg
 #     `--cwd` obligation is now ENFORCED by the wrapper (owner ruling: a
 #     review dispatch without --cwd = EXIT_ARG_ERROR pre-spawn, agy-dispatch

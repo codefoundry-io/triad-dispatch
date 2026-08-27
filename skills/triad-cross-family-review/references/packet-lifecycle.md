@@ -235,6 +235,18 @@ identical on macOS and Ubuntu 24.04):
   construction — it writes every input and THEN captures; a hand-built
   round owes the same order manually. `verify` mechanically FAILS on any
   uncovered non-output regular file in the packet dir.
+- **Leg OUTPUT files must match the declared exemption globs AT DISPATCH
+  TIME** — `verify` exempts (as outputs a round legitimately creates
+  after capture) ONLY names matching `_LEG_OUTPUT_GLOBS`
+  (review_scratch.py): `*.out`, `*.err`, `*-read-audit.json`,
+  `claude-r*.json`, `*-verdict.json`. Route every leg's redirected
+  stdout/stderr and verdict to those shapes when BUILDING the dispatch
+  command — e.g. `codex-r<N>-verdict.json` + `codex-r<N>.err`, never
+  `codex-stderr-r<N>.txt` (observed 2026-08-27, P4 entry gate r1: a
+  stderr redirect named outside the globs made `verify` report an
+  uncovered non-output file; a rename recovered it, but naming outputs
+  correctly at dispatch time avoids touching the packet dir after
+  capture at all).
 - The round-invariant rule covers INPUTS too (adopt-gate r3 Minor): a
   censused file that CHANGES per round must carry the round in its
   NAME — the digest record is `digest-r<N>.txt`, one per round, written
