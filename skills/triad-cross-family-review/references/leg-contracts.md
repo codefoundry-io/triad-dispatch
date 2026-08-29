@@ -856,7 +856,19 @@ fallback above.
   the reply (`>` → `&gt;`, `&` → `&amp;`, quotes likewise); DE-ESCAPE
   EXACTLY ONCE (`html.unescape`) before writing `claude-r<N>.json` for
   admission, then validate — over/under-de-escape fails schema or
-  binding admission, which is the check. DISCLOSED residual: a reply
+  binding admission, which is the check. RAW-STAGING RULE (0.28.5, two
+  same-day incidents 2026-08-29): the still-escaped raw reply staged
+  for de-escaping goes in the session SCRATCHPAD, never the packet dir
+  (P4-D3a r1: a `claude-r1-verdict.raw` inside the packet failed
+  `verify` as an uncovered non-output), and its name must carry the
+  GATE SLUG + round — `<gate-slug>-claude-r<N>.raw` — with the
+  write → unescape → materialize → validate chain run in ONE sitting:
+  a bare `claude-r<N>.raw` name is REUSED across same-session gates,
+  and a later gate can materialize the EARLIER gate's stale bytes
+  (P4-D3b r3: the leader materialized the same-day D3a raw; the
+  binding validator refused it — review-ID mismatch — the designed
+  backstop, but slug-scoped naming PREVENTS the hazard instead of
+  catching it). DISCLOSED residual: a reply
   whose string fields INTENTIONALLY spell HTML entities is
   indistinguishable from transport escaping after one unescape — when a
   finding's exact bytes matter, resolve against the agent transcript.

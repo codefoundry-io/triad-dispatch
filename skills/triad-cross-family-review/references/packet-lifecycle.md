@@ -276,7 +276,11 @@ identical on macOS and Ubuntu 24.04):
   set, not the dir's later accumulation. "Output" is a NARROW allowlist
   (`*.out`, `*.err`, `*-read-audit.json`, `claude-r*.json`,
   `*-verdict.json`); anything
-  else appearing post-capture fails `verify` as an uncovered file.
+  else appearing post-capture fails `verify` as an uncovered file. The
+  claude leg's still-escaped RAW reply is not an output at all — it is
+  staged in the session scratchpad under a GATE-SLUG-scoped name
+  (`references/leg-contracts.md` § claude leg, RAW-STAGING RULE
+  0.28.5), never in the packet dir.
 - A leg OUTPUT whose NAME is round-invariant — today the agy read-audit
   literal `agy-read-audit.json` — must be PRESERVED-AND-CLEARED to its
   round-suffixed name BEFORE the next round's capture

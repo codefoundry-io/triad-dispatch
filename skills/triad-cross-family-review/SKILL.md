@@ -1,8 +1,20 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE (a MERGE WITH FIXES carrying only non-blocking findings satisfies the gate). Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.28.4
+version: 0.28.5
 # changelog:
+#   0.28.5 (2026-08-29): doc-only — leg-contracts.md claude-leg
+#     transcription caveat gains the RAW-STAGING RULE (+ a
+#     packet-lifecycle.md cross-ref in the leg-OUTPUT allowlist bullet):
+#     the still-escaped raw reply is staged in the session SCRATCHPAD
+#     under a GATE-SLUG-scoped name (`<gate-slug>-claude-r<N>.raw`) with
+#     write->unescape->materialize->validate run in one sitting. Two
+#     same-day incidents 2026-08-29: P4-D3a r1 (a .raw inside the packet
+#     dir failed verify as an uncovered non-output) and P4-D3b r3 (a
+#     bare `claude-r3-verdict.raw` name reused across same-session gates
+#     materialized the EARLIER gate's stale bytes; the binding validator
+#     refused it — review-ID mismatch — slug-scoped naming prevents
+#     rather than catches).
 #   0.28.4 (2026-08-28): doc-only — packet-lifecycle.md § Round integrity
 #     gains two observed-incident rules: (a) consolidation-ledger writes
 #     go BEFORE `prepare` or AFTER `verify`, never during the frozen
