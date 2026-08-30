@@ -128,6 +128,7 @@ import re
 import shutil
 import stat
 import subprocess
+import shlex
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1397,7 +1398,18 @@ def _render_claude_prompt(packet_path: Path, worktree: Path,
         '   "context_known": true | false}, ...]}\n'
         "findings must be non-empty when the verdict is not SAFE TO MERGE; "
         "SAFE TO MERGE may carry Minor / HARDENING-SUGGESTION findings, "
-        "never Critical / must-fix.\n")
+        "never Critical / must-fix.\n"
+        # OUTPUT INTEGRITY (2026-08-30 verdict-admission hardening; measured:
+        # 3 of 5 emissions in one gate lost EXACTLY the outermost closing
+        # brace, and 3 of 3 were complete after this instruction shipped).
+        "OUTPUT INTEGRITY: before finishing, verify the object ends with "
+        "its outermost closing brace `}` (the object closer AFTER the "
+        "findings array's `]`). Your reply = that one JSON object, then "
+        "ONE final line containing exactly <END-VERDICT> and nothing else "
+        "(this marker line is the single permitted non-JSON content — it "
+        "resolves, rather than contradicts, the JSON-only rule above; the "
+        "admission tool consumes it mechanically, and a reply lacking it "
+        "is refused as possible tail loss).\n")
 
 
 def _parse_prepare_args(rest: list) -> tuple:
@@ -1722,6 +1734,25 @@ def cmd_prepare(packet_arg: str, worktree_arg: str, label: str,
     _write_new_file(outputs["claude prompt"], claude_prompt, "claude prompt")
 
     print(f"prepared {label} {digest}")
+    # Canonical per-leg OUTPUT names for THIS round, printed so the leader
+    # copies them into dispatch commands instead of recalling the rules
+    # (owner-promoted backlog 2026-08-30: two cross-session naming
+    # adherence failures; names must match _LEG_OUTPUT_GLOBS + the
+    # read-audit gate's fixed filename).
+    print(f"leg outputs ({label}):")
+    print(f"  codex : > {packet_dir / f'codex-{label}-verdict.json'}  2> {packet_dir / f'codex-{label}.err'}")
+    print(f"  agy   : > {packet_dir / f'agy-{label}-verdict.json'}  2> {packet_dir / f'agy-{label}.err'}")
+    print(f"          env TRIAD_READ_AUDIT_FILE={packet_dir / 'agy-read-audit.json'}")
+    raw_path = packet_dir / f"claude-{label}.json"
+    print(f"  claude: save the final message VERBATIM (no de-escape, no edits — the admit tool owns the single unescape) to {raw_path}")
+    vv = shlex.quote(str(Path(__file__).resolve().parent / "validate_verdict.py"))
+    print(
+        f"          admit: python3 {vv} --admit {shlex.quote(str(raw_path))} "
+        f"--expected-review-id {shlex.quote(review_id)} --expected-family claude "
+        f"--expected-packet {shlex.quote(str(packet_dir / f'packet-{label}.md'))} "
+        f"--end-marker '<END-VERDICT>' "
+        f"--admitted-out {shlex.quote(str(packet_dir / f'claude-{label}-verdict.json'))}"
+    )
     print(f"review_scratch: rendered {', '.join(p.name for p in outputs.values())}",
           file=sys.stderr)
     # Assembly-then-capture as ONE step: every leg input this round reviews

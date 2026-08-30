@@ -103,10 +103,27 @@ would let a same-shaped directory planted there SHADOW the real dist `bin/`.
 Dist-first carries no such risk in a DEV checkout: there is no
 `.claude/bin/verdict_schema.py` in this repo, so that candidate simply never
 matches and resolution falls through to the dev candidate.
-"""
+
+
+RAW-reply ADMISSION mode (2026-08-30 hardening; algorithm as of gate r2/r3):
+`--admit <raw-file>` with the full binding flags (REQUIRED) admits a leg's raw
+final-message file. RAW-FIRST two-pass: pass 1 runs the optional
+`--end-marker` check + a duplicate-member-rejecting parse on the RAW bytes
+(an already-valid reply — entity-spelling strings included — admits
+BYTE-EXACT); only when pass 1 fails AND entity tokens are present does the
+single documented html.unescape run, and pass 2 retries both steps (the
+escaped-transport case). No third pass. Exit codes: 0 admitted / 1
+shape+binding+usage / 2 UNPARSEABLE (printed next step = ONE targeted
+re-ask, then terminal INVALID) / 3 end-marker absent (tail-loss signal).
+`--admitted-out <path>` writes the TOOL-normalized admitted object on
+success only, via a same-dir pid-unique temp + hardlink (never a truncated
+canonical file); it never overwrites — a byte-identical re-run is
+idempotent rc 0, different content is refused. The tool never rewrites the
+raw file and has no repair path."""
 from __future__ import annotations
 
 import hashlib
+import html
 import importlib.util
 import json
 import os
@@ -300,6 +317,12 @@ def _validate_and_load(json_path: Path) -> tuple[bool, str | None, object | None
         obj = json.loads(text)
     except json.JSONDecodeError as e:
         return False, f"{json_path} is not valid JSON: {e}", None
+    return _validate_obj(obj, str(json_path))
+
+
+def _validate_obj(obj: object, label: str) -> tuple[bool, str | None, object | None]:
+    """Schema-validate an already-parsed JSON object (shared by the file
+    path above and the 2026-08-30 --admit raw-text path)."""
     here = Path(__file__).resolve()
     try:
         mod = _load_verdict_schema_module(here)
@@ -312,7 +335,7 @@ def _validate_and_load(json_path: Path) -> tuple[bool, str | None, object | None
     except Exception as e:  # pydantic.ValidationError — kept broad on purpose:
         # this module must stay import-light (no top-level pydantic import),
         # since verdict_schema's own dependency is resolved dynamically above.
-        return False, f"{json_path} fails LegVerdict validation: {_flatten(str(e))}", None
+        return False, f"{label} fails LegVerdict validation: {_flatten(str(e))}", None
     return True, None, verdict
 
 
@@ -335,7 +358,17 @@ _BINDING_FLAGS = (
 _USAGE = (
     "usage: validate_verdict.py <json-file> "
     "[--expected-review-id ID] [--expected-family claude|google|codex] "
-    "[--expected-content-digest HEX64 | --expected-packet FILE]"
+    "[--expected-content-digest HEX64 | --expected-packet FILE] "
+    "[--admit [--end-marker TOKEN] [--admitted-out FILE]]\n"
+    "  --admit: RAW-reply admission — binding flags REQUIRED; raw-first "
+    "two-pass (single html.unescape retry only when the raw pass fails); "
+    "duplicate JSON members rejected; never rewrites the raw file.\n"
+    "  --end-marker TOKEN: non-empty; consumed mechanically; absent -> "
+    "exit 3 (tail loss).\n"
+    "  --admitted-out FILE: on success only, tool-normalized canonical "
+    "object, never overwritten (byte-identical re-run = idempotent 0).\n"
+    "  exits: 0 admitted/valid; 1 shape/binding/usage; 2 UNPARSEABLE "
+    "(-> ONE targeted re-ask, then terminal INVALID); 3 end-marker absent"
 )
 
 # Distinct one-line messages for the two NEW usage-error classes (2026-08-11
@@ -356,12 +389,81 @@ _SHAPE_ONLY_NOTICE = (
     "--expected-packet)"
 )
 
+# ── RAW-reply ADMISSION mode (2026-08-30 verdict-admission hardening;
+# 3-family adjudication docs/reviews/2026-08-30-verdict-trunc-adjudication.md).
+# NO repair path: this mode never rewrites a file. Distinct exit codes so the
+# leader's next step is mechanical, never judgment:
+#   0 admitted; 1 shape/binding invalid (existing class); 2 UNPARSEABLE raw
+#   reply (-> ONE targeted re-ask, then terminal INVALID); 3 --end-marker
+#   given but absent (tail-loss signal).
+EXIT_UNPARSEABLE = 2
+EXIT_MARKER_ABSENT = 3
+_ADMIT_REQUIRES_BINDING_MSG = (
+    "admission requires all of --expected-review-id, --expected-family, "
+    "and a digest source (--expected-packet or --expected-content-digest) "
+    "— --admit never runs shape-only"
+)
+_HTML_ENTITY_TOKENS = ("&quot;", "&amp;", "&lt;", "&gt;", "&#")
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+    seen: set[str] = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate JSON member {key!r}")
+        seen.add(key)
+    return dict(pairs)
+
+
+def _admit_pass(
+    text: str, end_marker: str | None
+) -> tuple[bool, object | None, str | None, bool]:
+    """One admission pass over one text form: (ok, obj, fail_reason,
+    marker_missing). The EXPLICIT ok flag exists because a valid JSON
+    top-level `null` parses to None (gate r3, codex+claude: a None
+    sentinel would misroute it to the unparseable rc-2 class; with the
+    flag it flows to schema validation and the accurate rc-1 shape
+    failure). marker_missing marks the end-marker-absent class so the
+    caller distinguishes exit 3 from exit 2 AFTER both passes."""
+    if end_marker is not None:
+        stripped = text.rstrip()
+        if not stripped.endswith(end_marker):
+            return False, None, "end-marker absent", True
+        text = stripped[: -len(end_marker)]
+    try:
+        return (
+            True,
+            json.loads(text, object_pairs_hook=_reject_duplicate_keys),
+            None,
+            False,
+        )
+    except ValueError as e:  # JSONDecodeError subclass + the dup-key raise
+        return False, None, f"not valid JSON: {e}", False
+
+
+def _admit_unparseable_msg(label: str, err: str) -> str:
+    return (
+        f"UNPARSEABLE raw reply ({label}): {err}. Next step: ONE targeted "
+        "re-ask that NAMES this syntactic defect and quotes the no-change "
+        "clause (re-emit the SAME verdict, findings and severities as "
+        "strictly valid JSON — do NOT change the verdict and do NOT change "
+        "any severity), then terminal INVALID. A leader-completed, "
+        "leader-repaired, or leader-reconstructed reply is never admissible."
+    )
+
 
 def _parse_argv(
     argv: list[str],
-) -> tuple[str, str | None, str | None, str | None, str | None] | None:
+) -> (
+    tuple[
+        str, str | None, str | None, str | None, str | None,
+        bool, str | None, str | None,
+    ]
+    | None
+):
     """Returns (json_file, expected_review_id, expected_family,
-    expected_content_digest, expected_packet), or None on a malformed argv
+    expected_content_digest, expected_packet, admit, end_marker,
+    admitted_out), or None on a malformed argv
     (`main()` turns that into the usage message + exit 1). This function only
     checks argv SHAPE (each flag has a value, exactly one positional) — the
     ALL-OR-NOTHING binding-admission rule and the --expected-content-digest /
@@ -369,10 +471,14 @@ def _parse_argv(
     to the parsed result, not this pure shape parse."""
     positional: list[str] = []
     values: dict[str, str] = {}
+    admit = False
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg in _BINDING_FLAGS:
+        if arg == "--admit":
+            admit = True
+            i += 1
+        elif arg in _BINDING_FLAGS or arg in ("--end-marker", "--admitted-out"):
             if i + 1 >= len(argv):
                 return None
             values[arg] = argv[i + 1]
@@ -382,12 +488,20 @@ def _parse_argv(
             i += 1
     if len(positional) != 1:
         return None
+    if not admit and (
+        values.get("--end-marker") is not None
+        or values.get("--admitted-out") is not None
+    ):
+        return None  # admission-mode flags only
     return (
         positional[0],
         values.get("--expected-review-id"),
         values.get("--expected-family"),
         values.get("--expected-content-digest"),
         values.get("--expected-packet"),
+        admit,
+        values.get("--end-marker"),
+        values.get("--admitted-out"),
     )
 
 
@@ -402,6 +516,9 @@ def main(argv: list[str]) -> int:
         expected_family,
         expected_content_digest,
         expected_packet,
+        admit,
+        end_marker,
+        admitted_out,
     ) = parsed
 
     if expected_content_digest is not None and expected_packet is not None:
@@ -433,6 +550,131 @@ def main(argv: list[str]) -> int:
     ):
         print(_BINDING_INCOMPLETE_MSG, file=sys.stderr)
         return 1
+
+    if admit:
+        binding_complete = (
+            expected_review_id is not None
+            and expected_family is not None
+            and expected_digest is not None
+        )
+        if not binding_complete:
+            print(_ADMIT_REQUIRES_BINDING_MSG, file=sys.stderr)
+            return 1
+        raw, err = _read_regular_file_no_symlink(Path(json_file))
+        if err is not None:
+            print(err, file=sys.stderr)
+            return 1
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as e:
+            print(_admit_unparseable_msg(json_file, f"not UTF-8: {e}"), file=sys.stderr)
+            return EXIT_UNPARSEABLE
+        if end_marker == "":
+            print(_USAGE, file=sys.stderr)
+            return 1
+        # RAW-FIRST two-pass (gate r2, codex+claude convergent must-fix):
+        # pass 1 runs the marker check + parse on the RAW bytes so an
+        # already-valid reply — including one whose STRING FIELDS
+        # legitimately spell HTML entities — is admitted BYTE-EXACT, never
+        # mutated. Only when pass 1 fails AND entity tokens are present does
+        # the single documented html.unescape run, and pass 2 retries both
+        # steps on the unescaped text (this is the gate-r1 escaped-transport
+        # fix: an escaped marker/body fails pass 1 and admits on pass 2).
+        # There is no third pass — no repair path. Duplicate JSON members
+        # are REJECTED at any depth (gate r2 codex must-fix: json.loads is
+        # last-wins, so a reply carrying an earlier blocking verdict behind
+        # duplicate SAFE members would otherwise admit as SAFE).
+        ok_pass, obj, fail_reason, marker_missing = _admit_pass(text, end_marker)
+        if not ok_pass and any(tok in text for tok in _HTML_ENTITY_TOKENS):
+            ok_pass, obj, fail_reason, marker_missing = _admit_pass(
+                html.unescape(text), end_marker
+            )
+        if not ok_pass:
+            if marker_missing:
+                print(
+                    f"end-marker absent ({json_file}): expected the reply to "
+                    f"terminate with {end_marker!r} — possible TAIL LOSS; "
+                    "treat as the unparseable class (ONE targeted re-ask, "
+                    "then terminal INVALID)",
+                    file=sys.stderr,
+                )
+                return EXIT_MARKER_ABSENT
+            print(
+                _admit_unparseable_msg(json_file, fail_reason or "unparseable"),
+                file=sys.stderr,
+            )
+            return EXIT_UNPARSEABLE
+        ok, reason, verdict = _validate_obj(obj, json_file)
+        if not ok:
+            print(reason, file=sys.stderr)
+            return 1
+        if verdict.review_id != expected_review_id:
+            print("review ID mismatch", file=sys.stderr)
+            return 1
+        if verdict.family != expected_family:
+            print("family mismatch", file=sys.stderr)
+            return 1
+        if verdict.content_digest != expected_digest:
+            print("content digest mismatch", file=sys.stderr)
+            return 1
+        if admitted_out is not None:
+            # TOOL-mechanical normalized copy of the ADMITTED object (the
+            # canonical `claude-r<N>-verdict.json` the consolidation jq loop
+            # reads). Never overwrites; a failed admission writes NOTHING
+            # (this line is only reached on success). r2 hardening: the
+            # payload is fully materialized in a same-dir temp file first
+            # and hard-linked into place (an interrupted write can never
+            # leave a truncated canonical file), and a re-run whose target
+            # already holds EXACTLY these bytes is idempotent rc 0 (a
+            # resumed gate re-pasting the printed command) — different
+            # bytes stay a refusal.
+            payload = json.dumps(obj, indent=1) + "\n"
+            out_path = Path(admitted_out)
+            if out_path.is_symlink():
+                print("--admitted-out: refuses a symlink target", file=sys.stderr)
+                return 1
+            if out_path.exists():
+                try:
+                    existing = out_path.read_bytes()
+                except OSError as e:
+                    print(f"--admitted-out: {e}", file=sys.stderr)
+                    return 1
+                if existing == payload.encode("utf-8"):
+                    print(
+                        "NOTICE: --admitted-out already holds these exact "
+                        "bytes — idempotent re-admission",
+                        file=sys.stderr,
+                    )
+                    return 0
+                print(
+                    "--admitted-out: target exists with DIFFERENT content — "
+                    "refusing to overwrite",
+                    file=sys.stderr,
+                )
+                return 1
+            # pid-unique AND ends in "-verdict.json" so a crash-stranded
+            # temp rides verify's *-verdict.json leg-output allowlist
+            # instead of tripping the uncovered-file refusal, and a rerun
+            # never EEXIST-collides with a stale temp (gate r3 claude).
+            tmp_path = out_path.with_name(
+                f".tmp-admit-{os.getpid()}-{out_path.name}"
+            )
+            try:
+                fd = os.open(
+                    tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644
+                )
+                try:
+                    with os.fdopen(fd, "w") as fh:
+                        fh.write(payload)
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                    os.link(tmp_path, out_path)
+                finally:
+                    tmp_path.unlink(missing_ok=True)
+            except OSError as e:
+                print(f"--admitted-out: {e}", file=sys.stderr)
+                return 1
+        return 0
 
     ok, reason, verdict = _validate_and_load(Path(json_file))
     if not ok:

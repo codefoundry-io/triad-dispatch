@@ -78,8 +78,24 @@ Separately, a MERGE WITH FIXES whose findings are all non-blocking does not bloc
 merge at all — its findings still triage per the classes below.
 
 A non-SAFE verdict with NO extractable finding is an INVALID leg — "returned
-something, but the verdict is unusable". It is handled identically to a
-terminally-missing leg (rule 13): never released, never counted SAFE.
+something, but the verdict is unusable". So is **a reply that does not
+VALIDATE — unparseable raw text (truncation included), a schema failure, or
+a binding mismatch** (this sentence is the chain's DEFINITIONAL HOME —
+2026-08-30 verdict-admission hardening; the cross-references in
+leg-contracts.md and validate_verdict.py point here). The handling chain,
+stated once: **ONE TARGETED re-ask that NAMES the defect** (for a syntactic
+failure: name it and quote the no-change clause — "re-emit the SAME verdict,
+findings and severities as strictly valid JSON — do NOT change the verdict
+and do NOT change any severity"; NEVER a verbatim "re-emit unchanged"
+request, which anchors the model to its own defective output), **then
+terminal INVALID** if the re-ask also fails. **A leader-completed,
+leader-repaired, or leader-reconstructed reply is NEVER admissible** —
+admission runs through `lib/validate_verdict.py --admit` (raw read, optional
+end-marker consumption, one documented html.unescape, no repair path; exit 2
+= re-ask, exit 3 = end-marker absent). An INVALID leg is handled identically
+to a terminally-missing leg (rule 13): never released, never counted SAFE.
+The leg's FINDINGS may still serve as leader-probed evidence (direction
+asymmetry: findings only add work; only a verdict can release).
 
 ## Triage classes
 
@@ -222,8 +238,10 @@ its `findings[]` into the residual table (above) is mechanical — read it with
 
 ```bash
 # One validated object per leg, at <packet-dir>/<leg>-r<N>-verdict.json
-# (codex-r2-verdict.json / agy-r2-verdict.json / claude-r2-verdict.json — the
-# leader names these when it captures each leg's stdout / validated reply).
+# (codex-r2-verdict.json / agy-r2-verdict.json from the wrappers' stdout;
+# claude-r2-verdict.json is PRODUCED BY `validate_verdict.py --admit
+# --admitted-out` on successful admission (0.29.0) — the raw marker-bearing
+# claude-r2.json is NOT jq-consumable; never point jq at it).
 # ROUND-SUFFIXED on purpose (adopt-gate r2): a round-free name would be
 # censused by the NEXT round's capture and then rewritten by that round's
 # consolidation — a guaranteed false "round evidence changed". The suffixed

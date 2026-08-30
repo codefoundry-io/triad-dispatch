@@ -1,8 +1,9 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE (a MERGE WITH FIXES carrying only non-blocking findings satisfies the gate). Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.28.5
+version: 0.29.0
 # changelog:
+#  0.29.0 verdict-admission hardening (2026-08-30 adjudication): validate_verdict --admit raw-reply mode (no repair path; exit 2 unparseable→targeted re-ask, exit 3 end-marker absent; --admitted-out canonical claude-rN-verdict.json) + prepare prints canonical leg outputs w/ real review-id + claude prompt output-integrity/<END-VERDICT> contract + triage.md INVALID definitional home + reviewer agent-def severity/output fixes
 #   0.28.5 (2026-08-29): doc-only — leg-contracts.md claude-leg
 #     transcription caveat gains the RAW-STAGING RULE (+ a
 #     packet-lifecycle.md cross-ref in the leg-OUTPUT allowlist bullet):
@@ -312,7 +313,14 @@ Five references carry the detail — open one only when its column applies.
    admission), `--expected-packet` recomputes the digest from the packet
    file itself — and a binding mismatch is
    the INVALID-leg handling, never a pass
-   (`references/leg-contracts.md` § Verdict binding).
+   (`references/leg-contracts.md` § Verdict binding). The claude leg's
+   RAW reply file admits via `--admit` (+ `--end-marker <END-VERDICT>`,
+   which the rendered prompt instructs, + `--admitted-out
+   claude-r<N>-verdict.json` — the ONLY producer of the canonical file
+   the consolidation jq loop reads) — no repair path; an unparseable
+   reply takes the ONE-targeted-re-ask-then-INVALID chain whose
+   definitional home is `references/triage.md` § Verdict release; a
+   leader-completed reply is never admissible (2026-08-30 hardening).
 5. **Fix→re-confirm loop with a COUNTABLE cap (owner directive 2026-08-22,
    after the 9-round v1.2 agy gate).** Findings → fix each (own implementer +
    per-fix review) → re-confirm on the fixed branch. A first-pass DO-NOT-MERGE
@@ -544,7 +552,7 @@ Five references carry the detail — open one only when its column applies.
    Per-leg flags and prompts: `references/leg-contracts.md`.
 3. Once every required leg has terminated, run `verify` for the round — it
    must print `ROUND_INTEGRITY_OK r<N>` (a mismatch INVALIDATES the round:
-   mutation detected, never released) — validate every leg's JSON with
+   mutation detected, never released) — validate every leg (claude: via the `--admit` route, rule 4)'s JSON with
    `lib/validate_verdict.py --expected-*` (rule 4's binding admission), then
    collect the three verdicts + findings and run rule 4's consolidation:
    fact-check each finding against the source with a deterministic probe, TRIAGE

@@ -45,7 +45,7 @@ leader's obligations, every round, every leg:
    a hand-built body owes the same line by hand.
 2. Admission is MECHANICAL: `lib/validate_verdict.py <reply-file>
    --expected-review-id <id> --expected-family <token>
-   --expected-packet <abs-packet-path>` — for EVERY leg's JSON, not only
+   --expected-packet <abs-packet-path>` — for the codex and agy legs' stdout JSON (claude EXCEPTION 0.29.0: the claude RAW reply admits ONLY via the `--admit` route below), not only
    claude's (the codex/agy wrappers' `--pydantic` enforces SHAPE at
    dispatch; the binding values are checked leader-side because the
    wrapper cannot know them). `--expected-packet` makes the tool compute
@@ -842,27 +842,47 @@ fallback above.
   <reply-as-a-file> --expected-review-id <id> --expected-family claude
   --expected-packet <abs-packet-path>` (§ Verdict binding obligation 2;
   a flagless call is shape-only and is NOT an admission) — before
-  consolidating it. A reply that fails validation or binding is
-  the EXISTING INVALID-leg handling — one re-ask with the same directive
-  restated, then INVALID if it fails again (`references/triage.md` § Verdict
-  release at the merge gate); this does not invent a new chain.
+  consolidating it. **The ONE authoritative claude-leg admission command
+  (0.29.0 — any earlier plain invocation without `--admit` is SUPERSEDED
+  for this leg; `prepare` prints this command with the real values):**
+  `validate_verdict.py --admit <claude-rN.json> --expected-review-id …
+  --expected-family claude --expected-packet … --end-marker
+  '<END-VERDICT>' --admitted-out <claude-rN-verdict.json>` — no repair
+  path; the tool never rewrites the raw file; `--admitted-out` writes the
+  TOOL-normalized canonical object (success only; never overwrites —
+  byte-identical re-run = idempotent rc 0, different content refused) that
+  the consolidation jq loop reads. A reply that fails
+  to validate is the INVALID-leg chain now STATED in `references/triage.md`
+  § Verdict release (its definitional home): **one TARGETED re-ask that
+  NAMES the defect and quotes the no-change clause — never a verbatim
+  "re-emit unchanged" request (it anchors the model to its own defective
+  output; measured 2026-08-30) — then terminal INVALID.** A
+  leader-completed, leader-repaired, or leader-reconstructed reply is
+  NEVER admissible.
 - **Rendered prompt + reply transcription.** `prepare` renders this leg's
   full prompt as `claude-prompt-r<N>.txt` — adversarial preamble, packet
   path, severity instruction, verdict-selection rule, binding line, and
   the inline LegVerdict contract above — so the leader dispatches the
   `Agent` with that content (it is small: paste it, or have the agent
   Read the file first; either way the file is the censused input).
-  TRANSCRIPTION CAVEAT: the Agent completion notification HTML-escapes
-  the reply (`>` → `&gt;`, `&` → `&amp;`, quotes likewise); DE-ESCAPE
-  EXACTLY ONCE (`html.unescape`) before writing `claude-r<N>.json` for
-  admission, then validate — over/under-de-escape fails schema or
-  binding admission, which is the check. RAW-STAGING RULE (0.28.5, two
-  same-day incidents 2026-08-29): the still-escaped raw reply staged
-  for de-escaping goes in the session SCRATCHPAD, never the packet dir
+  TRANSCRIPTION CAVEAT (0.29.0 REVISION): the Agent completion
+  notification HTML-escapes the reply (`>` → `&gt;`, `&` → `&amp;`,
+  quotes likewise); the transcript-extraction path may instead yield the
+  UNESCAPED text. **Do NOT unescape manually** — write the staged raw
+  VERBATIM as `claude-r<N>.json` and let `--admit` perform the SINGLE
+  mechanical unescape (RAW-FIRST two-pass, gate r2: marker check + parse
+  run on the raw bytes first — an already-valid reply admits BYTE-EXACT,
+  entity-spelling strings preserved — and the unescape+retry runs only
+  when that pass fails with entity tokens present, so an escaped marker
+  still admits, on pass 2).
+  OVER-de-escaping by hand is the hazard that remains (it is a leader
+  edit — never admissible); UNDER-de-escaping is absorbed by the tool.
+  RAW-STAGING RULE (0.28.5, two
+  same-day incidents 2026-08-29): the raw reply staged for VERBATIM MATERIALIZATION (0.29.0 — no manual de-escape exists any more) goes in the session SCRATCHPAD, never the packet dir
   (P4-D3a r1: a `claude-r1-verdict.raw` inside the packet failed
   `verify` as an uncovered non-output), and its name must carry the
   GATE SLUG + round — `<gate-slug>-claude-r<N>.raw` — with the
-  write → unescape → materialize → validate chain run in ONE sitting:
+  write → materialize-verbatim → `--admit` chain run in ONE sitting:
   a bare `claude-r<N>.raw` name is REUSED across same-session gates,
   and a later gate can materialize the EARLIER gate's stale bytes
   (P4-D3b r3: the leader materialized the same-day D3a raw; the
