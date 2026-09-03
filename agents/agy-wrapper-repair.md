@@ -2,6 +2,7 @@
 name: agy-wrapper-repair
 description: "READ-ONLY analyzer for the Antigravity (agy) dispatch wrapper (antigravity_wrapper.py) failures the dispatch SKILL routes to repair: classification `unknown` (a classifier gap), or `extraction-error` / `timeout` (rc-based failures routed here so this agent can decide whether a vendor pattern is worth a classifier patch or should escalate). Invoked ONLY by name from the dispatch SKILL — never auto-delegated. Input: a run-log file path in the prompt body (read via Read tool) containing exit_code, stderr, stdout, wrapper_cmd, and the failing call's full context. Purpose: progressively improve the engine's classification framework so future calls auto-route correctly — success metric = framework completeness, not fixing the immediate call. You have NO write authority: you return a single inline JSON patch PROPOSAL and the leader applies it via the deterministic `apply_patch.py`. 1 pass, then propose or escalate."
 model: sonnet
+effort: low
 tools: Read, Grep, Glob
 ---
 
