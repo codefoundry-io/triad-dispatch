@@ -138,10 +138,20 @@ def _is_vendor_turn_timeout(result) -> bool:
     return isinstance(err, str) and bool(_VENDOR_TURN_TIMEOUT_RE.match(err))
 
 
+_DIAG_NUMBER_BOUND = 10**9
+
+
 def _bounded_number(value):
     """A numeric vendor field for a diagnostic line, or None: never an
-    unbounded / untyped vendor string (gate r2 row 11)."""
-    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    unbounded / untyped / non-finite vendor value (gate r2 row 11, post-close
+    row 20 — the JSON parser admits NaN / Infinity)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if abs(value) >= _DIAG_NUMBER_BOUND:     # exact int compare FIRST — isfinite() on a
+        return None                          # >float-range int raises OverflowError
+    if not math.isfinite(value):
+        return None
+    return value
 
 
 def _classify_no_answer(stderr: str, signals, vendor_rc: int,
@@ -429,7 +439,7 @@ def _census(events, allowlist, read_set):
     return forbidden, omitted, errored_reads, errored_other
 
 
-def _early_census(events, allowlist, read_set, prior_forbidden) -> tuple:
+def _early_census(events, allowlist, read_set, prior_forbidden, prior_omitted=0) -> tuple:
     """(errored_reads, forbidden, omitted) for an admission REFUSED before the
     census would normally run (framing / result-count defects — gate r1
     2026-09-04, claude): a run that also called a forbidden tool must still
@@ -440,7 +450,7 @@ def _early_census(events, allowlist, read_set, prior_forbidden) -> tuple:
     for n in prior_forbidden:
         if n not in forbidden:
             forbidden.append(n)
-    return errored_reads, forbidden, omitted
+    return errored_reads, forbidden, max(omitted, prior_omitted)
 
 
 def _forbidden_shown(forbidden, omitted=0) -> str:
@@ -452,7 +462,7 @@ def _forbidden_shown(forbidden, omitted=0) -> str:
     return shown + (f" (+{more} more)" if more > 0 else "")
 
 
-def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(),
+def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(), prior_omitted=0,
           vendor_rc=0) -> Admission:
     """v2 admission — judged by what the STREAM shows, never by the vendor's
     terminal status alone (spec § Admission; consultation consensus: the
@@ -492,16 +502,17 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
             # (gate r2, claude); the excerpt is capped and ASCII-escaped
             excerpt = json.dumps(s[:_common._AGY_DIGEST_KEY_CAP], ensure_ascii=True)
             return Admission(False, f"stream line {idx} is not a JSON object (unusable run): {excerpt}",
-                             *_early_census(events, allowlist, read_set, prior_forbidden))
+                             *_early_census(events, allowlist, read_set, prior_forbidden, prior_omitted))
     n_results = sum(1 for ev in events or []
                     if isinstance(ev, dict) and ev.get("event") == "result")
     if n_results != 1:
         return Admission(False, f"{n_results} result events in the stream (expected exactly 1)",
-                         *_early_census(events, allowlist, read_set, prior_forbidden))
+                         *_early_census(events, allowlist, read_set, prior_forbidden, prior_omitted))
     forbidden, omitted, errored_reads, errored_other = _census(events, allowlist, read_set)
     for n in prior_forbidden:          # an earlier attempt's forbidden call is never erased
         if n not in forbidden:
             forbidden.append(n)
+    omitted = max(omitted, prior_omitted)   # cross-attempt overflow: MAX, never a sum (row 19 r1)
     cap = _common._AGY_DIGEST_KEY_CAP
     if forbidden:
         shown = json.dumps([n[:cap] for n in forbidden[:8]], ensure_ascii=True)
@@ -734,6 +745,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
     # accumulate across attempts so a schema-repair or capacity retry cannot
     # erase an earlier attempt's evidence.
     forbidden_seen: list = []
+    forbidden_omitted_seen = 0          # census overflow beyond the cap, MAX across attempts (row 19 / rs-r1)
     while True:
         if cmd_box is not None:
             cmd_box[0] = list(cmd)   # the REAL argv of the attempt that runs (gate r3, codex)
@@ -742,9 +754,11 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
         stream = rr.stdout
         events, result = _common.parse_agy_stream(stream)
         if admission is not None:
-            for _n in _census(events, admission[0], admission[1])[0]:
+            _fb, _om, _er, _eo = _census(events, admission[0], admission[1])
+            for _n in _fb:
                 if _n not in forbidden_seen:
                     forbidden_seen.append(_n)
+            forbidden_omitted_seen = max(forbidden_omitted_seen, _om)   # MAX: a repeated set never over-counts
         attempt_digests.append(_common.digest_agy_stream(events, result))
         audit = _common.merge_agy_digests(attempt_digests)
         if rr.exit_code == _common.EXIT_TIMEOUT:
@@ -772,6 +786,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                 # consultation 2026-08-22, r9 attempt 1).
                 adm = admit(stream, events, result, allowlist=admission[0],
                             read_set=admission[1], prior_forbidden=forbidden_seen,
+                            prior_omitted=forbidden_omitted_seen,
                             vendor_rc=rr.vendor_exit_code)
                 degraded = status != "SUCCESS" or rr.vendor_exit_code != 0
                 read_evidence = (audit.get("files_read") or audit.get("files_read_omitted")
@@ -962,20 +977,66 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                 continue
             _common.log("headless soft-deny signature but the flag is already "
                         "present — skipping an identical re-run")
-        if forbidden_seen and admission is not None:
+        def _refuse_no_answer(vendor_class=None) -> AgyResult:
             # gate r1 row 3 / r2 row 14 (2026-09-04/05): the model burned the
             # turn on a forbidden tool (manage_task …) and returned NO answer —
-            # with OR without a terminal result event — that is the allowlist
-            # class, not extraction-error / unknown (a repair dispatch with
-            # nothing to patch). Same token, no answer.
-            shown = _forbidden_shown(forbidden_seen)
+            # the allowlist class, not extraction-error / unknown (a repair
+            # dispatch with nothing to patch). Same token, no answer; the
+            # (+N more) counter carries the accumulated census overflow (row 19).
+            shown = _forbidden_shown(forbidden_seen, forbidden_omitted_seen)
+            note = f"; vendor terminal signal also present: {vendor_class}" if vendor_class else ""
             _common.log(f"admission refused: tool(s) outside the allowlist appeared in the "
-                        f"stream: {shown} (empty answer)")
+                        f"stream: {shown} (empty answer){note}")
             return AgyResult(None, "admission-refused", _common.EXIT_TERMINAL,
                              rr.vendor_exit_code, stream_output=stream,
                              stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
                              extraction_error=(f"admission refused: tool(s) outside the allowlist "
-                                               f"appeared in the stream: {shown}; no answer"))
+                                               f"appeared in the stream: {shown}; no answer{note}"))
+
+        if forbidden_seen and admission is not None:
+            # A forbidden-tool run with NO answer is decided HERE, before any
+            # retry loop or tool-signal classification (residual-slice r1):
+            # run-level evidence ONLY (stderr + vendor rc + the result status
+            # token) — a forbidden tool's own error text can ECHO model-authored
+            # arguments ("… model overloaded …"), so tool-step signals never
+            # decide a forbidden run's class.
+            # run-level carriers = stderr + STANDALONE error_message steps +
+            # the result-level error. Any step carrying a `tool_info` dict is
+            # dropped WHATEVER its step_type or envelope (the signal harvester
+            # reads tool_info.error from every step, and a tool error can echo
+            # model-authored arguments — rs-r2/rs-r3, codex + claude). The
+            # result-level error is a vendor-typed carrier; it only ever
+            # ANNOTATES here (a result event forces the refusal below).
+            run_level_events = [ev for ev in (events or [])
+                                if not (isinstance(ev, dict)
+                                        and isinstance(ev.get("step_update"), dict)
+                                        and (ev["step_update"].get("step_type") == "tool"
+                                             or isinstance(ev["step_update"].get("tool_info"), dict)))]
+            run_level_signals = _common.agy_classify_signals(run_level_events, result)
+            run_level_cls, run_level_code = _classify_no_answer(rr.stderr, run_level_signals,
+                                                                rr.vendor_exit_code, status)
+            if run_level_cls in ("unknown", "extraction-error"):
+                run_level_cls = None
+            if result is not None and status == "ERROR" and _is_vendor_turn_timeout(result):
+                # ADDITIVE: both remedies stay visible (rs-r3, claude F4/F5)
+                run_level_cls = f"{run_level_cls} + vendor-timeout" if run_level_cls else "vendor-timeout"
+            if result is not None or run_level_cls is None:
+                # a terminal result event, or no recognised vendor class → the
+                # allowlist token (Policy D's audited signal), annotated with
+                # any run-level vendor class seen (claude M7)
+                return _refuse_no_answer(vendor_class=run_level_cls)
+            # no result event + a recognised run-level TERMINAL vendor class:
+            # keep its attribution — but never a capacity RETRY here (a fresh
+            # dispatch by the CALLER is the contract's one retry; claude M4 /
+            # agy HS). The allowlist slip still reaches stderr (rs-r2).
+            _common.log(f"{run_level_cls} on a run that also called tool(s) outside the allowlist: "
+                        f"{_forbidden_shown(forbidden_seen, forbidden_omitted_seen)}")
+            return AgyResult(None, run_level_cls, run_level_code, rr.vendor_exit_code,
+                             stream_output=stream, stderr=rr.stderr,
+                             read_audit=audit, effective_cwd=rr.effective_cwd,
+                             extraction_error=(f"{run_level_cls} on a run that also called tool(s) "
+                                               f"outside the allowlist: "
+                                               f"{_forbidden_shown(forbidden_seen, forbidden_omitted_seen)}"))
         if result is not None and status == "ERROR" and _is_vendor_turn_timeout(result):
             # gate r1 row 8 (2026-09-04): agy's OWN turn timeout fired before
             # the wrapper deadline (`result.error` = "timeout waiting for

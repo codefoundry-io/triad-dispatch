@@ -12,7 +12,12 @@ version: 0.16.3
 #     mandated a futile repair dispatch (analyzer escalated 2026-09-04). The
 #     no-answer branch classifies a forbidden-tool run `admission-refused`
 #     (was `extraction-error`); early framing/result-count refusals still
-#     name the forbidden tool. Agent
+#     name the forbidden tool. 2026-09-05 residual slice: a forbidden run with
+#     NO result event and a recognised RUN-LEVEL vendor class (stderr /
+#     standalone error_message — never a tool-step echo) keeps that class,
+#     returned after one dispatch with the forbidden tool named; with a result
+#     event the token stays `admission-refused`, annotated with the vendor
+#     class (incl. `vendor-timeout`). Agent
 #     bodies gain the TOOL ALLOWLIST rule (`_allowlist_rule`; agy advertises
 #     the full registry regardless of `tools:` — init.tools = 57): re-run
 #     `--setup-agents` on every host. Wrapper t38 + t28 pins.
@@ -431,7 +436,7 @@ call, and never spawn the repair agent for it.
 | `admission-refused` (65) | The v2 admission census found a tool OUTSIDE the agent's allowlist in the stream (`manage_task` / `run_command` / `send_message` …) — the allowlist class only; framing / unexplained-degraded / read-blind refusals stay `vendor-error`. The COMPLETE answer is quarantined (run-log copy only, `quarantined answer (N chars)`). Surface, never repair. Review-leg callers: one retry, then terminally missing. If it recurs after 0.16.3, check the host re-ran `--setup-agents` (agent body carries the allowlist rule) — the model is TOLD the five permitted tools; agy still advertises 57. |
 | `vendor-timeout` (65) | agy's OWN turn timeout fired before the wrapper deadline (`result.status` ERROR, `result.error` "timeout waiting for response", empty response, vendor rc 1; live 2026-09-04 at 857 s of a 900 s budget with 33 allowlisted reads). Surface, never repair (the analyzer escalated: no existing class fits). Review-leg callers: re-dispatch ONCE with a narrower read scope (smaller packet / fewer cited sites), then terminally missing. |
 | `truncated-answer` (65) | agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB) and keeps NO full copy anywhere, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader remediation: re-dispatch under the output-file contract** (`references/long-answer.md` — agy's `write_file` is not subject to the fold), which needs the write-capable permissive baseline and is therefore unavailable on a hardened install and forbidden on the cross-family-review agy leg (re-dispatch once read-only for a COMPACT verdict there instead). **NOT** repair-agent territory (deterministic vendor behavior on the answer-present path; a classifier patch cannot express it). Retrying the same stdout-shaped dispatch folds again — do not plain-retry. |
-| `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff (cap 2 stream-json call re-runs). |
+| `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff (cap 2 stream-json call re-runs) — EXCEPT on a read-only run that also called a tool outside the allowlist: that run returns after ONE dispatch (stderr + `extraction_error` name the forbidden tool), the caller's fresh dispatch being the contract's one retry (2026-09-05). |
 | `unknown` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** |
 | `extraction-error` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** agy ran but the driver found no usable answer — a `SUCCESS` status with an EMPTY `response` (`extraction_error = "empty-answer-body"`, agy self-reports success on a task it did not actually do), a fully empty capture, or garbage/no-result stream text with no matching pattern. The repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
 | `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since a hang (the wrapper's own SIGTERM→SIGKILL process-group kill fired against agy's `--print-timeout`-bounded run) is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |

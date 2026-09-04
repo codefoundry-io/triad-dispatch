@@ -258,9 +258,24 @@ the shallow-tier fact for the round record.
   "admission refused: tool(s) outside the allowlist … quarantined answer
   (N chars)". Standing handling keys on the token: ONE retry of the leg,
   a second `admission-refused` in the same round = terminally missing
-  (rule 13); never a repair-agent dispatch. Whether a complete verdict whose
-  only forbidden call was `manage_task` (no fs / network effect) should be
-  admitted is an OWNER policy question, undecided — fail-closed stands.
+  (rule 13); never a repair-agent dispatch. BY DESIGN (residual slice,
+  owner-reopened 2026-09-05): a forbidden run with NO terminal result event
+  whose RUN-LEVEL evidence (stderr / standalone error_message) names a
+  vendor terminal class — `cli-subscription-cap`, `oauth-env`,
+  `server-capacity`, `config-conflict` — returns THAT class after one
+  dispatch (the forbidden tool named on stderr and in the run-log), so the
+  cap / auth guidance is not lost; a forbidden run WITH a result event
+  stays `admission-refused`, annotated "vendor terminal signal also present:
+  <class>" (incl. `vendor-timeout`). Count both shapes as allowlist slips
+  in the round log. **Policy D (owner ruling
+  2026-09-05): a complete verdict whose only forbidden call was
+  `manage_task` (no fs / network effect) stays REFUSED — fail-closed.**
+  Basis: the instruction gap was the cause (3/3 live runs under the new
+  instruction made 0 forbidden attempts), and a model that ignores the
+  allowlist rule is itself a compliance signal the census must not launder.
+  Re-evaluation trigger: `admission-refused` recurring under the 0.29.1
+  instruction (audit rows), at which point the shape is a NEW defect, not a
+  policy relaxation.
   **`vendor-timeout` (65, same change):** agy's OWN turn timeout (`result.error`
   "timeout waiting for response", empty response) — observed live on this
   gate's r1 at 857 s of a 900 s budget with 33 allowlisted reads over 23

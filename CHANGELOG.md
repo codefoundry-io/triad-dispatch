@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.707 — 2026-09-05
+## 0.2.715 — 2026-09-05
 
 **agy TOOL ALLOWLIST instruction + `admission-refused` / `vendor-timeout` tokens (2026-09-04). MIGRATION: run `python3 bin/antigravity_wrapper.py --setup-agents` ONCE on every host after this update** — the agent
 bodies changed (they now carry the allowlist rule: agy advertises its
