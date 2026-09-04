@@ -1,8 +1,21 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.16.2
+version: 0.16.3
 # changelog:
+#   0.16.3 (2026-09-04): `admission-refused` (65) is its OWN classification
+#     for the ALLOWLIST class (a tool outside the agent's allowlist in the
+#     stream) — previously folded into `vendor-error`; framing /
+#     unexplained-degraded / read-blind refusals stay `vendor-error`. Also
+#     `vendor-timeout` (65): agy's own turn timeout (typed `result.error`
+#     "timeout waiting for response", empty answer) — was `unknown`, which
+#     mandated a futile repair dispatch (analyzer escalated 2026-09-04). The
+#     no-answer branch classifies a forbidden-tool run `admission-refused`
+#     (was `extraction-error`); early framing/result-count refusals still
+#     name the forbidden tool. Agent
+#     bodies gain the TOOL ALLOWLIST rule (`_allowlist_rule`; agy advertises
+#     the full registry regardless of `tools:` — init.tools = 57): re-run
+#     `--setup-agents` on every host. Wrapper t38 + t28 pins.
 #   0.16.2 (2026-08-26): review-agent `--cwd` guard ENFORCED (owner ruling) —
 #     a `--sandbox read-only` review dispatch (no `--web`) without `--cwd` is
 #     now refused EXIT_ARG_ERROR by the wrapper BEFORE any vendor work
@@ -219,7 +232,8 @@ the embedded body); missing or drifted → `config-conflict` (65) naming
 non-blank stdout line must be a JSON object (else the run is unusable), exactly
 one `result`, every tool name in any attempt ∈ the agent's allowlist (a
 fallback to agy's full-tool default agent, or a model slip, is rejected as
-`vendor-error` with the name on stderr), and a `status != SUCCESS` run is
+**`admission-refused`** with the name on stderr — since 0.16.3; the other
+refusals stay `vendor-error`), and a `status != SUCCESS` run is
 admitted ONLY when every errored step named an allowed read tool — logged as
 `[wrapper] antigravity admitted-with-errored-steps n=<k> tools=[...]`. The
 `init.agent` echo is a diagnostic only (agy echoes the REQUESTED name even on
@@ -397,7 +411,7 @@ CLS=$(printf '%s' "$SUMMARY" | sed -E 's/.*\[wrapper\] antigravity ([a-z-]+) .*/
 ```
 
 Token set:
-`ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | timeout | extraction-error | vendor-error | truncated-answer | config-conflict | unknown`
+`ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | timeout | extraction-error | vendor-error | admission-refused | vendor-timeout | truncated-answer | config-conflict | unknown`
 
 **The classification token is the branch key** (Step 4). The exit code is a
 coarse signal for shell control flow and does not identify the action on its own
@@ -414,6 +428,8 @@ call, and never spawn the repair agent for it.
 |---|---|
 | `ok` (0) | Return wrapper stdout (agy's final answer text). |
 | terminal (65) — cli-subscription-cap / token-limit / oauth-env / config-conflict / vendor-error | Surface to the user with the cause, and name the run-log path when there is one. Per-class causes and what the leader may say about each — including why `vendor-error` keeps the answer OUT of stdout and why none of these route to repair — [references/repair-loop.md](references/repair-loop.md) § Terminal (65) causes. |
+| `admission-refused` (65) | The v2 admission census found a tool OUTSIDE the agent's allowlist in the stream (`manage_task` / `run_command` / `send_message` …) — the allowlist class only; framing / unexplained-degraded / read-blind refusals stay `vendor-error`. The COMPLETE answer is quarantined (run-log copy only, `quarantined answer (N chars)`). Surface, never repair. Review-leg callers: one retry, then terminally missing. If it recurs after 0.16.3, check the host re-ran `--setup-agents` (agent body carries the allowlist rule) — the model is TOLD the five permitted tools; agy still advertises 57. |
+| `vendor-timeout` (65) | agy's OWN turn timeout fired before the wrapper deadline (`result.status` ERROR, `result.error` "timeout waiting for response", empty response, vendor rc 1; live 2026-09-04 at 857 s of a 900 s budget with 33 allowlisted reads). Surface, never repair (the analyzer escalated: no existing class fits). Review-leg callers: re-dispatch ONCE with a narrower read scope (smaller packet / fewer cited sites), then terminally missing. |
 | `truncated-answer` (65) | agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB) and keeps NO full copy anywhere, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader remediation: re-dispatch under the output-file contract** (`references/long-answer.md` — agy's `write_file` is not subject to the fold), which needs the write-capable permissive baseline and is therefore unavailable on a hardened install and forbidden on the cross-family-review agy leg (re-dispatch once read-only for a COMPACT verdict there instead). **NOT** repair-agent territory (deterministic vendor behavior on the answer-present path; a classifier patch cannot express it). Retrying the same stdout-shaped dispatch folds again — do not plain-retry. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff (cap 2 stream-json call re-runs). |
 | `unknown` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** |

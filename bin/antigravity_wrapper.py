@@ -123,6 +123,27 @@ def _repair_cmd(cmd, err):
     return new
 
 
+_VENDOR_TURN_TIMEOUT_RE = re.compile(r"^\s*timeout waiting for response\b", re.I)
+
+
+def _is_vendor_turn_timeout(result) -> bool:
+    """True when the stream's terminal result is agy's own turn timeout: the
+    typed `result.error` STARTS with the vendor's literal "timeout waiting
+    for response" (agy 1.1.26, observed 2026-09-04 as exactly that string).
+    Anchored, not a substring: `result.error` can ECHO model text (a
+    finish-schema validation report becomes the turn error — review packets
+    quote this very phrase), and such a report never starts with it (gate
+    r2 row 15)."""
+    err = result.get("error") if isinstance(result, dict) else None
+    return isinstance(err, str) and bool(_VENDOR_TURN_TIMEOUT_RE.match(err))
+
+
+def _bounded_number(value):
+    """A numeric vendor field for a diagnostic line, or None: never an
+    unbounded / untyped vendor string (gate r2 row 11)."""
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
 def _classify_no_answer(stderr: str, signals, vendor_rc: int,
                         status=None) -> tuple:
     """Decide classification for the no-usable-answer case.
@@ -262,6 +283,24 @@ _AGENT_BODY_RULES = (
 )
 
 
+def _allowlist_rule(tools) -> str:
+    """The standing system-text form of the wrapper's admission census
+    (2026-09-04): agy advertises its FULL tool registry to a custom agent
+    regardless of `tools:` (init.tools = 57 on 1.1.25/1.1.26), so the agent
+    must be TOLD which calls void its answer — one sentence per agent,
+    rendered from its own allowlist (a review body never names web tools)."""
+    return (
+        "TOOL ALLOWLIST (hardest rule): the tool schema you are shown may list\n"
+        "many tools, but you are permitted ONLY these: "
+        + ", ".join(tools)
+        + ".\nCalling ANY other tool even once — manage_task (never create task\n"
+        "lists; plan in your reasoning), run_command or any shell, write_to_file /\n"
+        "replace_file_content / sed_file, send_message, define_subagent /\n"
+        "invoke_subagent / manage_subagents, browser_* — voids your whole answer:\n"
+        "the caller audits every tool step and quarantines the result.\n"
+    )
+
+
 def _agent_body(name: str, description: str, tools, persona: str) -> str:
     return (
         "---\n"
@@ -274,6 +313,7 @@ def _agent_body(name: str, description: str, tools, persona: str) -> str:
         "commandExecutionPolicy: off\n"
         "---\n"
         f"{persona}\n"
+        f"{_allowlist_rule(tools)}"
         f"{_AGENT_BODY_RULES}"
     )
 
@@ -389,6 +429,29 @@ def _census(events, allowlist, read_set):
     return forbidden, omitted, errored_reads, errored_other
 
 
+def _early_census(events, allowlist, read_set, prior_forbidden) -> tuple:
+    """(errored_reads, forbidden, omitted) for an admission REFUSED before the
+    census would normally run (framing / result-count defects — gate r1
+    2026-09-04, claude): a run that also called a forbidden tool must still
+    classify `admission-refused` and name the tool, never fall back to
+    `vendor-error`; the counters ride along so the refusal loses no
+    diagnostic (gate r2 row 12)."""
+    forbidden, omitted, errored_reads, _eo = _census(events or [], allowlist, read_set)
+    for n in prior_forbidden:
+        if n not in forbidden:
+            forbidden.append(n)
+    return errored_reads, forbidden, omitted
+
+
+def _forbidden_shown(forbidden, omitted=0) -> str:
+    """ASCII-escaped capped list + the (+N more) counter the census path
+    prints — one builder for every reason that names forbidden tools."""
+    cap = _common._AGY_DIGEST_KEY_CAP
+    shown = json.dumps([n[:cap] for n in forbidden[:8]], ensure_ascii=True)
+    more = len(forbidden) - 8 + omitted
+    return shown + (f" (+{more} more)" if more > 0 else "")
+
+
 def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(),
           vendor_rc=0) -> Admission:
     """v2 admission — judged by what the STREAM shows, never by the vendor's
@@ -429,12 +492,12 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
             # (gate r2, claude); the excerpt is capped and ASCII-escaped
             excerpt = json.dumps(s[:_common._AGY_DIGEST_KEY_CAP], ensure_ascii=True)
             return Admission(False, f"stream line {idx} is not a JSON object (unusable run): {excerpt}",
-                             [], [], 0)
+                             *_early_census(events, allowlist, read_set, prior_forbidden))
     n_results = sum(1 for ev in events or []
                     if isinstance(ev, dict) and ev.get("event") == "result")
     if n_results != 1:
         return Admission(False, f"{n_results} result events in the stream (expected exactly 1)",
-                         [], [], 0)
+                         *_early_census(events, allowlist, read_set, prior_forbidden))
     forbidden, omitted, errored_reads, errored_other = _census(events, allowlist, read_set)
     for n in prior_forbidden:          # an earlier attempt's forbidden call is never erased
         if n not in forbidden:
@@ -725,13 +788,32 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                                            f"digest (files_read and web empty) — {remedy}",
                                     adm.errored_reads, [], adm.omitted)
                 if not adm.ok:
-                    _common.log(f"admission refused: {adm.reason}")   # names are ASCII-escaped by admit()
+                    # DISTINCT token (2026-09-04) for the ALLOWLIST class only:
+                    # a tool outside the agent's allowlist in the stream is
+                    # `admission-refused` — the review skill's "one retry,
+                    # then terminally missing" rule keys on it and the audit
+                    # row shows the forbidden tool + that a COMPLETE answer
+                    # was discarded (33 LegVerdicts lost under the generic
+                    # token, audit 2026-08-22..09-03). Every OTHER refusal
+                    # (framing, an unexplained degraded status, read-blind)
+                    # stays `vendor-error`. Both surface-not-repair:
+                    # deliberately absent from _common.CLASSIFICATION_TOKENS.
+                    reason = adm.reason
+                    if adm.forbidden and not reason.startswith("tool(s) outside the allowlist"):
+                        # an early (framing / result-count) refusal still names
+                        # the forbidden tool(s) the census saw (gate r1 row 2);
+                        # the test is on the wrapper-authored PREFIX, never on
+                        # a substring a vendor stdout excerpt could spoof
+                        reason += ("; tool(s) outside the allowlist also appeared in the stream: "
+                                   + _forbidden_shown(adm.forbidden, adm.omitted))
+                    _common.log(f"admission refused: {reason}")   # names are ASCII-escaped by admit()
                     snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
-                    return AgyResult(None, "vendor-error", _common.EXIT_TERMINAL,
+                    token = "admission-refused" if adm.forbidden else "vendor-error"
+                    return AgyResult(None, token, _common.EXIT_TERMINAL,
                                      rr.vendor_exit_code, stream_output=stream,
                                      stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
-                                     extraction_error=(f"admission refused: {adm.reason}; "
-                                                       f"quarantined answer: {snippet}"))
+                                     extraction_error=(f"admission refused: {reason}; "
+                                                       f"quarantined answer ({len(answer)} chars): {snippet}"))
                 if degraded or adm.errored_reads:
                     _common.log("[wrapper] antigravity admitted-with-errored-steps "
                                 f"n={len(adm.errored_reads)} "
@@ -880,6 +962,35 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                 continue
             _common.log("headless soft-deny signature but the flag is already "
                         "present — skipping an identical re-run")
+        if forbidden_seen and admission is not None:
+            # gate r1 row 3 / r2 row 14 (2026-09-04/05): the model burned the
+            # turn on a forbidden tool (manage_task …) and returned NO answer —
+            # with OR without a terminal result event — that is the allowlist
+            # class, not extraction-error / unknown (a repair dispatch with
+            # nothing to patch). Same token, no answer.
+            shown = _forbidden_shown(forbidden_seen)
+            _common.log(f"admission refused: tool(s) outside the allowlist appeared in the "
+                        f"stream: {shown} (empty answer)")
+            return AgyResult(None, "admission-refused", _common.EXIT_TERMINAL,
+                             rr.vendor_exit_code, stream_output=stream,
+                             stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
+                             extraction_error=(f"admission refused: tool(s) outside the allowlist "
+                                               f"appeared in the stream: {shown}; no answer"))
+        if result is not None and status == "ERROR" and _is_vendor_turn_timeout(result):
+            # gate r1 row 8 (2026-09-04): agy's OWN turn timeout fired before
+            # the wrapper deadline (`result.error` = "timeout waiting for
+            # response", empty response, vendor rc 1) — a typed vendor state
+            # distinct from the wrapper-kill `timeout` (repair-routed) and
+            # from the answer-present `vendor-error`. Named terminal token,
+            # surface-not-repair (the repair analyzer escalated exactly this:
+            # no existing class fits; rc 1 is generic). Review-leg callers:
+            # re-dispatch once with a narrower read scope, then missing.
+            return AgyResult(None, "vendor-timeout", _common.EXIT_TERMINAL,
+                             rr.vendor_exit_code, stream_output=stream,
+                             stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
+                             extraction_error=("vendor turn timeout: result.status=ERROR, "
+                                               f"error={str(result.get('error'))[:200]!r}, "
+                                               f"duration_seconds={_bounded_number(result.get('duration_seconds'))}"))
         if result is not None and status == "SUCCESS":
             # SUCCESS + empty response (spike P2, rc=0): a failed task the
             # vendor reports as success. Never a silent empty ok.

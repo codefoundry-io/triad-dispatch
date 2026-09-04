@@ -234,6 +234,41 @@ the shallow-tier fact for the round record.
   Evidence: `docs/spikes/2026-08-22-agy-permission-ladder/` rounds 1-3; spec
   `docs/superpowers/specs/2026-08-22-agy-readonly-v2-spec.md`. Expected
   read-audit: `commands=0 denied=0 writes=0 web=0`.
+- **Tool-allowlist instruction + `admission-refused` (2026-09-04, CFR 0.29.1).**
+  The agent's `tools:` list is NOT a model-visible restriction on agy
+  1.1.25/1.1.26: the stream's `init.tools` advertises the FULL registry (57
+  tools, `manage_task` / `run_command` / `write_to_file` / `send_message` /
+  browser included) to `triad-readonly-review`; only the wrapper's census
+  refuses, AFTER the answer exists. Measured cost before the fix
+  (`_logs/antigravity/audit.jsonl`): 110 refusals, 33 of them discarding a
+  COMPLETE LegVerdict (`manage_task` x7 in the E2-b gate, `send_message` x1
+  in the P4-C-spec gate). Two carriers now state the rule the census
+  enforces — the rendered `agy-prompt-r<N>.txt` READ-GRANT (the five
+  permitted tools by name, the forbidden planner / shell / write / subagent /
+  browser / web tools by name, "any other call voids your whole review";
+  pinned by `t4-prepare.sh`) and the agent body written by `--setup-agents`
+  (`_allowlist_rule`, pinned by `t28-agy-agent-mode.sh`; a host must re-run
+  `antigravity_wrapper.py --setup-agents` after
+  the upgrade or every dispatch fails `config-conflict` naming the file). The
+  allowlist refusal itself is now the DISTINCT classification
+  **`admission-refused`** (exit 65, surface-not-repair — the allowlist class
+  only; framing / unexplained-degraded / read-blind refusals stay
+  `vendor-error`; `t38-agy-admission-refused.sh`): stderr
+  `[wrapper] antigravity admission-refused …`, run-log `extraction_error`
+  "admission refused: tool(s) outside the allowlist … quarantined answer
+  (N chars)". Standing handling keys on the token: ONE retry of the leg,
+  a second `admission-refused` in the same round = terminally missing
+  (rule 13); never a repair-agent dispatch. Whether a complete verdict whose
+  only forbidden call was `manage_task` (no fs / network effect) should be
+  admitted is an OWNER policy question, undecided — fail-closed stands.
+  **`vendor-timeout` (65, same change):** agy's OWN turn timeout (`result.error`
+  "timeout waiting for response", empty response) — observed live on this
+  gate's r1 at 857 s of a 900 s budget with 33 allowlisted reads over 23
+  repo files: the leg read too widely for the vendor's internal turn budget.
+  Never `unknown` (the repair analyzer escalated: no existing class fits).
+  Handling: re-dispatch the leg ONCE with a NARROWER read scope (a smaller
+  packet, fewer "cite each site" demands, `--excerpt` the hot functions),
+  then terminally missing; consolidate the other legs regardless.
 - **Existence pin (2026-08-22, template-rendered — CFR 0.27.4).** The
   READ-GRANT forbids opening any path that does not exist on disk, naming
   the plan-stage case explicitly (a file the packet's DESIGN TEXT marks
@@ -344,35 +379,48 @@ the shallow-tier fact for the round record.
   leg dispatched WITHOUT `--pydantic`, per the stated fallback in
   `references/triage.md`).
 - **READ-GRANT block (mandatory, in the leg prompt; rewritten 2026-08-10
-  by owner directive — same method as the codex leg).** Include verbatim:
-  "Read `packet.md` FIRST and ONCE with your file-view tool (you have NO
-  usable shell for this review: under the wrapper's read-only containment the
-  command tool is absent or every command is denied — on agy the tools-
-  allowlisted `triad-readonly-review` agent, on gemini the policy-engine deny
-  — so never attempt one) — it is the round's framing and your review's
-  required entry point. You MAY then read files under the repo with your file-
-  view tool to VERIFY the packet's claims — cite file:line for anything you
-  assert from a repo file. TOOL CONVENTION (an errored or denied tool step
-  voids your whole review, so follow it exactly): to SEARCH, use your
-  grep_search tool — never a shell command — and set its SearchPath to a
-  SPECIFIC subdirectory of the repo (for example its analyzer/ or docs/ tree),
-  never the repository root: a root-wide search times out on large trees and
-  the errored step voids your review; to OPEN a file, call your file-view tool
-  with its CURRENT native arguments — the absolute path; paging arguments
-  (StartLine, EndLine, ContentOffset) are allowed only WITHIN the size the
-  tool reports, never past the end of the file (an overshoot is an errored
-  step that voids your review); and OPEN ONLY paths that exist on disk NOW — a
-  file the packet's DESIGN TEXT names as planned or to-be-created does NOT
-  exist yet, so never call your file-view tool on it: review its design from
-  the packet text alone (a does-not-exist open is an errored step and voids
-  your review); a file that appears as a new-file hunk in the fenced diff DOES
-  exist when the reviewed branch is the checked-out tree (the usual case) —
-  otherwise treat it as design text. Do NOT read files outside the repo, do
-  NOT search the web, and do NOT consult prior conversations or scratch space.
-  Do NOT modify any file, do NOT change external state, and do NOT run
-  commands, tests, scripts, builds, or vendor CLIs. Anything you did not
-  verify against the packet or a repo file is an open question, never an
-  asserted finding."
+  by owner directive — same method as the codex leg; refreshed 2026-09-05
+  from the rendered r2 prompt after the TOOL ALLOWLIST wave — the CODE
+  (`review_scratch.py` `_agy_read_grant`) is the SoT, this quote mirrors it).**
+  Include verbatim:
+  "Read `packet.md` FIRST and ONCE with your file-read tool (agy: view_file;
+  gemini: read_file) — it is the round's framing and your review's required
+  entry point. TOOL ALLOWLIST (the single hardest rule of this review). On
+  agy you run as the `triad-readonly-review` agent: your tool schema may
+  ADVERTISE many tools, but you are PERMITTED exactly five — view_file,
+  grep_search, list_dir, find_by_name, finish. Calling ANY other tool even
+  once — manage_task (do not create task lists; keep your plan in your
+  reasoning), run_command or any shell, write_to_file / replace_file_content
+  / sed_file, send_message, define_subagent / invoke_subagent /
+  manage_subagents, browser_*, read_url_content / search_web — voids your
+  whole review: the caller audits every tool step and QUARANTINES the
+  answer, so a complete verdict is thrown away. On gemini (the fallback
+  Google leg) the five names above do not apply: use ONLY your native file-
+  read and search tools, and never a shell command — the policy engine
+  denies commands. You MAY then read files under the repo with your file-
+  read tool to VERIFY the packet's claims — cite file:line for anything you
+  assert from a repo file. TOOL CONVENTION (on agy an errored or denied tool
+  step voids your whole review, so follow it exactly): to SEARCH, use your
+  search tool — agy: grep_search; gemini: search_file_content — never a
+  shell command — and set its search path to a SPECIFIC subdirectory of the
+  repo (for example its analyzer/ or docs/ tree), never the repository root:
+  a root-wide search times out on large trees and the errored step voids
+  your review; to OPEN a file, call your file-read tool — agy: view_file;
+  gemini: read_file — with its CURRENT native arguments — the absolute path;
+  agy paging arguments (StartLine, EndLine, ContentOffset) are allowed only
+  WITHIN the size the tool reports, never past the end of the file (an
+  overshoot is an errored step that voids your review); and OPEN ONLY paths
+  that exist on disk NOW — a file the packet's DESIGN TEXT names as planned
+  or to-be-created does NOT exist yet, so never call your file-read tool on
+  it: review its design from the packet text alone (a does-not-exist open is
+  an errored step and voids your review); a file that appears as a new-file
+  hunk in the fenced diff DOES exist when the reviewed branch is the
+  checked-out tree (the usual case) — otherwise treat it as design text. Do
+  NOT read files outside the repo, do NOT search the web, and do NOT consult
+  prior conversations or scratch space. Do NOT modify any file, do NOT
+  change external state, and do NOT run commands, tests, scripts, builds, or
+  vendor CLIs. Anything you did not verify against the packet or a repo file
+  is an open question, never an asserted finding."
   The mutation/exec sentence is part of the verbatim block on purpose
   (adopt-gate r2; re-grounded 2026-08-22, v2): on agy the setup-once
   `triad-readonly-review` agent has no write/shell/web tool and a fallback

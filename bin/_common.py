@@ -160,6 +160,9 @@ def map_classification_to_exit(cls: str) -> int:
         "config-conflict": EXIT_TERMINAL,
         "task-blocked": EXIT_TERMINAL,
         "vendor-error": EXIT_TERMINAL,  # agy: rc!=0 but a non-empty answer — surface, NOT repair
+        "admission-refused": EXIT_TERMINAL,  # agy: a tool OUTSIDE the agent allowlist in the stream (v2 census) — surface, NOT repair
+        "vendor-timeout": EXIT_TERMINAL,  # agy: the vendor's OWN turn timeout (result.error "timeout waiting for response", empty answer) — surface, NOT repair
+        "truncated-answer": EXIT_TERMINAL,  # agy: CLI-side mid-answer fold (driver hardcodes 65 too; the row keeps the map and the registry comment in agreement — gate r2 row 17)
         "unknown": EXIT_CLI_FAIL,
     }.get(cls, EXIT_CLI_FAIL)
 
@@ -2607,10 +2610,14 @@ def _prune_audit_archives(log_dir: Path) -> None:
 #
 #   CLASSIFICATION_TOKENS = the classify() result enum (keys of the
 #     map_classification_to_exit dict — the single source of truth).
-#     EXCEPTION (deliberate, P4 2026-07-11): `vendor-error` is in the exit map
-#     but NOT here — it is emitted directly by the agy driver when rc!=0 with a
-#     non-empty answer (a condition a classifier patch cannot express), so it
-#     must never be a proposable repair target.
+#     EXCEPTIONS (deliberate — driver-emitted agy tokens that live in the exit
+#     map but NOT here, so none is ever a proposable repair target): `vendor-error`
+#     (P4 2026-07-11: rc!=0 / non-SUCCESS status WITH a non-empty answer),
+#     `truncated-answer` (2026-07-22: CLI-side fold), `admission-refused`
+#     (2026-09-04: a tool outside the agent allowlist in the stream) and
+#     `vendor-timeout` (2026-09-04: agy's own turn timeout, empty answer).
+#     Each is a condition a classifier patch cannot express; t38 pins the
+#     registry contract for the two 2026-09-04 tokens, t14 for vendor-error.
 #   PATTERN_LIST_NAMES    = the built-in pattern-list constant names an
 #     extension may extend (a proposal's pattern_list must be one of these).
 

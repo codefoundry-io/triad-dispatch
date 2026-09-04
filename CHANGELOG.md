@@ -1,8 +1,21 @@
 # Changelog
 
-## 0.2.695 — 2026-09-03
+## 0.2.707 — 2026-09-05
 
-**Cross-family review hardening — verdict binding, mechanized round
+**agy TOOL ALLOWLIST instruction + `admission-refused` / `vendor-timeout` tokens (2026-09-04). MIGRATION: run `python3 bin/antigravity_wrapper.py --setup-agents` ONCE on every host after this update** — the agent
+bodies changed (they now carry the allowlist rule: agy advertises its
+full tool registry to a custom agent regardless of `tools:`), and the
+wrapper refuses `config-conflict` until the installed files match. A host
+that runs TWO wrapper builds (a source checkout and this plugin) shares
+ONE agents directory — keep both builds at the same version. The rendered
+agy review prompt names the five permitted tools and the forbidden
+planner / shell / write / subagent / browser / web tools (a forbidden
+call voids the review); a forbidden tool in the stream is now the
+distinct `admission-refused` (65) — one retry, then missing — and agy's
+own turn timeout (`result.error` "timeout waiting for response") is
+`vendor-timeout` (65, one narrower re-dispatch) instead of `unknown`.
+
+_(Prior release — **Cross-family review hardening — verdict binding, mechanized round
 integrity, and a read-grant for the codex/agy legs** (adopted from
 the codex-host 0.2.533 toolchain). Every review leg's `LegVerdict` is
 now BOUND to its round and leg (`review_id`/`family`/`content_digest`,
@@ -20,7 +33,7 @@ read FIRST and mutation stays denied, with capture/verify as the
 compensating control. The schema-repair retry no longer lets a leg
 launder a blocking finding into a clean `SAFE` on the re-ask (the
 retry is gated on the reply's parsed CONTENT, not on which validator
-arm fired).
+arm fired).)_
 
 _(Prior release — **prompt-transport hardening across every dispatch
 skill**: the Step 1 heredoc terminator is collision-resistant

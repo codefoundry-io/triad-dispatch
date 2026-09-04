@@ -64,7 +64,9 @@ stdout line is a JSON object; exactly one `result`; every tool name in any
 attempt ∈ the allowlist (both `tool_name` and `tool_info.name`; a nameless
 tool step counts as outside); a `status != SUCCESS` run is admitted only when
 every errored step named an allowed read (logged
-`admitted-with-errored-steps`), otherwise `vendor-error`. `init.agent` is a
+`admitted-with-errored-steps`), otherwise `vendor-error` — except that a tool
+OUTSIDE the allowlist in the stream is **`admission-refused`** (65, its own token
+since 0.16.3). `init.agent` is a
 diagnostic only (it echoes the requested name even on fallback — probe E,
 re-measured on 1.1.18). Below 1.1.18: `config-conflict`, no legacy path.
 Residuals: reads (and, for research, network) open by design; a fallback that

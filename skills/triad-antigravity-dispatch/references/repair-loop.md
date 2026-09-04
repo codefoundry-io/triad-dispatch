@@ -27,6 +27,8 @@ do.
 | `token-limit` | prompt size too large — shrink the prompt |
 | `oauth-env` | re-login required; auth stays user-managed |
 | `config-conflict` | either the settings deny transaction failed (lock-lease timeout, or a corrupt `~/.gemini/antigravity-cli/settings.json`), or `agy --version` probed below `_STREAM_JSON_FLOOR`, where the wrapper fails CLOSED before any vendor dispatch. Remediation for the latter: `agy update`, then re-dispatch |
+| `admission-refused` | the v2 admission census found a tool OUTSIDE the agent's allowlist in the stream (the allowlist class only; other refusals stay `vendor-error`); the complete answer is quarantined in the run-log. Driver-emitted, never a classifier patch — surface, one retry at most. |
+| `vendor-timeout` | the stream's terminal `result` is `status: ERROR` with the typed `error` "timeout waiting for response" and an empty response — agy's own turn budget ran out. Driver-emitted (`_is_vendor_turn_timeout`), never a classifier patch; surface, one narrower re-dispatch at most. |
 | `vendor-error` | the stream's terminal `result` event carried a non-empty answer WITH rc≠0 or a non-`SUCCESS` status. The answer is deliberately NOT on stdout: it survives only in the run-log's quarantined `extraction_error` copy and the raw NDJSON stream, which the leader does not open (Hard rule 2). Surface the classification token + exit codes and name the run-log path; a human can read it out of band to decide re-dispatch vs accept |
 
 `config-conflict`'s floor gate is a deterministic pre-dispatch check and
