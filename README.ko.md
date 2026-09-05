@@ -60,9 +60,27 @@ Claude 가 `triad-codex-dispatch` skill 을 실행하고, codex wrapper 를 호�
      사용됩니다.
 
    또한 PATH 에 **`python3 >= 3.12`** (wrapper 는 `#!/usr/bin/env python3` 로
-   실행)와, 플러그인 마켓플레이스 + 네임스페이스 플러그인 skill 을 지원할 만큼
-   **최신 Claude Code** 가 필요합니다. claude 리뷰 leg 는 세션 내 `Agent` 이므로
-   별도 로그인이 필요 없습니다.
+   실행)와, 그 `python3` 로 import 가능한 **pydantic 2.x** (`'pydantic>=2,<3'`) (cross-family-review
+   leg 이 `--pydantic verdict_schema:LegVerdict` 로 디스패치하고, 스키마가 v2 전용
+   API 를 씁니다), 그리고 플러그인 마켓플레이스 + 네임스페이스 플러그인 skill 을
+   지원할 만큼 **최신 Claude Code** 가 필요합니다. claude 리뷰 leg 는 세션 내
+   `Agent` 이므로 별도 로그인이 필요 없습니다.
+
+   > **Ubuntu 24.04 주의.** `apt install python3-pydantic` 은 **1.10** 이라 동작하지
+   > 않고, PEP 668 로 시스템 인터프리터가 externally-managed 이므로 `pip3 install
+   > --user` 도 실패합니다. venv 를 쓰세요 — `python3 -m venv ~/.venvs/triad &&
+   > ~/.venvs/triad/bin/pip install 'pydantic>=2,<3'` — 그리고 Claude Code 를 띄우는
+   > 셸에서 그 venv 를 activate 해야 `#!/usr/bin/env python3` 가 venv 인터프리터로
+   > 해석됩니다. 폐쇄망에서는 같은 명령에 `--no-index --find-links <wheel-dir>` 를
+   > 붙여 인덱스 대신 반입한 wheel 세트로 설치하세요. **그 세트는 3개가 아니라 5개**
+   > 입니다 — pydantic 2.x 런타임 의존 closure 전부:
+   > `pydantic-2.x-py3-none-any.whl` + `pydantic_core-*-cp312-*manylinux*.whl`
+   > (pydantic 릴리스마다 `==` 고정) + `typing_extensions-*.whl` +
+   > `annotated_types-*.whl` (>= 0.6) + `typing_inspection-*.whl` (>= 0.4.2,
+   > pydantic 2.10 부터 필수). 인터넷 쪽 머신에서
+   > `pip download 'pydantic>=2,<3' --only-binary=:all: --platform
+   > manylinux_2_17_x86_64 --python-version 312 -d <dir>` 가 정확히 그 세트를
+   > 떨굽니다.
 
 2. **플러그인 추가.**
 

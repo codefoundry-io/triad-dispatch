@@ -41,12 +41,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
-# pydantic optional — only required when --pydantic flag is given.
+# pydantic optional — only required when --pydantic flag is given, and then
+# **v2 only**: `model_validate_json()` / `model_json_schema()` /
+# `model_dump(mode="json")` are all v2 APIs absent from 1.x. Ubuntu 24.04 apt
+# ships `python3-pydantic` 1.10, where the import SUCCEEDS — a presence-only
+# guard would let the run reach an AttributeError deep inside validation
+# instead of failing here with an actionable message.
 try:
+    import pydantic  # type: ignore
     from pydantic import BaseModel  # type: ignore
-    PYDANTIC_OK = True
+    # `VERSION` is pydantic's own attribute (present in 1.x and 2.x); a
+    # vendored / repackaged build may carry only the PEP 396 `__version__`.
+    PYDANTIC_VERSION_FOUND = str(
+        getattr(pydantic, "VERSION", None)
+        or getattr(pydantic, "__version__", None)
+        or "") or None
+    PYDANTIC_OK = (PYDANTIC_VERSION_FOUND or "").split(".")[0] == "2"
+    if not PYDANTIC_OK:  # pragma: no cover - v1 not installed on the dev Mac
+        BaseModel = None  # type: ignore
 except ImportError:  # pragma: no cover
     BaseModel = None  # type: ignore
+    PYDANTIC_VERSION_FOUND = None
     PYDANTIC_OK = False
 
 
@@ -1276,7 +1291,14 @@ def load_pydantic_class(spec: str):
     Raises ImportError / AttributeError / TypeError on failure.
     """
     if not PYDANTIC_OK:
-        raise RuntimeError("pydantic not installed — `pip3 install --user pydantic`")
+        raise RuntimeError(
+            f"pydantic 2.x required (found: {PYDANTIC_VERSION_FOUND or 'none'}) "
+            "— install into a venv from the transferred wheel set: "
+            "python3 -m venv .venv && .venv/bin/pip install --no-index "
+            "--find-links <wheel-dir> 'pydantic>=2,<3' "
+            '(see the wrappers README section "Pydantic schema enforcement", '
+            'or the plugin README\'s setup section — "Required" in English, '
+            '"필수 설정" in Korean)')
     if _wrapper_hardened() and os.environ.get("TRIAD_ALLOW_PYDANTIC_IMPORT") != "1":
         # Hardened installs (public codex-host product) must opt in explicitly:
         # --pydantic imports arbitrary Python outside the vendor sandbox.

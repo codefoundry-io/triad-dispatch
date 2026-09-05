@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.725 — 2026-09-05
+## 0.2.735 — 2026-09-06
 
 **Cross-family review 0.29.2 — repo-relative findings paths, the
 claude output-shape notice, and the experimental X leg.** Every

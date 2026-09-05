@@ -61,9 +61,28 @@ Four steps get you a working install. Everything past this section is optional.
      **enterprise** Gemini tier stays in use.
 
    You also need **`python3 >= 3.12`** on PATH (the wrappers run via
-   `#!/usr/bin/env python3`), and a **recent Claude Code** — new enough for plugin
-   marketplaces and namespaced plugin skills. The claude review leg is an
-   in-session `Agent`, so it needs no separate login.
+   `#!/usr/bin/env python3`), **pydantic 2.x** (`'pydantic>=2,<3'`) importable by that same
+   `python3` (the cross-family-review legs dispatch `--pydantic
+   verdict_schema:LegVerdict`, and the schema uses v2-only APIs), and a
+   **recent Claude Code** — new enough for plugin marketplaces and namespaced
+   plugin skills. The claude review leg is an in-session `Agent`, so it needs
+   no separate login.
+
+   > **Ubuntu 24.04 note.** `apt install python3-pydantic` gives **1.10**, which
+   > does NOT work, and PEP 668 marks the system interpreter externally-managed
+   > so `pip3 install --user` aborts. Use a venv — `python3 -m venv ~/.venvs/triad
+   > && ~/.venvs/triad/bin/pip install 'pydantic>=2,<3'` — and activate it in the
+   > shell that launches Claude Code, so `#!/usr/bin/env python3` resolves to the
+   > venv interpreter. On a closed network, add `--no-index --find-links
+   > <wheel-dir>` to that same command and install from the transferred wheel set
+   > instead of an index. **That set is FIVE wheels, not three** — pydantic 2.x's
+   > full runtime closure: `pydantic-2.x-py3-none-any.whl` +
+   > `pydantic_core-*-cp312-*manylinux*.whl` (pinned `==` by the pydantic release)
+   > + `typing_extensions-*.whl` + `annotated_types-*.whl` (>= 0.6) +
+   > `typing_inspection-*.whl` (>= 0.4.2, required from pydantic 2.10 on). On an
+   > internet-side machine, `pip download 'pydantic>=2,<3' --only-binary=:all:
+   > --platform manylinux_2_17_x86_64 --python-version 312 -d <dir>` produces
+   > exactly that set.
 
 2. **Add the plugin.**
 
