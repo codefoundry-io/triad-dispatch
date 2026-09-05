@@ -17,6 +17,7 @@ the fix queue, and when recording or updating a residual.
 | Residual table | recording, updating, or carrying forward a residual |
 | Consolidating validated LegVerdict objects (jq) | a leg was dispatched with `--pydantic verdict_schema:LegVerdict` (or its claude-leg equivalent) and its findings need mapping into the residual table |
 | Reviewer-side instruction | writing the leg prompts |
+| X-leg comparison record | a round carried an ADVISORY `--x-leg` leg |
 
 ## Consolidation duties
 
@@ -140,6 +141,16 @@ Even for a REAL finding, a fix is DESIGN EXPANSION when it:
    across commits or rounds does not reset it; a repro TC or probe is
    investigation, not part of the fix).
 
+**Plan-gate fold of a NEW semantic contract (2026-09-05, P6 entry-plan gate).**
+A fold that introduces a new semantic contract — a runtime-evidence rule, a
+resolver, a predicate — hands every subsequent round a fresh layer of REAL
+material to review: r2 returned 22 rows and r3 another 16, all on the newly
+folded text, with no oscillation and no defect in the earlier rows. The entry
+plan therefore folds the CONSTRAINTS the contract must satisfy and DELEGATES
+the row-level DESIGN to the unit that owns the contract and carries its own
+gate. A gate that keeps producing real findings on material the current fold
+just created is a scope signal, not a convergence failure.
+
 Design expansion STOPS for an explicit owner OK before implementing, even
 mid-round. This bounds the autonomous fix loop rather than suspending it: leader
 autonomy covers REAL findings with minimal diffs.
@@ -193,6 +204,39 @@ the merge-stage gate against the actual diff — plus the codified
 non-blocking release above; never more plan-time enumeration rounds
 (precedent: an 11-round plan gate whose final rounds' findings were half the
 leader's own fold-edit slips).
+
+## X-leg comparison record
+
+An experimental X leg (SKILL.md rule 15) is run to be COMPARED, so each round
+it participates in gets one deterministic record — leader-filled, in the gate
+ledger (and rolled up into `docs/reviews/<date>-x-leg-<name>-campaign.md` for a
+campaign):
+
+| Field | What it holds |
+|---|---|
+| `x_findings` | count of findings the X leg returned |
+| `baseline_findings` | count from the SAME-family standing leg (gating or advisory) it is compared against — name that leg |
+| `overlap` | findings both raised: same file + line ±3, OR the same defect by leader judgement — MARK which of the two rules each overlap used |
+| `x_unique_real` | X-only findings that triaged REAL |
+| `x_unique_refuted` | X-only findings a recorded probe refuted |
+| `x_out_of_scope` | X-only findings outside the packet's scope or ruled out by the deployment context |
+| `verdict_agreement` | does the X verdict token match the baseline leg's? |
+| `wall_s_x` / `wall_s_baseline` | wall-clock seconds per leg |
+
+**Consolidation cross-check (do this BEFORE filling the table).** An X leg is
+identified by TWO independent markers — its artifact FILE NAMES
+(`<name>-r<N>-*`) and the `review_id` suffix its verdict echoes
+(`<review-id>.<name>`) — and both must agree with the leg's entry in
+`.x-legs-r<N>.json`. A disagreement means a verdict was filed under the wrong
+leg; re-admit it with `validate_verdict.py` and the recorded id rather than
+reasoning about which leg "probably" produced it.
+
+Standing rules: an X finding enters the residual table like any other, tagged
+`x:<name>` in its raising-leg cell, and takes the SAME triage (REAL /
+REACHABLE-UNOBSERVED / SPECULATIVE) — an X leg's severity or verdict never
+gates, and a Critical raised ONLY by an X leg is a finding to triage, not a
+merge block. An X leg that failed, timed out, or returned an unusable verdict
+is recorded as such in the same row set and the round proceeds.
 
 ## Residual table
 

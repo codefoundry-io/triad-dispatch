@@ -1,6 +1,24 @@
 # Changelog
 
-## 0.2.715 — 2026-09-05
+## 0.2.725 — 2026-09-05
+
+**Cross-family review 0.29.2 — repo-relative findings paths, the
+claude output-shape notice, and the experimental X leg.** Every
+rendered leg prompt now states that a finding's `file` is a
+REPO-RELATIVE POSIX path (an absolute one fails schema validation and
+loses the whole review — measured twice on 2026-09-05), and the claude
+prompt opens with the OUTPUT-SHAPE NOTICE the admission tool requires
+(reply BEGINS with `{`). `review_scratch.py prepare` gains the
+repeatable `--x-leg <name>:<vendor>[:<model>[:<effort>]]` flag: an
+ADVISORY 4th leg (never gating) rendered from the same packet and
+recorded in `.x-legs-r<N>.json`, with its complete dispatch command
+printed and `lib/read_audit_gate.sh --audit-file` available for an agy
+X leg's own read audit. Each X leg is BOUND to its own
+`review_id` = `<review-id>.<x-name>`, so admission mechanically
+refuses an X verdict filed under the standing leg's id; the
+`--audit-file` override must sit directly in the packet dir and
+carry the X basename shape; every leg's admission command is
+printed.
 
 **agy TOOL ALLOWLIST instruction + `admission-refused` / `vendor-timeout` tokens (2026-09-04). MIGRATION: run `python3 bin/antigravity_wrapper.py --setup-agents` ONCE on every host after this update** — the agent
 bodies changed (they now carry the allowlist rule: agy advertises its

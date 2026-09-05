@@ -16,6 +16,7 @@ its verdict may be weighed only after the read-audit gate below passes.
 | gemini leg | gemini is the resolved Google leg |
 | codex leg | dispatching codex — tier, `--search`, inline packet |
 | claude fresh-eye leg | dispatching the claude `Agent` leg |
+| X leg (experimental) | a round carries an ADVISORY `--x-leg` comparison leg |
 
 ## Verdict binding — all legs (adopted 2026-08-10, codex-host 0.2.533)
 
@@ -276,6 +277,13 @@ the shallow-tier fact for the round record.
   Re-evaluation trigger: `admission-refused` recurring under the 0.29.1
   instruction (audit rows), at which point the shape is a NEW defect, not a
   policy relaxation.
+  **Observation 2026-09-05 (agy 1.1.26):** the vendor now REJECTS a
+  `run_command` call at EXECUTION time — the stream carries "unknown tool:
+  run_command — check spelling" — while `init.tools` still advertises all 57
+  tools to `triad-readonly-review`. That is a vendor-side narrowing of one
+  tool, not the model-visible restriction the agent's `tools:` list was
+  supposed to be: the wrapper census remains the enforcement, and Policy D
+  (fail-closed on any forbidden call, `manage_task` included) is unchanged.
   **`vendor-timeout` (65, same change):** agy's OWN turn timeout (`result.error`
   "timeout waiting for response", empty response) — observed live on this
   gate's r1 at 857 s of a 900 s budget with 33 allowlisted reads over 23
@@ -601,7 +609,7 @@ the skill's own helper — ONE call per round covers a multi-file packet (every
 file must pass):
 
      ```bash
-     bash <skill>/lib/read_audit_gate.sh "$PACKET_DIR" "$PACKET_DIR/packet-r<N>.md" [<more-abs-packet-files>...]
+     bash <skill>/lib/read_audit_gate.sh [--audit-file <abs>] "$PACKET_DIR" "$PACKET_DIR/packet-r<N>.md" [<more-abs-packet-files>...]
      ```
 
 The helper is the gate's single EXECUTABLE form (skill v0.27.0 — the leader
@@ -618,6 +626,16 @@ stays the SPEC the helper implements. What each outcome means:
   make the gate open a file nobody bound or cleared for THIS round). The
   wrapper writes it on EVERY completed call, ok or not — no stderr capture,
   no grep/sed extraction (`triad-antigravity-dispatch` § Isolation).
+  **The ONE exception is the leading `--audit-file <abs>` flag, for an
+  experimental agy X leg only** (§ X leg): still argv-only and still no env
+  fallback, and narrow by construction — the value must be ABSOLUTE, live
+  DIRECTLY inside `$PACKET_DIR` (no subdirectory, no symlink resolution: an
+  audit outside the census'd round dir is not this round's evidence), and its
+  basename must match `x-<name>-r<N>-read-audit.json`. The STANDING
+  `agy-read-audit.json` is therefore never a legal override — containment
+  alone cannot tell the two apart, and gating an X leg on the standing leg's
+  evidence is a false PASS. Every violation is a LOUD usage exit 64, never a
+  verdict.
 - **Packet-file args are the ROUND-SUFFIXED names** (for a `prepare`-built
   round, `<packet-dir>/packet-r<N>.md` — never the packet DIR itself). Argv
   discipline is LOUD (exit 64), never a verdict: the packet dir and EVERY
@@ -960,3 +978,82 @@ fallback above.
   transcription is the only path, hence the caveat.)
 - **Agent definitions are session-start snapshots** — a frontmatter change takes
   effect from the NEXT session.
+
+## X leg (experimental)
+
+An X leg is the ADVISORY fourth leg of SKILL.md rule 15 — a comparison
+reviewer pointed at another vendor / model / effort. It is rendered by
+`prepare --x-leg <name>:<vendor>[:<model>[:<effort>]]` from the SAME packet
+as the standing legs (same packet bytes, same `content_digest`, the same
+per-family template), so a difference in its verdict is a difference in the
+MODEL, never in the framing. It never gates and never replaces a family.
+
+- **Binding identity.** The one value the X leg does NOT share with the
+  standing leg is `review_id`: an X leg is bound to
+  `<review-id>.<x-name>` (e.g. `<slug>-r1.x-agy-flash`), rendered into its
+  prompt's binding line and recorded in `.x-legs-r<N>.json`. The packet's own
+  `Review metadata:` line is inside the content digest and therefore always
+  names the STANDING round id, so an X render carries one extra sentence
+  telling the reviewer which of the two ids to echo. Admission runs
+  `validate_verdict.py` with the X id, so a Flash verdict saved under the Pro
+  leg's name is INVALID BY BINDING — the mechanical check, not leader
+  vigilance, keeps the comparison honest. (The separator is `.` and not `+`:
+  `LegVerdict.review_id` is constrained to `[A-Za-z0-9][A-Za-z0-9._-]*`, so a
+  `+` would schema-fail every X verdict at the wrapper.)
+
+- **Naming.** `x-<lowercase-alnum>[-part]…`. Input:
+  `<name>-prompt-r<N>.txt` (agy / gemini / claude) or `<name>-body-r<N>.txt`
+  (codex). Outputs: `<name>-r<N>-verdict.json`, `<name>-r<N>.err`,
+  `<name>-r<N>-read-audit.json` (agy), `<name>-r<N>-raw.json` (claude) — all
+  inside the leg-output allowlist (X outputs are matched by an explicit
+  basename SHAPE, never a path-spanning glob —
+  `references/packet-lifecycle.md` § Round integrity).
+- **model / effort are DISPATCH-TIME values** the leader types; nothing in
+  this skill pins a vendor catalog slug (`~/.claude/CLAUDE.md` § Web search
+  rules). Effort vocabulary: agy / gemini `low|medium|high`, codex
+  `low|medium|high|xhigh|max` (default `xhigh`); for the claude vendor the
+  MODEL field is an AGENT TYPE and effort is not accepted — effort is
+  frontmatter-fixed on the agent, so a different tier IS a different agent id.
+  A claude agent id may carry a plugin scope, so for that vendor EVERY field
+  after the vendor rejoins as one id (`x-c:claude:<plugin>:<agent>`); for the
+  other vendors a fifth field is a loud "too many fields" refusal. Because
+  that rejoin swallows any trailing field, a FINAL segment that is exactly an
+  effort token (`low|medium|high|xhigh|max`) is refused outright with the
+  same explanation — otherwise `x-c:claude:<agent>:high` would look accepted
+  while nothing carried the tier. An all-empty remainder (`x-c:claude::`) is
+  an EMPTY id, not an id spelled `:`, and falls back to the default. When the
+  model slot is empty the default id is LAYOUT-DERIVED: in a plugin install
+  the reviewer agent scoped with the plugin's own manifest name (a bare name
+  is shadowable by a consumer's same-named project agent), in the dev tree the
+  bare reviewer-agent name. In a plugin install a manifest that is unreadable,
+  not JSON, or without a non-empty string `name` is a LOUD failure (exit 2
+  naming the manifest), never a silent fall back to the shadowable bare
+  name.
+- **Dispatch shapes** (printed in full by `prepare`, values elided here):
+  - agy — `env TRIAD_READ_AUDIT_FILE=<dir>/<name>-r<N>-read-audit.json
+    python3 <…>/antigravity_wrapper.py --sandbox read-only --cwd <worktree>
+    [--model …] [--effort …] --timeout 1500 --pydantic
+    verdict_schema:LegVerdict --prompt-file <input> > <verdict> 2> <err>`;
+    gate it with `lib/read_audit_gate.sh --audit-file <its own read audit>
+    <packet-dir> <packet-r<N>.md>`.
+  - gemini — the same shape through `gemini_wrapper.py`, minus the read-audit
+    env (that wrapper writes none) and minus `--effort` (it exposes no such
+    flag; `prepare` prints a NOTE when one was recorded).
+  - codex — `python3 <…>/codex_wrapper.py --sandbox read-only --cwd
+    <worktree> [--model …] --reasoning <effort or xhigh> --search --timeout
+    1500 --pydantic verdict_schema:LegVerdict --prompt-file <body> > <verdict>
+    2> <err>`.
+  - claude — no wrapper: spawn `Agent` with the agent id above (the model
+    field, else the layout-derived default) on the rendered prompt, save the final
+    message VERBATIM to `<name>-r<N>-raw.json`, then admit it with
+    `validate_verdict.py --admit … --expected-family claude … --admitted-out
+    <name>-r<N>-verdict.json` (the claude-leg RAW-STAGING and no-manual-
+    de-escape rules above apply unchanged).
+- **A failed X leg never blocks the round** — record it in the comparison
+  record and consolidate the three families as usual.
+- **Machine record.** `.x-legs-r<N>.json` (`round`, then per leg `name`,
+  `vendor`, `family`, `model`, `effort`, `prompt_file` (a BASENAME — the
+  record already lives in the packet dir), `review_id`) lands with the round's
+  other inputs, before capture, so the census covers it. It is round evidence:
+  never hand-removed, even for an abandoned leg
+  (`references/packet-lifecycle.md` § Round integrity).

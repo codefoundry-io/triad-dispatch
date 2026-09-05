@@ -239,7 +239,16 @@ identical on macOS and Ubuntu 24.04):
   TIME** — `verify` exempts (as outputs a round legitimately creates
   after capture) ONLY names matching `_LEG_OUTPUT_GLOBS`
   (review_scratch.py): `*.out`, `*.err`, `*-read-audit.json`,
-  `claude-r*.json`, `*-verdict.json`. Route every leg's redirected
+  `claude-r*.json`, `*-verdict.json` — plus, for an experimental X leg, the
+  explicit shape rule `_is_x_leg_output`. That rule is a REGEX on the
+  basename, not a glob (CFR 0.29.2 gate r2): the globs are `fnmatchcase`d
+  against the whole POSIX RELPATH, where `*` also spans `/`, so an X glob such
+  as `x-*-r[0-9]*-raw.json` still exempted `x-fixtures-r1/notes-raw.json` and
+  `x-c-r1-notes-raw.json`. An X output must therefore contain NO `/` (it lives
+  directly in the packet dir) and its basename must fullmatch
+  `x-<lowercase-alnum>[-part]…-r<N>[-attempt<K>]` followed by
+  `-raw.json` / `-verdict.json` / `-read-audit.json` / `.err`.
+  Route every leg's redirected
   stdout/stderr and verdict to those shapes when BUILDING the dispatch
   command — e.g. `codex-r<N>-verdict.json` + `codex-r<N>.err`, never
   `codex-stderr-r<N>.txt` (observed 2026-08-27, P4 entry gate r1: a
@@ -298,6 +307,40 @@ identical on macOS and Ubuntu 24.04):
   consolidation artifacts avoid the same trap by
   carrying the round in their name (`<leg>-r<N>-verdict.json`,
   `references/triage.md`).
+- **A RE-DISPATCHED leg's earlier attempt is renamed into the allowlist,
+  never left under a free-form name** (observed 2026-09-05, P6 entry-plan
+  gate r2: `verify` refused `agy-read-audit-r2-attempt1.json`). Before the
+  retry, rename attempt K's artifacts to `<leg>-r<N>-attempt<K>.err`,
+  `<leg>-r<N>-attempt<K>-read-audit.json`, and
+  `<leg>-r<N>-attempt<K>-verdict.json` (a claude X leg's staged reply:
+  `x-<name>-r<N>-attempt<K>-raw.json`) — every one of those matches
+  `_LEG_OUTPUT_GLOBS` (`*.err`, `*-read-audit.json`, `*-verdict.json`) or the
+  X shape rule above (which carries the optional `-attempt<K>` segment), so
+  the round's evidence keeps both attempts without tripping the
+  uncovered-file refusal.
+- **NEVER hand-move `agy-read-audit.json`** — `prepare` and `capture`
+  auto-rename it to its producing round's suffix (mechanized 2026-08-11), so
+  a manual `cp`/`mv` is at best redundant and at worst destructive. Above
+  all, never CHAIN such a file operation before a dispatch (`mv … && …
+  wrapper`): the codex r2 launch of the 2026-09-05 P6 gate never happened
+  because the chained hand-move failed first. The helper owns the packet
+  dir. The same rule covers the X-leg artifacts: `<name>-prompt-r<N>.txt` /
+  `<name>-body-r<N>.txt` and `.x-legs-r<N>.json` are ROUND EVIDENCE (written
+  before capture, censused with the standing inputs) — never hand-remove them,
+  even for an X leg that was abandoned; record that leg MISSING in the round
+  log and leave its artifacts in place.
+- **Experimental X-leg names (CFR 0.29.2, SKILL.md rule 15).** An X leg's
+  INPUT (`<x-name>-prompt-r<N>.txt`, or `<x-name>-body-r<N>.txt` on the
+  codex vendor) and the machine record `.x-legs-r<N>.json` are written by
+  `prepare` BEFORE the round's capture, so they are censused leg inputs
+  like the standing five. Its OUTPUTS carry the round from the start —
+  `<x-name>-r<N>-verdict.json`, `<x-name>-r<N>.err`,
+  `<x-name>-r<N>-read-audit.json`, and `<x-name>-r<N>-raw.json` (the claude
+  vendor's verbatim reply, the one kind the standing globs do not already
+  cover) — so no X output is round-invariant and none owes a
+  preserve-and-clear. Anything else an X leg leaves in the packet dir
+  (scratch notes, a stray `.txt`) fails `verify` as an uncovered file, by
+  design.
 - The reviewed tree stays FROZEN for the round's duration: fixes for
   returned findings are STAGED and applied only after the last leg
   returns and `verify` passes. An edit adopted while closing a

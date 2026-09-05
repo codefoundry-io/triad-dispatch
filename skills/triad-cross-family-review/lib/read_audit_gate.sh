@@ -12,12 +12,19 @@
 # invocation (this comment deliberately does not, or the grep would
 # double-match).
 #
-#   usage: read_audit_gate.sh <abs-packet-dir> <abs-packet-file> [<abs-packet-file>...]
+#   usage: read_audit_gate.sh [--audit-file <abs-path>] <abs-packet-dir> <abs-packet-file> [<abs-packet-file>...]
 #
 # The digest path is DERIVED from <abs-packet-dir> as the shared literal
 # "$PACKET_DIR/agy-read-audit.json" — no env fallback (leg-contracts J1
 # anti-drift: an ambient TRIAD_READ_AUDIT_FILE some other shell context
-# left exported can never redirect this gate).
+# left exported can never redirect this gate). The optional LEADING
+# `--audit-file <abs-path>` (CFR 0.29.2) is the ONE explicit override: an
+# experimental X leg (SKILL.md rule 15) writes its own round-suffixed
+# `<x-name>-r<N>-read-audit.json`, and the gate reads THAT instead. Still
+# argv-only, and narrow: the value must be ABSOLUTE, live DIRECTLY inside
+# <abs-packet-dir> (no subdirectory, no symlink resolution), and its basename
+# must match `x-<name>-r<N>-read-audit.json` — the STANDING agy-read-audit.json
+# is never a legal override. Anything else is a usage error (64).
 #
 # stdout: one "[gate] <VERDICT> <file>" line per EVALUATED packet file
 #   (the ABSENT/symlink refusals evaluate none; the broken-evidence stop
@@ -64,16 +71,54 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
 fi
 
 usage_die() {
-  echo "usage: read_audit_gate.sh <abs-packet-dir> <abs-packet-file> [<abs-packet-file>...]" >&2
+  echo "usage: read_audit_gate.sh [--audit-file <abs-path>] <abs-packet-dir> <abs-packet-file> [<abs-packet-file>...]" >&2
   echo "error: $*" >&2
   exit 64
 }
+
+# Optional LEADING `--audit-file <abs-path>` (CFR 0.29.2): an experimental X
+# leg (SKILL.md rule 15) writes its OWN round-suffixed read audit
+# (`<x-name>-r<N>-read-audit.json`), so the gate must be retargetable. Still
+# EXPLICIT and still no env fallback (leg-contracts J1 anti-drift): the value
+# comes from argv or the shared literal below, never from the environment.
+AUDIT_FILE_OVERRIDE=""
+if [ "${1:-}" = "--audit-file" ]; then
+  [ "$#" -ge 2 ] || usage_die "--audit-file requires an absolute path"
+  AUDIT_FILE_OVERRIDE="$2"
+  shift 2
+  case "$AUDIT_FILE_OVERRIDE" in /*) : ;; *) usage_die "--audit-file must be an absolute path: $AUDIT_FILE_OVERRIDE" ;; esac
+fi
 
 [ "$#" -ge 2 ] || usage_die "need an absolute packet dir and at least one absolute packet file"
 PACKET_DIR="$1"
 shift
 case "$PACKET_DIR" in /*) : ;; *) usage_die "packet dir must be an absolute path: $PACKET_DIR" ;; esac
 [ -d "$PACKET_DIR" ] || usage_die "packet dir not found: $PACKET_DIR"
+
+# Override CONTAINMENT + SHAPE (CFR 0.29.2 gate r1): checked here because both
+# rules are relative to the now-validated PACKET_DIR.
+#   containment — the override must live DIRECTLY in the packet dir (no
+#     subdirectory, no path outside it, no symlink resolution): the round's
+#     evidence is exactly the census'd packet dir, and an audit read from
+#     anywhere else was never frozen by `capture`.
+#   X shape — the basename must be an X leg's own round-suffixed audit
+#     (`x-<name>-r<N>-read-audit.json`). Containment ALONE cannot tell the
+#     STANDING `agy-read-audit.json` from an X audit, so without this the
+#     standing Pro-leg evidence could be passed as an X leg's override and
+#     produce a false PASS for a leg that read nothing.
+if [ -n "$AUDIT_FILE_OVERRIDE" ]; then
+  _pkt_norm="${PACKET_DIR%/}"
+  case "$AUDIT_FILE_OVERRIDE" in
+    "$_pkt_norm"/*) : ;;
+    *) usage_die "--audit-file must live inside the packet dir $_pkt_norm (got $AUDIT_FILE_OVERRIDE) — an audit outside the census'd round dir is not this round's evidence" ;;
+  esac
+  [ "${AUDIT_FILE_OVERRIDE%/*}" = "$_pkt_norm" ] \
+    || usage_die "--audit-file must sit DIRECTLY in the packet dir, not in a subdirectory: $AUDIT_FILE_OVERRIDE"
+  case "${AUDIT_FILE_OVERRIDE##*/}" in
+    x-*-r[0-9]*-read-audit.json) : ;;
+    *) usage_die "--audit-file must name an X leg's own round-suffixed audit (x-<name>-r<N>-read-audit.json), got ${AUDIT_FILE_OVERRIDE##*/} — the STANDING agy-read-audit.json is never a legal override (gating an X leg on the standing leg's evidence is a false PASS)" ;;
+  esac
+fi
 for f in "$@"; do
   case "$f" in /*) : ;; *) usage_die "packet file must be an absolute path: $f" ;; esac
   [ -f "$f" ] || usage_die "packet file not found: $f (for a prepare-built round the packet is the ROUND-SUFFIXED packet-r<N>.md; a stale generic name here would false-VOID a compliant leg)"
@@ -89,7 +134,7 @@ _CAP=200
 # ONE literal across all THREE sites (leg-contracts J1): the dispatch
 # binding, the leader-side pre-clear, and this gate all read/write the SAME
 # "$PACKET_DIR/agy-read-audit.json" — byte-identical, no env-var fallback.
-AGY_READ_AUDIT_FILE="$PACKET_DIR/agy-read-audit.json"
+AGY_READ_AUDIT_FILE="${AUDIT_FILE_OVERRIDE:-$PACKET_DIR/agy-read-audit.json}"
 
 if [ -h "$AGY_READ_AUDIT_FILE" ]; then
   # Check-then-open symlink refusal — deliberately WEAKER than
