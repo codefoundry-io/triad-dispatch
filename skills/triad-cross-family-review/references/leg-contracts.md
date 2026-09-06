@@ -898,7 +898,19 @@ fallback above.
   of the review rotation. Escalation for a very-important AND algorithmically
   complex round = `subagent_type: triad-dispatch:cross-family-review-reviewer-max` (identical
   body, `effort: max`). Effort is frontmatter-fixed with no per-invocation
-  override, so the sibling definition IS the escalation mechanism.
+  override, so the sibling definition IS the escalation mechanism. A THIRD
+  sibling, `cross-family-review-reviewer-high` (identical body, `effort:
+  high`), is the ADVISORY comparison arm of the 2026-09-06 effort campaign
+  (`docs/reviews/2026-09-06-claude-effort-high-vs-xhigh-campaign.md`): it is
+  dispatched ONLY as a fourth leg — `prepare … --x-leg
+  x-claude-high:claude:cross-family-review-reviewer-high` typed NEXT TO
+  `--x-leg "$TRIAD_REVIEW_X_LEGS"` (an explicit `--x-leg` ignores the env
+  default, so the standing Flash leg must be re-typed; in a plugin install the
+  agent id carries the plugin scope, `x-claude-high:claude:<plugin>:<agent>`)
+  — never as the standing claude leg, and it never gates. Both claude arms
+  read the same packet bytes and the same family template; only the binding
+  `review_id` differs (§ Fourth leg), so a verdict difference is an EFFORT
+  difference, never a framing one.
 - **Prompt.** Add the explicit max-thinking directive at every tier ("Think as
   hard as you can / ultrathink before answering") — the depth levers are
   frontmatter effort and the PROMPT (rule 10). Without the directive the claude
@@ -976,8 +988,14 @@ fallback above.
   (The reviewer agent is Read/Grep/Glob-only, so a
   write-your-reply-to-a-file contract is NOT available — leader-side
   transcription is the only path, hence the caveat.)
-- **Agent definitions are session-start snapshots** — a frontmatter change takes
-  effect from the NEXT session.
+- **Agent definitions and the session.** A NEW definition file registered
+  mid-session on the 2026-09-06 desktop build (the harness announced it and a
+  smoke dispatch ran on it — transcript `effort: high`), refuting the older
+  session-start-snapshot rule for that case; whether an EDITED frontmatter
+  re-loads mid-session is unmeasured. Before the first gate that uses a new or
+  re-tiered sibling, check the Agent tool's available-types list, and prove
+  the tier from the transcript's `effort` field (the campaign's fingerprint
+  column).
 
 ## Fourth leg (standing, advisory)
 
@@ -1039,7 +1057,9 @@ never delays the round.
   rules). Effort vocabulary: agy / gemini `low|medium|high`, codex
   `low|medium|high|xhigh|max` (default `xhigh`); for the claude vendor the
   MODEL field is an AGENT TYPE and effort is not accepted — effort is
-  frontmatter-fixed on the agent, so a different tier IS a different agent id.
+  frontmatter-fixed on the agent, so a different tier IS a different agent id
+  (the shipped reviewer tiers: `cross-family-review-reviewer` xhigh, `-max`,
+  `-high` — § claude fresh-eye leg).
   A claude agent id may carry a plugin scope, so for that vendor EVERY field
   after the vendor rejoins as one id (`x-c:claude:<plugin>:<agent>`); for the
   other vendors a fifth field is a loud "too many fields" refusal. Because

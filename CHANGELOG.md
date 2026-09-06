@@ -1,6 +1,18 @@
 # Changelog
 
-## 0.2.758 — 2026-09-06
+## 0.2.762 — 2026-09-06
+
+**Cross-family review 0.30.1 — effort-high comparison sibling of
+the claude reviewer agent.** `cross-family-review-reviewer-high`
+ships next to the base (`effort: xhigh`) and escalation
+(`effort: max`) definitions: identical body, frontmatter
+`effort: high`, dispatched ONLY as an advisory fourth leg
+(`review_scratch.py prepare --x-leg
+x-claude-high:claude:triad-dispatch:cross-family-review-reviewer-high`,
+next to the standing `--x-leg "$TRIAD_REVIEW_X_LEGS"` spec) for an
+operator's effort-vs-latency measurement; it never stands in for
+the gating claude leg and never gates a merge. Doc + agent
+definition only — no engine change.
 
 **Cross-family review 0.30.0 — the fourth reviewer leg is now
 STANDING.** What shipped in 0.29.2 as the experimental X leg runs
