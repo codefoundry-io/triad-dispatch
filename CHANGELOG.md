@@ -1,6 +1,26 @@
 # Changelog
 
-## 0.2.735 — 2026-09-06
+## 0.2.758 — 2026-09-06
+
+**Cross-family review 0.30.0 — the fourth reviewer leg is now
+STANDING.** What shipped in 0.29.2 as the experimental X leg runs
+on EVERY round as an advisory fourth leg: `review_scratch.py
+prepare` reads its spec from `$TRIAD_REVIEW_X_LEGS` when no
+`--x-leg` is typed, an explicit `--x-leg` wins for that round,
+`--no-x-leg` suppresses it, the two flags together are refused
+(exit 2), and exactly one source ARM fires (its NOTE on stdout;
+the absent arm is mirrored to stderr verbatim). The source is
+recorded on every round in `.x-legs-r<N>.json` (`x_source`) so a
+later audit can tell a suppressed leg from a missing profile
+line.
+The leg still NEVER gates the merge decision, and the two
+Google-family legs (Pro + Flash) count as ONE family for every
+two-family rule — their agreement is neither an independent-leg
+convergence floor nor a contradiction. For an agy fourth leg its
+read-audit gate (`lib/read_audit_gate.sh --audit-file`) is
+mandatory, not optional (a gemini override writes no audit).
+The leg's model / effort stay DISPATCH-TIME values set
+in the operator's shell profile — never pinned in code.
 
 **Cross-family review 0.29.2 — repo-relative findings paths, the
 claude output-shape notice, and the experimental X leg.** Every

@@ -30,7 +30,7 @@ Subcommands (absolute paths only):
     prepare <abs-packet-dir> <abs-worktree-root> r<N>
             --brief <abs-file> [--file <rel>]... [--diff <range>]
             [--diff-path <rel>]... [--excerpt <rel>:<start>-<end>]...
-            [--x-leg <name>:<vendor>[:<model>[:<effort>]]]...
+            [--x-leg <name>:<vendor>[:<model>[:<effort>]]]... [--no-x-leg]
                              DETERMINISTIC round preparation (owner
                              directive 2026-08-11): the leader authors ONLY
                              the brief (context + questions split on one
@@ -52,12 +52,21 @@ Subcommands (absolute paths only):
                              bulk bytes move file-to-file — nothing needs
                              to be streamed through the leader's context.
                              `--x-leg` (repeatable) additionally renders an
-                             ADVISORY experimental leg (SKILL.md rule 15)
-                             from the SAME packet, records
-                             `.x-legs-r<N>.json` (each X leg bound to its
+                             ADVISORY fourth leg (SKILL.md rule 15)
+                             from the SAME packet (each X leg bound to its
                              OWN review_id `<review-id>.<x-name>`), and
                              prints that leg's complete dispatch command;
                              it never changes the standing five artifacts.
+                             When no `--x-leg` is typed the specs are read
+                             from `$TRIAD_REVIEW_X_LEGS` (the standing fourth
+                             leg, SKILL.md rule 1(d)); `--no-x-leg` renders
+                             three standing legs only. EVERY prepare records
+                             `.x-legs-r<N>.json` (`round`, `x_source`,
+                             `legs` — empty when the round has no fourth
+                             leg); exactly one source ARM fires (its NOTE on
+                             stdout; the absent arm is mirrored to stderr
+                             verbatim), and a gemini fourth leg WITH an
+                             effort field adds its effort NOTE.
 
 Prune rules (applied only during `open`, only to DIRECT children of the
 explicit root, only to DATE-PREFIXED (YYYY-MM-DD-...) real directories that
@@ -426,7 +435,7 @@ _LEG_OUTPUT_GLOBS = ("*.out", "*.err", "*-read-audit.json", "claude-r*.json",
                      "*-verdict.json")
 
 
-# The experimental X leg's OUTPUT shape (CFR 0.29.2 gate r2, 3-family
+# The fourth leg's OUTPUT shape (CFR 0.29.2 gate r2, 3-family
 # must-fix). An fnmatch glob is the wrong instrument here: `*` in
 # `fnmatchcase` spans `/`, and the pattern is matched against the WHOLE POSIX
 # relpath, so a glob such as `x-*-r[0-9]*-raw.json` also admitted
@@ -1506,8 +1515,9 @@ def _render_claude_prompt(packet_path: Path, worktree: Path,
 
 
 # ---------------------------------------------------------------------------
-# Experimental X leg (CFR 0.29.2, owner request 2026-09-05: "a 4th test leg,
-# on/off, pointable at other models/vendors, compared with the Pro leg"). An X
+# Standing fourth leg (SKILL.md rule 1(d); introduced as the experimental X leg
+# in 0.29.2, owner request 2026-09-05: "a 4th test leg, on/off, pointable at
+# other models/vendors, compared with the Pro leg"). An X
 # leg is ADVISORY — SKILL.md rule 15 — and is rendered from the SAME packet,
 # with the SAME review_id and content_digest, by the SAME per-family template
 # the standing leg uses. `model` / `effort` are OPAQUE dispatch-time strings:
@@ -1580,6 +1590,12 @@ _X_LEG_TIMEOUT = 1500
 # `[A-Za-z0-9][A-Za-z0-9._-]*`, so a `+` would make EVERY X verdict a
 # guaranteed schema-fail at the wrapper.
 _X_LEG_ID_SEP = "."
+
+# Standing fourth leg (CFR 0.30.0, owner 2026-09-06): `prepare` reads the
+# X-leg spec(s) from this variable when the leader types no `--x-leg`. The
+# VALUE (a model slug) lives in the leader's shell profile and the doc
+# snippet, never here (`~/.claude/CLAUDE.md` § Web search rules).
+_X_LEG_ENV = "TRIAD_REVIEW_X_LEGS"
 
 
 def _x_leg_review_id(review_id: str, name: str) -> str:
@@ -1715,7 +1731,7 @@ def _print_admission_check(verdict: Path, review_id: str, family: str,
 def _print_x_leg_dispatch(leg: dict, packet_dir: Path, worktree: Path,
                           label: str, review_id: str) -> None:
     """The COMPLETE command the leader copies for this X leg — built here so
-    an experimental leg's transport is as mechanical as a standing one."""
+    the standing fourth leg's transport is as mechanical as any other leg's."""
     q = shlex.quote
     name = leg["name"]
     x_review_id = _x_leg_review_id(review_id, name)
@@ -1781,25 +1797,37 @@ def _print_x_leg_dispatch(leg: dict, packet_dir: Path, worktree: Path,
     print(f"          x-leg {name}: ADVISORY — never gates; consolidate with "
           f"tag x:{name}; binding review_id={x_review_id} (a verdict saved "
           f"under the standing leg's id is INVALID by binding); comparison "
-          f"record per triage.md § X-leg comparison")
+          f"record per triage.md § Fourth-leg comparison record")
 
 
 def _parse_prepare_args(rest: list) -> tuple:
-    """(brief, files, diff_range, diff_paths, excerpts, x_legs) from the flag tail
-    of a `prepare` invocation — hand-parsed like the rest of this CLI.
-    `--diff-path` (repeatable) scopes `--diff` to a git pathspec, so a
-    working-tree diff can carry the reviewed CODE only (the review-packet
-    rule excludes test/catalog churn); it is meaningless without `--diff`
-    and refused alone."""
+    """(brief, files, diff_range, diff_paths, excerpts, x_legs, x_source) from
+    the flag tail of a `prepare` invocation — hand-parsed like the rest of
+    this CLI. `--diff-path` (repeatable) scopes `--diff` to a git pathspec,
+    so a working-tree diff can carry the reviewed CODE only (the
+    review-packet rule excludes test/catalog churn); it is meaningless
+    without `--diff` and refused alone.
+
+    Fourth-leg resolution (CFR 0.30.0): an explicit `--x-leg` wins outright;
+    `--no-x-leg` renders no X leg even when the env is set; otherwise the
+    specs come from `$TRIAD_REVIEW_X_LEGS` (whitespace- or comma-separated).
+    `x_source` names which of the three happened ("flag" / "env" /
+    "suppressed") or is None when nothing supplied a fourth leg, so `prepare`
+    can print the NOTE the leader reads at dispatch time."""
     brief = None
     files = []
     excerpts = []
     diff_range = None
     diff_paths = []
     x_leg_specs = []
+    no_x_leg = False
     i = 0
     while i < len(rest):
         flag = rest[i]
+        if flag == "--no-x-leg":
+            no_x_leg = True
+            i += 1
+            continue
         if flag in ("--brief", "--file", "--diff", "--diff-path", "--excerpt",
                     "--x-leg"):
             if i + 1 >= len(rest):
@@ -1828,8 +1856,39 @@ def _parse_prepare_args(rest: list) -> tuple:
         _fail("prepare requires --brief <abs-file>")
     if diff_paths and diff_range is None:
         _fail("--diff-path requires --diff <range>")
-    return (brief, files, diff_range, diff_paths, excerpts,
-            _parse_x_leg_specs(x_leg_specs))
+    if no_x_leg and x_leg_specs:
+        _fail("--no-x-leg and --x-leg are mutually exclusive — drop one")
+    env_specs = [s for s in re.split(r"[\s,]+",
+                                     os.environ.get(_X_LEG_ENV, "").strip())
+                 if s]
+    if x_leg_specs:
+        x_source = "flag"
+    elif no_x_leg:
+        # Deliberate suppression is its OWN source whatever the environment
+        # holds: an unset (or empty-splitting) variable must never turn the
+        # leader's explicit --no-x-leg into the "missing fourth leg" defect
+        # report that failure-modes.md routes to a profile fix (W-7).
+        x_source = "suppressed"
+    elif env_specs:
+        x_source = "env"
+        x_leg_specs = env_specs
+    else:
+        x_source = None
+    try:
+        x_legs = _parse_x_leg_specs(x_leg_specs)
+    except SystemExit:
+        # `_fail` already named the offending spec on stderr; from the env
+        # path the leader also needs to know it is not a typo in the command
+        # they just typed. Printed BEFORE the re-raise so both lines land.
+        if x_source == "env":
+            print(f"review_scratch: the fourth-leg spec came from "
+                  f"${_X_LEG_ENV} — fix that variable in the leader's shell "
+                  f"profile (docs/setting_vs.md § 6.2b) if the refusal names "
+                  f"the spec; a refusal naming a plugin manifest is a "
+                  f"dist-install problem — or name the agent id "
+                  f"explicitly in the spec", file=sys.stderr)
+        raise
+    return (brief, files, diff_range, diff_paths, excerpts, x_legs, x_source)
 
 
 def _require_readable(path: Path, label: str) -> None:
@@ -1918,8 +1977,8 @@ def cmd_prepare(packet_arg: str, worktree_arg: str, label: str,
         _fail(f"prepare label must be r<N> (got {label!r})")
     round_no = int(_ROUND_LABEL_RE.fullmatch(label).group(1))
     worktree = _require_worktree_toplevel(worktree_arg)
-    brief_arg, file_args, diff_range, diff_paths, excerpt_args, x_legs = \
-        _parse_prepare_args(rest)
+    brief_arg, file_args, diff_range, diff_paths, excerpt_args, x_legs, \
+        x_source = _parse_prepare_args(rest)
 
     packet_path = packet_dir / f"packet-{label}.md"
     outputs = {
@@ -1935,8 +1994,10 @@ def cmd_prepare(packet_arg: str, worktree_arg: str, label: str,
     for leg in x_legs:
         outputs[f"x-leg {leg['name']} input"] = (
             packet_dir / _x_leg_input_name(leg, label))
-    if x_legs:
-        outputs["x-leg record"] = packet_dir / f".x-legs-{label}.json"
+    # Written on EVERY prepare, legs or none (gate r1, claude Minor + agy HS):
+    # without it, a suppressed round and a round whose leader profile lost the
+    # variable are indistinguishable to a later audit.
+    outputs["x-leg record"] = packet_dir / f".x-legs-{label}.json"
     # Doomed-call checks BEFORE any mutation (the preserve-and-clear below
     # renames files — it must not run on a call that then fails anyway).
     for name, path in outputs.items():
@@ -2139,20 +2200,20 @@ def cmd_prepare(packet_arg: str, worktree_arg: str, label: str,
                                          x_leg=True)
         _write_new_file(outputs[f"x-leg {leg['name']} input"], body,
                         f"x-leg {leg['name']} input")
-    if x_legs:
-        _write_new_file(
-            outputs["x-leg record"],
-            json.dumps({"round": round_no,
-                        # BASENAME, not an absolute path (gate r1, agy
-                        # Minor): the record lives IN the packet dir, so an
-                        # absolute value duplicates that dir and pins the
-                        # round record to one machine's layout.
-                        "legs": [dict(leg, prompt_file=outputs[
-                            f"x-leg {leg['name']} input"].name,
-                            review_id=_x_leg_review_id(review_id, leg["name"]))
-                            for leg in x_legs]},
-                       indent=2, sort_keys=True) + "\n",
-            "x-leg record")
+    _write_new_file(
+        outputs["x-leg record"],
+        json.dumps({"round": round_no,
+                    "x_source": x_source,
+                    # BASENAME, not an absolute path (gate r1, agy
+                    # Minor): the record lives IN the packet dir, so an
+                    # absolute value duplicates that dir and pins the
+                    # round record to one machine's layout.
+                    "legs": [dict(leg, prompt_file=outputs[
+                        f"x-leg {leg['name']} input"].name,
+                        review_id=_x_leg_review_id(review_id, leg["name"]))
+                        for leg in x_legs]},
+                   indent=2, sort_keys=True) + "\n",
+        "x-leg record")
 
     print(f"prepared {label} {digest}")
     # Canonical per-leg OUTPUT names for THIS round, printed so the leader
@@ -2180,6 +2241,36 @@ def cmd_prepare(packet_arg: str, worktree_arg: str, label: str,
     )
     for leg in x_legs:
         _print_x_leg_dispatch(leg, packet_dir, worktree, label, review_id)
+    # Exactly one source ARM fires below (its NOTE on stdout; the absent arm
+    # is mirrored to stderr verbatim); a gemini fourth leg WITH an effort
+    # field also printed its effort NOTE above: the leader must never have to
+    # infer
+    # whether this round carried the standing fourth leg, or where its spec
+    # came from (SKILL.md rule 1(d)).
+    names = ", ".join(leg["name"] for leg in x_legs)
+    if x_source == "env":
+        print(f"NOTE — fourth leg from {_X_LEG_ENV}: {names}")
+    elif x_source == "flag":
+        # Keyed on the PARSED specs (same split as `_parse_prepare_args`), not
+        # on the raw string: a separator-only value contributes nothing, so
+        # there is nothing to have ignored (gate r1, x:flash HS).
+        if [s for s in re.split(r"[\s,]+",
+                                os.environ.get(_X_LEG_ENV, "").strip()) if s]:
+            print(f"NOTE — fourth leg from --x-leg ({_X_LEG_ENV} ignored this "
+                  f"round): {names}")
+        else:
+            print(f"NOTE — fourth leg from --x-leg: {names}")
+    elif x_source == "suppressed":
+        print("NOTE — fourth leg suppressed by --no-x-leg "
+              "(three standing legs only this round)")
+    else:
+        absent = (f"NOTE — no fourth leg this round: {_X_LEG_ENV} unset or "
+                  f"empty and no --x-leg (SKILL.md rule 1(d) expects the "
+                  f"standing fourth leg on every round)")
+        print(absent)
+        # Only this arm is a DEFECT to fix before dispatch, so it also goes to
+        # stderr: it must survive a skim of the dispatch block (W-8).
+        print(absent, file=sys.stderr)
     print(f"review_scratch: rendered {', '.join(p.name for p in outputs.values())}",
           file=sys.stderr)
     # Assembly-then-capture as ONE step: every leg input this round reviews
@@ -2211,7 +2302,8 @@ def main(argv: list) -> None:
               "prepare <abs-packet-dir> <abs-worktree-root> r<N> "
               "--brief <abs-file> [--file <rel>]... [--diff <range>] "
               "[--diff-path <rel>]... [--excerpt <rel>:<start>-<end>]... "
-              "[--x-leg <name>:<vendor>[:<model>[:<effort>]]]...")
+              "[--x-leg <name>:<vendor>[:<model>[:<effort>]]]... "
+              "[--no-x-leg]")
 
 
 if __name__ == "__main__":

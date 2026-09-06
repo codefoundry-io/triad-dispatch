@@ -16,7 +16,7 @@ its verdict may be weighed only after the read-audit gate below passes.
 | gemini leg | gemini is the resolved Google leg |
 | codex leg | dispatching codex — tier, `--search`, inline packet |
 | claude fresh-eye leg | dispatching the claude `Agent` leg |
-| X leg (experimental) | a round carries an ADVISORY `--x-leg` comparison leg |
+| Fourth leg (standing) | every round carries the ADVISORY fourth leg (rule 1(d)); dispatching it, or overriding it with --x-leg / --no-x-leg |
 
 ## Verdict binding — all legs (adopted 2026-08-10, codex-host 0.2.533)
 
@@ -626,9 +626,9 @@ stays the SPEC the helper implements. What each outcome means:
   make the gate open a file nobody bound or cleared for THIS round). The
   wrapper writes it on EVERY completed call, ok or not — no stderr capture,
   no grep/sed extraction (`triad-antigravity-dispatch` § Isolation).
-  **The ONE exception is the leading `--audit-file <abs>` flag, for an
-  experimental agy X leg only** (§ X leg): still argv-only and still no env
-  fallback, and narrow by construction — the value must be ABSOLUTE, live
+  **The ONE exception is the leading `--audit-file <abs>` flag, for the
+  standing agy fourth leg only** (§ Fourth leg): still argv-only and still
+  no env fallback, and narrow by construction — the value must be ABSOLUTE, live
   DIRECTLY inside `$PACKET_DIR` (no subdirectory, no symlink resolution: an
   audit outside the census'd round dir is not this round's evidence), and its
   basename must match `x-<name>-r<N>-read-audit.json`. The STANDING
@@ -979,17 +979,43 @@ fallback above.
 - **Agent definitions are session-start snapshots** — a frontmatter change takes
   effect from the NEXT session.
 
-## X leg (experimental)
+## Fourth leg (standing, advisory)
 
-An X leg is the ADVISORY fourth leg of SKILL.md rule 15 — a comparison
-reviewer pointed at another vendor / model / effort. It is rendered by
-`prepare --x-leg <name>:<vendor>[:<model>[:<effort>]]` from the SAME packet
-as the standing legs (same packet bytes, same `content_digest`, the same
-per-family template), so a difference in its verdict is a difference in the
-MODEL, never in the framing. It never gates and never replaces a family.
+The fourth leg is SKILL.md rule 1(d): the Google FLASH tier through agy,
+rendered by `prepare` from `$TRIAD_REVIEW_X_LEGS` on every round (full and
+focused) from the SAME packet as the standing legs (same bytes, same
+`content_digest`, the same family template), so a difference in its verdict
+is a difference in the MODEL, never in the framing. It never gates and never
+replaces a family; Pro + Flash agreement is ONE family
+(`references/triage.md` § Countable stop rules).
 
-- **Binding identity.** The one value the X leg does NOT share with the
-  standing leg is `review_id`: an X leg is bound to
+**Default spec (the leader's shell profile — `docs/setting_vs.md` § 6.2b;
+the leader's Bash tool sources `~/.zshenv` ONLY, so `.zshrc` and
+`.claude/settings.json` `env` do NOT reach `prepare`):**
+
+    export TRIAD_REVIEW_X_LEGS='x-agy-flash:agy:gemini-3.8-flash-high:high'
+
+The slug is a DISPATCH-TIME value (`~/.claude/CLAUDE.md` § Web search rules):
+when the vendor retires it, change this line and the profile, never code.
+Overrides per round: `prepare … --x-leg <spec>` (explicit wins, env ignored),
+`prepare … --no-x-leg` (three standing legs only); the two flags together are
+refused (exit 2). In `prepare`, exactly
+one source ARM fires (its NOTE on stdout; the absent arm is mirrored to
+stderr verbatim); a gemini fourth leg WITH an effort field additionally
+prints its effort NOTE. `NOTE — no fourth leg this round`
+means the variable is unset or empty on this host — fix the profile line
+before dispatch.
+
+**Contract:** advisory on every round; the read-audit gate is MANDATORY for an
+agy fourth leg (a gemini override writes no audit — § gemini leg)
+(`lib/read_audit_gate.sh --audit-file <its own x-…-r<N>-read-audit.json>`
+— an ungated agy fourth leg is an UNVERIFIED answer); `admission-refused` (65)
+takes the same one-retry-then-missing rule as the standing agy leg, with the
+attempt-1 artifacts renamed `<name>-r<N>-attempt1-*`; a failed fourth leg
+never delays the round.
+
+- **Binding identity.** The one value the fourth leg does NOT share with the
+  standing leg is `review_id`: the fourth leg is bound to
   `<review-id>.<x-name>` (e.g. `<slug>-r1.x-agy-flash`), rendered into its
   prompt's binding line and recorded in `.x-legs-r<N>.json`. The packet's own
   `Review metadata:` line is inside the content digest and therefore always
@@ -1049,11 +1075,15 @@ MODEL, never in the framing. It never gates and never replaces a family.
     `validate_verdict.py --admit … --expected-family claude … --admitted-out
     <name>-r<N>-verdict.json` (the claude-leg RAW-STAGING and no-manual-
     de-escape rules above apply unchanged).
-- **A failed X leg never blocks the round** — record it in the comparison
+- **A failed fourth leg never blocks the round** — record it in the comparison
   record and consolidate the three families as usual.
-- **Machine record.** `.x-legs-r<N>.json` (`round`, then per leg `name`,
+- **Machine record.** `.x-legs-r<N>.json` (`round`, `x_source`
+  (`"env"` / `"flag"` / `"suppressed"` / `null`), then per leg `name`,
   `vendor`, `family`, `model`, `effort`, `prompt_file` (a BASENAME — the
-  record already lives in the packet dir), `review_id`) lands with the round's
+  record already lives in the packet dir), `review_id`) is written by EVERY
+  `prepare` — `legs: []` with the source that explains why when the round
+  carried no fourth leg, so deliberate suppression and a missing profile line
+  are distinguishable to a later audit. It lands with the round's
   other inputs, before capture, so the census covers it. It is round evidence:
   never hand-removed, even for an abandoned leg
   (`references/packet-lifecycle.md` § Round integrity).

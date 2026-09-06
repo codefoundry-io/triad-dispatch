@@ -239,7 +239,7 @@ identical on macOS and Ubuntu 24.04):
   TIME** — `verify` exempts (as outputs a round legitimately creates
   after capture) ONLY names matching `_LEG_OUTPUT_GLOBS`
   (review_scratch.py): `*.out`, `*.err`, `*-read-audit.json`,
-  `claude-r*.json`, `*-verdict.json` — plus, for an experimental X leg, the
+  `claude-r*.json`, `*-verdict.json` — plus, for the standing fourth leg, the
   explicit shape rule `_is_x_leg_output`. That rule is a REGEX on the
   basename, not a glob (CFR 0.29.2 gate r2): the globs are `fnmatchcase`d
   against the whole POSIX RELPATH, where `*` also spans `/`, so an X glob such
@@ -329,11 +329,13 @@ identical on macOS and Ubuntu 24.04):
   before capture, censused with the standing inputs) — never hand-remove them,
   even for an X leg that was abandoned; record that leg MISSING in the round
   log and leave its artifacts in place.
-- **Experimental X-leg names (CFR 0.29.2, SKILL.md rule 15).** An X leg's
+- **Fourth-leg (X-leg) names (SKILL.md rule 1(d) / rule 15).** An X leg's
   INPUT (`<x-name>-prompt-r<N>.txt`, or `<x-name>-body-r<N>.txt` on the
   codex vendor) and the machine record `.x-legs-r<N>.json` are written by
   `prepare` BEFORE the round's capture, so they are censused leg inputs
-  like the standing five. Its OUTPUTS carry the round from the start —
+  like the standing five. The record is written on EVERY round — with
+  `legs: []` and the `x_source` that explains why when the round carried no
+  fourth leg — so its presence never implies a fourth leg ran. Its OUTPUTS carry the round from the start —
   `<x-name>-r<N>-verdict.json`, `<x-name>-r<N>.err`,
   `<x-name>-r<N>-read-audit.json`, and `<x-name>-r<N>-raw.json` (the claude
   vendor's verbatim reply, the one kind the standing globs do not already

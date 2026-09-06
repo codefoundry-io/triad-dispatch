@@ -19,7 +19,7 @@
 # anti-drift: an ambient TRIAD_READ_AUDIT_FILE some other shell context
 # left exported can never redirect this gate). The optional LEADING
 # `--audit-file <abs-path>` (CFR 0.29.2) is the ONE explicit override: an
-# experimental X leg (SKILL.md rule 15) writes its own round-suffixed
+# the standing fourth leg (rule 1(d)) writes its own round-suffixed
 # `<x-name>-r<N>-read-audit.json`, and the gate reads THAT instead. Still
 # argv-only, and narrow: the value must be ABSOLUTE, live DIRECTLY inside
 # <abs-packet-dir> (no subdirectory, no symlink resolution), and its basename
@@ -76,8 +76,8 @@ usage_die() {
   exit 64
 }
 
-# Optional LEADING `--audit-file <abs-path>` (CFR 0.29.2): an experimental X
-# leg (SKILL.md rule 15) writes its OWN round-suffixed read audit
+# Optional LEADING `--audit-file <abs-path>` (CFR 0.29.2): the standing fourth
+# leg (rule 1(d)) writes its OWN round-suffixed read audit
 # (`<x-name>-r<N>-read-audit.json`), so the gate must be retargetable. Still
 # EXPLICIT and still no env fallback (leg-contracts J1 anti-drift): the value
 # comes from argv or the shared literal below, never from the environment.

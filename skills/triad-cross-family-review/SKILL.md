@@ -1,8 +1,9 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE (a MERGE WITH FIXES carrying only non-blocking findings satisfies the gate). Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.29.2
+version: 0.30.0
 # changelog:
+#  0.30.0 (2026-09-06): the experimental X leg becomes the STANDING fourth leg (owner directive 2026-09-06). `prepare` reads `$TRIAD_REVIEW_X_LEGS` when no `--x-leg` is typed (`--no-x-leg` suppresses; explicit `--x-leg` wins; exactly one source ARM fires, its NOTE on stdout and the absent arm mirrored to stderr; a malformed env spec fails loud pre-mutation naming the variable). Rule 1(d) + rule 15 retitle + Flow 2; leg-contracts § Fourth leg (default spec snippet, every-round contract, read-audit gate mandatory); triage.md "Pro + Flash = ONE family" for the two-family floor and rule 12; failure-modes row for the absent fourth leg; docs/setting_vs.md § 6.2b `~/.zshenv` line (the leader's Bash tool sources `~/.zshenv` only — spike 2026-09-06). Model/effort: NO tier change (10-round evidence in docs/reviews/2026-09-06-portability-audit.md). Gate r1 fix wave: `.x-legs-r<N>.json` is written on EVERY prepare carrying `x_source` (`env` / `flag` / `suppressed` / `null`) so an audit can tell a suppressed round from a missing profile line; the absent NOTE says "unset or empty" and the "ignored this round" arm keys on the PARSED env specs; the env-provenance hint names the VARIABLE (and disclaims the plugin-manifest refusal) instead of asserting which spec was refused; triage.md's consolidation loop reads the fourth leg from the round record (MISSING line when a recorded leg filed no verdict); the read-audit directive is agy-qualified; docs say one source ARM. t4 axes 32-40.
 #  0.29.2 (2026-09-05): P6-gate instruction fixes + the experimental X leg. Prompts: every rendered leg body states that a finding's `file` is a REPO-RELATIVE POSIX path (`verdict_schema` refuses an absolute one — agy r3 attempt 1 schema-fail 66 with 6 errors, and the r2 quarantined answer, both used the absolute packet path), and the claude prompt now OPENS with the OUTPUT-SHAPE NOTICE the leader had hand-added since 2026-09-04 (`--admit` refuses a reply not beginning with `{`). Docs: retry-artifact naming (`<leg>-r<N>-attempt<K>.*`, inside the leg-output allowlist) + never hand-move or chain a file op on `agy-read-audit.json` (a failed `mv &&` meant the codex leg never launched) in packet-lifecycle.md and rule 13; three failure-mode rows (paging-overshoot `admission-refused` on a big packet, the repo-relative `schema-fail`, the never-launched chained dispatch); leg-contracts agy observation (1.1.26 rejects `run_command` at execution while `init.tools` still advertises 57 — the census stays the enforcement, Policy D unchanged); triage.md scope-expansion gate on a plan-gate fold of a NEW semantic contract (fold CONSTRAINTS, delegate the row-level design), pointed at from rule 5. Feature: `prepare --x-leg <name>:<vendor>[:<model>[:<effort>]]` renders an ADVISORY 4th leg from the SAME packet (rule 15), records `.x-legs-r<N>.json`, prints the complete dispatch command; `read_audit_gate.sh --audit-file <abs>` gates an agy X leg's own read audit. Gate r1 fix wave: the raw-reply glob is X-shaped (`x-*-r[0-9]*-raw.json`, never a bare `*-raw.json` that fnmatch would span a subdirectory with); each X leg carries its OWN binding `review_id` (`<review-id>.<x-name>`) so admission mechanically refuses a cross-leg filing, and `prepare` prints an admission command for EVERY leg; `_wrapper_command_path` resolves the two shipped layouts explicitly instead of walking every ancestor; `--audit-file` must live directly in the packet dir and carry the X basename shape (the standing audit is never a legal override); a claude X leg's agent id may carry a plugin scope and its default is layout-derived from the plugin manifest; the agy X dispatch prints its read-audit gate command; `.x-legs-r<N>.json` records the basename. Gate r2 fix wave: X leg-output coverage is an explicit basename SHAPE (no `/`; `x-…-r<N>[-attempt<K>]-{raw,verdict,read-audit}.json` or `.err`) instead of a path-spanning fnmatch glob that let `x-fixtures-r1/notes-raw.json` and `x-c-r1-notes-raw.json` escape the census; a claude X spec whose FINAL field is an effort token is refused (the agent-id rejoin had re-admitted it) and an all-empty agent remainder falls back to the default; a dist-layout plugin manifest that is unreadable / not JSON / name-less now fails LOUD before prepare's first mutation instead of printing a shadowable bare agent id; the wrapper not-found NOTE prints AFTER its own leg line; the X renders carry one sentence resolving the packet's standing `Review metadata:` id against the X binding id. t3/t4/t5 pins.
 #  0.29.1 (2026-09-04): agy leg TOOL-ALLOWLIST instruction (audit: 33 complete verdicts quarantined 2026-08-22..09-03 — agy advertises 57 tools to the allowlisted agent; the prompt claimed the command tool was absent): the rendered agy READ-GRANT names the five permitted tools + the forbidden planner/shell/write/subagent/browser/web tools and states any other call voids the review; wrapper 0.2.x emits the DISTINCT `admission-refused` (65) token on the census-refusal path (was `vendor-error`) so the one-retry-then-missing rule keys on it; agent bodies carry the same rule (re-run `--setup-agents`; the deployed plugin is re-exported in the same change — a host with two wrapper builds shares one agents dir). Gate r1 wave: `vendor-timeout` (65) for agy's own turn timeout (was `unknown`), forbidden-tool runs with an empty answer or a framing defect still classify `admission-refused`, the prompt block is agy-scoped with a gemini sentence, t4 links the prompt's tool list to `AGY_REVIEW_TOOLS`. t4/t28/t38 pins.
 #  0.29.0 verdict-admission hardening (2026-08-30 adjudication): validate_verdict --admit raw-reply mode (no repair path; exit 2 unparseable→targeted re-ask, exit 3 end-marker absent; --admitted-out canonical claude-rN-verdict.json) + prepare prints canonical leg outputs w/ real review-id + claude prompt output-integrity/<END-VERDICT> contract + triage.md INVALID definitional home + reviewer agent-def severity/output fixes
@@ -257,6 +258,23 @@ Five references carry the detail — open one only when its column applies.
      findings consolidate like any leg's, but its SAFE does not satisfy the merge
      gate — gate on codex + claude. The same applies to a Google leg that fell
      back to the shallow default tier.
+   - **(d) Standing FOURTH leg — Google Flash tier via agy, ADVISORY, on EVERY
+     round (full and focused).** The standing Google leg (c) runs the Pro
+     tier; the fourth leg runs the Flash tier on the SAME packet and is
+     consolidated like any leg, tagged `x:<name>` (rule 15). It never gates,
+     never counts toward the three families, and Pro + Flash agreement is ONE
+     family for every two-family rule (`references/triage.md` § Countable
+     stop rules). `prepare` renders it from `$TRIAD_REVIEW_X_LEGS` (the
+     leader's shell profile carries the value — `docs/setting_vs.md`
+     § 6.2b; the default spec is quoted in `references/leg-contracts.md`
+     § Fourth leg); an explicit `--x-leg` replaces it for the round,
+     `--no-x-leg` drops it, the two flags together are refused (exit 2), and
+     exactly one source ARM fires (its NOTE on stdout; the absent arm is
+     mirrored to stderr verbatim); a gemini fourth leg WITH an effort field
+     additionally prints its effort NOTE. `prepare`
+     records the source in `.x-legs-r<N>.json` on EVERY round.
+     A round prepared with the `NOTE — no fourth leg` line is
+     a leader-environment defect to fix before dispatch, not a degraded mode.
    - **Degraded mode = fewer than three families RETURN a consolidated verdict
      this round** — neither Google CLI installed, or a leg logged terminally
      missing (rule 13). A leg that RAN and was consolidated is not degraded mode,
@@ -441,10 +459,12 @@ Five references carry the detail — open one only when its column applies.
     let the probe decide whether the loop has genuinely stopped converging.
     Owner-call threshold (owner directive): the FIRST head-on same-decision
     contradiction where both sides survive the probe is already an owner call
-    (rule 4) — no waiting for oscillation, no compromise crafted first. A
+    (rule 4; Pro + Flash = one voice) — no waiting for oscillation, no
+    compromise crafted first. A
     probe-refuted side is not a conflict; close it by recording the probe. One
     healthy signal is not a conflict either: independent legs finding the SAME
-    defect is a CONVERGENCE floor — fix it and run one final confirm.
+    defect is a CONVERGENCE floor (Pro + Flash = one leg —
+    `references/triage.md`) — fix it and run one final confirm.
     **Scope freeze (2026-08-22):** from round 3 on, a finding must cite a hunk
     of the gated diff; anything else (a pre-existing line, a neighbouring
     design, a hypothetical input shape) opens a NEW slice rather than another
@@ -512,13 +532,18 @@ Five references carry the detail — open one only when its column applies.
     updated, never deleted. The class definitions, the countable scope-gate
     thresholds, the residual-table schema and dispositions, and the reviewer-side
     severity instruction every leg prompt carries are in `references/triage.md`.
-15. **Experimental X leg (owner request 2026-09-05).** An X leg is a FOURTH,
+15. **Fourth leg (standing, advisory; 0.30.0 — was the experimental X leg of
+    0.29.2).** An X leg is a FOURTH,
     purely ADVISORY reviewer pointed at another vendor / model / effort so its
     output can be compared with the standing leg of the same family. It NEVER
     gates, never counts toward rule 1's three families, and never substitutes
-    for one — a failed or missing X leg cannot delay a round. On/off is the
-    `prepare --x-leg <name>:<vendor>[:<model>[:<effort>]]` flag alone (no flag
-    = off; no env switch); vendor ∈ agy|gemini|codex|claude, and model/effort
+    for one — a failed or missing X leg cannot delay a round. Source order per
+    round: `--x-leg` and `--no-x-leg` together are refused (exit 2); otherwise
+    explicit `--x-leg` (repeatable) > `--no-x-leg` > `$TRIAD_REVIEW_X_LEGS`
+    (rule 1(d)) > none; exactly one source ARM fires (its NOTE on stdout; the
+    absent arm is mirrored to stderr verbatim), and a gemini fourth leg WITH
+    an effort field additionally prints its effort NOTE.
+    Vendor ∈ agy|gemini|codex|claude, and model/effort
     are DISPATCH-TIME values the leader types, never pinned in code
     (`~/.claude/CLAUDE.md` § Web search rules). Per-vendor fields: agy and
     gemini take `[:<model>[:low|medium|high]]`, codex
@@ -535,7 +560,8 @@ Five references carry the detail — open one only when its column applies.
     dir and carry the X basename shape; the standing audit is never legal. X
     findings enter the residual table tagged `x:<name>` and take the same
     triage; each round's comparison fields are `references/triage.md`
-    § X-leg comparison record, and a campaign gets a leader-written ledger at
+    § Fourth-leg comparison record, and a comparison CAMPAIGN (when the leader
+    declares one) gets a leader-written ledger at
     `docs/reviews/<date>-x-leg-<name>-campaign.md`.
 
 ## Flow
@@ -566,7 +592,10 @@ Five references carry the detail — open one only when its column applies.
    renders the three round-suffixed leg bodies (`codex-body-r<N>.txt`
    inlines the packet; `agy-prompt-r<N>.txt` / `claude-prompt-r<N>.txt`
    point at it) carrying the binding values, the per-leg READ-GRANT, and
-   the verdict-selection rule, and runs the round's `capture` (evidence
+   the verdict-selection rule, renders the standing fourth leg's input from
+   `$TRIAD_REVIEW_X_LEGS` (rule 1(d); `--x-leg` / `--no-x-leg` override) and
+   prints its dispatch command plus the source `NOTE`, and runs the round's
+   `capture` (evidence
    snapshot + worktree fingerprint) — so every byte a leg reviews sits
    inside the census by construction (adopt-gate r1 lesson;
    `references/packet-lifecycle.md` § Round integrity + § Deterministic
@@ -579,7 +608,8 @@ Five references carry the detail — open one only when its column applies.
    prompt per rule 10) + `triad-codex-dispatch` (codex `--reasoning xhigh
    --search`) + the resolved Google leg (`triad-antigravity-dispatch` with
    `--sandbox read-only` and `TRIAD_READ_AUDIT_FILE` bound, or
-   `triad-gemini-dispatch`; skip and log if neither is installed). Each leg gets
+   `triad-gemini-dispatch`; skip and log if neither is installed) + the fourth
+   leg by the command `prepare` printed (rule 1(d)). Each leg gets
    the same suspect-question list and diff scope. The agy leg stays read-only for
    the WHOLE round, including its folded-verdict re-dispatch
    (`references/leg-contracts.md` § agy leg).
@@ -594,7 +624,11 @@ Five references carry the detail — open one only when its column applies.
    must print `ROUND_INTEGRITY_OK r<N>` (a mismatch INVALIDATES the round:
    mutation detected, never released) — validate every leg (claude: via the `--admit` route, rule 4)'s JSON with
    `lib/validate_verdict.py --expected-*` (rule 4's binding admission), then
-   collect the three verdicts + findings and run rule 4's consolidation:
+   collect every returned leg's verdict and findings (the fourth leg included —
+   for an agy fourth leg (a gemini override writes no audit —
+   `references/leg-contracts.md` § gemini leg) gate its read audit with
+   `lib/read_audit_gate.sh --audit-file <its own
+   x-…-r<N>-read-audit.json>` first) and run rule 4's consolidation:
    fact-check each finding against the source with a deterministic probe, TRIAGE
    each finding REAL / REACHABLE-UNOBSERVED / SPECULATIVE (rule 14 — SPECULATIVE
    → DISCLOSED residual, no code), and classify the round CONVERGING /

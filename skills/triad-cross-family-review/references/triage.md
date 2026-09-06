@@ -17,7 +17,7 @@ the fix queue, and when recording or updating a residual.
 | Residual table | recording, updating, or carrying forward a residual |
 | Consolidating validated LegVerdict objects (jq) | a leg was dispatched with `--pydantic verdict_schema:LegVerdict` (or its claude-leg equivalent) and its findings need mapping into the residual table |
 | Reviewer-side instruction | writing the leg prompts |
-| X-leg comparison record | a round carried an ADVISORY `--x-leg` leg |
+| Fourth-leg comparison record | a round carried the ADVISORY fourth leg (rule 1(d)) |
 
 ## Consolidation duties
 
@@ -166,7 +166,7 @@ autonomy covers REAL findings with minimal diffs.
 | occurrence gate | a REACHABLE-UNOBSERVED item has no repro from REAL vendor output (capture / run-log / audit row) | DISCLOSED residual, no code — a fixture-only repro does not promote it |
 | docs never gate | a finding is text-only | batched into one post-merge doc-resync commit; never a round trigger |
 | scope freeze | round ≥ 3 and the finding cites no hunk of the gated diff | new slice, not this gate |
-| two-family floor | single-family REACHABLE item, no measured probe | residual |
+| two-family floor | single-family REACHABLE item, no measured probe — **Pro + Flash (both Gemini) count as ONE family**: their agreement never clears this floor | residual |
 
 Precedent: the 2026-08-22 agy v1.2 gate ran nine rounds; rounds 4-9 landed
 one narrower parser shape each (null field → malformed container → dropped
@@ -205,11 +205,12 @@ non-blocking release above; never more plan-time enumeration rounds
 (precedent: an 11-round plan gate whose final rounds' findings were half the
 leader's own fold-edit slips).
 
-## X-leg comparison record
+## Fourth-leg comparison record
 
-An experimental X leg (SKILL.md rule 15) is run to be COMPARED, so each round
-it participates in gets one deterministic record — leader-filled, in the gate
-ledger (and rolled up into `docs/reviews/<date>-x-leg-<name>-campaign.md` for a
+The standing fourth leg (SKILL.md rule 1(d)) is run to be COMPARED with the
+standing Google leg, so each round gets one deterministic record —
+leader-filled, in the gate ledger (a campaign roll-up
+`docs/reviews/<date>-x-leg-<name>-campaign.md` only when the leader declares a
 campaign):
 
 | Field | What it holds |
@@ -236,7 +237,11 @@ Standing rules: an X finding enters the residual table like any other, tagged
 REACHABLE-UNOBSERVED / SPECULATIVE) — an X leg's severity or verdict never
 gates, and a Critical raised ONLY by an X leg is a finding to triage, not a
 merge block. An X leg that failed, timed out, or returned an unusable verdict
-is recorded as such in the same row set and the round proceeds.
+is recorded as such in the same row set and the round proceeds. For rule 12's
+head-on-contradiction test the two Google legs are one voice: a Pro-vs-Flash
+disagreement is a comparison-record fact, never a CONFLICTED round on its own —
+and their agreement is not the independent-legs CONVERGENCE floor either: a
+defect raised by Pro AND Flash alone counts as ONE leg.
 
 ## Residual table
 
@@ -299,6 +304,28 @@ for leg in codex agy claude; do
   [ -f "$f" ] || { echo "-- $leg: no validated object (fallback below)"; continue; }
   verdict="$(jq -r '.verdict' "$f")"
   jq -r --arg leg "$leg" --arg verdict "$verdict" --arg round "$ROUND" '
+    .findings[] |
+    "| \(.file):\(.line // "-") | \($leg) | \($round) | <leader-triage-class> | \(.severity) / \($verdict) | <probe-or-repro> | \(.summary) | open |"
+  ' "$f"
+done
+
+# The FOURTH leg files under its OWN name, so it is never in the loop above.
+# `.x-legs-r<N>.json` (written by EVERY prepare, `legs: []` when the round had
+# no fourth leg) is the authoritative list of what was rendered this round —
+# read the names from it, never from memory. Rows are tagged `x:<name>` so an
+# advisory finding can never be counted as a gating leg's (rule 15).
+REC="$PACKET_DIR/.x-legs-r$ROUND.json"
+# No record at all = a pre-0.30.0 packet, or a hand-removed record. Say so:
+# without this line the loop below emits nothing and reads as "no findings".
+[ -f "$REC" ] || echo "MISSING fourth-leg record $REC (a pre-0.30.0 packet, or a hand-removed record — packet-lifecycle § Round integrity)"
+[ -f "$REC" ] && for name in $(jq -r '.legs[].name' "$REC"); do
+  f="$PACKET_DIR/$name-r$ROUND-verdict.json"
+  # A RECORDED leg with no verdict file — or a 0-byte one, the shape a
+  # timed-out or refused leg leaves — is a dispatch/admission failure, not a
+  # silent skip: the round record says it was rendered, so it owes an answer.
+  [ -s "$f" ] || { echo "-- MISSING x:$name: rendered this round, no validated object at $f"; continue; }
+  verdict="$(jq -r '.verdict' "$f")"
+  jq -r --arg leg "x:$name" --arg verdict "$verdict" --arg round "$ROUND" '
     .findings[] |
     "| \(.file):\(.line // "-") | \($leg) | \($round) | <leader-triage-class> | \(.severity) / \($verdict) | <probe-or-repro> | \(.summary) | open |"
   ' "$f"
