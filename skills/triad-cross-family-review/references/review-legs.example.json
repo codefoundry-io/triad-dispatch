@@ -1,0 +1,18 @@
+{
+  "schema": "triad-review-legs.v1",
+  "x_legs": [
+    {
+      "name": "x-claude-high",
+      "vendor": "claude",
+      "agent": "triad-dispatch:cross-family-review-reviewer-high",
+      "enabled": true
+    },
+    {
+      "name": "x-agy-flash",
+      "vendor": "agy",
+      "model": "REPLACE-WITH-CURRENT-FLASH-SLUG",
+      "effort": "high",
+      "enabled": false
+    }
+  ]
+}

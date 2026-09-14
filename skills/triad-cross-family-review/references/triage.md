@@ -166,7 +166,7 @@ autonomy covers REAL findings with minimal diffs.
 | occurrence gate | a REACHABLE-UNOBSERVED item has no repro from REAL vendor output (capture / run-log / audit row) | DISCLOSED residual, no code — a fixture-only repro does not promote it |
 | docs never gate | a finding is text-only | batched into one post-merge doc-resync commit; never a round trigger |
 | scope freeze | round ≥ 3 and the finding cites no hunk of the gated diff | new slice, not this gate |
-| two-family floor | single-family REACHABLE item, no measured probe — **Pro + Flash (both Gemini) count as ONE family**: their agreement never clears this floor | residual |
+| two-family floor | single-family REACHABLE item, no measured probe — **when a Flash leg is configured, Pro + Flash (both Gemini) count as ONE family**: their agreement never clears this floor | residual |
 
 Precedent: the 2026-08-22 agy v1.2 gate ran nine rounds; rounds 4-9 landed
 one narrower parser shape each (null field → malformed container → dropped
@@ -207,8 +207,10 @@ leader's own fold-edit slips).
 
 ## Fourth-leg comparison record
 
-The standing fourth leg (SKILL.md rule 1(d)) is run to be COMPARED with the
-standing Google leg, so each round gets one deterministic record —
+A configured fourth leg (SKILL.md rule 1(d)) is run to be COMPARED with the
+SAME-FAMILY standing leg — a Google X leg against the standing agy Pro leg, a
+claude X leg against the GATING claude leg — so each round gets one
+deterministic record —
 leader-filled, in the gate ledger (a campaign roll-up
 `docs/reviews/<date>-x-leg-<name>-campaign.md` only when the leader declares a
 campaign):
@@ -238,7 +240,8 @@ REACHABLE-UNOBSERVED / SPECULATIVE) — an X leg's severity or verdict never
 gates, and a Critical raised ONLY by an X leg is a finding to triage, not a
 merge block. An X leg that failed, timed out, or returned an unusable verdict
 is recorded as such in the same row set and the round proceeds. For rule 12's
-head-on-contradiction test the two Google legs are one voice: a Pro-vs-Flash
+head-on-contradiction test the two Google legs, WHEN a Flash leg is configured
+(SKILL.md rule 1(d) — it is no longer the standing default), are one voice: a Pro-vs-Flash
 disagreement is a comparison-record fact, never a CONFLICTED round on its own —
 and their agreement is not the independent-legs CONVERGENCE floor either: a
 defect raised by Pro AND Flash alone counts as ONE leg.

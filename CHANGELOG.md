@@ -1,6 +1,35 @@
 # Changelog
 
-## 0.2.762 — 2026-09-06
+## 0.2.779 — 2026-09-14
+
+**Cross-family review 0.31.0 — advisory X legs are configured in a
+JSON file, not a shell variable.** `review_scratch.py prepare` now
+resolves the fourth leg(s) in this order: explicit `--x-leg` /
+`--no-x-leg` > `<repo>/.claude/triad-review-legs.json` (project) >
+`$XDG_CONFIG_HOME/triad/review-legs.json` or
+`~/.config/triad/review-legs.json` (user) > `$TRIAD_REVIEW_X_LEGS`
+(DEPRECATED fallback, still honored with a NOTE) > none (three
+standing legs — a NOTE, no longer a defect). Schema
+`triad-review-legs.v1`: `x_legs[]` entries carry `name`, `vendor`,
+`agent` (claude, REQUIRED there) or `model` + `effort` (other
+vendors), `enabled`; unknown keys, mixed `agent`/`model`, an
+omitted claude `agent`, or a non-JSON file are refused before the
+first mutation. `.x-legs-r<N>.json` records
+`x_config_path` and `x_disabled`. Example:
+`skills/triad-cross-family-review/references/review-legs.example.json`.
+That SHIPPED template carries the PLUGIN-SCOPED claude agent id
+(`triad-dispatch:cross-family-review-reviewer-high`): a BARE id
+is shadowable by a consumer's same-named PROJECT agent, which would
+silently become the advisory reviewer — so a hand-written config in
+a plugin install should use the scoped spelling too. Its Flash
+entry ships DISABLED and carries the placeholder
+`REPLACE-WITH-CURRENT-FLASH-SLUG` (model slugs are deployment
+values, never pinned in code): replace it before enabling that
+entry.
+Recommended default (ten-round evidence, owner 2026-09-14): the
+claude `high` arm `cross-family-review-reviewer-high` enabled as a
+yield-justified second claude arm; the Google Flash tier kept on
+file but `enabled: false`. Advisory legs never gate.
 
 **Cross-family review 0.30.1 — effort-high comparison sibling of
 the claude reviewer agent.** `cross-family-review-reviewer-high`

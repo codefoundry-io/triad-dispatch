@@ -57,16 +57,22 @@ Subcommands (absolute paths only):
                              OWN review_id `<review-id>.<x-name>`), and
                              prints that leg's complete dispatch command;
                              it never changes the standing five artifacts.
-                             When no `--x-leg` is typed the specs are read
-                             from `$TRIAD_REVIEW_X_LEGS` (the standing fourth
-                             leg, SKILL.md rule 1(d)); `--no-x-leg` renders
-                             three standing legs only. EVERY prepare records
-                             `.x-legs-r<N>.json` (`round`, `x_source`,
-                             `legs` — empty when the round has no fourth
-                             leg); exactly one source ARM fires (its NOTE on
-                             stdout; the absent arm is mirrored to stderr
-                             verbatim), and a gemini fourth leg WITH an
-                             effort field adds its effort NOTE.
+                             When no `--x-leg` is typed the specs come from
+                             the CONFIG precedence chain (SKILL.md rule 1(d)):
+                             the PROJECT file
+                             `<worktree>/.claude/triad-review-legs.json`, then
+                             the USER file
+                             `$XDG_CONFIG_HOME/triad/review-legs.json`
+                             (`~/.config` fallback), then the DEPRECATED
+                             `$TRIAD_REVIEW_X_LEGS`, then nothing;
+                             `--no-x-leg` renders three standing legs only.
+                             EVERY prepare records `.x-legs-r<N>.json`
+                             (`round`, `x_source`, `x_config_path`,
+                             `x_disabled`, `legs` — empty when the round has
+                             no fourth leg); exactly one source ARM fires (its
+                             NOTE on stdout) and every IGNORED source is
+                             mirrored to stderr, and a gemini fourth leg WITH
+                             an effort field adds its effort NOTE.
 
 Prune rules (applied only during `open`, only to DIRECT children of the
 explicit root, only to DATE-PREFIXED (YYYY-MM-DD-...) real directories that
@@ -137,6 +143,7 @@ via subprocess (LC_ALL=C pinned) rather than a git-porcelain library, for
 the same cross-platform-stdlib-only reason.
 """
 
+import errno
 import fnmatch
 import hashlib
 import json
@@ -1523,10 +1530,24 @@ def _render_claude_prompt(packet_path: Path, worktree: Path,
 # the standing leg uses. `model` / `effort` are OPAQUE dispatch-time strings:
 # they are never validated against a vendor catalog and never pinned as a
 # default anywhere in this file (`~/.claude/CLAUDE.md` § Web search rules — no
-# vendor model IDs in code). The flag IS the on/off switch; there is
-# deliberately no env-var input (same anti-drift rule as the read-audit path).
+# vendor model IDs in code). The fourth leg comes from the config file chain
+# (SKILL.md rule 1(d)); the env var is a DEPRECATED fallback, and `--x-leg` /
+# `--no-x-leg` override both.
 # ---------------------------------------------------------------------------
 _X_LEG_NAME_RE = re.compile(r"x-[a-z0-9]+(?:-[a-z0-9]+)*")
+# A claude X leg names an AGENT, and the only colon it may carry is the ONE
+# plugin scope `<plugin>:<agent>` (fold r2, F11): two scope colons used to
+# rejoin silently into a single "agent id", and an all-colon value (`:` / `::`)
+# normalized to None — the LAYOUT DEFAULT, i.e. the GATING agent — so a
+# mistyped comparison arm re-ran the gating tier and defeated the comparison.
+_X_LEG_AGENT_RE = re.compile(r"[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)?")
+# The remedy tail shared by both DECISIVE user-config home refusals (post-r3
+# wave, W1 / W2). The flag arm probes non-decisively, so a typed flag really is
+# an escape hatch from both — the sentence says so rather than leaving the
+# leader to infer it.
+_X_LEG_HOME_FIX = ("set XDG_CONFIG_HOME to an absolute directory, fix HOME, "
+                   "or type --x-leg / --no-x-leg for this round — the flag "
+                   "arm never READS the user config to decide the round")
 _X_LEG_FAMILIES = {"agy": "google", "gemini": "google",
                    "codex": "codex", "claude": "claude"}
 _X_LEG_EFFORTS = {"agy": ("low", "medium", "high"),
@@ -1596,6 +1617,278 @@ _X_LEG_ID_SEP = "."
 # VALUE (a model slug) lives in the leader's shell profile and the doc
 # snippet, never here (`~/.claude/CLAUDE.md` § Web search rules).
 _X_LEG_ENV = "TRIAD_REVIEW_X_LEGS"
+
+# Fourth-leg CONFIG FILE (CFR 0.31.0, owner 2026-09-14): the skill USER — not
+# the leader's shell profile — declares which ADVISORY legs a round renders.
+# Project file beats user file beats `$_X_LEG_ENV` (kept as a deprecated
+# fallback). Values (model slugs / agent ids) live in the consumer's file, never
+# here (`~/.claude/CLAUDE.md` § Web search rules).
+_X_LEG_CONFIG_SCHEMA = "triad-review-legs.v1"
+_X_LEG_CONFIG_PROJECT_REL = (".claude", "triad-review-legs.json")
+_X_LEG_CONFIG_USER_REL = ("triad", "review-legs.json")
+_X_LEG_CONFIG_TOP_KEYS = ("schema", "x_legs")
+_X_LEG_CONFIG_ENTRY_KEYS = ("name", "vendor", "agent", "model", "effort",
+                            "enabled")
+
+
+def _x_leg_config_note_skipped(path: Path, exc: OSError) -> None:
+    """A candidate the probe could not even LOOK at (fold r1, F4): disclosed,
+    never fatal. The caller decides whether this candidate DECIDES the arm."""
+    name = errno.errorcode.get(exc.errno, str(exc.errno))
+    print(f"NOTE — config candidate {path} unreadable ({name}) — not "
+          f"consulted", file=sys.stderr)
+
+
+def _x_leg_config_present(path: Path, decisive: bool) -> bool:
+    """Does this candidate EXIST? A SYMLINK counts as PRESENT (it is refused
+    when read, never skipped as a miss). Under Python 3.12 BOTH `exists()` and
+    `is_symlink()` RAISE PermissionError on a child of a mode-000 directory
+    (Tier-2 probe 2026-09-14), so every probe is wrapped: on the candidate that
+    DECIDES the arm an OSError is a loud refusal — treating it as absent would
+    silently drop the deployment's configured advisory legs from the round —
+    and on any other candidate it is the stderr NOTE above."""
+    try:
+        return path.is_symlink() or path.exists()
+    except OSError as exc:
+        if decisive:
+            _fail(f"fourth-leg config candidate {path} cannot be probed "
+                  f"({exc}) — this candidate decides which advisory legs the "
+                  f"round renders, so the round is refused rather than run "
+                  f"with them silently dropped; fix the permissions on its "
+                  f"directory, or type --x-leg / --no-x-leg to bypass the "
+                  f"config files entirely")
+        _x_leg_config_note_skipped(path, exc)
+        return False
+
+
+def _x_leg_user_config_path(decisive: bool):
+    """The USER-level candidate, or None when this host cannot name one. An
+    unset or EMPTY `XDG_CONFIG_HOME` is the `~/.config` default; any other
+    non-absolute value is invalid and ignored (fold r1, F3 / fold r2, F12); a
+    resolved home that is itself not absolute is the same class and leaves this
+    candidate absent too (post-r3 wave, W2). The returned path is absolute."""
+    xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    # A RELATIVE value is INVALID and ignored (XDG Base Directory
+    # Specification 0.8, 2021-05-08: "All paths set in these environment
+    # variables must be absolute. If an implementation encounters a relative
+    # path in any of these variables it should consider the path invalid and
+    # ignore it."). Honouring it would resolve the user config against the
+    # leader's CWD, so the same round would read a different file per
+    # invocation directory — and would put a relative path in the round
+    # record. `x_config_path` is absolute or null.
+    if xdg and not os.path.isabs(xdg):
+        print(f"NOTE — XDG_CONFIG_HOME {xdg!r} ignored: the XDG Base "
+              f"Directory Specification requires an ABSOLUTE path (a relative "
+              f"value is invalid and ignored) — falling back to ~/.config",
+              file=sys.stderr)
+        xdg = ""
+    if xdg:
+        return Path(xdg).joinpath(*_X_LEG_CONFIG_USER_REL)
+    try:
+        base = Path.home()
+    except (RuntimeError, OSError) as exc:
+        # `Path.home()` RAISES when the home directory cannot be resolved.
+        # That is fatal ONLY where this candidate DECIDES the arm (fold r2,
+        # F13): a flag arm, and a round the project file already answered,
+        # must never exit over a candidate they were not going to read — there
+        # the user candidate is simply ABSENT, disclosed on stderr. Because a
+        # flag arm probes NON-decisively, typing `--x-leg` / `--no-x-leg` DOES
+        # bypass this refusal (post-r3 wave, W1: the fold-r2 comment claimed
+        # the opposite), so the refusal offers it beside the two environment
+        # fixes and says why it works.
+        if decisive:
+            _fail(f"cannot resolve the home directory for the user-level "
+                  f"fourth-leg config ({exc}) — {_X_LEG_HOME_FIX}")
+        print(f"NOTE — user config candidate skipped: home directory "
+              f"unresolvable ({exc})", file=sys.stderr)
+        return None
+    # `Path.home()` hands back `$HOME` VERBATIM, so a non-absolute HOME is the
+    # same class as a relative `XDG_CONFIG_HOME` above (post-r3 wave, W2): it
+    # would resolve the user candidate against the leader's CWD — a different
+    # file per invocation directory — and put a RELATIVE path in the round
+    # record. Same disposition: absent candidate, NOTE quoting the raw value
+    # where the probe is non-decisive, refusal where it decides the arm.
+    if not os.path.isabs(str(base)):
+        why = f"the home directory {str(base)!r} is not an absolute path"
+        if decisive:
+            _fail(f"{why} — {_X_LEG_HOME_FIX}")
+        print(f"NOTE — user config candidate skipped: {why}", file=sys.stderr)
+        return None
+    return (base / ".config").joinpath(*_X_LEG_CONFIG_USER_REL)
+
+
+def _x_leg_config_path(worktree: Path, decisive: bool) -> tuple:
+    """(highest-precedence fourth-leg config file or None, the EXISTING
+    lower-precedence candidate or None).
+
+    `decisive` is False in a FLAG arm (fold r1, F4): `--x-leg` / `--no-x-leg`
+    cannot be aborted by a broken config directory or an unresolvable home, so
+    there every probe failure is a NOTE and the arm's mirror of an existing
+    config file is best-effort. The ignored-candidate MIRROR lines themselves
+    are printed by the CALLER — only the arm that actually fired knows what it
+    ignored (fold r1, F5)."""
+    project = worktree.joinpath(*_X_LEG_CONFIG_PROJECT_REL)
+    # PROJECT first (fold r1, F4): it alone decides the arm. USER is resolved
+    # and probed only to DECIDE the arm (the project file is absent) or to
+    # MIRROR it (the project file won), so neither a broken user directory nor
+    # an unresolvable home can abort a round the project file already answered.
+    if _x_leg_config_present(project, decisive):
+        user = _x_leg_user_config_path(False)
+        return project, (user if user is not None
+                         and _x_leg_config_present(user, False) else None)
+    user = _x_leg_user_config_path(decisive)
+    if user is not None and _x_leg_config_present(user, decisive):
+        return user, None
+    return None, None
+
+
+def _x_leg_config_str(entry: dict, key: str, where: str):
+    value = entry.get(key)
+    if value is not None and (not isinstance(value, str) or not value):
+        _fail(f"{where}: {key!r} must be a non-empty string (got {value!r})")
+    return value
+
+
+def _load_x_leg_config(path: Path) -> tuple:
+    """(spec strings for ALL entries, the DISABLED entry names) from a
+    `triad-review-legs.v1` file. The specs cover every entry, enabled or not,
+    so a leg kept on file runs the full parser (fold r1, F6); the caller drops
+    the disabled names from the RENDERED set after the parse.
+
+    Every shape refusal fires BEFORE prepare's
+    first mutation and names the FILE plus the offending key/entry; the specs
+    then run through `_parse_x_leg_specs`, so the name regex, the vendor set,
+    the per-vendor effort vocabulary, the duplicate-name and the claude-effort
+    refusals all apply unchanged to a config-sourced leg."""
+    raw = _read_regular_bytes(path, f"fourth-leg config {path}")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        _fail(f"fourth-leg config {path} is not valid UTF-8 JSON ({exc})")
+    if not isinstance(data, dict):
+        _fail(f"fourth-leg config {path} must be a JSON object with the keys "
+              f"{', '.join(_X_LEG_CONFIG_TOP_KEYS)}")
+    unknown = sorted(set(data) - set(_X_LEG_CONFIG_TOP_KEYS))
+    if unknown:
+        _fail(f"fourth-leg config {path}: unknown top-level key(s) "
+              f"{', '.join(repr(k) for k in unknown)} — the keys are "
+              f"{', '.join(_X_LEG_CONFIG_TOP_KEYS)}")
+    if data.get("schema") != _X_LEG_CONFIG_SCHEMA:
+        _fail(f"fourth-leg config {path}: \"schema\" must be "
+              f"{_X_LEG_CONFIG_SCHEMA!r} (got {data.get('schema')!r})")
+    entries = data.get("x_legs")
+    if not isinstance(entries, list):
+        _fail(f"fourth-leg config {path}: \"x_legs\" must be a list of leg "
+              f"objects (an empty list means NO fourth leg this round)")
+    specs = []
+    disabled = []
+    for idx, entry in enumerate(entries):
+        where = f"fourth-leg config {path} x_legs[{idx}]"
+        if not isinstance(entry, dict):
+            _fail(f"{where} is not a JSON object (got {entry!r})")
+        bad = sorted(set(entry) - set(_X_LEG_CONFIG_ENTRY_KEYS))
+        if bad:
+            _fail(f"{where}: unknown key(s) "
+                  f"{', '.join(repr(k) for k in bad)} — the per-entry keys "
+                  f"are {', '.join(_X_LEG_CONFIG_ENTRY_KEYS)}")
+        name = _x_leg_config_str(entry, "name", where)
+        vendor = _x_leg_config_str(entry, "vendor", where)
+        agent = _x_leg_config_str(entry, "agent", where)
+        model = _x_leg_config_str(entry, "model", where)
+        effort = _x_leg_config_str(entry, "effort", where)
+        if name is None:
+            _fail(f"{where}: \"name\" is required")
+        if vendor is None:
+            _fail(f"{where} ({name}): \"vendor\" is required")
+        # Colon safety at the STRUCTURED boundary (fold r1, F2): the entry is
+        # round-tripped through the colon-joined spec string, so a ':' inside a
+        # field silently RE-PARTITIONS the leg — `{"model": "slug:high"}`
+        # became model `slug` plus effort `high`, and `{"name": "x-a:agy",
+        # "vendor": "codex"}` became an agy leg named `x-a`. The claude
+        # `agent` is the one field a colon belongs in (the plugin scope); it
+        # is checked separately in the claude branch below.
+        for key, value in (("name", name), ("vendor", vendor),
+                           ("model", model), ("effort", effort)):
+            if value is not None and ":" in value:
+                _fail(f"{where}: \"{key}\" must not contain ':' (got "
+                      f"{value!r}) — the entry is round-tripped through the "
+                      f"colon-joined leg spec, so a colon here silently "
+                      f"re-partitions the leg; only a claude \"agent\" may "
+                      f"carry the plugin-scope colon")
+        if vendor not in _X_LEG_FAMILIES:
+            _fail(f"{where} ({name}): \"vendor\" must be one of "
+                  f"{', '.join(sorted(_X_LEG_FAMILIES))} (got {vendor!r})")
+        if agent is not None and model is not None:
+            _fail(f"{where} ({name}): \"agent\" and \"model\" are "
+                  f"mutually exclusive — the claude vendor takes an AGENT id, "
+                  f"every other vendor a model slug")
+        if vendor == "claude":
+            if model is not None or effort is not None:
+                _fail(f"{where} ({name}): \"model\"/\"effort\" are not "
+                      f"accepted for the claude vendor — effort is "
+                      f"frontmatter-fixed, so a tier IS a different "
+                      f"\"agent\" id")
+            # The plugin scope is admitted, an effort TAIL is not (fold r1,
+            # F2): `_parse_x_leg_specs` refuses it from the joined spec with a
+            # message about "--x-leg", which names no field a config author
+            # can find. Refuse it here, naming the "agent" key.
+            if agent is not None and agent.split(":")[-1] in _X_LEG_ALL_EFFORTS:
+                _fail(f"{where} ({name}): \"agent\" must not end with an "
+                      f"effort token "
+                      f"({'|'.join(sorted(_X_LEG_ALL_EFFORTS))}) — effort is "
+                      f"frontmatter-fixed on a claude agent, so a different "
+                      f"tier is a different AGENT id, never a tail on this one")
+            # The SHAPE rule runs after the effort tail so the more specific
+            # message wins where both apply (fold r2, F11).
+            if agent is not None and not _X_LEG_AGENT_RE.fullmatch(agent):
+                _fail(f"{where} ({name}): \"agent\" must be an agent id, "
+                      f"optionally ONE plugin scope "
+                      f"(<plugin>:<agent>, characters [A-Za-z0-9._-]) — got "
+                      f"{agent!r}; a second scope colon rejoins into one id "
+                      f"and an all-colon value falls back to the layout "
+                      f"DEFAULT agent, which is the GATING claude leg, so the "
+                      f"tier comparison this leg exists for would be silently "
+                      f"lost")
+            # The config file is EXPLICIT by nature, so the id is REQUIRED here
+            # (gate 2026-09-14 r1, agy must-fix): omitting it resolved to the
+            # LAYOUT-DERIVED default, which IS the gating claude reviewer, so an
+            # advisory entry silently re-ran the gating leg under an advisory
+            # tag and the tier comparison the fourth leg exists for was lost.
+            # The `--x-leg` flag arm keeps its default (typed per round, read
+            # back on the dispatch line before the spawn).
+            if agent is None:
+                _fail(f"{where} ({name}): \"agent\" is required for the claude "
+                      f"vendor — an omitted id resolves to the layout-derived "
+                      f"DEFAULT agent, which is the GATING claude reviewer, so "
+                      f"this advisory entry would silently re-run the gating "
+                      f"leg; name the comparison arm explicitly (recommended: "
+                      f"\"cross-family-review-reviewer-high\", spelled "
+                      f"\"<plugin>:cross-family-review-reviewer-high\" in a "
+                      f"plugin install)")
+        elif agent is not None:
+            _fail(f"{where} ({name}): \"agent\" is accepted for the claude "
+                  f"vendor only — vendor {vendor} takes \"model\" "
+                  f"(+ optional \"effort\")")
+        enabled = entry.get("enabled", True)
+        if not isinstance(enabled, bool):
+            _fail(f"{where} ({name}): \"enabled\" must be true or false "
+                  f"(got {enabled!r})")
+        if not enabled:
+            # Recorded as disabled but still SPEC-BUILT below (fold r1, F6): a
+            # leg kept on file for a later round must not silently rot into an
+            # unusable spec, so it runs the FULL parser — name regex, effort
+            # vocabulary, the claude rules, and duplicate names ACROSS the
+            # enabled/disabled boundary — and is dropped from the RENDERED set
+            # only afterwards (`_parse_prepare_args`). Shape-checking the keys
+            # alone left exactly those defects to rot.
+            disabled.append(name)
+        if vendor == "claude":
+            specs.append(f"{name}:claude" + (f":{agent}" if agent else ""))
+        else:
+            tail = f":{model}" if model else (":" if effort else "")
+            specs.append(f"{name}:{vendor}{tail}"
+                         + (f":{effort}" if effort else ""))
+    return specs, disabled
 
 
 def _x_leg_review_id(review_id: str, name: str) -> str:
@@ -1800,20 +2093,23 @@ def _print_x_leg_dispatch(leg: dict, packet_dir: Path, worktree: Path,
           f"record per triage.md § Fourth-leg comparison record")
 
 
-def _parse_prepare_args(rest: list) -> tuple:
-    """(brief, files, diff_range, diff_paths, excerpts, x_legs, x_source) from
+def _parse_prepare_args(rest: list, worktree: Path) -> tuple:
+    """(brief, files, diff_range, diff_paths, excerpts, x_legs, x_source,
+    x_config_path, x_disabled) from
     the flag tail of a `prepare` invocation — hand-parsed like the rest of
     this CLI. `--diff-path` (repeatable) scopes `--diff` to a git pathspec,
     so a working-tree diff can carry the reviewed CODE only (the
     review-packet rule excludes test/catalog churn); it is meaningless
     without `--diff` and refused alone.
 
-    Fourth-leg resolution (CFR 0.30.0): an explicit `--x-leg` wins outright;
-    `--no-x-leg` renders no X leg even when the env is set; otherwise the
-    specs come from `$TRIAD_REVIEW_X_LEGS` (whitespace- or comma-separated).
-    `x_source` names which of the three happened ("flag" / "env" /
-    "suppressed") or is None when nothing supplied a fourth leg, so `prepare`
-    can print the NOTE the leader reads at dispatch time."""
+    Fourth-leg resolution (CFR 0.31.0): an explicit `--x-leg` wins outright;
+    `--no-x-leg` renders no X leg whatever is configured; then the PROJECT
+    config file `<worktree>/.claude/triad-review-legs.json`, then the USER
+    config `$XDG_CONFIG_HOME/triad/review-legs.json` (`~/.config` fallback),
+    then the DEPRECATED `$TRIAD_REVIEW_X_LEGS` (whitespace- or
+    comma-separated). `x_source` names which arm fired ("flag" / "config" /
+    "env" / "suppressed") or is None when nothing supplied a fourth leg, so
+    `prepare` can print the NOTE the leader reads at dispatch time."""
     brief = None
     files = []
     excerpts = []
@@ -1861,21 +2157,56 @@ def _parse_prepare_args(rest: list) -> tuple:
     env_specs = [s for s in re.split(r"[\s,]+",
                                      os.environ.get(_X_LEG_ENV, "").strip())
                  if s]
-    if x_leg_specs:
-        x_source = "flag"
-    elif no_x_leg:
+    x_config_path = None
+    x_disabled = []
+    if x_leg_specs or no_x_leg:
         # Deliberate suppression is its OWN source whatever the environment
-        # holds: an unset (or empty-splitting) variable must never turn the
-        # leader's explicit --no-x-leg into the "missing fourth leg" defect
-        # report that failure-modes.md routes to a profile fix (W-7).
-        x_source = "suppressed"
-    elif env_specs:
-        x_source = "env"
-        x_leg_specs = env_specs
+        # holds: an unset (or empty-splitting) variable, and an unconfigured
+        # deployment, must never turn the leader's explicit --no-x-leg into the
+        # "no fourth leg configured" NOTE — that line describes a round nobody
+        # asked to configure, not one the leader deliberately suppressed
+        # (fold r1, F7: failure-modes.md no longer treats either as a defect).
+        x_source = "flag" if x_leg_specs else "suppressed"
+        won = "--x-leg" if x_leg_specs else "--no-x-leg"
+        # Every ignored source is mirrored to stderr, never silently dropped: a
+        # leader who typed a flag over a configured deployment must see WHICH
+        # file was bypassed this round. The probe is NON-decisive here (F4).
+        config_path, ignored_user = _x_leg_config_path(worktree, False)
+        if config_path is not None:
+            print(f"NOTE — fourth leg config {config_path} ignored this "
+                  f"round: {won} wins", file=sys.stderr)
+        # BOTH existing files are named, each exactly once (fold r2, F14):
+        # discarding the lower-precedence candidate here hid a user file from
+        # a leader who bypassed a deployment carrying two of them.
+        if ignored_user is not None:
+            print(f"NOTE — user config {ignored_user} ignored this round: "
+                  f"{won} wins", file=sys.stderr)
+        if env_specs:
+            print(f"NOTE — {_X_LEG_ENV} ignored this round: {won} wins",
+                  file=sys.stderr)
     else:
-        x_source = None
+        config_path, ignored_user = _x_leg_config_path(worktree, True)
+        if config_path is not None:
+            x_source = "config"
+            x_config_path = str(config_path)
+            x_leg_specs, x_disabled = _load_x_leg_config(config_path)
+            if ignored_user is not None:
+                print(f"NOTE — user config {ignored_user} ignored this round: "
+                      f"project config wins", file=sys.stderr)
+            if env_specs:
+                print(f"NOTE — {_X_LEG_ENV} ignored this round: config file "
+                      f"wins", file=sys.stderr)
+        elif env_specs:
+            x_source = "env"
+            x_leg_specs = env_specs
+        else:
+            x_source = None
     try:
         x_legs = _parse_x_leg_specs(x_leg_specs)
+        # The disabled entries were parsed WITH the enabled ones (F6); they
+        # leave the round here, after every refusal they could trigger.
+        if x_disabled:
+            x_legs = [leg for leg in x_legs if leg["name"] not in x_disabled]
     except SystemExit:
         # `_fail` already named the offending spec on stderr; from the env
         # path the leader also needs to know it is not a typo in the command
@@ -1887,8 +2218,16 @@ def _parse_prepare_args(rest: list) -> tuple:
                   f"the spec; a refusal naming a plugin manifest is a "
                   f"dist-install problem — or name the agent id "
                   f"explicitly in the spec", file=sys.stderr)
+        elif x_source == "config":
+            print(f"review_scratch: the fourth-leg spec came from "
+                  f"{x_config_path} — fix that file if the refusal names the "
+                  f"spec (references/review-legs.example.json is the "
+                  f"template); a refusal naming a plugin manifest is a "
+                  f"dist-install problem — or name the agent id explicitly "
+                  f"in that entry", file=sys.stderr)
         raise
-    return (brief, files, diff_range, diff_paths, excerpts, x_legs, x_source)
+    return (brief, files, diff_range, diff_paths, excerpts, x_legs, x_source,
+            x_config_path, x_disabled)
 
 
 def _require_readable(path: Path, label: str) -> None:
@@ -1978,7 +2317,8 @@ def cmd_prepare(packet_arg: str, worktree_arg: str, label: str,
     round_no = int(_ROUND_LABEL_RE.fullmatch(label).group(1))
     worktree = _require_worktree_toplevel(worktree_arg)
     brief_arg, file_args, diff_range, diff_paths, excerpt_args, x_legs, \
-        x_source = _parse_prepare_args(rest)
+        x_source, x_config_path, x_disabled = _parse_prepare_args(rest,
+                                                                 worktree)
 
     packet_path = packet_dir / f"packet-{label}.md"
     outputs = {
@@ -2204,6 +2544,12 @@ def cmd_prepare(packet_arg: str, worktree_arg: str, label: str,
         outputs["x-leg record"],
         json.dumps({"round": round_no,
                     "x_source": x_source,
+                    # WHICH file configured the round (absolute — unlike the
+                    # in-packet prompt basenames, this path is OUTSIDE the
+                    # packet dir) and which entries it kept switched off, so a
+                    # later audit reads the round's whole leg decision.
+                    "x_config_path": x_config_path,
+                    "x_disabled": x_disabled,
                     # BASENAME, not an absolute path (gate r1, agy
                     # Minor): the record lives IN the packet dir, so an
                     # absolute value duplicates that dir and pins the
@@ -2241,36 +2587,47 @@ def cmd_prepare(packet_arg: str, worktree_arg: str, label: str,
     )
     for leg in x_legs:
         _print_x_leg_dispatch(leg, packet_dir, worktree, label, review_id)
-    # Exactly one source ARM fires below (its NOTE on stdout; the absent arm
-    # is mirrored to stderr verbatim); a gemini fourth leg WITH an effort
-    # field also printed its effort NOTE above: the leader must never have to
-    # infer
-    # whether this round carried the standing fourth leg, or where its spec
-    # came from (SKILL.md rule 1(d)).
+    # Exactly one source ARM fires below (its NOTE on stdout; every IGNORED
+    # source is mirrored to stderr as a NOTE line); a gemini fourth leg WITH
+    # an effort field also printed its effort NOTE above: the leader must never
+    # have to infer whether this round carried the standing fourth leg, or
+    # where its spec came from (SKILL.md rule 1(d)).
     names = ", ".join(leg["name"] for leg in x_legs)
     if x_source == "env":
-        print(f"NOTE — fourth leg from {_X_LEG_ENV}: {names}")
-    elif x_source == "flag":
-        # Keyed on the PARSED specs (same split as `_parse_prepare_args`), not
-        # on the raw string: a separator-only value contributes nothing, so
-        # there is nothing to have ignored (gate r1, x:flash HS).
-        if [s for s in re.split(r"[\s,]+",
-                                os.environ.get(_X_LEG_ENV, "").strip()) if s]:
-            print(f"NOTE — fourth leg from --x-leg ({_X_LEG_ENV} ignored this "
-                  f"round): {names}")
+        print(f"NOTE — fourth leg from {_X_LEG_ENV} (DEPRECATED — move it to "
+              f"{_X_LEG_CONFIG_PROJECT_REL[0]}/{_X_LEG_CONFIG_PROJECT_REL[1]},"
+              f" SKILL.md rule 1(d)): {names}")
+    elif x_source == "config":
+        if x_legs:
+            print(f"NOTE — fourth leg from {x_config_path}: {names}")
+        elif x_disabled:
+            # A deployment that TURNED ITS LEGS OFF is not one that declares
+            # none (post-r3 wave, W4): the empty-list wording covered both, so
+            # the leader could not tell an `enabled: false` sweep from a file
+            # with no entries — and the disabled names never reached stdout.
+            print(f"NOTE — fourth leg config {x_config_path}: every entry is "
+                  f"disabled this round ({', '.join(x_disabled)})")
         else:
-            print(f"NOTE — fourth leg from --x-leg: {names}")
+            print(f"NOTE — fourth leg config {x_config_path} declares no X "
+                  f"leg this round")
+    elif x_source == "flag":
+        # The IGNORED sources (a set env var, an existing config file) are
+        # mirrored to STDERR by `_parse_prepare_args` (fold r1, F5): stdout
+        # states the arm that FIRED, one line, whatever else was on offer.
+        print(f"NOTE — fourth leg from --x-leg: {names}")
     elif x_source == "suppressed":
         print("NOTE — fourth leg suppressed by --no-x-leg "
               "(three standing legs only this round)")
     else:
-        absent = (f"NOTE — no fourth leg this round: {_X_LEG_ENV} unset or "
-                  f"empty and no --x-leg (SKILL.md rule 1(d) expects the "
-                  f"standing fourth leg on every round)")
-        print(absent)
-        # Only this arm is a DEFECT to fix before dispatch, so it also goes to
-        # stderr: it must survive a skim of the dispatch block (W-8).
-        print(absent, file=sys.stderr)
+        # No longer a leader-environment DEFECT (CFR 0.31.0): advisory legs
+        # are the deployment's choice, so an unconfigured round is a plain
+        # three-leg round — stated once, on stdout, never mirrored as an error.
+        print(f"NOTE — no fourth leg configured this round (three standing "
+              f"legs); add advisory legs in "
+              f"{_X_LEG_CONFIG_PROJECT_REL[0]}/"
+              f"{_X_LEG_CONFIG_PROJECT_REL[1]} (project) or "
+              f"~/.config/{_X_LEG_CONFIG_USER_REL[0]}/"
+              f"{_X_LEG_CONFIG_USER_REL[1]} (user)")
     print(f"review_scratch: rendered {', '.join(p.name for p in outputs.values())}",
           file=sys.stderr)
     # Assembly-then-capture as ONE step: every leg input this round reviews

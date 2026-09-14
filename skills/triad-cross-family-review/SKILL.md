@@ -1,8 +1,9 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE (a MERGE WITH FIXES carrying only non-blocking findings satisfies the gate). Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.30.1
+version: 0.31.0
 # changelog:
+#  0.31.0 (2026-09-14): the ADVISORY fourth leg(s) are configured by the skill USER in a JSON FILE, not in the leader's shell profile — `prepare` resolves `--x-leg`/`--no-x-leg` > PROJECT `<worktree>/.claude/triad-review-legs.json` > USER `$XDG_CONFIG_HOME/triad/review-legs.json` (empty/unset -> `~/.config`) > `$TRIAD_REVIEW_X_LEGS` (DEPRECATED fallback, its NOTE says so) > none (a NOTE, no longer a leader-environment defect). File contract `schema: "triad-review-legs.v1"` + `x_legs` list of `{name, vendor, agent|model(+effort), enabled}`; EVERY entry — disabled ones included — runs through the existing `--x-leg` spec parser, so the name regex / vendor set / per-vendor effort / duplicate-name / claude-effort refusals apply unchanged (a disabled entry is dropped from the RENDERED set only after it has passed them, so a leg kept on file cannot rot); a malformed or symlinked config, an unknown key, `agent` on a non-claude vendor, `model`/`effort` on claude, both `agent` and `model` are LOUD refusals naming the file BEFORE prepare's first mutation; no structured field may contain `':'` (the entry round-trips through the colon-joined spec; a claude `agent` may carry the plugin scope but not an effort tail), a RELATIVE `XDG_CONFIG_HOME` is invalid and ignored (XDG spec 0.8), and a config candidate the probe cannot read aborts the round only when it DECIDES the arm (a flag arm is never abortable, its probe failure a stderr NOTE); every ignored source — env var and config file alike — is mirrored to stderr, and stdout carries only the arm that fired. `.x-legs-r<N>.json` gains `x_config_path` (absolute or null) and `x_disabled`; `x_source` ∈ `flag|config|env|suppressed|null`. Recommended default (owner 2026-09-14, ten-round evidence `docs/reviews/2026-09-07-design-campaign-gate.md`): the claude `high` comparison arm (8 must-fix the gating claude arm missed, 2 found by no other leg) as the standing advisory arm; the Google Flash tier is no longer the standing fourth leg (0 unique blocking defects over 10 rounds) and stays on file `enabled: false`. Rule 1(d) + rule 15 + Flow 2/3, leg-contracts § Fourth leg, failure-modes W-7 + a malformed-config row, triage.md (Flash clause now conditional), NEW `references/review-legs.example.json`, docs/setting_vs.md § 6.2b. t4 axes 41-53 (+28/32/33/34/37/38/40 pins).
 #  0.30.1 (2026-09-06): doc + agent-definition only — `cross-family-review-reviewer-high` (identical body, `effort: high`) registered as the ADVISORY comparison arm of the 2026-09-06 claude-effort campaign (`docs/reviews/2026-09-06-claude-effort-high-vs-xhigh-campaign.md`): dispatched only as a fourth leg (`prepare --x-leg x-claude-high:claude:cross-family-review-reviewer-high` typed next to `--x-leg "$TRIAD_REVIEW_X_LEGS"`), never the standing leg, never gates; leg-contracts § claude fresh-eye leg + § Fourth leg name it; the exporter ships it verbatim with its two siblings and s1 asserts all three ship with the read-only pin + effort tier; t7 pins the three bodies byte-identical. The registering session dispatched the new id at once on the 2026-09-06 desktop build (smoke: transcript `effort: high`) — the session-start-snapshot rule is refuted for a NEW definition file there; on any other build check the Agent tool's available-types list before the first gate.
 #  0.30.0 (2026-09-06): the experimental X leg becomes the STANDING fourth leg (owner directive 2026-09-06). `prepare` reads `$TRIAD_REVIEW_X_LEGS` when no `--x-leg` is typed (`--no-x-leg` suppresses; explicit `--x-leg` wins; exactly one source ARM fires, its NOTE on stdout and the absent arm mirrored to stderr; a malformed env spec fails loud pre-mutation naming the variable). Rule 1(d) + rule 15 retitle + Flow 2; leg-contracts § Fourth leg (default spec snippet, every-round contract, read-audit gate mandatory); triage.md "Pro + Flash = ONE family" for the two-family floor and rule 12; failure-modes row for the absent fourth leg; docs/setting_vs.md § 6.2b `~/.zshenv` line (the leader's Bash tool sources `~/.zshenv` only — spike 2026-09-06). Model/effort: NO tier change (10-round evidence in docs/reviews/2026-09-06-portability-audit.md). Gate r1 fix wave: `.x-legs-r<N>.json` is written on EVERY prepare carrying `x_source` (`env` / `flag` / `suppressed` / `null`) so an audit can tell a suppressed round from a missing profile line; the absent NOTE says "unset or empty" and the "ignored this round" arm keys on the PARSED env specs; the env-provenance hint names the VARIABLE (and disclaims the plugin-manifest refusal) instead of asserting which spec was refused; triage.md's consolidation loop reads the fourth leg from the round record (MISSING line when a recorded leg filed no verdict); the read-audit directive is agy-qualified; docs say one source ARM. t4 axes 32-40.
 #  0.29.2 (2026-09-05): P6-gate instruction fixes + the experimental X leg. Prompts: every rendered leg body states that a finding's `file` is a REPO-RELATIVE POSIX path (`verdict_schema` refuses an absolute one — agy r3 attempt 1 schema-fail 66 with 6 errors, and the r2 quarantined answer, both used the absolute packet path), and the claude prompt now OPENS with the OUTPUT-SHAPE NOTICE the leader had hand-added since 2026-09-04 (`--admit` refuses a reply not beginning with `{`). Docs: retry-artifact naming (`<leg>-r<N>-attempt<K>.*`, inside the leg-output allowlist) + never hand-move or chain a file op on `agy-read-audit.json` (a failed `mv &&` meant the codex leg never launched) in packet-lifecycle.md and rule 13; three failure-mode rows (paging-overshoot `admission-refused` on a big packet, the repo-relative `schema-fail`, the never-launched chained dispatch); leg-contracts agy observation (1.1.26 rejects `run_command` at execution while `init.tools` still advertises 57 — the census stays the enforcement, Policy D unchanged); triage.md scope-expansion gate on a plan-gate fold of a NEW semantic contract (fold CONSTRAINTS, delegate the row-level design), pointed at from rule 5. Feature: `prepare --x-leg <name>:<vendor>[:<model>[:<effort>]]` renders an ADVISORY 4th leg from the SAME packet (rule 15), records `.x-legs-r<N>.json`, prints the complete dispatch command; `read_audit_gate.sh --audit-file <abs>` gates an agy X leg's own read audit. Gate r1 fix wave: the raw-reply glob is X-shaped (`x-*-r[0-9]*-raw.json`, never a bare `*-raw.json` that fnmatch would span a subdirectory with); each X leg carries its OWN binding `review_id` (`<review-id>.<x-name>`) so admission mechanically refuses a cross-leg filing, and `prepare` prints an admission command for EVERY leg; `_wrapper_command_path` resolves the two shipped layouts explicitly instead of walking every ancestor; `--audit-file` must live directly in the packet dir and carry the X basename shape (the standing audit is never a legal override); a claude X leg's agent id may carry a plugin scope and its default is layout-derived from the plugin manifest; the agy X dispatch prints its read-audit gate command; `.x-legs-r<N>.json` records the basename. Gate r2 fix wave: X leg-output coverage is an explicit basename SHAPE (no `/`; `x-…-r<N>[-attempt<K>]-{raw,verdict,read-audit}.json` or `.err`) instead of a path-spanning fnmatch glob that let `x-fixtures-r1/notes-raw.json` and `x-c-r1-notes-raw.json` escape the census; a claude X spec whose FINAL field is an effort token is refused (the agent-id rejoin had re-admitted it) and an all-empty agent remainder falls back to the default; a dist-layout plugin manifest that is unreadable / not JSON / name-less now fails LOUD before prepare's first mutation instead of printing a shadowable bare agent id; the wrapper not-found NOTE prints AFTER its own leg line; the X renders carry one sentence resolving the packet's standing `Review metadata:` id against the X binding id. t3/t4/t5 pins.
@@ -259,23 +260,33 @@ Five references carry the detail — open one only when its column applies.
      findings consolidate like any leg's, but its SAFE does not satisfy the merge
      gate — gate on codex + claude. The same applies to a Google leg that fell
      back to the shallow default tier.
-   - **(d) Standing FOURTH leg — Google Flash tier via agy, ADVISORY, on EVERY
-     round (full and focused).** The standing Google leg (c) runs the Pro
-     tier; the fourth leg runs the Flash tier on the SAME packet and is
-     consolidated like any leg, tagged `x:<name>` (rule 15). It never gates,
-     never counts toward the three families, and Pro + Flash agreement is ONE
-     family for every two-family rule (`references/triage.md` § Countable
-     stop rules). `prepare` renders it from `$TRIAD_REVIEW_X_LEGS` (the
-     leader's shell profile carries the value — `docs/setting_vs.md`
-     § 6.2b; the default spec is quoted in `references/leg-contracts.md`
-     § Fourth leg); an explicit `--x-leg` replaces it for the round,
-     `--no-x-leg` drops it, the two flags together are refused (exit 2), and
-     exactly one source ARM fires (its NOTE on stdout; the absent arm is
-     mirrored to stderr verbatim); a gemini fourth leg WITH an effort field
-     additionally prints its effort NOTE. `prepare`
-     records the source in `.x-legs-r<N>.json` on EVERY round.
-     A round prepared with the `NOTE — no fourth leg` line is
-     a leader-environment defect to fix before dispatch, not a degraded mode.
+   - **(d) Standing FOURTH leg(s) — ADVISORY, configured by the skill USER.**
+     A fourth leg runs on the SAME packet and is consolidated like any leg,
+     tagged `x:<name>` (rule 15). It never gates, never counts toward the three
+     families. The legs of a round come from
+     `<worktree>/.claude/triad-review-legs.json` (project) or
+     `~/.config/triad/review-legs.json` (user, `$XDG_CONFIG_HOME`-aware — an
+     unset, empty or RELATIVE value falls back to `~/.config`) —
+     schema + example in `references/leg-contracts.md` § Fourth leg and
+     `references/review-legs.example.json`; an explicit `--x-leg` (repeatable)
+     replaces the file's legs for the round, `--no-x-leg` drops them, the two
+     flags together are refused (exit 2); `$TRIAD_REVIEW_X_LEGS` is a
+     DEPRECATED fallback honored only when no config file exists (its NOTE says
+     so). Exactly one source ARM fires (its NOTE on stdout; every ignored
+     source is mirrored to stderr); a gemini fourth leg WITH an effort field
+     additionally prints its effort NOTE. `prepare` records the source, the
+     config path and the disabled entries in `.x-legs-r<N>.json` on EVERY
+     round. **No config = three standing legs** — the `NOTE — no fourth leg
+     configured this round` line is information, NOT a defect.
+     **Recommended default (owner 2026-09-14, ten-round evidence
+     `docs/reviews/2026-09-07-design-campaign-gate.md`):** the claude `high`
+     comparison arm `cross-family-review-reviewer-high` as a yield-justified
+     SECOND claude arm (it raised 8 must-fix the gating claude arm missed, 2 of
+     them found by no other leg). The Google Flash tier is no longer the
+     standing fourth leg (0 unique blocking defects over 10 rounds); keep it on
+     file with `enabled: false` if a deployment wants to re-enable it. Whenever
+     a Flash leg IS configured, Pro + Flash agreement is ONE family for every
+     two-family rule (`references/triage.md` § Countable stop rules).
    - **Degraded mode = fewer than three families RETURN a consolidated verdict
      this round** — neither Google CLI installed, or a leg logged terminally
      missing (rule 13). A leg that RAN and was consolidated is not degraded mode,
@@ -540,9 +551,13 @@ Five references carry the detail — open one only when its column applies.
     gates, never counts toward rule 1's three families, and never substitutes
     for one — a failed or missing X leg cannot delay a round. Source order per
     round: `--x-leg` and `--no-x-leg` together are refused (exit 2); otherwise
-    explicit `--x-leg` (repeatable) > `--no-x-leg` > `$TRIAD_REVIEW_X_LEGS`
-    (rule 1(d)) > none; exactly one source ARM fires (its NOTE on stdout; the
-    absent arm is mirrored to stderr verbatim), and a gemini fourth leg WITH
+    explicit `--x-leg` (repeatable) > `--no-x-leg` > the PROJECT config
+    `<worktree>/.claude/triad-review-legs.json` > the USER config
+    `$XDG_CONFIG_HOME/triad/review-legs.json` (`~/.config` when that variable
+    is unset, empty or RELATIVE — a relative value is invalid and ignored per
+    the XDG spec) > the DEPRECATED `$TRIAD_REVIEW_X_LEGS` (rule 1(d)) >
+    none; exactly one source ARM fires (its NOTE on stdout; every ignored
+    source is mirrored to stderr), and a gemini fourth leg WITH
     an effort field additionally prints its effort NOTE.
     Vendor ∈ agy|gemini|codex|claude, and model/effort
     are DISPATCH-TIME values the leader types, never pinned in code
@@ -593,8 +608,10 @@ Five references carry the detail — open one only when its column applies.
    renders the three round-suffixed leg bodies (`codex-body-r<N>.txt`
    inlines the packet; `agy-prompt-r<N>.txt` / `claude-prompt-r<N>.txt`
    point at it) carrying the binding values, the per-leg READ-GRANT, and
-   the verdict-selection rule, renders the standing fourth leg's input from
-   `$TRIAD_REVIEW_X_LEGS` (rule 1(d); `--x-leg` / `--no-x-leg` override) and
+   the verdict-selection rule, renders the CONFIGURED fourth leg's input from
+   `.claude/triad-review-legs.json` (project) or
+   `~/.config/triad/review-legs.json` (user) — rule 1(d); `--x-leg` /
+   `--no-x-leg` override, `$TRIAD_REVIEW_X_LEGS` a deprecated fallback — and
    prints its dispatch command plus the source `NOTE`, and runs the round's
    `capture` (evidence
    snapshot + worktree fingerprint) — so every byte a leg reviews sits
