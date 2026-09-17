@@ -1021,6 +1021,12 @@ fallback above.
   ```bash
   # body rendered by `review_scratch.py prepare` (it names the worktree);
   # --timeout 900 fits a focused diff, LARGE diff → 1500 (rule 7):
+  # EVERY path argument is ABSOLUTE (--cwd, --prompt-file, $PACKET_DIR): the
+  # wrappers validate paths BEFORE any vendor call and refuse a relative one
+  # ("--prompt-file must be an absolute path", rc 3, stdout EMPTY — a
+  # hand-typed relative path looks like a leg that never answered). The same
+  # rule binds an ad-hoc design/plan-review brief dispatched outside a round
+  # (observed 2026-09-18). Root CLAUDE.md § Pitfalls 5 names the cwd hazard.
   codex_wrapper.py --sandbox read-only \
     --cwd "$PACKET_DIR/wt-r<N>" \
     --reasoning xhigh --search --timeout 900 \
