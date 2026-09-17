@@ -344,15 +344,18 @@ def main() -> int:
 
     def build_cmd(effective_prompt: str) -> list[str]:
         cmd = codex_invocation(args.search) + ["--sandbox", args.sandbox]
-        if args.sandbox == "read-only":
-            # W16 (CFR S2, 2026-09-17; Tier 1: codex-rs/exec/src/cli.rs — "Do not
-            # load user or project execpolicy `.rules` files"): an execpolicy
-            # rule with decision="allow" runs its command OUTSIDE the sandbox
-            # without prompting, so this host's ~/.codex/rules (git add/commit,
-            # gh ..., rm -rf _runs) put a READ-ONLY review leg one operator
-            # rule away from a real write. The read-only posture never wants
-            # an escalation; the write posture keeps the operator's rules.
-            cmd.append("--ignore-rules")
+        # W16 (CFR S2, 2026-09-17; Tier 1: codex-rs/exec/src/cli.rs — "Do not
+        # load user or project execpolicy `.rules` files"): an execpolicy rule
+        # with decision="allow" runs its command OUTSIDE the sandbox without
+        # prompting, so this host's ~/.codex/rules (git add/commit, gh ...,
+        # rm -rf _runs) put a READ-ONLY review leg one operator rule away from
+        # a real write. S2-9 (owner-accepted 2026-09-18): EVERY posture — a
+        # wrapper dispatch pins approval_policy=never below and never wants an
+        # escalation outside the sandbox on the write posture either; the
+        # operator's allow rules were the one path around that pin. Inside
+        # workspace-write the same commands still run when the sandbox permits
+        # them; what goes away is the unsandboxed escape.
+        cmd.append("--ignore-rules")
         cmd += [
             "--skip-git-repo-check",
             "--json",

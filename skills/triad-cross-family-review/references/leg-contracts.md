@@ -954,15 +954,17 @@ fallback above.
   search backend — the same class of egress residual as the agy read/network leak
   above, on a different leg. For a SENSITIVE packet, drop `--search` to keep the
   leg fully offline.
-- **`--ignore-rules` rides every read-only dispatch (W16, 2026-09-17; CFR
-  0.35.0).** Tier 1 (`openai/codex` `codex-rs/exec/src/cli.rs`, global exec
+- **`--ignore-rules` rides every codex dispatch (W16, 2026-09-17, CFR 0.35.0
+  — read-only; S2-9, 2026-09-18, CFR 0.35.4 — the write posture too).** Tier 1 (`openai/codex` `codex-rs/exec/src/cli.rs`, global exec
   flag): "Do not load user or project execpolicy `.rules` files"; the rules
   doc: a rule with `decision="allow"` "run[s] the command outside the sandbox
   without prompting". This host's `~/.codex/rules/` allow `git add`, `git
   commit`, `gh …`, even `rm -rf _runs` — so `--sandbox read-only` was one
   operator rule away from a real write. `codex_wrapper.py` appends
-  `--ignore-rules` itself whenever the posture is read-only (the raw default
-  and this leg); the write posture (`--task code`) keeps the operator's rules.
+  `--ignore-rules` itself on every posture — the raw default, this leg, and
+  `--task code` (S2-9: a wrapper dispatch pins `approval_policy=never` and never
+  wants an escalation outside the sandbox on the write posture either; inside
+  workspace-write the same commands still run when the sandbox permits them).
   Nothing to add at the call site; `tests/unit/wrappers/t24-codex-search.sh`
   pins the placement.
 - **DE-INLINED (S1, 2026-09-16) — pass `--cwd <round worktree>` and include the
@@ -1027,7 +1029,7 @@ fallback above.
   # --cwd = the repo the READ-GRANT trailer opens for verification reads
   # (contract revision 2026-08-10 above); writes stay sandbox-blocked.
   # (--reasoning max only on a designated escalation round)
-  # (the wrapper itself appends --ignore-rules on this read-only posture — W16)
+  # (the wrapper itself appends --ignore-rules on every posture — W16 / S2-9)
   # (--search = live web-grounding, disclosed above — drop it for a sensitive packet)
   ```
 
