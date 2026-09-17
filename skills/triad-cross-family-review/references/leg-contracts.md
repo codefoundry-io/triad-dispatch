@@ -400,14 +400,22 @@ the shallow-tier fact for the round record.
     `casefold()` over raw `-z` names, never whitespace-stripped — 0.35.3), is
     refused before the worktree exists on every platform, and cleanup
     refuses before any unlink when `.agents` is not a real directory;
-    the permission-prompt tools (`ask_*`, `list_permissions`) and the waits
-    are allowed by the hook and still void if they EXECUTE (census). The
+    the hook is an ALLOW-LIST (H1, 0.36.1): `ALLOW_TOOLS` = the census's five
+    review tools (t9 pins them equal to the wrapper's `AGY_REVIEW_TOOLS`), and
+    EVERY other name — the permission-prompt tools, the waits, a tool agy
+    ships tomorrow — is DENIED before it runs (blocked, non-voiding; the S2
+    "unknown → allow" choice is reversed: an unknown tool that mutates must
+    be blocked before it executes, not voided after). A `--web` leg will pass
+    the research set when `prepare --web-legs` lands (S2-13 stays disclosed
+    until then). The
     load check counts only hook-shaped rows (`decision` allow|deny + `tool`;
     0.35.1). Per-ROUND, not per-leg (S2-6, disclosed): two agy-family legs
     share one hooks.json and one log — one agy leg per round as deployed.
   - **The prompt states the same rule** (the READ-GRANT block quoted below and
-    the agent body written by `--setup-agents`): off-list mutating and
-    network calls are BLOCKED before they run WHEN the caller's worktree
+    the agent body written by `--setup-agents`): any tool outside the
+    allow set is BLOCKED before it runs (H1, 0.36.1; the agent body still
+    says "mutating and network" — true, narrower, disclosed: changing it
+    forces a host-wide `--setup-agents` re-run) WHEN the caller's worktree
     carries a hook (a review round) — logged, not fatal — the leg cannot see
     from inside whether such a hook is present, so it never makes one, and
     any off-list call that EXECUTES voids; the former "an errored / denied
@@ -560,8 +568,8 @@ the shallow-tier fact for the round record.
   manage_task (do not create task lists; keep your plan in your reasoning),
   run_command or any shell, write_to_file / replace_file_content / sed_file,
   send_message, define_subagent / invoke_subagent / manage_subagents,
-  browser_*, read_url_content / search_web — is off-limits. Mutating and
-  network tools are BLOCKED before they run by a PreToolUse hook in this
+  browser_*, read_url_content / search_web — is off-limits. Tools outside
+  the five are BLOCKED before they run by a PreToolUse hook in this
   worktree; a blocked call costs you the step and is logged — it does not void
   your review — but you cannot see from inside whether the hook loaded, so
   never make one. ANY call outside the five that EXECUTES voids your whole

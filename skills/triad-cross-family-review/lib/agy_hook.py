@@ -11,14 +11,22 @@ Two modes, one file, python3 stdlib only, no AI:
       "*"). stdin: the vendor's PreToolUse payload (`toolCall.name`,
       `toolCall.args`, `conversationId`, `stepIdx`, ...); stdout: ONE JSON
       object `{"decision": "allow"}` or `{"decision": "deny", "reason": ...}`.
-      `decide()` is the whole policy: a fixed set of MUTATING / command /
-      network / subagent / planner tools is denied, everything else — every
-      read tool, every tool this table has never heard of — is allowed. Reads
-      are never denied on purpose: a broken hook denies every call including
-      reads and the leg produces no answer at all (measured 2026-09-16, arm
-      C), so this handler stays small enough to be obviously correct. A
-      payload it cannot read, or a call with no name, is DENIED (fail-closed;
-      that is loud, never a silent write). One JSON line per invocation is
+      `decide()` is the whole policy — an ALLOW-LIST (H1, plan
+      2026-09-18-cfr-post-review-hardening): the five review tools the
+      wrapper census admits (`ALLOW_TOOLS`, pinned equal to the wrapper's
+      `AGY_REVIEW_TOOLS` by t9) are allowed; EVERY other name — mutating,
+      command, network, subagent, planner, prompt-shaped, or one agy ships
+      tomorrow — is denied before it runs (logged, non-voiding). This
+      reverses the S2 "unknown → allow" choice: an unknown tool that mutates
+      must be blocked before it executes, not voided after. The vendor's
+      hooks.json matcher is a regex with no documented no-match default, so
+      the allow-list lives here behind the `*` matcher. A broken hook denies
+      every call including reads and the leg produces no answer at all
+      (measured 2026-09-16, arm C), so this handler stays small enough to be
+      obviously correct. The reply is ONLY `decision` (+ `reason`); the
+      documented `permissionOverrides` field is never emitted. A payload it
+      cannot read, or a call with no name, is DENIED (fail-closed; that is
+      loud, never a silent write). One JSON line per invocation is
       appended to --log — tool, decision, conversation id, step index — and
       NEVER the tool arguments (a write's args carry the file body). A log the
       hook cannot write is reported on stderr and the decision still answers.
@@ -51,31 +59,15 @@ import sys
 import time
 from pathlib import Path
 
-# The MEASURED registry (57 tools advertised by agy 1.2.5 to a print-mode
-# agent), classified once: every name below mutates the filesystem, runs a
-# command, reaches the network / a browser / an MCP server, spawns or messages
-# an agent, or plans out of band. Not here: the five review tools (view_file,
-# grep_search, list_dir, find_by_name, finish), the permission-prompt tools
-# (ask_*, list_permissions) and the waits — none of them has an effect a
-# review leg must not have. The `browser_*` family is a prefix (16 names).
-DENY_TOOLS = frozenset({
-    # filesystem mutation
-    "write_to_file", "replace_file_content", "multi_replace_file_content",
-    "sed_file", "notebook_edit", "notebook_execution", "delete_knowledge",
-    # command execution
-    "run_command", "send_command_input", "command_status",
-    # network / browser (the un-prefixed members of the browser family)
-    "read_url_content", "search_web", "open_browser_url",
-    "capture_browser_console_logs", "capture_browser_screenshot",
-    "click_browser_pixel", "execute_browser_javascript", "list_browser_pages",
-    "read_browser_page",
-    # subagents / messaging / planning
-    "define_subagent", "invoke_subagent", "manage_subagents",
-    "send_message", "manage_task", "manage_inbox", "schedule",
-    # MCP / resources / generation
-    "call_mcp_tool", "list_resources", "read_resource", "generate_image",
-})
-DENY_PREFIXES = ("browser_",)
+# ONE allow set, shared with the wrapper's admission census (AGY_REVIEW_TOOLS in
+# the wrapper's antigravity_wrapper.py, shipped as bin/ — t9 pins the two equal at
+# test time, no runtime import across the artifacts). Every other tool name — mutating,
+# executing, network, subagent, MCP, prompt-shaped or one agy ships tomorrow —
+# is DENIED before it runs: logged, non-voiding. The vendor's hooks.json matcher
+# is a regular expression with no documented no-match default decision
+# (antigravity.google/docs/hooks, accessed 2026-09-18), so a config-level
+# allow-list could not fail closed; the policy lives here behind `*`.
+ALLOW_TOOLS = frozenset({"view_file", "grep_search", "list_dir", "find_by_name", "finish"})
 
 _POLICY = "blocked by triad cross-family review policy"
 _REPORT_CAP = 40   # denied rows printed by `check` — the digest's list cap
@@ -89,11 +81,10 @@ def decide(name) -> tuple:
     cannot read must never let a mutating call through."""
     if not isinstance(name, str) or not name:
         return ("deny", f"{_POLICY}: the tool call carries no readable name")
-    if name in DENY_TOOLS or name.startswith(DENY_PREFIXES):
-        return ("deny", f"{_POLICY}: {name} mutates, executes, or reaches "
-                        f"outside the reviewed tree — a read-only review leg "
-                        f"may not call it")
-    return ("allow", None)
+    if name in ALLOW_TOOLS:
+        return ("allow", None)
+    return ("deny", f"{_POLICY}: {name[:64]} is outside this leg's allow set "
+                    f"— a read-only review leg may not call it")
 
 
 def _hook_main(log_path: Path) -> int:

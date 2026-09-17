@@ -1317,7 +1317,7 @@ def _agy_read_grant(entry_name: str, worktree: Path) -> str:
         "your reasoning), run_command or any shell, write_to_file / "
         "replace_file_content / sed_file, send_message, define_subagent / "
         "invoke_subagent / manage_subagents, browser_* , read_url_content / "
-        "search_web — is off-limits. Mutating and network tools are BLOCKED "
+        "search_web — is off-limits. Tools outside the five are BLOCKED "
         "before they run by a PreToolUse hook in this worktree; a blocked "
         "call costs you the step and is logged — it does not void your "
         "review — but you cannot see from inside whether the hook loaded, so "
