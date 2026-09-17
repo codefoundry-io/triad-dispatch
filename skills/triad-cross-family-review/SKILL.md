@@ -208,8 +208,9 @@ Five references carry the detail — open one only when its column applies.
    sandbox claim alone, decides admission. For the AGY leg the containment
    is MECHANICAL since 0.35.0 (S2): the round worktree carries a PreToolUse
    hook (`lib/agy_hook.py`, written by `prepare` into
-   `<worktree>/.agents/hooks.json`) that DENIES mutating / command / network /
-   subagent / planner tools before they run — whatever agent resolved, since
+   `<worktree>/.agents/hooks.json`) that denies every tool outside the five-name review allow set before it
+   runs (0.36.1; mutating / command / network / subagent / planner tools
+   included) — whatever agent resolved, since
    `--agent` fails OPEN silently; admission is EFFECT-based (a BLOCKED call is
    logged, an EXECUTED off-list call voids); and the hook LOAD CHECK
    (`agy_hook.py check …` → `HOOK_LOAD_PASS`) must pass beside the read-audit

@@ -50,7 +50,11 @@ Measured vocabulary (agy 1.2.5, 2026-09-17): a denied call reaches the stream
 as state ERROR with tool_info.error.message "tool call denied by pre-tool
 hook: <reason>"; the run stays SUCCESS / rc 0 and the file is never written.
 The wrapper's admission census reads that denial as BLOCKED (logged, not
-voiding) — an off-list call that EXECUTES still voids the answer.
+voiding) — an off-list call that EXECUTES still voids the answer. A denied
+PROMPT-shaped call (`ask_question`, measured 2026-09-18, h1-deny-probe) reaches
+the stream as `step_type: unknown`, state ERROR, with NO tool name, so the
+census and the digest's `denied` list cannot attribute it — the hook log is
+the record that names it (H3 carries the evidence duty).
 """
 from __future__ import annotations
 

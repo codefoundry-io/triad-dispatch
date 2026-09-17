@@ -332,13 +332,21 @@ the shallow-tier fact for the round record.
     (`define_subagent`, `invoke_subagent`, `manage_subagents`, `send_message`,
     `manage_task`, `manage_inbox`, `schedule`), MCP / generation
     (`call_mcp_tool`, `list_resources`, `read_resource`, `generate_image`) —
-    the measured 57-tool registry classified once (`tests/unit/skills/t9-agy-hook.sh`
-    pins every name). Everything else is ALLOWED: reads are never denied (a
-    broken hook denies every call, reads included, and the leg produces no
-    answer at all — arm C, measured), an unknown tool is allowed and left to
-    the census, an unreadable or nameless payload is DENIED (fail-closed),
-    tool ARGS are never logged (a write's args carry the file body). A log the
-    hook cannot write is reported on stderr and the decision still answers.
+    the measured 57-tool registry (kept in `tests/unit/skills/t9-agy-hook.sh` as a
+    DENY-side pin) — and, since 0.36.1 (H1), EVERY OTHER NAME: the handler is an
+    ALLOW-LIST whose set is the census's five review tools (`ALLOW_TOOLS`,
+    t9-pinned equal to the wrapper's `AGY_REVIEW_TOOLS`); an unknown tool, a
+    prompt-shaped tool (`ask_*`, `list_permissions`) and the waits are DENIED
+    before they run — blocked, non-voiding — never left to the census. Read
+    tools outside the five (`code_search`, `codebase_search`, `skill_search`)
+    are denied too (disclosed, H1 gate r1). A broken hook denies every call,
+    reads included, and the leg produces no answer at all (arm C, measured); an
+    unreadable or nameless payload is DENIED (fail-closed); tool ARGS are never
+    logged (a write's args carry the file body); a log the hook cannot write is
+    reported on stderr and the decision still answers. A denied PROMPT-shaped
+    call reaches the stream as `step_type: unknown`, state ERROR, with no tool
+    name (measured 2026-09-18, h1-deny-probe) — the hook log is the only record
+    that names it; the digest's `denied` list cannot.
   - **Admission is EFFECT-based (Gate A only).** The wrapper's census splits
     off-list names by what HAPPENED: every occurrence DENIED before execution
     (the hook, or the vendor's own `denied permission` — ONE predicate,
@@ -568,8 +576,8 @@ the shallow-tier fact for the round record.
   manage_task (do not create task lists; keep your plan in your reasoning),
   run_command or any shell, write_to_file / replace_file_content / sed_file,
   send_message, define_subagent / invoke_subagent / manage_subagents,
-  browser_*, read_url_content / search_web — is off-limits. Tools outside
-  the five are BLOCKED before they run by a PreToolUse hook in this
+  browser_*, read_url_content / search_web — is off-limits. On agy, tools
+  outside the five are BLOCKED before they run by a PreToolUse hook in this
   worktree; a blocked call costs you the step and is logged — it does not void
   your review — but you cannot see from inside whether the hook loaded, so
   never make one. ANY call outside the five that EXECUTES voids your whole
@@ -912,7 +920,7 @@ Two live claims govern whether a deployment can run this leg at all:
   run is admitted when its verdict validates and its errored steps are all
   allowed reads — the read-audit still shows every errored step. Updated
   2026-08-22 (v2). **S2 (2026-09-17, 0.35.0):** the round worktree's PreToolUse
-  hook DENIES mutating / command / network / subagent / planner tools
+  hook denies every tool outside the five-name allow set (0.36.1 — mutating / command / network / subagent / planner tools included)
   whatever agent resolved — the backstop for `--agent` failing OPEN — and
   admission is EFFECT-based: a BLOCKED call is logged, an EXECUTED off-list
   call voids; the hook LOAD CHECK proves the layer loaded (§ agy leg).
