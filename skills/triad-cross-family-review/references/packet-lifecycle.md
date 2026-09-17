@@ -1,7 +1,7 @@
 # Cross-family review — packet lifecycle, order, and round integrity
 
 Loaded on demand from `triad-cross-family-review/SKILL.md` (Hard rule 8).
-Read this when opening or closing a packet dir, assembling a LARGE packet, or
+Read this when opening or closing a packet dir, shrinking a large diff, or
 deciding whether an edit made mid-round invalidates it.
 
 ## Contents
@@ -11,7 +11,7 @@ deciding whether an edit made mid-round invalidates it.
 | Where packet files live | choosing a path for a brief / diff / context file a vendor leg has to read |
 | Packet dir lifecycle | opening, refreshing, or closing a packet dir — `review_scratch.py` and its ownership fences |
 | Packet dir lifecycle → Removing a stray checkout | `open` / `prepare` / `close` refused (or the prune skipped) over an entry it could not name as its own round tree — the ONE supported manual intervention |
-| Large packet — pre-assemble one focused file | the diff is big or the review spans several documents |
+| Large diff — shrink the reviewed surface | the diff is big or the review spans several documents |
 | Packet order and fencing | assembling the packet itself — block order, the data fence, containment placement |
 | Deterministic round preparation — prepare | building a round's packet + leg bodies (the normal path — one command) |
 | Round integrity — capture / verify | before dispatching any round, after its legs return, or when a fix is ready while legs are still out |
@@ -27,7 +27,7 @@ required for gemini and it keeps every leg uniform.
 
 Every review-context file goes inside a helper-managed packet dir under the
 gitignored `_runs/review/` — never a bare `_shared/<name>.md`, never `/tmp` — so
-every READING leg can `Read` it; codex receives the same content inlined instead (rule 9). The claude `Agent` leg is not
+every READING leg can `Read` it; the codex leg reads the same files through its read-only shell (rule 9). The claude `Agent` leg is not
 workspace-sandboxed and could read `/tmp`; the vendor legs cannot, so the
 convention holds for all of them.
 
@@ -103,25 +103,15 @@ refusal said `unresolvable` — the gate's own source repository.
    round. Verify a round tree BEFORE deleting it if you have not: `verify` is
    the only chance to check the delivered artifacts against their record.
 
-## Large packet — pre-assemble one focused file
+## Large diff — shrink the reviewed surface
 
-When the expected packet is LARGE — a big diff (say more than ~1000 changed lines
-or many files) or a multi-document review (an ADS + a big JSON + a design doc) —
-the leader pre-assembles the packet into ONE focused file and instructs the
-agy/gemini leg to read THAT ONE file (its `view_file` on the repo-relative
-gitignored path) and nothing else.
-
-Telling a vendor leg to self-assemble — to run `git diff <range>` on a large diff
-itself, or to read N context/interface/mock files itself — is what breaks: a
-workspace-sandboxed leg spends its whole wall-time budget reading and stitching
-the packet and hits its print-timeout, returning timeout / extraction-error with
-no verdict. A leg told to self-assemble has timed out around 13 minutes where the
-same content, pre-assembled, finished in a few minutes. Pair this with the rule-7
-generous timeout rather than using it instead of one.
-
-Sample the repetitive parts and keep the high-risk files whole — not the whole
-tree. codex inlines the same focused subset instead of reading the file
-(`references/leg-contracts.md` § codex leg).
+`prepare` writes the whole diff into the round worktree; there is no packet
+file to assemble. When a diff approaches a leg's context ceiling, narrow it:
+`--diff-path <rel>` (repeatable) limits `diff.prod.patch` to those paths,
+`--tests-path <pathspec>` limits `diff.tests.patch`, and `--excerpt
+<rel>:<start>-<end>` pins a hot function INTO `brief.md`. Prefer shrinking
+over raising `--timeout` (SKILL rule 7). Telling a vendor leg to self-assemble
+a large diff itself is what used to time out (`references/evidence.md`).
 
 ## Packet order and fencing
 

@@ -34,35 +34,15 @@ the leader should run instead; the leader owns every execution and every write.
 ## Adversarial stance (HARD)
 
 **Assume a subtle defect IS present and your job is to find it.** A bare "looks
-fine / SAFE / no issues" is a FAILED review, not a pass — it is the exact
-rubber-stamp this leg exists to prevent. Before you conclude anything:
-
-- ENUMERATE which decisions, invariants, and files you actually checked. A
-  verdict with no enumerated checks is not credible.
-- Treat every suspect/omitted/simplified decision in the packet as an open
-  QUESTION ("is X actually safe to omit?"), not a settled fact. Challenge the
-  packet's framing; do not inherit it.
-- Do NOT deflate a real correctness / robustness / security issue to Minor or
-  benign to avoid a fix loop. Rate strictly by impact. A same-family leg that
-  under-reasons and downgrades everything is worse than useless, because the
-  cross-family legs then escalate residuals you waved through.
-- Do NOT inflate either: state the concrete trigger scenario for each finding.
-  Label a scenario the packet's deployment-context block rules out
-  **HARDENING-SUGGESTION (suggestion)** — never BLOCKING — but ONLY when
-  that exclusion carries its evidence pointer; an unevidenced exclusion is
-  NOT a basis for the label (report UNKNOWN-CONTEXT at impact-rated
-  severity instead). When the packet does
-  not state the deployment fact your judgement depends on, report at
-  impact-rated severity marked **UNKNOWN-CONTEXT**; never guess the deployment.
-  Do not demand error handling, fallbacks, or validation for scenarios the
-  deployment-context rules out. "System boundary" INCLUDES this repo's
-  declared untrusted inputs — vendor stdout, run-logs, transcripts, review
-  packets (the export SECURITY threat model) — so a missing validation on
-  those IS in scope and is never HARDENING-SUGGESTION. You may challenge a
-  deployment-context claim you hold to be factually wrong: state the
-  evidence instead of deferring.
-- Think as hard as you can before answering. Depth is the only thing that earns
-  a same-family leg its place next to the cross-family legs.
+fine / SAFE / no issues" is a FAILED review, not a pass. ENUMERATE which
+decisions, invariants, and files you actually checked; treat every
+suspect/omitted/simplified decision in the packet as an open QUESTION ("is X
+actually safe to omit?") and challenge the packet's framing rather than
+inherit it. The round prompt `prepare` rendered carries the severity contract
+(no deflation, no inflation, HARDENING-SUGGESTION / UNKNOWN-CONTEXT labels, the
+system-boundary rule) — follow it; it is not restated here. Think as hard as
+you can before answering: depth is the only thing that earns a same-family leg
+its place next to the cross-family legs.
 
 ## What to look for
 
@@ -86,28 +66,10 @@ cite `file:line` for every finding so the leader can fact-check it deterministic
 
 ## Output
 
-**When the round prompt you were pointed at specifies an output contract (the
-LegVerdict JSON-only shape, an OUTPUT-INTEGRITY closing-brace check, an
-end-marker line), THAT contract governs your reply — follow it exactly and
-skip the prose shape below** (2026-08-30 verdict-admission hardening: this
-section used to compete with the round prompt's JSON contract, a measured
-pressure source for malformed emissions). The shape below applies only when
-the round prompt states no output contract of its own.
-
-Return your review as your reply — no file write (you have no write tool). Shape it so
-the leader can consolidate it without re-reading raw logs:
-
-1. **Checks performed** — the enumerated list of decisions/invariants/files you inspected.
-2. **Findings** — each as a QUESTION about a specific `file:line`, with the evidence and
-   the impact if it is a real defect. Separate BLOCKING findings (merge-stoppers) from
-   MINOR ones — BLOCKING maps to the review skill's Critical/must-fix severity
-   axis; HARDENING-SUGGESTION and UNKNOWN-CONTEXT are labels carried alongside
-   that severity, feeding the leader's triage. Do not pad; do not invent
-   findings to look thorough.
-3. **Verdict** — exactly one of: **SAFE TO MERGE** (no blocking findings, checks
-   enumerated), **MERGE WITH FIXES** (non-blocking findings the leader should address),
-   or **DO NOT MERGE** (at least one blocking correctness/security finding). A verdict
-   with no enumerated checks is treated as a failed review.
+The round prompt `prepare` rendered carries your output contract (the
+LegVerdict JSON-only shape, the OUTPUT-INTEGRITY closing-brace check, the
+`<END-VERDICT>` end marker). THAT contract governs your reply — follow it
+exactly. Your reply is the verdict; the contract governs its shape.
 
 ## Operating discipline
 
