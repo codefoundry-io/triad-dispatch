@@ -10,6 +10,7 @@ deciding whether an edit made mid-round invalidates it.
 |---|---|
 | Where packet files live | choosing a path for a brief / diff / context file a vendor leg has to read |
 | Packet dir lifecycle | opening, refreshing, or closing a packet dir — `review_scratch.py` and its ownership fences |
+| Packet dir lifecycle → Removing a stray checkout | `open` / `prepare` / `close` refused (or the prune skipped) over an entry it could not name as its own round tree — the ONE supported manual intervention |
 | Large packet — pre-assemble one focused file | the diff is big or the review spans several documents |
 | Packet order and fencing | assembling the packet itself — block order, the data fence, containment placement |
 | Deterministic round preparation — prepare | building a round's packet + leg bodies (the normal path — one command) |
@@ -65,6 +66,42 @@ records outside the packet root.
 
 Packet `close` DELETES the dir, so copy the residual table to its durable record
 first (`references/triage.md` § Residual table).
+
+### Removing a stray checkout
+
+The packet dir is HELPER-OWNED (owner ruling 2026-09-17): the steps below are
+the ONLY supported manual intervention in it, and everything else — renaming,
+moving or locking a round tree, dropping a foreign clone or worktree in, or
+re-pinning from a repository other than the gate's source — is out of scope, so
+the helper REFUSES such a state without deleting anything and states what it
+observes instead of prescribing a command.
+
+Run these when `open`, `prepare` or `close` refuses (or the stale-sibling prune
+skips) over an entry it could not name as its own round tree. `<path>` is the
+entry the refusal quoted; `<repo>` is the repository it reported, or — when the
+refusal said `unresolvable` — the gate's own source repository.
+
+1. **See whether the path is registered.**
+   `git -C <repo> worktree list --porcelain` — look for a `worktree <path>`
+   line. The refusal's `source registration:` observation already answers this
+   for the source repository; this step answers it for any other repository the
+   refusal named.
+2. **Registered at THAT path, with a `.git` gitfile git can read** — detach it:
+   `git -C <repo> worktree remove --force <path>`.
+   A LOCKED worktree refuses that; run `git -C <repo> worktree unlock <path>`
+   first, then repeat.
+3. **Otherwise** — not registered, registered under a different path (a moved or
+   copied tree), or a gitfile git cannot read:
+   `rm -rf <path>` then `git -C <repo> worktree prune`
+   (the first deletes the directory and everything in it; the second clears the
+   registration git still holds for a tree that is no longer where that
+   registration says). When the entry's `.git` entry is a **DIRECTORY** — a
+   clone or a primary repository, which no `.git/worktrees` registration
+   anywhere names — `rm -rf <path>` alone is the whole of it; there is nothing
+   to prune. When the entry is a plain FILE or a SYMLINK, plain `rm <path>`.
+4. **Re-run the command that refused** — `close`, or `prepare` for the next
+   round. Verify a round tree BEFORE deleting it if you have not: `verify` is
+   the only chance to check the delivered artifacts against their record.
 
 ## Large packet — pre-assemble one focused file
 
@@ -145,11 +182,11 @@ obligation below by hand.
 
 ```bash
 python3 <skill>/lib/review_scratch.py prepare <abs-packet-dir> \
-  <abs-worktree-root> r<N> \
+  <abs-source-repo> r<N> \
   --brief /abs/brief.md \
-  [--file <worktree-relative-path>]... \
-  [--diff <git-range>] [--diff-path <worktree-relative-path>]... \
-  [--excerpt <worktree-relative-path>:<start>-<end>]...
+  --diff <git-range> [--diff-path <repo-relative-path>]... \
+  [--tests-path <repo-relative-path>]... \
+  [--excerpt <repo-relative-path>:<start>-<end>]...
 ```
 
 - **The brief is the leader's ONLY per-round authored text**: deployment
@@ -162,14 +199,16 @@ python3 <skill>/lib/review_scratch.py prepare <abs-packet-dir> \
   next round while legs are still out fires a false "round evidence
   changed" (r1 finding, claude). If it must live inside, round-suffix it
   (`brief-r<N>.md`).
-- **Every bulk byte moves FILE-TO-FILE.** `--file` embeds a worktree file
-  verbatim (UTF-8 text only; symlinks — including a symlink DIRECTORY
-  component, refused by a dir_fd open chain — escapes, control-character
-  paths, and binary refused),
-  `--diff` runs `git diff` with pinned flags itself (`--diff-path`
-  pathspecs scope it — a working-tree diff can then carry the reviewed
-  CODE only, per the packet-is-CODE-only rule), `--excerpt` slices a
-  line range — none of it is ever streamed through the leader's context.
+- **Every bulk byte moves FILE-TO-FILE.** `--diff` is REQUIRED — it names the
+  reviewed change and pins the round worktree at the resolved right-hand side,
+  so the tree and the patches cannot describe different things. `--diff-path`
+  pathspecs scope the reviewed surface and `--tests-path` splits test churn out
+  of the GATED patch (the review-is-CODE-only rule); both refuse loud when they
+  match nothing, since a silent no-op would drop or misfile hunks. `--excerpt`
+  slices a line range FROM THE PINNED COMMIT (never the leader's live working
+  tree) and pins it into the brief. `--file` whole-file embedding was RETIRED
+  with packet assembly: the worktree already carries the whole file. None of it
+  is ever streamed through the leader's context.
   Embedded content may not carry any of the round's LIVE fence lines or
   the brief marker, on any renderable line separator (fence forgery
   refused loud — excerpt around such a line); after `capture`, every
@@ -179,10 +218,26 @@ python3 <skill>/lib/review_scratch.py prepare <abs-packet-dir> \
   This is the token-discipline rule as much as a convenience: content the
   leader re-types into a packet costs context AND invites transcription
   slips; content a program copies costs neither.
-- **Rendered outputs are ROUND-SUFFIXED** (`packet-r<N>.md`,
+- **Rendered outputs are ROUND-SUFFIXED** (`delivery-r<N>.md` — the record
+  listing the delivered artifacts with their sha256s, which is what the
+  verdict binding hashes now that there is no assembled packet —
   `digest-r<N>.txt`, `codex-body-r<N>.txt`, `agy-prompt-r<N>.txt`,
   `claude-prompt-r<N>.txt`) and written exclusive-create — a duplicate
-  round fails loud. The leg bodies carry the binding values, the per-leg
+  round fails loud. The four DELIVERED artifacts (`brief.md`,
+  `diff.prod.patch`, `diff.tests.patch`, `history.txt`) live in the round
+  worktree at `<packet-dir>/wt-r<N>` (the round is in the NAME), NOT in the packet dir; `verify` re-checks
+  them against `delivery-r<N>.md`, which keeps their integrity independent
+  of the reviewed repo's own `.gitignore`. Beside them `prepare` writes
+  `.agents/hooks.json` (S2, 0.35.0) — the round's agy PreToolUse hook config,
+  pointing at `<skill>/lib/agy_hook.py` with `--log
+  <packet-dir>/agy-hook-r<N>.jsonl`. It is OURS like the four artifacts
+  (cleanup unlinks it; the re-pin owns it), written after them and BEFORE the
+  untracked walk and capture so the worktree FINGERPRINT censuses it, and
+  deliberately NOT listed in the record: it is enforcement, not delivered
+  material (`references/leg-contracts.md` § agy leg, the hook bullet). A
+  reviewed tree that TRACKS `.agents/hooks.json` is refused before the
+  worktree exists; a reviewed repo that gitignores `.agents/` hides the file
+  from the fingerprint's untracked arm (disclosed). The leg bodies carry the binding values, the per-leg
   READ-GRANT blocks, the reviewer-side severity instruction, and the
   verdict-selection rule (`references/triage.md` § Reviewer-side
   instruction — the doc text stays the SoT; a doc-side revision updates
@@ -208,19 +263,46 @@ identical on macOS and Ubuntu 24.04):
 
 - **Before dispatching round N** (packet assembled, prompts built):
   `python3 <skill>/lib/review_scratch.py capture <abs-packet-dir>
-  <abs-worktree-root> r<N>` — freezes an exclusive-create snapshot
-  (`.snapshot-r<N>.json`): a per-file sha256 census of every regular
+  <abs-packet-dir>/wt-r<N> r<N>` — the second positional is the ROUND WORKTREE
+  (`prepare` runs this itself; it is spelled out here for a hand-built round).
+  A HAND-BUILT round is supported ONLY when it writes its own
+  `delivery-r<N>.md` AND captures under the ROUND label `r<N>` (r11 AA7). The
+  record's format is what `prepare` writes, and `prepare`'s output is the
+  template to copy: a `Review metadata: <review-id> …` line, then one
+  `- <artifact>  sha256=<64 hex>  (<size note>)` line for each of `brief.md`,
+  `diff.prod.patch`, `diff.tests.patch`, `history.txt`. Capturing such a round
+  under a NON-round label instead parks its snapshot where the round guards
+  cannot see it — the bare-tree refusal looks for `.snapshot-r<N>.json` — so the
+  tree reads as never delivered and is cleaned with its capture beside it. A
+  non-round label remains what it is, an OPERATOR capture of a tree, and is not
+  a way to run a round. Capture
+  — freezes an exclusive-create snapshot named for the LABEL
+  (`.snapshot-<label>.json`, i.e. `.snapshot-r<N>.json` for a round — the only
+  spelling the round guards read): a per-file sha256 census of every regular
   file then in the packet dir, one prepared digest over that census
   (length-prefixed framing), and a canonical WORKTREE fingerprint
   (HEAD + status + staged/unstaged diffs under pinned flags +
   untracked-file hashes, `LC_ALL=C` — deterministic across git
   configs). One label per round, never re-captured.
 - **After every required leg terminates, BEFORE consolidation**:
-  `… verify <abs-packet-dir> <abs-worktree-root> r<N>` must print
+  `… verify <abs-packet-dir> <abs-packet-dir>/wt-r<N> r<N>` must print
   `ROUND_INTEGRITY_OK r<N>`. A packet-evidence mismatch = a leg
   certified text that changed under it; a WORKTREE-fingerprint
   mismatch = the code under review mutated while legs ran — either way
-  the round is INVALID, never released. This verify is the
+  the round is INVALID, never released. A ROUND-shaped label
+  (`r<N>`, `r0<N>`) resolves its delivery record by the SUPPLIED spelling
+  first and by the round NUMBER second — so a pre-canonical `delivery-r04.md`
+  answers for `verify … r04` (r10 Z4) — and REFUSES when NEITHER is in the
+  packet dir (r9 Y3): the
+  fingerprint's two arms both omit paths the REVIEWED repo gitignores, so
+  without the record's four sha256s a mutated `diff.prod.patch` in a repo
+  carrying `*.patch` certifies clean. A HAND-BUILT round therefore writes that
+  record, exactly as `prepare` does (r11 AA7). A NON-round label is an OPERATOR
+  capture, never a round: it verifies the packet evidence and the fingerprint
+  only, and its token line SAYS so — `ROUND_INTEGRITY_OK <label> (artifact
+  hashes NOT checked — no delivery record)`, on stdout, so the round gate's
+  token (`ROUND_INTEGRITY_OK r<N>`, SKILL rule 8) can never be satisfied
+  silently (r10 Z17). This verify is the
   COMPENSATING CONTROL for legs with native read tools (the codex
   leg's 2026-08-10 READ-GRANT contract, and the agy leg's
   intent-not-enforcement residual): mutation detection, not a sandbox
@@ -240,7 +322,10 @@ identical on macOS and Ubuntu 24.04):
   after capture) ONLY names matching `_LEG_OUTPUT_GLOBS`
   (review_scratch.py): `*.out`, `*.err`, `*-read-audit.json`,
   `claude-r*.json`, `*-verdict.json` — plus, for the standing fourth leg, the
-  explicit shape rule `_is_x_leg_output`. That rule is a REGEX on the
+  explicit shape rule `_is_x_leg_output`, and, since 0.35.0, the agy hook log
+  `agy-hook-r<N>.jsonl` (`_is_hook_log_output`: the hook appends to it while an
+  agy-family leg runs; same basename rule — `agy-hook-r1/notes.jsonl` and
+  `agy-hook-r1.txt` stay uncovered). That rule is a REGEX on the
   basename, not a glob (CFR 0.29.2 gate r2): the globs are `fnmatchcase`d
   against the whole POSIX RELPATH, where `*` also spans `/`, so an X glob such
   as `x-*-r[0-9]*-raw.json` still exempted `x-fixtures-r1/notes-raw.json` and
@@ -284,7 +369,7 @@ identical on macOS and Ubuntu 24.04):
   outside the snapshot census — integrity binds the round's evidence
   set, not the dir's later accumulation. "Output" is a NARROW allowlist
   (`*.out`, `*.err`, `*-read-audit.json`, `claude-r*.json`,
-  `*-verdict.json`); anything
+  `*-verdict.json`, the X shape, `agy-hook-r<N>.jsonl`); anything
   else appearing post-capture fails `verify` as an uncovered file. The
   claude leg's still-escaped RAW reply is not an output at all — it is
   staged in the session scratchpad under a GATE-SLUG-scoped name

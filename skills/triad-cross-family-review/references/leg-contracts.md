@@ -14,7 +14,7 @@ its verdict may be weighed only after the read-audit gate below passes.
 | agy read-audit gate | an agy leg returned and you are about to weigh it |
 | agy standing residuals | deciding whether this deployment can run the agy leg at all |
 | gemini leg | gemini is the resolved Google leg |
-| codex leg | dispatching codex — tier, `--search`, inline packet |
+| codex leg | dispatching codex — tier, `--search`, worktree delivery |
 | claude fresh-eye leg | dispatching the claude `Agent` leg |
 | Fourth leg (advisory, user-configured) | the round's advisory legs come from `.claude/triad-review-legs.json` / `~/.config/triad/review-legs.json` (rule 1(d)); dispatching them, or overriding with --x-leg / --no-x-leg |
 
@@ -234,7 +234,8 @@ the shallow-tier fact for the round record.
   the mechanical read-audit gate below runs UNCHANGED over such a run.
   Evidence: `docs/spikes/2026-08-22-agy-permission-ladder/` rounds 1-3; spec
   `docs/superpowers/specs/2026-08-22-agy-readonly-v2-spec.md`. Expected
-  read-audit: `commands=0 denied=0 writes=0 web=0`.
+  read-audit: `commands=0 writes=0 web=0`; since 0.35.0 (S2) `denied` may
+  list hook-BLOCKED calls — logged, not voiding (bullet below).
 - **Tool-allowlist instruction + `admission-refused` (2026-09-04, CFR 0.29.1).**
   The agent's `tools:` list is NOT a model-visible restriction on agy
   1.1.25/1.1.26: the stream's `init.tools` advertises the FULL registry (57
@@ -298,15 +299,132 @@ the shallow-tier fact for the round record.
   gate's r1 at 857 s of a 900 s budget with 33 allowlisted reads over 23
   repo files: the leg read too widely for the vendor's internal turn budget.
   Never `unknown` (the repair analyzer escalated: no existing class fits).
-  Handling: re-dispatch the leg ONCE with a NARROWER read scope (a smaller
-  packet, fewer "cite each site" demands, `--excerpt` the hot functions),
-  then terminally missing; consolidate the other legs regardless.
-- **Existence pin (2026-08-22, template-rendered — CFR 0.27.4).** The
+  Handling: re-dispatch the leg ONCE with a NARROWER read scope (tighten the
+  reviewed surface with `--diff-path` / `--tests-path`, fewer "cite each
+  site" demands, `--excerpt` the hot functions into the brief), then
+  terminally missing; consolidate the other legs regardless.
+- **PreToolUse hook + EFFECT-based admission + the hook LOAD CHECK
+  (2026-09-17, CFR 0.35.0 — S2 of plan
+  `docs/superpowers/plans/2026-09-16-cfr-delivery-and-enforcement-redesign.md`
+  § Enforcement).** Containment moved off the prompt and off the agent
+  allowlist onto a MECHANICAL layer the round carries itself. MEASURED on agy
+  1.2.5 (2026-09-17, two runs) and 1.2.3 (2026-09-16): a workspace
+  `<cwd>/.agents/hooks.json` PreToolUse hook FIRES in print mode (Tier 1:
+  antigravity.google/docs/hooks — matcher `*` = every tool; stdin
+  `conversationId` / `workspacePaths` / `stepIdx` / `toolCall.{name,args}`;
+  stdout `{"decision": "deny", "reason": …}`); a denied call reaches the
+  stream as state ERROR + `tool call denied by pre-tool hook: <reason>`, the
+  run stays SUCCESS / rc 0, the file is never written; a call the vendor
+  rejects at ARGUMENT VALIDATION never reaches the hook; and `--agent
+  <unknown>` fails OPEN silently (a bogus name yields a fully write-capable
+  default agent, the `init` event echoes the requested name) — so the hook is
+  the backstop that holds when the allowlist does not.
+  - `prepare` writes `<worktree>/.agents/hooks.json` (one named hook,
+    `enabled`, matcher `*`, handler `python3 <skill>/lib/agy_hook.py --log
+    <packet-dir>/agy-hook-r<N>.jsonl`, timeout 10 s) after the four artifacts
+    and before the untracked walk and capture. The handler (`lib/agy_hook.py`,
+    stdlib, no AI) denies a FIXED set — filesystem mutation (`write_to_file`,
+    `replace_file_content`, `multi_replace_file_content`, `sed_file`,
+    `notebook_*`, `delete_knowledge`), commands (`run_command`,
+    `send_command_input`, `command_status`), network / browser
+    (`read_url_content`, `search_web`, `open_browser_url`, every `browser_*`
+    and the un-prefixed browser tools), subagents / messaging / planning
+    (`define_subagent`, `invoke_subagent`, `manage_subagents`, `send_message`,
+    `manage_task`, `manage_inbox`, `schedule`), MCP / generation
+    (`call_mcp_tool`, `list_resources`, `read_resource`, `generate_image`) —
+    the measured 57-tool registry classified once (`tests/unit/skills/t9-agy-hook.sh`
+    pins every name). Everything else is ALLOWED: reads are never denied (a
+    broken hook denies every call, reads included, and the leg produces no
+    answer at all — arm C, measured), an unknown tool is allowed and left to
+    the census, an unreadable or nameless payload is DENIED (fail-closed),
+    tool ARGS are never logged (a write's args carry the file body). A log the
+    hook cannot write is reported on stderr and the decision still answers.
+  - **Admission is EFFECT-based (Gate A only).** The wrapper's census splits
+    off-list names by what HAPPENED: every occurrence DENIED before execution
+    (the hook, or the vendor's own `denied permission` — ONE predicate,
+    `_common._agy_step_denied`, shared with the digest's `denied` list) →
+    BLOCKED: stderr `[wrapper] antigravity blocked-calls n=… tools=[…]`, the
+    verdict stands; any occurrence that EXECUTED, or errored for a non-denial
+    reason (its effect is unknown — the validation-rejected `manage_task` above
+    is this shape) → FORBIDDEN: `admission-refused` exactly as before (Policy D
+    unchanged). Gate B — a degraded status is admitted only when an errored
+    READ explains it — is UNTOUCHED; a blocked call explains nothing.
+    **Wave 1 of the S2 gate (0.35.1, three legs converging):** the TERMINAL
+    `step_update` decides each call — the vendor emits an ACTIVE update before
+    every DONE/ERROR, and counting it had made every denied call "executed"
+    too; an ACTIVE update with no terminal update (a cut stream) still counts
+    as executed (unknown effect); an ACTIVE record is suppressed ONLY by a
+    TRUSTWORTHY identity — an INTEGER `step_index` shared with a terminal
+    update of the same name (0.35.2). The denial predicate is ANCHORED: state
+    ERROR and the first NON-EMPTY line of `tool_info.error.message` STARTS
+    with `tool call denied by pre-tool hook` or `user denied permission`, or
+    carries the vendor's STRUCTURAL head `permission check failed for <verb>
+    "<arg>": <tail>` whose tail — read after the last `": `, since the
+    echoed argument sits inside the quotes and may itself carry a quote —
+    starts with `user denied permission` or `Permission denied for` (the
+    retired settings deny-rule shape; 0.35.2 / 0.35.3, EVERY tail captured in
+    `docs/spikes/2026-08-22-agy-permission-ladder`) — a diagnostic that
+    quotes a phrase mid-message is an ordinary error (the call ran). Unknown
+    shapes fail CLOSED and are disclosed, not enumerated (owner 2026-09-17:
+    the vendor is a paid service; no vendor-exotica negatives).
+  - **The hook LOAD CHECK — a REQUIRED mechanical check beside the read-audit
+    gate.** `python3 <skill>/lib/agy_hook.py check <packet-dir>/agy-read-audit.json
+    <packet-dir>/agy-hook-r<N>.jsonl` prints `HOOK_LOAD_<VERDICT> tool_steps=<n>
+    invocations=<n> denied=<n>`: PASS (exit 0, at least one invocation — the
+    layer loaded; equality is NOT required, see the validation-rejected call),
+    VOID (exit 3 — tool steps ran with ZERO invocations: the enforcement layer
+    did not load, the leg is INVALID this round; check
+    `<worktree>/.agents/hooks.json`, re-dispatch once, then terminally
+    missing), ABSENT (exit 2, no read audit — settle the read-audit gate's
+    ABSENT first), INCONCLUSIVE (exit 4 — no tool call and no log proves
+    nothing; the read-audit gate voids a read-blind leg on its own; or a
+    malformed log line). `prepare` prints the command for the standing leg and
+    for every agy X leg; one hook log serves the round's agy-family legs
+    (they share the worktree) and the check does NOT filter on its
+    `conversation_id` column — it is per-ROUND (S2-6, disclosed; one agy leg
+    per round as deployed, and a same-leg re-dispatch shares the log too).
+  - **Files.** `agy-hook-r<N>.jsonl` is a leg OUTPUT for `verify`
+    (basename rule, no `/`, like the X shape); `.agents/hooks.json` is OWNED
+    by cleanup like the four artifacts and censused by the worktree
+    FINGERPRINT — deliberately NOT listed in `delivery-r<N>.md`: it is
+    enforcement, not delivered material, and a mutation the hook failed to
+    stop is what the effect-based census catches. Disclosed: a reviewed repo
+    that gitignores `.agents/` hides the file from the fingerprint's
+    untracked arm; a reviewed tree that TRACKS `.agents/hooks.json`, or
+    tracks `.agents` itself as anything but a directory (a symlink to a
+    shared config dir, a file — 0.35.1: `close` had unlinked `hooks.json`
+    THROUGH such a symlink), or tracks ANY case alias of an owned name
+    (`.AGENTS`, `.Agents/`, `BRIEF.md` — 0.35.2: the dev filesystem folds
+    case, so the exact-name lookups had let the checkout materialise them
+    and the round wedged after the artifacts existed; compared with
+    `casefold()` over raw `-z` names, never whitespace-stripped — 0.35.3), is
+    refused before the worktree exists on every platform, and cleanup
+    refuses before any unlink when `.agents` is not a real directory;
+    the permission-prompt tools (`ask_*`, `list_permissions`) and the waits
+    are allowed by the hook and still void if they EXECUTE (census). The
+    load check counts only hook-shaped rows (`decision` allow|deny + `tool`;
+    0.35.1). Per-ROUND, not per-leg (S2-6, disclosed): two agy-family legs
+    share one hooks.json and one log — one agy leg per round as deployed.
+  - **The prompt states the same rule** (the READ-GRANT block quoted below and
+    the agent body written by `--setup-agents`): off-list mutating and
+    network calls are BLOCKED before they run WHEN the caller's worktree
+    carries a hook (a review round) — logged, not fatal — the leg cannot see
+    from inside whether such a hook is present, so it never makes one, and
+    any off-list call that EXECUTES voids; the former "an errored / denied
+    step voids your review" consequences were false since the v2 admission
+    and are gone. The agent-body sentence is shared by the research agent,
+    whose own web tools are never called blocked (0.35.2).
+    Hosts re-run `antigravity_wrapper.py
+    --setup-agents` after this upgrade.
+- **Existence pin (2026-08-22, template-rendered — CFR 0.27.4; retargeted
+  2026-09-16 for S1 worktree delivery).** The
   READ-GRANT forbids opening any path that does not exist on disk, naming
-  the plan-stage case explicitly (a file the packet's DESIGN TEXT marks
-  planned / to-be-created does not exist yet) while exempting merge-stage
-  packets' NEW-FILE HUNKS in the fenced diff, which DO exist on disk (gate
-  r4, codex). agy's file-view dies on a missing path
+  the plan-stage case explicitly (a file the BRIEF's DESIGN TEXT marks
+  planned / to-be-created does not exist yet) while exempting NEW-FILE HUNKS
+  in `diff.prod.patch`, which DO exist in the round worktree — it is checked
+  out AT the reviewed commit, so the old "when the reviewed branch is the
+  checked-out tree" caveat (gate r4, codex) is now unconditional rather than
+  the usual case. agy's file-view dies on a missing path
   at "convert tool call for permissions ... invalid_args" (upstream #826,
   OPEN, bug-labelled 1.1.15 + 1.1.17; reproduced WITHOUT a sandbox), and the
   errored step flips the run to ERROR. Origin: symbol-card plan gate r2
@@ -412,47 +530,72 @@ the shallow-tier fact for the round record.
   `references/triage.md`).
 - **READ-GRANT block (mandatory, in the leg prompt; rewritten 2026-08-10
   by owner directive — same method as the codex leg; refreshed 2026-09-05
-  from the rendered r2 prompt after the TOOL ALLOWLIST wave — the CODE
-  (`review_scratch.py` `_agy_read_grant`) is the SoT, this quote mirrors it).**
+  from the rendered r2 prompt after the TOOL ALLOWLIST wave, and again
+  2026-09-16 for S1 worktree delivery (the entry file is the worktree
+  `brief.md`, not an assembled packet) — the CODE
+  (`review_scratch.py` `_agy_read_grant`) is the SoT, this quote mirrors it —
+  `tests/unit/skills/t4-prepare.sh` axis 60 now ENFORCES the mirror, comparing
+  the two whitespace-normalized, so any edit here that the code does not carry
+  FAILS the suite).**
+  **Placeholders: `review_scratch.py` renders this block with the round's REAL
+  absolute worktree path, and this QUOTE is the only part of the doc the code
+  renders — but it is NOT the only place `<packet-dir>/wt-r<N>` appears here. The
+  gate-invocation and required-read lines further down carry the same
+  placeholder and nothing expands them for you; treat every occurrence in this
+  file the same way. If you
+  ever hand-build a prompt or a gate command from this doc, expand every `<packet-dir>`
+  placeholder — the entry file AND the gated patch — before sending: the
+  read-audit gate compares `params.AbsolutePath` by exact string equality, so
+  a pasted literal placeholder, or a bare filename, VOIDs a compliant leg (r4
+  row T4, r5 rows U3/U8). This instruction is the DOC's, not the code's — it
+  stays OUTSIDE the verbatim block, because a sentence inside it that the code
+  never renders is exactly the drift axis 60 exists to catch.**
   Include verbatim:
-  "Read `packet.md` FIRST and ONCE with your file-read tool (agy: view_file;
-  gemini: read_file) — it is the round's framing and your review's required
-  entry point. TOOL ALLOWLIST (the single hardest rule of this review). On
-  agy you run as the `triad-readonly-review` agent: your tool schema may
-  ADVERTISE many tools, but you are PERMITTED exactly five — view_file,
-  grep_search, list_dir, find_by_name, finish. Calling ANY other tool even
-  once — manage_task (do not create task lists; keep your plan in your
-  reasoning), run_command or any shell, write_to_file / replace_file_content
-  / sed_file, send_message, define_subagent / invoke_subagent /
-  manage_subagents, browser_*, read_url_content / search_web — voids your
-  whole review: the caller audits every tool step and QUARANTINES the
-  answer, so a complete verdict is thrown away. On gemini (the fallback
-  Google leg) the five names above do not apply: use ONLY your native file-
-  read and search tools, and never a shell command — the policy engine
-  denies commands. You MAY then read files under the repo with your file-
-  read tool to VERIFY the packet's claims — cite file:line for anything you
-  assert from a repo file. TOOL CONVENTION (on agy an errored or denied tool
-  step voids your whole review, so follow it exactly): to SEARCH, use your
-  search tool — agy: grep_search; gemini: search_file_content — never a
-  shell command — and set its search path to a SPECIFIC subdirectory of the
-  repo (for example its analyzer/ or docs/ tree), never the repository root:
-  a root-wide search times out on large trees and the errored step voids
-  your review; to OPEN a file, call your file-read tool — agy: view_file;
-  gemini: read_file — with its CURRENT native arguments — the absolute path;
-  agy paging arguments (StartLine, EndLine, ContentOffset) are allowed only
-  WITHIN the size the tool reports, never past the end of the file (an
-  overshoot is an errored step that voids your review); and OPEN ONLY paths
-  that exist on disk NOW — a file the packet's DESIGN TEXT names as planned
-  or to-be-created does NOT exist yet, so never call your file-read tool on
-  it: review its design from the packet text alone (a does-not-exist open is
-  an errored step and voids your review); a file that appears as a new-file
-  hunk in the fenced diff DOES exist when the reviewed branch is the
-  checked-out tree (the usual case) — otherwise treat it as design text. Do
-  NOT read files outside the repo, do NOT search the web, and do NOT consult
-  prior conversations or scratch space. Do NOT modify any file, do NOT
-  change external state, and do NOT run commands, tests, scripts, builds, or
-  vendor CLIs. Anything you did not verify against the packet or a repo file
-  is an open question, never an asserted finding."
+  "Read `<packet-dir>/wt-r<N>/brief.md` FIRST and ONCE with your file-read
+  tool (agy: view_file; gemini: read_file) — it is the round's framing and
+  your review's required entry point. TOOL ALLOWLIST (the single hardest rule
+  of this review). On agy you run as the `triad-readonly-review` agent: your
+  tool schema may ADVERTISE many tools, but you are PERMITTED exactly five —
+  view_file, grep_search, list_dir, find_by_name, finish. Every other tool —
+  manage_task (do not create task lists; keep your plan in your reasoning),
+  run_command or any shell, write_to_file / replace_file_content / sed_file,
+  send_message, define_subagent / invoke_subagent / manage_subagents,
+  browser_*, read_url_content / search_web — is off-limits. Mutating and
+  network tools are BLOCKED before they run by a PreToolUse hook in this
+  worktree; a blocked call costs you the step and is logged — it does not void
+  your review — but you cannot see from inside whether the hook loaded, so
+  never make one. ANY call outside the five that EXECUTES voids your whole
+  review: the caller audits every tool step and QUARANTINES the answer, so a
+  complete verdict is thrown away. On gemini (the fallback Google leg) the
+  five names above do not apply: use ONLY your native file-read and search
+  tools, and never a shell command — the policy engine denies commands. Then
+  OPEN `<packet-dir>/wt-r<N>/diff.prod.patch` — it is the GATED material and
+  the caller's read audit REQUIRES it, so a review that never opens it is
+  discarded even when the verdict is complete. You MAY then read anything else
+  in the worktree with your file-read tool to VERIFY the brief's claims — cite
+  file:line for anything you assert from a file in the tree. TOOL CONVENTION
+  (on agy an errored read is tolerated as long as some read succeeds, but it
+  wastes a step and is logged in the read audit, so follow it exactly): to
+  SEARCH, use your search tool — agy: grep_search; gemini: search_file_content
+  — never a shell command — and set its search path to a SPECIFIC subdirectory
+  of the repo (for example its analyzer/ or docs/ tree), never the repository
+  root: a root-wide search times out on large trees and the errored step is a
+  wasted, logged read; to OPEN a file, call your file-read tool — agy:
+  view_file; gemini: read_file — with its CURRENT native arguments — the
+  absolute path; agy paging arguments (StartLine, EndLine, ContentOffset) are
+  allowed only WITHIN the size the tool reports, never past the end of the
+  file (an overshoot is an errored step — tolerated, but logged and wasted);
+  and OPEN ONLY paths that exist on disk NOW — a file the brief's DESIGN TEXT
+  names as planned or to-be-created does NOT exist yet, so never call your
+  file-read tool on it: review its design from the brief text alone (a
+  does-not-exist open is an errored step — tolerated, but logged and wasted);
+  a file that appears as a new-file hunk in `diff.prod.patch` DOES exist here
+  — this worktree is checked out at the reviewed commit. Do NOT read files
+  outside the repo, do NOT search the web, and do NOT consult prior
+  conversations or scratch space. Do NOT modify any file, do NOT change
+  external state, and do NOT run commands, tests, scripts, builds, or vendor
+  CLIs. Anything you did not verify against the brief or a file in the
+  worktree is an open question, never an asserted finding."
   The mutation/exec sentence is part of the verbatim block on purpose
   (adopt-gate r2; re-grounded 2026-08-22, v2): on agy the setup-once
   `triad-readonly-review` agent has no write/shell/web tool and a fallback
@@ -461,18 +604,22 @@ the shallow-tier fact for the round record.
   carrier the model reads, and it still covers the tools no rule can deny
   (notebook / subagent / message / browser_* family — census detection
   only); dropping it would leave those with no intent carrier at all.
-  Packet-FIRST is load-bearing twice over: it is the mechanical read-audit
-  gate's required entry (the gate below runs UNCHANGED — the packet path
-  must appear in `files_read`), and reading it before any repo browsing
-  keeps the gate decisive under the digest's 40-entry `files_read` cap.
+  BRIEF-FIRST is load-bearing twice over: it is the mechanical read-audit
+  gate's required entry (the gate below runs UNCHANGED — it takes the file as
+  ARGUMENTS — since the r2 gate BOTH `<packet-dir>/wt-r<N>/brief.md` and
+  `<packet-dir>/wt-r<N>/diff.prod.patch`, which must appear in
+  `files_read`; the READ-GRANT instructs both reads, because a gate that
+  requires a file the leg was never told to open VOIDs a compliant leg),
+  and reading them before browsing the tree keeps the gate
+  decisive under the digest's 40-entry `files_read` cap.
   DISCLOSURE (adopt-gate r2): with repo browsing granted,
   `files_read_omitted > 0` becomes the NORM for a leg doing real
   verification work, and the gate's confirmed-VOID arm requires
   `omitted == 0` — so VOID stays decisive only when the leg complied
-  with packet-FIRST, an INSTRUCTION-LEVEL property, the same class as
+  with brief-FIRST, an INSTRUCTION-LEVEL property, the same class as
   the codex read boundary (§ codex leg). A non-compliant leg lands
   INCONCLUSIVE — never a silent pass, but no longer the mechanical
-  leg-not-run proof the packet-ONLY diet gave; the round notes carry
+  leg-not-run proof the old packet-ONLY diet gave; the round notes carry
   that judgment. Mutation
   is ABSENT on the v2 read-only path (the allowlist agent carries no
   write/shell tool; a fallback's attempts are denied by the vendor's headless
@@ -484,16 +631,18 @@ the shallow-tier fact for the round record.
   egress residual is UNCHANGED (§ agy standing residuals — owner-owned).
   Rationale: agy's detection record earned the wider view, and the old
   packet-ONLY diet made the leader's packet assembly this leg's ceiling —
-  the same blindness the codex READ-GRANT fixed.
-  Placement: immediately before the closing instruction, never leading the packet
-  (`references/packet-lifecycle.md` § Packet order and fencing).
-- **Prompt body.** The rendered `agy-prompt-r<N>.txt` (`prepare` output —
-  READ-GRANT block with the round packet filename interpolated, severity
-  instruction, verdict-selection rule, binding line): pass it with
+  the same blindness the codex READ-GRANT fixed. S1 removed that ceiling
+  outright: the leg now holds the whole tree, pinned at the reviewed commit.
+  Placement: immediately before the closing instruction, never leading the
+  prompt (`references/packet-lifecycle.md` § Packet order and fencing).
+- **Prompt body.** The rendered `agy-prompt-r<N>.txt` (`prepare` output — the
+  round worktree path and its `brief.md` entry point, the READ-GRANT block,
+  severity instruction, verdict-selection rule, binding line): pass it with
   `--prompt-file <abs>`; a hand-built prompt owes the same blocks.
 - **Verdict weight.** ADVISORY for the unanimous gate — SKILL rule 1.
-- **Cites.** Verify any surviving agy finding's file:line against the packet
-  before it enters the residual table. The gate proves the packet was read, not
+- **Cites.** Verify any surviving agy finding's file:line against the round
+  WORKTREE before it enters the residual table. The gate proves the brief was
+  read, not
   that a cite is accurate; cites were fabricated in 4 of 5 traced-or-scored runs
   even where the finding class was right (`references/evidence.md`).
 - **Containment carriers (rewritten 2026-08-22, v2).** TWO per-call carriers
@@ -530,6 +679,13 @@ the shallow-tier fact for the round record.
 Apply this BEFORE weighing the verdict, and before any agy finding enters the
 residual table.
 
+Since 0.35.0 (S2) the hook LOAD CHECK runs BESIDE it, on the same leg:
+`python3 <skill>/lib/agy_hook.py check <packet-dir>/agy-read-audit.json
+<packet-dir>/agy-hook-r<N>.jsonl` must print `HOOK_LOAD_PASS`. `HOOK_LOAD_VOID`
+(tool steps ran, zero hook invocations) means the enforcement layer did not
+load — the leg is INVALID this round, whatever this gate says; `ABSENT` /
+`INCONCLUSIVE` defer to this gate's own verdict (§ agy leg, the hook bullet).
+
 **Threat model (owner ruling — settled; do not re-open; recorded in
 `docs/reviews/2026-07-31-agy-stream-json-residuals.md`).** The gate is evidence
 that the leg DID THE READING WORK, a mechanical anti-shallow-review check. It is
@@ -549,14 +705,19 @@ reads it; the run-log stays the repair-agent's input artifact.)
 
 Then apply:
 
-1. every packet file's absolute path must appear as the `AbsolutePath` param
+1. each of the round's REQUIRED-READ files — since the r2 gate the worktree
+   brief AND the gated patch (`<packet-dir>/wt-r<N>/brief.md`,
+   `<packet-dir>/wt-r<N>/diff.prod.patch`); the gate takes them as ARGUMENTS, so
+   the mechanism below is unchanged. The brief alone was not enough: it
+   carries framing and a manifest, so a leg could pass while never opening
+   the code under review — must appear as the `AbsolutePath` param
    of a `read_audit.digest.files_read[*]` entry (`read_audit` here names the
    loaded `{meta, digest}` object). The match is KEY-RESTRICTED (review r2,
    codex must-fix — live-corroborated by a real `grep_search {Query,
    SearchPath}` entry in that round's own digest): `files_read` holds every
    successful READ-CLASS call, so a `grep_search` whose `Query` VALUE equals
-   the packet path is tool traffic that merely REFERENCED the path — only
-   the file-view tool's `AbsolutePath` param evidences a read of the packet
+   that path is tool traffic that merely REFERENCED it — only
+   the file-view tool's `AbsolutePath` param evidences a read of the file
    itself. The key name is a VENDOR coupling (disclosed): empirically pinned
    from real digests + the t41/f9/t5 fixtures; an agy param rename fails
    toward VOID/INCONCLUSIVE (loud, conservative), never a silent PASS.
@@ -614,11 +775,11 @@ Then apply:
 
 agy verdict weight is unchanged (rule 1).
 MECHANICAL means extract-and-gate deterministically, with no AI judgment. Run
-the skill's own helper — ONE call per round covers a multi-file packet (every
-file must pass):
+the skill's own helper — ONE call per round covers several required-read files
+(every file must pass):
 
      ```bash
-     bash <skill>/lib/read_audit_gate.sh [--audit-file <abs>] "$PACKET_DIR" "$PACKET_DIR/packet-r<N>.md" [<more-abs-packet-files>...]
+     bash <skill>/lib/read_audit_gate.sh [--audit-file <abs>] "$PACKET_DIR" "$PACKET_DIR/wt-r<N>/brief.md" "$PACKET_DIR/wt-r<N>/diff.prod.patch" [<more-abs-files>...]
      ```
 
 The helper is the gate's single EXECUTABLE form (skill v0.27.0 — the leader
@@ -645,12 +806,15 @@ stays the SPEC the helper implements. What each outcome means:
   alone cannot tell the two apart, and gating an X leg on the standing leg's
   evidence is a false PASS. Every violation is a LOUD usage exit 64, never a
   verdict.
-- **Packet-file args are the ROUND-SUFFIXED names** (for a `prepare`-built
-  round, `<packet-dir>/packet-r<N>.md` — never the packet DIR itself). Argv
-  discipline is LOUD (exit 64), never a verdict: the packet dir and EVERY
-  packet file must be absolute paths, the dir must exist, and every packet
-  file must exist — a stale generic `packet.md` would otherwise false-VOID
-  a compliant leg.
+- **The required-read args are the worktree BRIEF and the GATED PATCH** (for a
+  `prepare`-built round: `<packet-dir>/wt-r<N>/brief.md` and
+  `<packet-dir>/wt-r<N>/diff.prod.patch` — never the packet DIR itself). `prepare`
+  prints the exact command; keep it and the READ-GRANT in step, since a
+  required read the leg is not instructed to make VOIDs a compliant leg (r2
+  gate row R3). Argv discipline is LOUD (exit 64), never a verdict: the packet dir
+  and EVERY file argument must be absolute paths, the dir must exist, and
+  every named file must exist — a stale generic `packet.md`, or a prior
+  round's entry file, would otherwise false-VOID a compliant leg.
 - **Exit 0 PASS** — every packet file's absolute path matched the
   `AbsolutePath` of a successful `view_file` entry in `files_read` (the
   rule-1 tool+key restriction; arguments that survive to this comparison
@@ -739,7 +903,11 @@ Two live claims govern whether a deployment can run this leg at all:
   subagent / message / browser_* family) are detection-only. A status=ERROR
   run is admitted when its verdict validates and its errored steps are all
   allowed reads — the read-audit still shows every errored step. Updated
-  2026-08-22 (v2).
+  2026-08-22 (v2). **S2 (2026-09-17, 0.35.0):** the round worktree's PreToolUse
+  hook DENIES mutating / command / network / subagent / planner tools
+  whatever agent resolved — the backstop for `--agent` failing OPEN — and
+  admission is EFFECT-based: a BLOCKED call is logged, an EXECUTED off-list
+  call voids; the hook LOAD CHECK proves the layer loaded (§ agy leg).
 - **Other disclosed v2 residuals:** a fallback that calls nothing forbidden is
   indistinguishable and accepted (side-effect-free); two agent files outside
   the repo per host (`--setup-agents`); a vendor rename of an allowlisted
@@ -786,15 +954,30 @@ fallback above.
   search backend — the same class of egress residual as the agy read/network leak
   above, on a different leg. For a SENSITIVE packet, drop `--search` to keep the
   leg fully offline.
-- **INLINE the packet into `--prompt` AND grant read-only repo access
-  (contract revised 2026-08-10, adopted from codex-host 0.2.533).** The
-  packet stays inlined — the leg's guaranteed view and its framing.
-  ADDITIONALLY pass `--cwd <abs repo root>` and include the READ-GRANT
-  trailer below. The historical "cannot open a handed-over file"
+- **`--ignore-rules` rides every read-only dispatch (W16, 2026-09-17; CFR
+  0.35.0).** Tier 1 (`openai/codex` `codex-rs/exec/src/cli.rs`, global exec
+  flag): "Do not load user or project execpolicy `.rules` files"; the rules
+  doc: a rule with `decision="allow"` "run[s] the command outside the sandbox
+  without prompting". This host's `~/.codex/rules/` allow `git add`, `git
+  commit`, `gh …`, even `rm -rf _runs` — so `--sandbox read-only` was one
+  operator rule away from a real write. `codex_wrapper.py` appends
+  `--ignore-rules` itself whenever the posture is read-only (the raw default
+  and this leg); the write posture (`--task code`) keeps the operator's rules.
+  Nothing to add at the call site; `tests/unit/wrappers/t24-codex-search.sh`
+  pins the placement.
+- **DE-INLINED (S1, 2026-09-16) — pass `--cwd <round worktree>` and include the
+  READ-GRANT trailer below.** Until S1 the packet was inlined into `--prompt` as
+  this leg's guaranteed view (contract of 2026-08-10, adopted from codex-host
+  0.2.533). `prepare` now hands every leg a worktree pinned at the reviewed
+  commit, so the guaranteed view IS that tree, entered through `brief.md`;
+  inlining would only re-spend context on bytes the leg can read for itself.
+  Measured in the 2026-09-16 spike: codex held a 128 KB diff straight from the
+  worktree — 307.8 s `ok`, 13 of 13 cited lines verified real against the tree.
+  The historical "cannot open a handed-over file"
   failure was the rule-7 blanket no-exec directive banning the
   read-only shell commands codex uses to open files — `--sandbox
   read-only` never blocked reads, only writes. With reads granted the
-  leg verifies packet claims against the repo the way the claude leg
+  leg verifies the brief's claims against the tree the way the claude leg
   does (the FU10 plan gate measured the cost of NOT granting this: the
   codex leg's r3 SAFE(0) missed a defect that required reading one
   function outside the packet, and its r2 refuted trigger came from
@@ -813,8 +996,9 @@ fallback above.
   READ-GRANT trailer (verbatim; it REPLACES the old blanket no-exec
   line for THIS leg only): "You MAY read files under the working
   directory with read-only commands (cat, sed -n, rg, ls, git diff,
-  git show, git log) to verify claims beyond the packet — cite
-  file:line for anything you assert from them. Do NOT read files
+  git show, git log) to verify claims beyond the brief and the two
+  patches — cite file:line for anything you assert from them. Do NOT
+  read files
   outside the working directory — no home-directory or dotfiles, no
   credentials, no system paths: nothing outside the repository is
   review material. Do NOT modify any file,
@@ -826,22 +1010,24 @@ fallback above.
   may legitimately return fast — criteria-enumeration quality stays the
   primary rubber-stamp check (rule 11). Mechanically: the `prepare`
   subcommand renders this leg's entire body —
-  `codex-body-r<N>.txt`, the packet inlined between PACKET fences plus
-  the READ-GRANT trailer, severity instruction, verdict-selection rule,
-  and binding line (`references/packet-lifecycle.md` § Deterministic
-  round preparation) — so the dispatch passes the FILE:
+  `codex-body-r<N>.txt`, which now POINTS AT the round worktree (no
+  inlined packet) plus the READ-GRANT trailer, severity instruction,
+  verdict-selection rule, and binding line
+  (`references/packet-lifecycle.md` § Deterministic round preparation)
+  — so the dispatch passes the FILE:
 
   ```bash
-  # body rendered by `review_scratch.py prepare` (canonical order inside);
-  # --timeout 900 fits a focused packet, LARGE packet → 1500 (rule 7):
+  # body rendered by `review_scratch.py prepare` (it names the worktree);
+  # --timeout 900 fits a focused diff, LARGE diff → 1500 (rule 7):
   codex_wrapper.py --sandbox read-only \
-    --cwd /abs/repo/root \
+    --cwd "$PACKET_DIR/wt-r<N>" \
     --reasoning xhigh --search --timeout 900 \
     --pydantic verdict_schema:LegVerdict \
     --prompt-file "$PACKET_DIR/codex-body-r<N>.txt"
   # --cwd = the repo the READ-GRANT trailer opens for verification reads
   # (contract revision 2026-08-10 above); writes stay sandbox-blocked.
   # (--reasoning max only on a designated escalation round)
+  # (the wrapper itself appends --ignore-rules on this read-only posture — W16)
   # (--search = live web-grounding, disclosed above — drop it for a sensitive packet)
   ```
 
@@ -883,11 +1069,11 @@ fallback above.
   `--prompt-file` on the rendered `codex-body-r<N>.txt`; the hand-built
   fallback inlines through `$(cat -- "$review_body")` — both are
   collision-free precisely because
-  there is no heredoc to terminate early.) Inlining is a codex-leg requirement rather than a
-  universal one, since gemini and agy read the repo-relative packet file — though
-  inlining a small packet works for every leg. For a LARGE diff the inlined body
-  must ALSO be the focused, high-risk subset: same focused content agy/gemini get
-  as a file, same canonical order, different transport.
+  there is no heredoc to terminate early.) Since S1 there is no asymmetry left
+  to manage: every leg — codex, agy/gemini and claude — is pointed at the SAME
+  round worktree and enters through the same `brief.md`, so the transport is
+  uniform and the bytes each leg judges are identical. That identity is what the
+  binding's `content_digest` and cross-family corroboration both rest on.
 
 ## claude fresh-eye leg
 
@@ -1160,7 +1346,7 @@ never delays the round.
     [--model …] [--effort …] --timeout 1500 --pydantic
     verdict_schema:LegVerdict --prompt-file <input> > <verdict> 2> <err>`;
     gate it with `lib/read_audit_gate.sh --audit-file <its own read audit>
-    <packet-dir> <packet-r<N>.md>`.
+    <packet-dir> <packet-dir>/wt-r<N>/brief.md <packet-dir>/wt-r<N>/diff.prod.patch`.
   - gemini — the same shape through `gemini_wrapper.py`, minus the read-audit
     env (that wrapper writes none) and minus `--effort` (it exposes no such
     flag; `prepare` prints a NOTE when one was recorded).

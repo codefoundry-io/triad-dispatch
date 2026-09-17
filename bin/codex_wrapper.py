@@ -343,8 +343,17 @@ def main() -> int:
     os.close(fd)
 
     def build_cmd(effective_prompt: str) -> list[str]:
-        cmd = codex_invocation(args.search) + [
-            "--sandbox", args.sandbox,
+        cmd = codex_invocation(args.search) + ["--sandbox", args.sandbox]
+        if args.sandbox == "read-only":
+            # W16 (CFR S2, 2026-09-17; Tier 1: codex-rs/exec/src/cli.rs — "Do not
+            # load user or project execpolicy `.rules` files"): an execpolicy
+            # rule with decision="allow" runs its command OUTSIDE the sandbox
+            # without prompting, so this host's ~/.codex/rules (git add/commit,
+            # gh ..., rm -rf _runs) put a READ-ONLY review leg one operator
+            # rule away from a real write. The read-only posture never wants
+            # an escalation; the write posture keeps the operator's rules.
+            cmd.append("--ignore-rules")
+        cmd += [
             "--skip-git-repo-check",
             "--json",
             "-o", last_msg_path,

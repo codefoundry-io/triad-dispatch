@@ -485,6 +485,59 @@ def _agy_tool_name(info, su) -> str:
     return "?"
 
 
+# A tool step is a DENIAL when its state is ERROR and the FIRST LINE of
+# `tool_info.error.message` STARTS with one of these — the vendor's own
+# headless permission denial ("User denied permission to run command:\n<the
+# model's command line>") or a PreToolUse hook's refusal ("tool call denied
+# by pre-tool hook: <reason>", measured 2026-09-17 on agy 1.2.5; the run stays
+# SUCCESS and the call never executes). ANCHORED on purpose (S2 gate r1, codex
+# C3 + agy A1, two families): typed error messages echo model-authored
+# arguments AFTER a newline (r2/N2), and a diagnostic can QUOTE the phrase
+# mid-message ("command exited 1: sh: echo denied by pre-tool hook …") — such a
+# call RAN, its effect is unknown, and it must stay an ordinary error.
+_AGY_DENIAL_PREFIXES = ("tool call denied by pre-tool hook",
+                        "user denied permission")
+# The vendor's headless denial as CAPTURED (docs/spikes/2026-08-22-agy-
+# permission-ladder/out/*.stream.jsonl; S2 gate r2, claude): `permission check
+# failed for <verb> "<arg>": user denied permission …` — the model-authored
+# argument sits INSIDE the quotes, so the head is judged at position 0 and
+# the denial tail AFTER the last double quote; a quoted phrase cannot forge it.
+_AGY_PERMISSION_HEAD = "permission check failed for "
+# EVERY captured tail (S2 gate r3, codex): the headless user denial and the
+# retired v1.2 settings deny-rule shape (`Permission denied for <verb>(…).
+# Matches user-configured deny rule.`, ladder F4 + G). A head followed by any
+# other tail (#826 `invalid_args`) is not a denial.
+_AGY_PERMISSION_TAILS = ("user denied permission", "permission denied for")
+
+
+def _agy_step_denied(su) -> bool:
+    """True when a tool `step_update` is a DENIAL: state ERROR and the first
+    line of its error message starts with a `_AGY_DENIAL_PREFIXES` phrase
+    (case-insensitive, leading blanks ignored). ONE predicate, shared by the
+    digest fold below (`denied` list, read_attempts outcome `denied`) and the
+    antigravity wrapper's admission census (a denied off-list call is BLOCKED
+    — logged, not voiding — while an executed one still voids). Type-guarded:
+    a non-dict step / info / error, a non-string message, or any state but
+    ERROR (a DONE step carrying a denial-shaped error RAN) is not a denial."""
+    if not isinstance(su, dict) or su.get("state") != "ERROR":
+        return False
+    info = su.get("tool_info")
+    err = info.get("error") if isinstance(info, dict) else None
+    msg = err.get("message") if isinstance(err, dict) else None
+    if not isinstance(msg, str):
+        return False
+    first = _agy_first_line(msg).lower()   # first NON-EMPTY line (r3/G5 shape)
+    if first.startswith(_AGY_DENIAL_PREFIXES):
+        return True
+    if first.startswith(_AGY_PERMISSION_HEAD):
+        # after the LAST `": ` — the tail echoes the argument, which may itself
+        # carry a double quote (S2 gate r3, claude); a bare last-quote split
+        # landed inside that echo
+        tail = first.rsplit('": ', 1)[-1] if '": ' in first else ""
+        return tail.startswith(_AGY_PERMISSION_TAILS)
+    return False
+
+
 def _agy_tool_class(name: str) -> str:
     """Coarse class of an agy tool name — `read` / `write` / `command` /
     `web` / `other` (r2/C5). Recorded on every read_attempts entry so a
@@ -547,14 +600,10 @@ def digest_agy_stream(events: list, result=None) -> dict:
         params = info.get("parameters")
         hint = _agy_params_hint(params)
         tool_steps += 1
-        raw_err = info.get("error")
-        err_present = bool(raw_err)
-        err = raw_err if isinstance(raw_err, dict) else {}
+        err_present = bool(info.get("error"))
         if state_s == "ERROR":
             error_steps += 1
-        err_msg = err.get("message")
-        is_denied = "denied permission" in (
-            err_msg if isinstance(err_msg, str) else "").lower()
+        is_denied = _agy_step_denied(su)
         if is_denied:
             denied.append({"tool": name, "params": hint})
         if state_s == "DONE" and not err_present:

@@ -1,8 +1,16 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — dispatches INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime, agy via triad-antigravity-dispatch or gemini via triad-gemini-dispatch), frames the suspect/omitted/simplified decisions as QUESTIONS, consolidates their verdicts (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE), then runs a fix→re-confirm loop until the gating legs are unanimously SAFE (a MERGE WITH FIXES carrying only non-blocking findings satisfies the gate). Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.31.0
+version: 0.35.3
 # changelog:
+#  0.35.3 (2026-09-17): S2 gate r3 wave 3 (ledger § Round 3 — focused re-confirm of wave 2, gating legs, CONVERGING: claude SAFE TO MERGE, codex one must-fix = the LAST captured vendor denial tail). R3-1 (codex + claude): `_AGY_PERMISSION_TAILS` — the structural vendor head now accepts every CAPTURED tail (`user denied permission …` and the retired settings deny-rule shape `Permission denied for <verb>(…). Matches user-configured deny rule.`); the leader enumerated every distinct error head in the captured corpus, so the predicate seam closes by construction. R3-2 (codex): the collision scan compares tracked paths as git prints them (raw `-z` names; no whitespace stripping — a leading/trailing blank is a different file). R3-3 (claude): the denial tail is read after the last `": ` (the echoed argument may carry a quote). R3-5/R3-6: the load check's report list is capped at 40 + `(+N more)`; a bool step index prints as None. R3-7: the X-leg dispatch comment states S2-6 (no conversation-id filtering) honestly. R3-8: `casefold()` (one word). OWNER INSTRUCTION mid-round: negative tests for vendor-side / exotic shapes are NOT built to the legs' depth — the vendor is a paid service responsible for its output; an unknown shape fails closed and is disclosed, never waved (the `.agentſ` axis was dropped). Disclosed: S2-12 (integer `step_index` reuse would reopen R2-1 fail-open; unreachable on measured streams), S2-13 (`DENY_TOOLS` denies the research agent's web tools too — no `--web` leg runs at a hooked worktree today). t13 27-28, t9 14-15. Wave size code-only +19/−12 (S2 cumulative +359/−60 vs ~180 — disclosure trigger stays fired; physical +607/−68 vs ~420, ×1.45, backstop clear).
+#  0.35.2 (2026-09-17): S2 gate r2 wave 2 (ledger § Round 2 — focused re-confirm of wave 1, gating legs, CONVERGING; claude re-proved the claim on the measured spike stream: the denied `write_to_file` now reaches `Admission.ok` with `blocked == ("write_to_file",)`). R2-1 (codex): an ACTIVE record is suppressed ONLY by a TRUSTWORTHY identity — an INTEGER `step_index` shared with a terminal update of the same name; malformed or missing indices never suppress (two string indices had collapsed to `None`, letting a denied write's terminal key hide a second, ACTIVE-only write). R2-2 (codex + claude): the pre-mutation collision check is CASE-INSENSITIVE over every tracked path at the reviewed commit — a tracked `.AGENTS` / `.Agents/` / `BRIEF.md` on the case-folding macOS filesystem had slipped past the exact-name lookups and wedged the round after the artifacts existed; `.agents` is allowed only spelled exactly and as a tree. R2-3 (claude, must-fix): the vendor's own denial head is matched STRUCTURALLY — `permission check failed for <verb> "<arg>": user denied permission …` (position-0 head, denial tail after the LAST quote; the model's argument sits inside the quotes) — the wave-1 prefix `user denied permission` matched no captured vendor message, so vendor denials had been forbidden (fail-closed) while the docs asserted coverage. R2-4: the first NON-EMPTY line (`_agy_first_line`). R2-5: the shared allowlist sentence is true for both agent bodies (off-list tools, WHEN the caller's worktree carries a hook; the research agent's web tools are never called blocked) — hosts re-run `--setup-agents`. R2-6: the load check's report line caps and ASCII-escapes the vendor-payload tool name. Disclosed: S2-10 any non-ACTIVE state is treated as terminal (a future PENDING re-breaks the claim fail-closed); S2-11 a hook that cannot read stdin logs its denials, so the load check PASSes (correct — it loaded). t38 33 (+31 fixtures with integer indices), t13 26, t9 12-13, t28 pins. Wave size code-only +38/−17 (S2 cumulative +352/−60 vs ~180 — disclosure trigger stays fired; physical +588/−68 vs ~420, backstop clear).
+#  0.35.1 (2026-09-17): S2 gate r1 wave 1 (ledger `docs/reviews/2026-09-17-s2-enforcement-residuals.md` § Round 1 — three legs CONVERGING on two seams). S2-1 (codex + claude, REPRODUCED against the spike streams): the census read EVERY `step_update`, and the vendor emits an ACTIVE update before each DONE/ERROR, so a hook-DENIED call was `executed` too and the effect-based split never fired on a real stream — the TERMINAL update now decides each call (`step_index` + name), and an ACTIVE update with no terminal update (a cut stream) still counts as executed (unknown effect, fail-closed). S2-2 (three families, REPRODUCED): `_agy_step_denied` is ANCHORED — state ERROR and the FIRST LINE of the message STARTS with a vendor denial phrase (`tool call denied by pre-tool hook` / `user denied permission`); a diagnostic quoting the phrase mid-message, or a DONE step carrying a denial-shaped error, is an ordinary error and the call stays forbidden. S2-3 (codex + agy, REPRODUCED twice): a reviewed tree that TRACKS `.agents` as a symlink or a file is refused before the worktree exists (`git ls-tree` mode), and cleanup refuses before any unlink when `.agents` is not a real directory — `close` had unlinked `.agents/hooks.json` THROUGH a tracked symlink into a shared directory, or wedged on ENOTDIR with the artifacts gone. S2-4 (codex): the load check counts only hook-shaped rows (`decision` allow|deny + `tool`); any other JSON object → INCONCLUSIVE. S2-5 (agy + claude, REPRODUCED): the handler reads stdin as bytes and decodes UTF-8 with replacement — a legacy stdio encoding crashed it on a non-ASCII path. S2-8 (claude): the READ-GRANT / agent body condition the blocked-call promise — the leg cannot see from inside whether the hook loaded, so it never makes one (hosts re-run `--setup-agents`). Disclosed residuals: S2-6 the load check is per ROUND (one agy leg per round as deployed; fix shape = `conversation_id` in the read audit), S2-7 no codex version floor for `--ignore-rules` (loud fail-closed; pre-deploy check in the S3 note), S2-9 the write posture keeps the operator's rules (pre-existing; owner-optional). t38 31-32, t13 25 (+ axis 7 realigned), t9 9-11, t4 pin; fake-agy `v2_denied_shell_admitted` carries the ACTIVE precursors. Wave size code-only +57/−14 (S2 cumulative +329/−58 vs ~180 — disclosure trigger stays fired; physical +546/−66 vs ~420, backstop clear).
+#  0.35.0 (2026-09-17): S2 ENFORCEMENT — the agy leg's containment moves off the prompt and off the agent allowlist onto a MECHANICAL PreToolUse hook in the round worktree (plan `docs/superpowers/plans/2026-09-16-cfr-delivery-and-enforcement-redesign.md` § Enforcement; MEASURED on agy 1.2.5, session spike-s2, two runs: a workspace `.agents/hooks.json` fires in print mode with matcher `*`, a denied call reaches the stream as state ERROR + `tool call denied by pre-tool hook: <reason>`, the run stays SUCCESS / rc 0 and the file is never written; a call the vendor rejects at ARGUMENT VALIDATION never reaches the hook; `--agent <unknown>` fails OPEN silently, measured 2026-09-16). `prepare` writes `<worktree>/.agents/hooks.json` (one named hook, `enabled`, matcher `*`, handler `python3 <skill>/lib/agy_hook.py --log <packet-dir>/agy-hook-r<N>.jsonl`, timeout 10 s) AFTER the four artifacts and BEFORE the untracked walk and capture; the handler (NEW `lib/agy_hook.py`, stdlib, no AI) denies a fixed set of mutating / command / network-browser / subagent / messaging / planner tools — the measured 57-tool registry classified once, pinned by `t9` — and allows everything else: reads are never denied, an unknown tool is allowed (the census still judges it), an unreadable or nameless payload is DENIED (fail-closed), tool ARGS are never logged. ADMISSION IS EFFECT-BASED — Gate A only: an off-list call DENIED before execution (the hook, or the vendor's own permission denial — ONE predicate `_common._agy_step_denied`, shared with the digest's `denied` list) is BLOCKED: logged on stderr (`[wrapper] antigravity blocked-calls n=… tools=[…]`), never voiding; an off-list call that EXECUTED, or errored for a non-denial reason (its effect is unknown), still voids as `admission-refused` — Policy D unchanged. Gate B (a degraded status is admitted only when an errored READ explains it; `t28` v2-7 / v2-9) is UNTOUCHED — a blocked call explains nothing (`t38` axis 29). NEW MECHANICAL CHECK, the hook LOAD CHECK: `python3 <skill>/lib/agy_hook.py check <packet-dir>/agy-read-audit.json <packet-dir>/agy-hook-r<N>.jsonl` prints `HOOK_LOAD_<PASS|VOID|ABSENT|INCONCLUSIVE> tool_steps=<n> invocations=<n> denied=<n>` (exit 0 / 3 / 2 / 4; 64 usage) — ZERO hook invocations while the read audit counts tool steps means the enforcement layer did not load and VOIDs the leg (PASS needs one invocation, never an equality); `prepare` prints the command beside the read-audit gate line, for the standing leg and every agy X leg (one hook log per round, conversation ids tell the legs apart). The hook log is a leg OUTPUT (`agy-hook-r<N>.jsonl`, a BASENAME rule like the X shape); `.agents/hooks.json` is OWNED by cleanup like the four artifacts and censused by the worktree fingerprint — NOT listed in the delivery record (it is enforcement, not delivered material; a reviewed repo that gitignores `.agents/` hides it from the fingerprint's untracked arm — disclosed); a reviewed tree that TRACKS `.agents/hooks.json` is refused before the worktree exists. W16: the codex wrapper passes `--ignore-rules` on every READ-ONLY dispatch (Tier 1: `codex-rs/exec/src/cli.rs` — "Do not load user or project execpolicy `.rules` files"; an execpolicy `decision="allow"` rule runs its command OUTSIDE the sandbox without prompting, and this host's `~/.codex/rules` allow `git add/commit`, `gh …`, `rm -rf _runs`); the write posture keeps the operator's rules. Prompt text (`_agy_read_grant`, mirrored in `references/leg-contracts.md`) and the agent body (`_allowlist_rule` — hosts RE-RUN `--setup-agents`) state the ONE rule the hook and the census enforce together: mutating / network calls are BLOCKED before they run (logged, not fatal) and any off-list call that EXECUTES voids; the three `an errored step voids your review` consequences, false since the v2 admission tolerated errored reads, are gone. Riding in the same gate range but NOT S2 material: S1 OPEN residuals AB1 (the prune blocks on a gitfile-less `wt-r<N>`) and AB2 (only the four repository-SELECTION `GIT_*` variables are stripped) — `t8` 86-87, own commit. Tests: `t9-agy-hook.sh` NEW (8 axes), `t13` 24, `t38` 26-30, `t24` `--ignore-rules`, `t28` / `t4` wording pins. Size at GREEN: code-only +283/−55 against the declared ~180 — the PRIMARY disclosure trigger fired (×1.57, +103; the classified registry and the load check are most of it) — physical +470/−63 against ~420 (backstop clear); no public def outside the gated design; recorded, continuing (owner rule 2026-09-17).
+#  0.34.1 (2026-09-17): wave 11 of the S1 gate — the bounded micro-wave the owner ruled after r11 (ledger `docs/reviews/2026-09-16-s1-worktree-delivery-residuals.md` § Owner ruling 2026-09-17 (r11), rows AA1-AA8). The outgoing round tree's acceptance test is a CONJUNCT again: repository identity AND registration AT THIS PATH — wave 10 REPLACED the second with the first where it should have ADDED to it, so a packet dir copied or moved WHOLE (`cp -a`, `mv`, a restore from backup) had its four artifacts unlinked before `git worktree remove` failed, i.e. the helper DELETED in a state the boundary says it may only observe (AA1, BLOCKING, reproduced, two families; this is not the r9 Y1 regression — that was a worktree-PATH compare). Two further reproduced refusals of VALID states: the repository probe no longer requires a `.git` ENTRY inside the path, so a `--separate-git-dir` source — whose metadata dir is what `git worktree list` names as the main worktree — resolves instead of being refused "could not be established" (AA2; the NO-DISCOVERY rule Z5 moves to `_observe_entry`, where a path is OBSERVED rather than compared), and the stale-sibling prune's SKIP now blocks on any `wt`/`wt-*` DIRECTORY it cannot resolve, `.git` or not — a lost gitfile over a LIVE registration had the reap rmtree the sibling around it (AA3; a plain file or symlink at those names still goes with the sibling, Z16 unchanged). Containment: every git probe runs with `GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR`/`GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY`/`GIT_ALTERNATE_OBJECT_DIRECTORIES` dropped next to the `LC_ALL=C` pin, so an ambient exported repository can no longer make both identity answers equal (AA5); `_digest_note` treats a snapshot whose `files` is not a list as unvalidatable instead of raising out of a refusal (AA4). Docs: rule 8 scopes the no-runnable-exit sentence to entries the helper only OBSERVED and names the one surviving escape, and pins its gate token to `ROUND_INTEGRITY_OK r<N>` (AA6); `references/packet-lifecycle.md` supports a hand-built round ONLY when it writes `delivery-r<N>.md` and captures under the ROUND label (AA7); the module docstring and `read_audit_gate.sh`'s not-found message drop the retired `packet-r<N>.md` name (AA8). t8 axis 80 narrowed + axes 81-85 new.
+#  0.34.0 (2026-09-17): THE SUPPORT BOUNDARY — the packet dir is HELPER-OWNED (owner ruling after r10 named the loop's non-termination; ledger `docs/reviews/2026-09-16-s1-worktree-delivery-residuals.md` § Owner ruling 2026-09-17 (r10), plan § Owner decisions). Manual manipulation beyond ONE documented recovery (`references/packet-lifecycle.md` § Removing a stray checkout, NEW) is OUT OF SCOPE: for any state the helper cannot name as its own round tree it REFUSES WITHOUT DELETING, states five OBSERVATIONS (the quoted path; directory/symlink/file; its `.git` entry gitfile/directory/symlink/none; the repository that resolves to, or `unresolvable`; whether the round's SOURCE registers that path, or `unknown`) and closes with ONE identical pointer line. The per-shape exit selector is DELETED — no `rm`, `git worktree remove` or `git worktree prune` is printed for a stray or unremovable entry (14 residual rows across r7–r10 were that selector defeated by one more exotic filesystem state; r10 Z2/Z3/Z6/Z7/Z10/Z15 close as out-of-scope with it). The ONE surviving prescription is the `--force` escape for a round tree whose repository the helper just established LIVE. Two BUGS the same review found are fixed: the re-pin's acceptance test is REPOSITORY IDENTITY (`git rev-parse --path-format=absolute --git-common-dir` on the tree and on the source) instead of "does the source register this path" — a STALE registration plus another repository's checkout at that path unlinked all four artifacts before failing (r10 Z1, reproduced) — and `verify` resolves the delivery record by the SUPPLIED label first, then the canonical number, so a genuine pre-canonical `delivery-r04.md` + `.snapshot-r04.json` verifies WITH its hash check (r10 Z4). Narrowings: no repository is ever reported from git's parent-directory DISCOVERY (Z5); the permissive snapshot read never ranks or mints round 0 (Z11); the stale-sibling prune SKIPS only on the CHECKOUT predicate, so a plain `wt-…` file no longer makes a sibling un-reapable (Z16); `_digest_note` also reads a PADDED snapshot of the same round (Z13) and names `codex-body-r<N>.txt`'s `content_digest` as the third carrier of the record's sha256 (Z8); the no-tree WARNING enumerates rounds permissively (Z9); a NON-round `verify` prints `ROUND_INTEGRITY_OK <label> (artifact hashes NOT checked — no delivery record)` so the gate token is never satisfied silently (Z17). Wave 10 of the S1 gate (r10 Z1–Z17). t8 axes 36/51/58/60b/61/64/70/72/75 rewritten + 76–80 new; t3 follows the token line.
+#  0.33.0 (2026-09-17): the round WORKTREE is `<packet-dir>/wt-r<N>` — the round lives in the tree's NAME (owner ruling after the three-family design review; ledger `docs/reviews/2026-09-16-s1-worktree-delivery-residuals.md` § Design review 2026-09-17). Cleanup derives the round from the directory name and reads nothing inside the tree for identity: record present → hash the four artifacts, any missing/different → refuse; no record + no snapshot + bare tree → never delivered → remove; anything else → refuse and preserve. `close`/`prepare` REFUSE on any entry they cannot name as the round tree (a renamed/symlinked/non-directory `wt*` at the top level, or a directory carrying `.git` at ANY depth), with an exit that applies — detach only when git registers THAT path, else `rm -rf` + `git worktree prune`; they also refuse on a legacy `wt` checkout (migration = verify, then the printed exit); with NO tree and records present `close` proceeds with a WARNING naming the anomalous round's record/snapshot/digest (owner-ruled W15). `verify` accepts a padded legacy label whose snapshot exists but resolves the delivery record by round NUMBER and refuses when it is absent (a non-round label gets a NOTE that artifact hashes were not checked); readers of `.snapshot-r*.json` are permissive, minting is canonical; `prepare`/`capture` refuse non-canonical `r0`/`r04`. Every printed recovery command is shlex-quoted and names `-C <owner>` only when resolved. Waves 7–9 of the S1 gate (r7 W1–W14, r8 X1–X13, r9 Y1–Y11).
+#  0.32.0 (2026-09-17): the THREE-ROUND CAP is REMOVED (owner directive 2026-09-17, superseding 2026-08-22). Rule 5's stop set is now (a) a finding whose fix requires a PLAN or DESIGN change → owner discussion BEFORE design work; (b) convergence (zero new REAL must-fix → one focused re-confirm); (c) rule 12 contradiction / rule 4 CONFLICTED-OSCILLATING / rule 14 TERMINAL. Non-contradicting bug/completeness findings inside the existing design are fixed and re-confirmed at any round count without asking — the leader verifies, delegates implementation to a subagent (SDD/TDD) where that keeps its context lean. Evidence: the S1 worktree-delivery gate ran five rounds; two of the leader's three owner checkpoints were round-arithmetic asks over in-design bug fixes, and only the third (a write-order restructure = a design change) was a legitimate ask. Rule 5, rule 14, triage.md § Loop exit; `~/.claude/CLAUDE.md` § Slice-size budget drops its "Round budget" line and demotes the numeric size triggers to DISCLOSURE (structural stop stays the sole size ask-trigger). No code change.
 #  0.31.0 (2026-09-14): the ADVISORY fourth leg(s) are configured by the skill USER in a JSON FILE, not in the leader's shell profile — `prepare` resolves `--x-leg`/`--no-x-leg` > PROJECT `<worktree>/.claude/triad-review-legs.json` > USER `$XDG_CONFIG_HOME/triad/review-legs.json` (empty/unset -> `~/.config`) > `$TRIAD_REVIEW_X_LEGS` (DEPRECATED fallback, its NOTE says so) > none (a NOTE, no longer a leader-environment defect). File contract `schema: "triad-review-legs.v1"` + `x_legs` list of `{name, vendor, agent|model(+effort), enabled}`; EVERY entry — disabled ones included — runs through the existing `--x-leg` spec parser, so the name regex / vendor set / per-vendor effort / duplicate-name / claude-effort refusals apply unchanged (a disabled entry is dropped from the RENDERED set only after it has passed them, so a leg kept on file cannot rot); a malformed or symlinked config, an unknown key, `agent` on a non-claude vendor, `model`/`effort` on claude, both `agent` and `model` are LOUD refusals naming the file BEFORE prepare's first mutation; no structured field may contain `':'` (the entry round-trips through the colon-joined spec; a claude `agent` may carry the plugin scope but not an effort tail), a RELATIVE `XDG_CONFIG_HOME` is invalid and ignored (XDG spec 0.8), and a config candidate the probe cannot read aborts the round only when it DECIDES the arm (a flag arm is never abortable, its probe failure a stderr NOTE); every ignored source — env var and config file alike — is mirrored to stderr, and stdout carries only the arm that fired. `.x-legs-r<N>.json` gains `x_config_path` (absolute or null) and `x_disabled`; `x_source` ∈ `flag|config|env|suppressed|null`. Recommended default (owner 2026-09-14, ten-round evidence `docs/reviews/2026-09-07-design-campaign-gate.md`): the claude `high` comparison arm (8 must-fix the gating claude arm missed, 2 found by no other leg) as the standing advisory arm; the Google Flash tier is no longer the standing fourth leg (0 unique blocking defects over 10 rounds) and stays on file `enabled: false`. Rule 1(d) + rule 15 + Flow 2/3, leg-contracts § Fourth leg, failure-modes W-7 + a malformed-config row, triage.md (Flash clause now conditional), NEW `references/review-legs.example.json`, docs/setting_vs.md § 6.2b. t4 axes 41-53 (+28/32/33/34/37/38/40 pins).
 #  0.30.1 (2026-09-06): doc + agent-definition only — `cross-family-review-reviewer-high` (identical body, `effort: high`) registered as the ADVISORY comparison arm of the 2026-09-06 claude-effort campaign (`docs/reviews/2026-09-06-claude-effort-high-vs-xhigh-campaign.md`): dispatched only as a fourth leg (`prepare --x-leg x-claude-high:claude:cross-family-review-reviewer-high` typed next to `--x-leg "$TRIAD_REVIEW_X_LEGS"`), never the standing leg, never gates; leg-contracts § claude fresh-eye leg + § Fourth leg name it; the exporter ships it verbatim with its two siblings and s1 asserts all three ship with the read-only pin + effort tier; t7 pins the three bodies byte-identical. The registering session dispatched the new id at once on the 2026-09-06 desktop build (smoke: transcript `effort: high`) — the session-start-snapshot rule is refuted for a NEW definition file there; on any other build check the Agent tool's available-types list before the first gate.
 #  0.30.0 (2026-09-06): the experimental X leg becomes the STANDING fourth leg (owner directive 2026-09-06). `prepare` reads `$TRIAD_REVIEW_X_LEGS` when no `--x-leg` is typed (`--no-x-leg` suppresses; explicit `--x-leg` wins; exactly one source ARM fires, its NOTE on stdout and the absent arm mirrored to stderr; a malformed env spec fails loud pre-mutation naming the variable). Rule 1(d) + rule 15 retitle + Flow 2; leg-contracts § Fourth leg (default spec snippet, every-round contract, read-audit gate mandatory); triage.md "Pro + Flash = ONE family" for the two-family floor and rule 12; failure-modes row for the absent fourth leg; docs/setting_vs.md § 6.2b `~/.zshenv` line (the leader's Bash tool sources `~/.zshenv` only — spike 2026-09-06). Model/effort: NO tier change (10-round evidence in docs/reviews/2026-09-06-portability-audit.md). Gate r1 fix wave: `.x-legs-r<N>.json` is written on EVERY prepare carrying `x_source` (`env` / `flag` / `suppressed` / `null`) so an audit can tell a suppressed round from a missing profile line; the absent NOTE says "unset or empty" and the "ignored this round" arm keys on the PARSED env specs; the env-provenance hint names the VARIABLE (and disclaims the plugin-manifest refusal) instead of asserting which spec was refused; triage.md's consolidation loop reads the fourth leg from the round record (MISSING line when a recorded leg filed no verdict); the read-audit directive is agy-qualified; docs say one source ARM. t4 axes 32-40.
@@ -119,8 +127,9 @@ version: 0.31.0
 #     pattern + the mechanical-census remedy. (4) NEW review_scratch.py
 #     `prepare` subcommand (owner directive — token discipline): the
 #     leader authors ONE brief (context / =====QUESTIONS===== marker /
-#     questions) and NAMES evidence (--file/--diff/--excerpt); the tool
-#     assembles packet-r<N>.md canonically FILE-TO-FILE, writes
+#     questions) and NAMES the reviewed change
+#     (--diff/--diff-path/--tests-path/--excerpt); the tool creates the
+#     round WORKTREE and writes its four artifacts FILE-TO-FILE, writes
 #     digest-r<N>.txt, renders all three round-suffixed leg bodies
 #     (binding lines + per-leg READ-GRANT + severity instruction +
 #     verdict-selection rule), auto-preserves round-invariant leg
@@ -303,7 +312,8 @@ Five references carry the detail — open one only when its column applies.
      network-denied OS sandbox.
    Everything per-leg — the deterministic selection snippet, each leg's flags and
    prompt requirements, the agy READ-GRANT block, the MECHANICAL read-audit gate
-   (run `lib/read_audit_gate.sh` before weighing that leg's verdict and before
+   (run `lib/read_audit_gate.sh` AND the hook LOAD CHECK `lib/agy_hook.py
+   check` — `HOOK_LOAD_PASS`, 0.35.0 — before weighing that leg's verdict and before
    any agy finding enters the residual table), the folded-verdict re-dispatch,
    and the egress residual's evidence — is in `references/leg-contracts.md`.
 2. **Frame suspect decisions as QUESTIONS, not settled facts.** "Is X actually
@@ -353,23 +363,31 @@ Five references carry the detail — open one only when its column applies.
    reply takes the ONE-targeted-re-ask-then-INVALID chain whose
    definitional home is `references/triage.md` § Verdict release; a
    leader-completed reply is never admissible (2026-08-30 hardening).
-5. **Fix→re-confirm loop with a COUNTABLE cap (owner directive 2026-08-22,
-   after the 9-round v1.2 agy gate).** Findings → fix each (own implementer +
-   per-fix review) → re-confirm on the fixed branch. A first-pass DO-NOT-MERGE
-   addressed by a FIX closes only through a re-confirm pass, never by the
-   leader asserting it is fixed; a finding refuted by a probe closes through
-   that path instead, with the probe recorded. Stops: (a) **round cap** — at
-   most THREE full-family rounds per gate (initial, fix re-confirm, final
-   re-confirm); a fourth needs an owner re-budget citing a NEW defect observed
-   in real output, never "one more round"; (b) **convergence** — a round with
-   zero NEW REAL must-fix findings ends the gate: if that round produced a
-   fix wave, apply it and run ONE focused re-confirm scoped to the wave's
-   hunks — the two GATING legs (codex + claude) at minimum, agy optional;
-   this focused pass is NOT a full round and does not count against the cap
-   — a clean round with no wave skips the focused pass; then merge, PROVIDED every prior
-   blocking row already carries a rule-4 release disposition (re-confirmed
-   fix, recorded probe, or owner decision); (c) rule 12's non-convergence stop, rule 4's CONFLICTED/OSCILLATING
-   owner call, rule 14's TERMINAL exit. **Docs never gate code**: text-only
+5. **Fix→re-confirm loop — NO round cap (owner directive 2026-09-17,
+   superseding the 2026-08-22 three-round cap).** Findings → fix each (own
+   implementer + per-fix review, SDD/TDD — the leader VERIFIES the findings,
+   delegating the verification to a subagent when that helps, and delegates
+   the IMPLEMENTATION to a subagent whenever that keeps the leader's context
+   lean at a worthwhile effort/model-cost trade) → re-confirm on the fixed
+   branch. A first-pass DO-NOT-MERGE addressed by a FIX closes only through a
+   re-confirm pass, never by the leader asserting it is fixed; a finding
+   refuted by a probe closes through that path instead, with the probe
+   recorded. **Non-contradicting findings that catch bugs or completeness
+   gaps INSIDE the existing design are welcome at ANY round count** — fix them
+   and re-confirm without asking; round arithmetic was never the problem.
+   Stops: (a) **design or plan change** — a finding whose fix requires
+   changing the gated plan or design (a new contract, a restructured order of
+   operations, a new public def/class not in the gated design) goes to the
+   OWNER before any design work starts. Accepting a review and sliding into
+   over-design without that discussion is the failure this rule exists to
+   prevent; (b) **convergence** — a round with zero NEW REAL must-fix findings
+   ends the gate: if that round produced a fix wave, apply it and run ONE
+   focused re-confirm scoped to the wave's hunks — the two GATING legs
+   (codex + claude) at minimum, agy optional; a clean round with no wave
+   skips the focused pass; then merge, PROVIDED every prior blocking row
+   already carries a rule-4 release disposition (re-confirmed fix, recorded
+   probe, or owner decision); (c) rule 12's contradiction stop and rule 4's
+   CONFLICTED/OSCILLATING owner call, rule 14's TERMINAL exit. **Docs never gate code**: text-only
    findings are batched into one post-merge doc-resync commit and never
    trigger a round. A plan-gate fold that introduces a NEW semantic contract
    draws a fresh layer of REAL findings every round — fold the CONSTRAINTS
@@ -390,49 +408,84 @@ Five references carry the detail — open one only when its column applies.
    vendor CLIs). TWO legs' directives are SCOPED to a READ-GRANT: the CODEX
    leg (read-only shell commands explicitly PERMITTED; the old blanket
    wording banned the very commands codex reads files with; trailer in
-   `references/leg-contracts.md` § codex leg) and the AGY leg (packet read
-   FIRST, still the mechanical read-audit gate's required entry, then repo
-   verification reads via its file-view tool with file:line cites;
+   `references/leg-contracts.md` § codex leg) and the AGY leg (the worktree
+   BRIEF read FIRST, still the mechanical read-audit gate's required entry,
+   then verification reads across the pinned tree with file:line cites;
    `references/leg-contracts.md` § agy leg). For both, the round's
    capture/verify integrity gate (`references/packet-lifecycle.md` § Round
    integrity) is the compensating control — mutation detection, not a
-   sandbox claim alone, decides admission. An agentic sandboxed
+   sandbox claim alone, decides admission. For the AGY leg the containment
+   is MECHANICAL since 0.35.0 (S2): the round worktree carries a PreToolUse
+   hook (`lib/agy_hook.py`, written by `prepare` into
+   `<worktree>/.agents/hooks.json`) that DENIES mutating / command / network /
+   subagent / planner tools before they run — whatever agent resolved, since
+   `--agent` fails OPEN silently; admission is EFFECT-based (a BLOCKED call is
+   logged, an EXECUTED off-list call voids); and the hook LOAD CHECK
+   (`agy_hook.py check …` → `HOOK_LOAD_PASS`) must pass beside the read-audit
+   gate before that leg's verdict is weighed (`references/leg-contracts.md`
+   § agy leg). An agentic sandboxed
    reviewer otherwise live-runs the code under review, hangs on a real vendor API
    call, and under its read-only sandbox cannot reap the hung child — burning the
    whole timeout with no verdict. Pair the no-exec directive with a **timeout
-   scaled to packet size × reasoning tier** — both, not either: budget
-   `--timeout 1500` for a LARGE packet at the max tier, and prefer SHRINKING the
-   packet (rules 8-9) over raising the timeout. Also avoid concurrent same-family
+   scaled to DIFF size × reasoning tier** — both, not either: budget
+   `--timeout 1500` for a large diff at the max tier, and prefer SHRINKING the
+   reviewed surface (`--diff-path`, `--tests-path`, `--excerpt`; rules 8-9)
+   over raising the timeout. Also avoid concurrent same-family
    API pressure: keep the gemini leg off the wire while another leg may also call
    gemini (429). A live-run finding can still be valid — capture the gap, then
    re-dispatch read-only. Measurements and the originating incident:
    `references/evidence.md`.
-8. **Vendor-leg context files go at a repo-relative gitignored path, never
-   `/tmp`.** Put every review-context file inside a helper-managed packet dir
-   under the gitignored `_runs/review/` — never a bare `_shared/<name>.md` — so
-   every leg can `Read` it; gemini is workspace-sandboxed to the repo and cannot
-   read `/tmp` at all. For a LARGE diff or a multi-document review, PRE-ASSEMBLE
-   one focused packet file and have the vendor leg read only that; telling a
-   sandboxed leg to self-assemble burns its whole wall-time budget and returns no
-   verdict. The packet's canonical order is deployment-context → fenced diff
-   subset → suspect questions LAST, with any per-leg containment block riding
-   immediately before that closing instruction. Before dispatching, run the
-   round's `capture` (per-round evidence snapshot + canonical worktree
-   fingerprint — `lib/review_scratch.py capture`) and
-   FREEZE the tree; after every required leg terminates, `verify` must print
-   `ROUND_INTEGRITY_OK` before consolidation. Lifecycle commands, the
-   ownership fences, the fencing text, the `Review metadata:` block, and the
-   capture/verify procedure: `references/packet-lifecycle.md`.
-9. **codex leg: INLINE the packet into `--prompt` AND grant read-only repo
-   access (`--cwd` + READ-GRANT trailer).** The
-   inlined packet stays the leg's guaranteed view; the read grant restores its
-   ability to VERIFY claims against the repo (the historical
-   cannot-open-a-file failure was the old blanket no-exec directive, not the
-   sandbox — reads were never sandbox-blocked, writes still are). The revised
-   contract, its trailer text, the rescoped fast-SAFE heuristic, the call-site
-   substitution shape, the single-quoted-heredoc pitfall
-   it must avoid, and the large-diff focused-subset requirement are in
-   `references/leg-contracts.md` § codex leg.
+8. **Delivery is the round's WORKTREE, at a repo-relative gitignored path,
+   never `/tmp`.** `prepare` creates a DETACHED `git worktree` at
+   `<packet-dir>/wt-r<N>` — THE ROUND LIVES IN THE NAME, and `close` derives
+   the round from that name, never from anything inside the tree — under the
+   gitignored `_runs/review/`, pinned at the
+   right-hand side of `--diff`, and writes FOUR files into it: `brief.md`
+   (deployment context, a size MANIFEST naming every changed file and the
+   surface deliberately excluded, and the suspect questions LAST),
+   `diff.prod.patch` (the gated material), `diff.tests.patch` (test changes,
+   labelled as a statement of intended behaviour) and `history.txt`
+   (`git log --stat`, so a leg sees commit boundaries without executing
+   anything). Every leg is dispatched `--cwd <worktree>` and reads for itself;
+   gemini is workspace-sandboxed to the repo and cannot read `/tmp` at all.
+   **The LEADER builds the diffs** — every leg must judge the SAME bytes,
+   because the binding's `content_digest` ties each verdict to that content and
+   cross-family corroboration means nothing if three legs each computed their
+   own diff. Retired with this design: packet assembly and `--file` whole-file
+   embedding (the pinned tree already carries the whole file); `--excerpt`
+   survives to pin a hot function INTO the brief, which is the mitigation when
+   a diff is near the context ceiling. Before dispatching, run the round's
+   `capture` (per-round evidence snapshot + canonical worktree fingerprint —
+   `lib/review_scratch.py capture`, over the ROUND WORKTREE) and FREEZE the
+   tree; after every required leg terminates, `verify` must print
+   `ROUND_INTEGRITY_OK r<N>` before consolidation (the round-suffixed token, as
+   the Flow's step 3 requires — a NON-round label's qualified line says the
+   artifact hashes were not checked and never satisfies this gate). **The packet
+   dir is HELPER-OWNED** (owner ruling 2026-09-17): manual manipulation beyond
+   the ONE documented recovery — `references/packet-lifecycle.md` § Removing a
+   stray checkout — is out of scope, and for any state it cannot name as its own
+   round tree the helper REFUSES WITHOUT DELETING, states what it OBSERVES, and
+   points at that section. For an entry it only OBSERVED — a stray or
+   unremovable one — it prescribes no per-shape recovery command: do not expect
+   a runnable exit in that refusal, and do not add one. The ONE runnable escape
+   is the ROUND TREE's own `git worktree remove --force`, printed only after the
+   helper has established LIVE — on that same call, before any unlink — that the
+   source repository owns the tree and registers it at that path; it offers the
+   operator the exit of accepting that the round's material is unverifiable.
+   Lifecycle commands, the ownership fences, the fencing text, the
+   `Review metadata:` block, and the capture/verify procedure:
+   `references/packet-lifecycle.md`.
+9. **codex leg: DE-INLINED — it reads the round worktree like every other leg
+   (`--cwd` + READ-GRANT trailer).** Until this design the packet was inlined
+   into `--prompt` as codex's guaranteed view; a tree checked out at the
+   reviewed commit removes that premise, and the 2026-09-16 spike measured
+   codex holding a 128 KB diff straight from the worktree (307.8 s `ok`, 13 of
+   13 cited lines verified real against the tree). The read grant is what lets
+   it VERIFY claims (the historical cannot-open-a-file failure was the old
+   blanket no-exec directive, not the sandbox — reads were never
+   sandbox-blocked, writes still are). Its trailer text, the rescoped fast-SAFE
+   heuristic, the call-site shape and the single-quoted-heredoc pitfall it must
+   avoid are in `references/leg-contracts.md` § codex leg.
 10. **claude fresh-eye leg = a TRUE fresh-eye Agent, MAX thinking, adversarial.**
     The claude leg is a separate `Agent` with isolated context — never the leader
     reasoning inline. Because it is the same family as a claude leader, its
@@ -588,26 +641,31 @@ Five references carry the detail — open one only when its column applies.
    <slug>`, which also prunes stale packets from crashed past reviews). Author
    the round's BRIEF — deployment context above one `=====QUESTIONS=====`
    marker line, the suspect questions below it — as a standalone file; that
-   brief is the ONLY per-round text the leader writes. Keep the packet
-   FOCUSED: for a LARGE diff name only the high-risk subset (a narrowed
-   `--diff` range, `--excerpt` hot functions, `--file` load-bearing
-   documents) — `references/packet-lifecycle.md` § Large packet. At review
-   end, `… close <packet-dir>`.
+   brief is the ONLY per-round text the leader writes. Keep the GATED SURFACE
+   focused: for a LARGE diff name only the high-risk subset (a narrowed
+   `--diff` range, `--diff-path` scoping, `--tests-path` to split test churn
+   out of the gated patch, `--excerpt` hot functions into the brief) —
+   `references/packet-lifecycle.md` § Large packet. At review end,
+   `… close <packet-dir>` — which removes the round worktree FIRST, and
+   refuses rather than forcing if a leg wrote into the reviewed tree.
 2. Prepare the round with ONE deterministic command:
    `python3 <skill>/lib/review_scratch.py prepare <packet-dir>
-   <worktree-root> r<N> --brief <abs-brief.md> [--file <rel>]...
-   [--diff <range>] [--diff-path <rel>]...
-   [--excerpt <rel>:<start>-<end>]...` — `--diff-path` pathspecs keep a
-   working-tree `--diff` inside the packet-is-CODE-only rule (no
-   test/catalog churn). It
+   <source-repo> r<N> --brief <abs-brief.md>
+   --diff <range> [--diff-path <rel>]... [--tests-path <pathspec>]...
+   [--excerpt <rel>:<start>-<end>]...` — `--diff-path` pathspecs scope the
+   reviewed surface, and `--tests-path` splits test churn out of the GATED
+   patch (the review-is-CODE-only rule). It
    preserve-and-clears round-invariant leg outputs (`agy-read-audit.json`
    → its PRODUCING round's suffixed name, derived from the latest
-   captured snapshot), assembles `packet-r<N>.md` in the
-   canonical order with every diff/file/excerpt byte moved FILE-TO-FILE
-   (never streamed through leader context), writes `digest-r<N>.txt`,
-   renders the three round-suffixed leg bodies (`codex-body-r<N>.txt`
-   inlines the packet; `agy-prompt-r<N>.txt` / `claude-prompt-r<N>.txt`
-   point at it) carrying the binding values, the per-leg READ-GRANT, and
+   captured snapshot), creates the round WORKTREE at `<packet-dir>/wt-r<N>`
+   (re-pinning REMOVES the round tree present, identified by its OWN name —
+   never by the incoming label — after checking it against that round's record)
+   pinned at the right-hand side of `--diff` and writes its four artifacts
+   (`brief.md`, `diff.prod.patch`, `diff.tests.patch`, `history.txt`) with
+   every byte moved FILE-TO-FILE (never streamed through leader context),
+   writes `digest-r<N>.txt`, renders the three round-suffixed leg bodies
+   (all three POINT AT the worktree — codex is no longer inlined)
+   carrying the binding values, the per-leg READ-GRANT, and
    the verdict-selection rule, renders the CONFIGURED fourth leg's input from
    `.claude/triad-review-legs.json` (project) or
    `~/.config/triad/review-legs.json` (user) — rule 1(d); `--x-leg` /
@@ -677,7 +735,7 @@ Five references carry the detail — open one only when its column applies.
    is BLOCKING, otherwise return to Flow 4. Do not GOTO 2. Otherwise, if the round
    is CONVERGING: fix each REAL finding with a minimal diff (implementer +
    per-fix review; a design-expanding fix stops for an owner OK), then GOTO 2 to
-   re-confirm within rule 5's three-round cap (a zero-new-REAL-must-fix round
+   re-confirm — there is no round cap (a zero-new-REAL-must-fix round
    ends the gate with one focused re-confirm). If any item is CONFLICTED or the round
    is OSCILLATING, call the owner instead of re-dispatching and hand over the
    conflict table; non-conflicted findings may continue their fix loop meanwhile.

@@ -161,7 +161,7 @@ autonomy covers REAL findings with minimal diffs.
 
 | rule | trigger | what happens |
 |---|---|---|
-| round cap | 3 full-family rounds used | gate ends; a 4th round only on an owner re-budget citing a NEW defect observed in real output |
+| design or plan change | a finding's fix requires changing the gated plan or design — a new contract, a restructured order of operations, a new public def/class not in the gated design | OWNER discussion BEFORE any design work; this replaces the 2026-08-22 three-round cap (removed by owner directive 2026-09-17 — no round count is a stop by itself; non-contradicting in-design bug fixes continue at any round) |
 | convergence | a round lands zero NEW REAL must-fix | apply the wave → ONE focused re-confirm scoped to the wave's hunks → merge |
 | occurrence gate | a REACHABLE-UNOBSERVED item has no repro from REAL vendor output (capture / run-log / audit row) | DISCLOSED residual, no code — a fixture-only repro does not promote it |
 | docs never gate | a finding is text-only | batched into one post-merge doc-resync commit; never a round trigger |

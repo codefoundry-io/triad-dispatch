@@ -121,7 +121,7 @@ if [ -n "$AUDIT_FILE_OVERRIDE" ]; then
 fi
 for f in "$@"; do
   case "$f" in /*) : ;; *) usage_die "packet file must be an absolute path: $f" ;; esac
-  [ -f "$f" ] || usage_die "packet file not found: $f (for a prepare-built round the packet is the ROUND-SUFFIXED packet-r<N>.md; a stale generic name here would false-VOID a compliant leg)"
+  [ -f "$f" ] || usage_die "packet file not found: $f (for a prepare-built round the packet IS the round worktree, so these are its artifacts — <packet-dir>/wt-r<N>/brief.md and <packet-dir>/wt-r<N>/diff.prod.patch; a stale round number or a path from a prior round would false-VOID a compliant leg)"
 done
 
 # _CAP = _common.py's _AGY_DIGEST_VALUE_CAP (the digest's own params-value

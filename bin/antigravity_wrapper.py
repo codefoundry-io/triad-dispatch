@@ -303,11 +303,16 @@ def _allowlist_rule(tools) -> str:
         "TOOL ALLOWLIST (hardest rule): the tool schema you are shown may list\n"
         "many tools, but you are permitted ONLY these: "
         + ", ".join(tools)
-        + ".\nCalling ANY other tool even once — manage_task (never create task\n"
-        "lists; plan in your reasoning), run_command or any shell, write_to_file /\n"
+        + ".\nEvery other tool — manage_task (never create task lists; plan in your\n"
+        "reasoning), run_command or any shell, write_to_file /\n"
         "replace_file_content / sed_file, send_message, define_subagent /\n"
-        "invoke_subagent / manage_subagents, browser_* — voids your whole answer:\n"
-        "the caller audits every tool step and quarantines the result.\n"
+        "invoke_subagent / manage_subagents, browser_* — is off-limits. Off-list\n"
+        "mutating and network tools are BLOCKED before they run when the\n"
+        "caller's worktree carries a PreToolUse hook (a cross-family review\n"
+        "round) — a blocked call is logged, not fatal — but you cannot see from\n"
+        "inside whether such a hook is present, so never make one. Any call\n"
+        "outside this list that EXECUTES voids your whole answer: the caller\n"
+        "audits every tool step and quarantines the result.\n"
     )
 
 
@@ -393,23 +398,50 @@ class Admission(NamedTuple):
     ok: bool
     reason: str
     errored_reads: list     # errored tool steps that named an allowed read tool
-    forbidden: list         # tool names outside the allowlist (capped)
+    forbidden: list         # off-list tool names that EXECUTED or errored for an
+                            # unknown reason (voiding; capped)
     omitted: int            # census hits beyond the cap (counted, not stored)
+    blocked: tuple = ()     # off-list tool names DENIED before execution on every
+                            # occurrence (S2 effect-based Gate A: logged, not voiding)
 
 
 _UNNAMED_TOOL_STEP = "<unnamed tool step>"
 
 
 def _census(events, allowlist, read_set):
-    """(forbidden, omitted, errored_reads, errored_other) over one attempt's
-    parsed events — admission rule 4 plus the errored-step split rule 5 needs.
-    Runs on EVERY attempt (schema-repair / capacity retries included) so a
-    forbidden call in an earlier attempt is never erased by a clean retry."""
+    """(forbidden, omitted, errored_reads, errored_other, blocked) over one
+    attempt's parsed events — admission rule 4 plus the errored-step split rule
+    5 needs. Runs on EVERY attempt (schema-repair / capacity retries included)
+    so a forbidden call in an earlier attempt is never erased by a clean retry.
+
+    EFFECT-BASED (S2, 2026-09-17 — plan 2026-09-16-cfr-delivery-and-
+    enforcement-redesign § Enforcement, Gate A): an off-list name whose EVERY
+    occurrence was DENIED before execution (`_common._agy_step_denied` — the
+    round worktree's PreToolUse hook, or the vendor's own permission denial) is
+    BLOCKED: nothing ran, so nothing voids; the caller logs it. An off-list
+    name with ANY occurrence that was not a denial — executed, or errored for an
+    unknown reason (measured 2026-09-17: a `manage_task` rejected at argument
+    validation never reaches the hook; its effect is unknown) — is FORBIDDEN and
+    voids the answer (Policy D, unchanged). `forbidden` is capped like the
+    digest with `omitted` counting the DISTINCT names beyond the cap; `blocked`
+    is capped and informational."""
     allowed = set(allowlist)
-    forbidden: list = []
-    omitted = 0
+    executed: list = []
+    denied: list = []
     errored_reads: list = []
     errored_other: list = []
+    # The TERMINAL update decides each call (S2 gate r1, codex C2 + claude —
+    # REPRODUCED against the spike streams): the vendor emits an ACTIVE update
+    # before every DONE/ERROR, so counting it as an occurrence made every
+    # hook-DENIED call "executed" too and the effect-based split never fired on
+    # a real stream. An ACTIVE update is suppressed ONLY by a TRUSTWORTHY
+    # matching identity — an INTEGER step_index shared with a terminal update
+    # of the same name (S2 gate r2, codex: two distinct STRING indices used to
+    # collapse to None, so a denied write's terminal key hid a second,
+    # ACTIVE-only write). An ACTIVE record with no integer index, or one that
+    # never reached a terminal update (a cut stream), still counts — its effect
+    # is UNKNOWN, so fail-closed.
+    updates = []
     for ev in events or []:
         su = ev.get("step_update") if isinstance(ev, dict) else None
         if not isinstance(su, dict) or su.get("step_type") != "tool":
@@ -423,20 +455,33 @@ def _census(events, allowlist, read_set):
             names.add(ti["name"])
         if not names:
             names.add(_UNNAMED_TOOL_STEP)
-        errored = su.get("state") == "ERROR" or (isinstance(ti, dict) and bool(ti.get("error")))
+        idx = su.get("step_index")
+        idx = idx if isinstance(idx, int) and not isinstance(idx, bool) else None
+        updates.append((su, names, idx))
+    terminal = {(idx, n) for su, names, idx in updates
+                if su.get("state") != "ACTIVE" and idx is not None for n in names}
+    for su, names, idx in updates:
+        active = su.get("state") == "ACTIVE"
+        if active and idx is not None and all((idx, n) in terminal for n in names):
+            continue
+        ti = su.get("tool_info")
+        errored = (not active) and (su.get("state") == "ERROR"
+                                    or (isinstance(ti, dict) and bool(ti.get("error"))))
+        step_denied = (not active) and _common._agy_step_denied(su)
         for n in sorted(names):
             if n not in allowed:
-                if n in forbidden:
-                    continue
-                if len(forbidden) < _common._AGY_DIGEST_LIST_CAP:
-                    forbidden.append(n)
-                else:
-                    omitted += 1
+                bucket = denied if step_denied else executed
+                if n not in bucket:
+                    bucket.append(n)
             elif errored:
                 bucket = errored_reads if n in read_set else errored_other
                 if n not in bucket:
                     bucket.append(n)
-    return forbidden, omitted, errored_reads, errored_other
+    cap = _common._AGY_DIGEST_LIST_CAP
+    forbidden = executed[:cap]
+    omitted = len(executed) - len(forbidden)
+    blocked = [n for n in denied if n not in executed][:cap]
+    return forbidden, omitted, errored_reads, errored_other, blocked
 
 
 def _early_census(events, allowlist, read_set, prior_forbidden, prior_omitted=0) -> tuple:
@@ -446,7 +491,7 @@ def _early_census(events, allowlist, read_set, prior_forbidden, prior_omitted=0)
     classify `admission-refused` and name the tool, never fall back to
     `vendor-error`; the counters ride along so the refusal loses no
     diagnostic (gate r2 row 12)."""
-    forbidden, omitted, errored_reads, _eo = _census(events or [], allowlist, read_set)
+    forbidden, omitted, errored_reads, _eo, _blocked = _census(events or [], allowlist, read_set)
     for n in prior_forbidden:
         if n not in forbidden:
             forbidden.append(n)
@@ -475,6 +520,11 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
     4. Census: every tool name on a tool step (`tool_name` AND
        `tool_info.name`, a nameless step counts as a name outside the
        allowlist) must be in `allowlist`; the list is capped like the digest.
+       EFFECT-BASED since S2 (2026-09-17): an off-list call DENIED before it
+       ran (the worktree PreToolUse hook / vendor permission denial) is
+       BLOCKED — carried on `.blocked`, logged by the caller, not voiding;
+       an off-list call that EXECUTED (or errored for a non-denial reason)
+       is FORBIDDEN and refuses the answer as before.
     5. Status: SUCCESS with vendor rc 0 -> ok; anything else (a non-SUCCESS
        status OR a non-zero vendor rc, gate r1) is admitted ONLY when at least
        one errored tool step EXPLAINS it and every errored step named an
@@ -508,7 +558,8 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
     if n_results != 1:
         return Admission(False, f"{n_results} result events in the stream (expected exactly 1)",
                          *_early_census(events, allowlist, read_set, prior_forbidden, prior_omitted))
-    forbidden, omitted, errored_reads, errored_other = _census(events, allowlist, read_set)
+    forbidden, omitted, errored_reads, errored_other, blocked = _census(events, allowlist, read_set)
+    blocked = tuple(blocked)
     for n in prior_forbidden:          # an earlier attempt's forbidden call is never erased
         if n not in forbidden:
             forbidden.append(n)
@@ -520,7 +571,7 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
         return Admission(False, f"tool(s) outside the allowlist appeared in the stream: {shown}"
                                 f"{f' (+{more} more)' if more > 0 else ''} — agy fell back to its "
                                 f"default agent or the model slipped; answer quarantined",
-                         errored_reads, forbidden, omitted)
+                         errored_reads, forbidden, omitted, blocked)
     status = result.get("status") if isinstance(result, dict) else None
     shown_status = str(status)[:cap]
     if status != "SUCCESS" or vendor_rc not in (0, None):
@@ -528,16 +579,18 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
         if errored_other:
             shown = json.dumps([n[:cap] for n in errored_other[:8]], ensure_ascii=True)
             return Admission(False, f"{tag} with errored non-read step(s) {shown}",
-                             errored_reads, [], omitted)
+                             errored_reads, [], omitted, blocked)
         if errored_reads:
             return Admission(True, f"{tag} admitted: every errored step is an allowed read "
                                    f"{json.dumps([n[:cap] for n in errored_reads[:8]], ensure_ascii=True)}",
-                             errored_reads, [], omitted)
+                             errored_reads, [], omitted, blocked)
         # nothing in the stream explains the degradation (run-level error / cancel /
-        # cut / bare rc!=0): a possibly partial answer is not admitted (gate r3)
+        # cut / bare rc!=0): a possibly partial answer is not admitted (gate r3).
+        # A BLOCKED call does not explain it either — it never ran (Gate B untouched).
         return Admission(False, f"{tag} with no errored tool step in the stream — nothing "
-                                f"explains the degradation; answer quarantined", [], [], omitted)
-    return Admission(True, "ok", errored_reads, [], omitted)
+                                f"explains the degradation; answer quarantined", [], [], omitted,
+                         blocked)
+    return Admission(True, "ok", errored_reads, [], omitted, blocked)
 
 
 def agents_dir() -> Path:
@@ -754,7 +807,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
         stream = rr.stdout
         events, result = _common.parse_agy_stream(stream)
         if admission is not None:
-            _fb, _om, _er, _eo = _census(events, admission[0], admission[1])
+            _fb, _om, _er, _eo, _bl = _census(events, admission[0], admission[1])
             for _n in _fb:
                 if _n not in forbidden_seen:
                     forbidden_seen.append(_n)
@@ -829,6 +882,16 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                                      stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
                                      extraction_error=(f"admission refused: {reason}; "
                                                        f"quarantined answer ({len(answer)} chars): {snippet}"))
+                if adm.blocked:
+                    # EFFECT-BASED Gate A (S2, 2026-09-17): denied before execution
+                    # — by the round worktree's PreToolUse hook or the vendor's own
+                    # permission policy — so nothing ran and nothing voids; the
+                    # digest's `denied` list and the hook log carry the detail. An
+                    # EXECUTED off-list call took the admission-refused branch above.
+                    _common.log("[wrapper] antigravity blocked-calls "
+                                f"n={len(adm.blocked)} "
+                                f"tools={json.dumps([n[:_common._AGY_DIGEST_KEY_CAP] for n in adm.blocked[:8]], ensure_ascii=True)} "
+                                f"— denied before execution; logged, not voiding")
                 if degraded or adm.errored_reads:
                     _common.log("[wrapper] antigravity admitted-with-errored-steps "
                                 f"n={len(adm.errored_reads)} "
