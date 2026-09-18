@@ -1,8 +1,19 @@
 ---
 name: triad-codex-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Codex CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 codex_wrapper.py` raw; the user asks to call codex once, have codex handle a task, or run a one-shot codex analysis; a higher-level orchestration SKILL needs the Codex leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Gemini (`triad-gemini-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.9.3
+version: 0.9.4
 # changelog:
+#   0.9.4 (2026-09-18): `input-delivery-failed` (65) — the shared engine's
+#     stdin prompt transport (codex `prompt_via_stdin`) now fails CLOSED: a
+#     codex child that exited 0 while the wrapper's stdin writer failed
+#     (write / flush / pre-spawn UTF-8 encode) or had not finished within the
+#     bounded join gets exit 65 with the answer BLANKED, never `ok`; an
+#     unencodable prompt is refused pre-spawn (exit 3); `stdin_delivery`
+#     rides the audit record and the failure run-log. Wrapper-SET token (the
+#     agy `vendor-error` precedent): not a classify() result, not a repair
+#     proposal. Step 4 gains its row. Origin: codex maintainer handoff
+#     2026-09-18 (synthetic probe: 1-byte read + early close + success-shaped
+#     answer returned rc 0). Tests: t48 (seam) + f12 (end to end).
 #   0.9.3 (2026-08-26): doc-only — § Leader procedure step 3's wrapper
 #     invocation now carries the absolute wrapper path (was relative,
 #     resolvable from exactly one directory; contradicted the Step-1
@@ -135,9 +146,9 @@ CLS=$(printf '%s' "$SUMMARY" | sed -E 's/.*\[wrapper\] codex ([a-z-]+) .*/\1/')
 ```
 
 Token set:
-`ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | schema-rejected | fanout-spawn-error | config-conflict | timeout | extraction-error | unknown | fanout-partial`
+`ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | schema-rejected | fanout-spawn-error | config-conflict | input-delivery-failed | timeout | extraction-error | unknown | fanout-partial`
 
-Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) / `4` (binary missing) / `64` (server-cap exhausted) / `65` (terminal) / `66` (schema fail) / `67` (schema-rejected — `--output-schema` refused at submit) / `68` (fanout-partial — `--task` fan-out incomplete) / `69` (`--task code` implementer BLOCKED/NEEDS_CONTEXT — a status signal with no classification token in the summary line; branch on the exit code).
+Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg; also an unencodable stdin prompt — `input-delivery-failed` refused pre-spawn) / `4` (binary missing) / `64` (server-cap exhausted) / `65` (terminal — SHARED by the five terminal causes and `input-delivery-failed`, so at 65 read the TOKEN from the summary line before picking a Step 4 row) / `66` (schema fail) / `67` (schema-rejected — `--output-schema` refused at submit) / `68` (fanout-partial — `--task` fan-out incomplete) / `69` (`--task code` implementer BLOCKED/NEEDS_CONTEXT — a status signal with no classification token in the summary line; branch on the exit code).
 
 ### Step 4 — Branch on classification
 
@@ -145,6 +156,7 @@ Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) / `4` (bin
 |---|---|
 | `ok` (0) | Return wrapper stdout. With `--pydantic`, stdout is the validated JSON object. |
 | terminal (65) — cli-subscription-cap / token-limit / oauth-env / fanout-spawn-error / config-conflict | Surface to user with cause (re-login / quota / prompt size / `--task` subagent spawn rejected / inherited `~/.codex/config.toml` parse error). **NOT** repair-agent territory (already matched — repair routing is only `unknown` / `extraction-error` / `timeout`). |
+| `input-delivery-failed` (65; 3 when refused pre-spawn) | The wrapper's OWN stdin transport did not confirm delivery of the prompt (write/flush failed — typically the child closed its stdin early —, the writer had not finished within the bounded join, or the prompt was not UTF-8-encodable and nothing was sent) while codex exited 0 and answered like a success. The answer is BLANKED (stdout empty) and the raw vendor rc is kept. The cause is on the wrapper's OWN stderr, the deterministic line right before the summary — `exit=0 … but stdin delivery failed:<ExceptionClass>; failing closed` (or `unconfirmed`) — which the leader may read; the audit record and the failure run-log ALSO carry it as `stdin_delivery`, for the analyzer and for forensics only (Hard rule 2: the leader does not read the run-log). Surface to user with that cause; a re-dispatch is reasonable. Leave the failure run-log alone — no Step 5 arm ran, and the NEXT dispatch's own IPC cleanup prunes it (the wrapper clears prior residue on start). **NOT** repair-agent territory (a wrapper transport defect, not a classifier gap — the token is never a repair proposal). A genuine vendor error (rc != 0) after an early close keeps ITS classification; the delivery failure is an annotation there. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff. |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 6). Spawn it even when you are busy or also surfacing the failure — never skip.** |
 | `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 6).** Vendor returned rc=0 but extractor found no answer (empty JSON envelope, missing last-message file). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |

@@ -178,6 +178,7 @@ def map_classification_to_exit(cls: str) -> int:
         "admission-refused": EXIT_TERMINAL,  # agy: a tool OUTSIDE the agent allowlist in the stream (v2 census) — surface, NOT repair
         "vendor-timeout": EXIT_TERMINAL,  # agy: the vendor's OWN turn timeout (result.error "timeout waiting for response", empty answer) — surface, NOT repair
         "truncated-answer": EXIT_TERMINAL,  # agy: CLI-side mid-answer fold (driver hardcodes 65 too; the row keeps the map and the registry comment in agreement — gate r2 row 17)
+        "input-delivery-failed": EXIT_TERMINAL,  # wrapper-SET, never a classify() result: the stdin prompt was not confirmed delivered (write/flush/encode failed or unconfirmed) while the child exited 0 — surface, NOT repair (codex handoff 2026-09-18; t48/f12)
         "unknown": EXIT_CLI_FAIL,
     }.get(cls, EXIT_CLI_FAIL)
 
@@ -957,11 +958,24 @@ class RunResult:
     # log f-string and threw it away). Set by _run_once on every spawn attempt
     # (the validated --cwd, or the inherited process cwd when --cwd is absent
     # — including a failed spawn, where the attempted directory IS the
-    # forensic value). None on a RunResult that never reached a spawn; the
+    # forensic value, and the pre-spawn stdin UTF-8 refusal, which names the
+    # directory the child WOULD have run in). None only on a RunResult
+    # constructed OUTSIDE _run_once (a pre-engine guard failure); the
     # audit/run-log key is then OMITTED (vendor_version shape rule). Never fed
     # back into Popen(cwd=...) — os.getcwd() returns the PHYSICAL path, which
     # would silently change a symlinked-cwd child's view.
     effective_cwd: Optional[str] = None
+    # stdin prompt delivery outcome (codex maintainer handoff, 2026-09-18):
+    # None for every non-stdin caller (gemini/claude/agy — key OMITTED on the
+    # audit/run-log records, same shape rule as vendor_version), otherwise
+    # "complete" (write + flush finished), "failed:<ExceptionClass>" (write,
+    # flush or pre-spawn UTF-8 encode raised — the CLASS name only, never the
+    # prompt bytes) or "unconfirmed" (the writer had not finished within the
+    # bounded join after the child terminated). A success-shaped rc 0 whose
+    # delivery is not "complete" is refused by _run_once (exit 65,
+    # classification input-delivery-failed) — a successful write proves
+    # TRANSPORT progress only, never that the vendor processed every byte.
+    stdin_delivery: Optional[str] = None
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
@@ -2056,7 +2070,13 @@ def _run_once(
     stdin_text: when provided, feed via a daemon writer thread so a large
     prompt cannot deadlock against a full OS pipe before the child starts
     reading. When None (default), stdin is DEVNULL (gemini/claude behavior
-    unchanged).
+    unchanged). Fail-closed contract (2026-09-18): an unencodable stdin_text
+    returns EXIT_ARG_ERROR (3) BEFORE any child exists; a child that exited 0
+    while delivery was not confirmed "complete" returns EXIT_TERMINAL (65) —
+    both with classification "input-delivery-failed", classify() skipped and
+    final_answer blank; a child with rc != 0 keeps its own classification and
+    only carries the `stdin_delivery` annotation. Callers must not treat this
+    seam as "exit 0 iff the child exited 0" any more.
     classify_and_log: default True keeps codex/gemini/claude byte-identical
     (classify() + the "[wrapper] <cli> ..." summary line run here as before).
     False skips BOTH — the agy stream-json driver decides classification and
@@ -2073,6 +2093,33 @@ def _run_once(
     # single-source scrub; _run_once is the single vendor-child spawn site.
     child_env = scrubbed_child_env()
 
+    # Fail CLOSED on an unencodable prompt BEFORE any child exists (codex
+    # maintainer handoff 2026-09-18, requirement 1). Origin: the writer thread
+    # swallowed the UnicodeEncodeError, the child saw EOF after ZERO bytes and
+    # its rc 0 became a wrapper success. The diagnostic names the index and
+    # the exception CLASS only — never the prompt bytes (requirement 4).
+    if stdin_text is not None:
+        try:
+            stdin_text.encode("utf-8")
+        except UnicodeEncodeError as e:
+            elapsed = time.monotonic() - start
+            msg = (f"stdin text is not UTF-8-encodable at index {e.start} "
+                   f"({type(e).__name__}); nothing was sent")
+            log(msg)
+            result = RunResult(
+                EXIT_ARG_ERROR, "", msg + "\n", elapsed,
+                classification="input-delivery-failed",
+                effective_cwd=effective_cwd,
+                stdin_delivery=f"failed:{type(e).__name__}",
+            )
+            if classify_and_log:
+                log(
+                    f"[wrapper] {cli} input-delivery-failed "
+                    f"exit={result.exit_code} vendor={result.vendor_exit_code} "
+                    f"elapsed={elapsed:.1f}s"
+                )
+            return result
+
     popen_kwargs: dict = dict(
         cwd=cwd,
         env=child_env,
@@ -2080,6 +2127,11 @@ def _run_once(
         stderr=subprocess.PIPE,
         stdin=(subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL),
         text=True,
+        # Explicit UTF-8 on every pipe (handoff requirement 1): text=True alone
+        # takes the LOCALE's preferred encoding, so the bytes the vendor child
+        # received could differ between the Mac dev host and an Ubuntu host
+        # with a non-UTF-8 locale. stdin_text is already proven encodable above.
+        encoding="utf-8",
         bufsize=1,
     )
     if hasattr(os, "setsid"):
@@ -2114,19 +2166,29 @@ def _run_once(
                 log("child shares the parent process group; group kill disabled")
                 pgid = None
 
+    # stdin delivery state (handoff requirement 2): the writer RECORDS its
+    # completion or the failure's exception CLASS (bounded, content-free)
+    # instead of swallowing it; EOF signalling (close) and the concurrent
+    # stdout/stderr drains are unchanged. `t_in` is joined with the same 2 s
+    # bound as the drains once the child has terminated (requirement 3) —
+    # never an unbounded join behind a blocked pipe or an inherited descriptor.
+    stdin_state: dict = {"done": False, "error": None}
+    t_in: Optional[threading.Thread] = None
     if stdin_text is not None and proc.stdin is not None:
         def _feed_stdin() -> None:
             try:
                 proc.stdin.write(stdin_text)
                 proc.stdin.flush()
-            except Exception:
-                pass
+                stdin_state["done"] = True
+            except Exception as e:  # noqa: BLE001 — recorded, adjudicated below
+                stdin_state["error"] = type(e).__name__
             finally:
                 try:
                     proc.stdin.close()
                 except Exception:
                     pass
-        threading.Thread(target=_feed_stdin, daemon=True).start()
+        t_in = threading.Thread(target=_feed_stdin, daemon=True)
+        t_in.start()
 
     stdout_buf: list[str] = []
     stderr_buf: list[str] = []
@@ -2171,15 +2233,44 @@ def _run_once(
 
     t_out.join(timeout=2)
     t_err.join(timeout=2)
+    # Reconcile the stdin writer within the same bound (requirement 3). The
+    # child has terminated (normally or killed), so a writer still blocked on
+    # a full pipe can only be held by an inherited descriptor — that case is
+    # "unconfirmed", never a success.
+    stdin_delivery: Optional[str] = None
+    if t_in is not None:
+        t_in.join(timeout=2)
+        if stdin_state["error"] is not None:
+            stdin_delivery = f"failed:{stdin_state['error']}"
+        elif stdin_state["done"] and not t_in.is_alive():
+            stdin_delivery = "complete"
+        else:
+            stdin_delivery = "unconfirmed"
 
     elapsed = time.monotonic() - start
     stdout = "".join(stdout_buf)
     stderr = "".join(stderr_buf)
     rc = proc.returncode if proc.returncode is not None else -1
 
+    # Precedence (requirement 5): the wrapper's own timeout first; a GENUINE
+    # vendor failure (rc != 0) keeps its own classification and only carries
+    # the delivery annotation — a provider that rejected the input and closed
+    # the pipe must not lose its real error to the consequential BrokenPipe;
+    # a success-shaped rc 0 whose prompt was NOT confirmed delivered fails
+    # CLOSED (requirement 4) — the answer was produced without the input. The
+    # raw vendor rc is preserved on every path.
+    delivery_failed = (
+        stdin_delivery is not None and stdin_delivery != "complete"
+        and not timed_out and rc == 0
+    )
     if timed_out:
         log(f"timed out elapsed={elapsed:.1f}s")
         result = RunResult(EXIT_TIMEOUT, stdout, stderr, elapsed)
+    elif delivery_failed:
+        log(f"exit={rc} elapsed={elapsed:.1f}s but stdin delivery "
+            f"{stdin_delivery}; failing closed")
+        result = RunResult(EXIT_TERMINAL, stdout, stderr, elapsed,
+                           classification="input-delivery-failed")
     else:
         log(f"exit={rc} elapsed={elapsed:.1f}s")
         ec = EXIT_OK if rc == 0 else EXIT_CLI_FAIL
@@ -2187,19 +2278,24 @@ def _run_once(
 
     result.vendor_exit_code = rc
     result.effective_cwd = effective_cwd
+    result.stdin_delivery = stdin_delivery
     if classify_and_log:
         # SEMANTIC stderr classification (tool-not-installed / vendor warning)
-        # stays the leader's judgment over the mirrored raw stderr.
-        result.classification = classify(
-            cli, stderr, stdout, result.exit_code, vendor_exit_code=rc,
-        )
+        # stays the leader's judgment over the mirrored raw stderr. A
+        # delivery failure is decided ABOVE from the writer's own record and
+        # is never re-derived from stderr text (requirement 6: no
+        # error-text reclassification can promote it or trigger a retry).
+        if not delivery_failed:
+            result.classification = classify(
+                cli, stderr, stdout, result.exit_code, vendor_exit_code=rc,
+            )
         # One-line deterministic summary (immediately visible to leader/user).
         log(
             f"[wrapper] {cli} {result.classification} "
             f"exit={result.exit_code} vendor={result.vendor_exit_code} "
             f"elapsed={elapsed:.1f}s"
         )
-    else:
+    elif not delivery_failed:
         # r1/R8: do NOT leave the field at its "ok" default — a shared struct
         # reading "ok" for a run that was never classified is a trap for any
         # future consumer of this RunResult. NOT a new classify() token
@@ -2413,7 +2509,9 @@ def run_cli_with_retry(
                     f"elapsed={r.elapsed_s:.1f}s"
                 )
                 return r
-            # cls in {"unknown", "timeout"} — fail-fast. Both surface as
+            # cls in {"unknown", "timeout", "input-delivery-failed"} — fail-fast
+            # (the last one arrives from _run_once already at exit 65 with the
+            # answer blanked; no retry, no repair dispatch). The first two surface as
             # repair-agent territory at the dispatch SKILL layer (timeout =
             # likely ESCALATE since hang isn't a classifier gap, but the
             # SKILL still routes through the same path for uniformity).
@@ -2594,6 +2692,12 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
         # reached a spawn (pre-spawn guard failures), same shape rule as
         # vendor_version above.
         rec["effective_cwd"] = result.effective_cwd
+    if result.stdin_delivery is not None:
+        # stdin delivery outcome (codex handoff 2026-09-18): a fixed vocabulary
+        # (complete / failed:<ExceptionClass> / unconfirmed) — no prompt
+        # content, so no redaction. Key omitted for the non-stdin callers,
+        # same shape rule as vendor_version above (t48 axis 7).
+        rec["stdin_delivery"] = result.stdin_delivery
     if redact:
         rec["stderr_len"] = len(result.stderr or "")
     if ok:
@@ -2609,7 +2713,18 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
     with lock_path.open("a", encoding="utf-8") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            with path.open("a", encoding="utf-8") as f:
+            # errors="backslashreplace" (gate r1 fix, codex must-fix + claude,
+            # converged 2026-09-18): the record may carry a prompt head that
+            # is NOT UTF-8-encodable (argv is decoded with surrogateescape, so
+            # an invalid byte in `--prompt` becomes a lone surrogate — exactly
+            # the input `_run_once` now refuses pre-spawn at exit 3). A strict
+            # writer re-raised UnicodeEncodeError HERE, killing the wrapper at
+            # rc 1 with a traceback and losing the refusal's exit code, this
+            # record and the run-log. The escape (`\udcff`) is valid JSON;
+            # Python's json round-trips it to the same code point, while jq
+            # (1.7.1 measured, gate r2) DISPLAYS it as U+FFFD — the file itself
+            # stays intact. Every encodable record is byte-identical.
+            with path.open("a", encoding="utf-8", errors="backslashreplace") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 # Flush the record while the audit lock is held so append and
                 # possible rotation are one serialized critical section.
@@ -2686,7 +2801,11 @@ def _prune_audit_archives(log_dir: Path) -> None:
 #     (P4 2026-07-11: rc!=0 / non-SUCCESS status WITH a non-empty answer),
 #     `truncated-answer` (2026-07-22: CLI-side fold), `admission-refused`
 #     (2026-09-04: a tool outside the agent allowlist in the stream) and
-#     `vendor-timeout` (2026-09-04: agy's own turn timeout, empty answer).
+#     `vendor-timeout` (2026-09-04: agy's own turn timeout, empty answer), and
+#     the one SHARED-ENGINE wrapper-set token `input-delivery-failed`
+#     (2026-09-18: _run_once could not confirm stdin prompt delivery to a rc-0
+#     child, or refused an unencodable prompt pre-spawn — a wrapper transport
+#     defect, never a classifier gap; t48 axis 8 pins it OUT of this enum).
 #     Each is a condition a classifier patch cannot express; t38 pins the
 #     registry contract for the two 2026-09-04 tokens, t14 for vendor-error.
 #   PATTERN_LIST_NAMES    = the built-in pattern-list constant names an
@@ -3178,8 +3297,18 @@ def emit_run_log(
         # run-log, and a wrong-root dispatch is exactly the class it must be
         # able to see in the artifact it is allowed to open.
         **({"effective_cwd": result.effective_cwd} if result.effective_cwd is not None else {}),
+        # stdin_delivery (codex handoff 2026-09-18): same omit-when-None spread.
+        # A delivery failure is a WRAPPER transport defect, not a classifier
+        # gap — the repair analyzer must be able to see that from the one
+        # artifact it may open and decline to propose a pattern.
+        **({"stdin_delivery": result.stdin_delivery} if result.stdin_delivery is not None else {}),
     }
-    with path.open("w", encoding="utf-8") as f:
+    # errors="backslashreplace": the run-log keeps the prompt HEAD (200 chars)
+    # plus the full wrapper argv (an inline `--prompt` rides there whole), so
+    # a lone surrogate from a surrogateescape-decoded `--prompt` (the input the
+    # pre-spawn refusal exists for) must not turn this write into a traceback
+    # (gate r1 fix 2026-09-18; the audit writer carries the same guard).
+    with path.open("w", encoding="utf-8", errors="backslashreplace") as f:
         json.dump(rec, f, ensure_ascii=False, indent=2)
 
     _prune_run_logs(runs_dir, preserve=path)
@@ -3642,7 +3771,11 @@ def debug_log(cli: str, prompt: str, result: RunResult) -> None:
     day_dir.mkdir(parents=True, exist_ok=True)
     path = day_dir / f"{cli}.md"
 
-    with path.open("a", encoding="utf-8") as f:
+    # errors="backslashreplace": the debug dump stores a truncated prompt CELL
+    # (`_debug_cell`); a lone surrogate (surrogateescape-decoded argv) in that
+    # head must not abort the dump with a
+    # traceback (gate r1 fix 2026-09-18; same guard as audit / run-log).
+    with path.open("a", encoding="utf-8", errors="backslashreplace") as f:
         try:
             fcntl.flock(f, fcntl.LOCK_EX)
             # Race-free header — under lock, fstat().st_size==0 means new
