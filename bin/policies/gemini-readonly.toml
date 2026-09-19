@@ -10,9 +10,13 @@
 # so the deny rules (200) override the allow rules (100)). `--policy` loads at
 # the User tier (4) and REPLACES ~/.gemini/policies for this call; only an
 # Admin-tier policy can outrank these denies (gemini-cli PR #18500).
-# ⚠️ Live ENFORCEMENT still to be e2e-confirmed on an enterprise/Vertex/API-key
-# tier (individual-tier auth is deprecated → IneligibleTierError): run one
-# write-attempt under `--sandbox read-only` and confirm the write tool is denied.
+# `--policy` REPLACES only the USER-tier policy directory for this call (verified
+# 2026-09-19 against packages/core/src/policy/config.ts at v0.46.0 and v0.60.0);
+# system/admin, workspace and the built-in DEFAULT policies still load, so a tool
+# this file does not name keeps the default tier's decision. Live ENFORCEMENT of
+# the deny rows is verified where gemini is in service (CLI login, no API keys):
+# the shared spec's `contracts/gemini-readonly.verify.toml` lists the checks and
+# the owner briefs the result (spec R-GOOGLE / Q-N). D-9 web rows: see the end.
 
 # --- allow read tools ---
 [[rule]]
@@ -64,3 +68,17 @@ priority = 200
 toolName = "mcp_*"
 decision = "deny"
 priority = 200
+
+# --- D-9 (owner ruling 2026-09-19): review legs have no web tools. EXPLICIT rows,
+# because `--policy` replaces only the USER tier and the built-in default tier
+# still loads: v0.60.0 `read-only.toml` allows google_web_search at priority 50
+# and `write.toml:96-108` denies web_fetch only in headless runs, so a tool this
+# file did not name kept the default decision (round r2 finding). Web evidence
+# belongs to an investigation dispatch (shared spec R-INVEST, clause web-evidence).
+# Runtime effect verified where gemini is in service — checklist
+# `contracts/gemini-readonly.verify.toml` in the shared spec (owner briefing route). ---
+[[rule]]
+toolName = ["google_web_search", "web_fetch"]
+decision = "deny"
+priority = 200
+denyMessage = "Review legs read the reviewed tree only; web evidence belongs to an investigation dispatch (D-9)."

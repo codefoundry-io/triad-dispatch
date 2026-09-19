@@ -1,8 +1,16 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.16.3
+version: 0.16.4
 # changelog:
+#   0.16.4 (2026-09-19): research dispatches (`--web`) carry the wrapper's
+#     `AGY_WEB_EVIDENCE_CLAUSE` at the END of the prompt (spec case C29 /
+#     R-INVEST): a `search_web` result is a pointer, never a citation; every
+#     cited web fact comes from a `read_url_content` fetch with the page's own
+#     date or version; unfetched / placeholder URLs and bare years are
+#     forbidden; a failed or undated fetch is UNSURE. The audit row and run-log
+#     record the prompt as sent. Origin: host-parity rounds r1/r2 — 0 fetches
+#     in both rounds, placeholder URLs in r2 (t49). § Routing gains one sentence.
 #   0.16.3 (2026-09-04): `admission-refused` (65) is its OWN classification
 #     for the ALLOWLIST class (a tool outside the agent's allowlist in the
 #     stream) — previously folded into `vendor-error`; framing /
@@ -196,7 +204,13 @@ the current vendor source instead of the leader answering from memory) and
 **context hygiene** (the raw page stays in the agy worker; the leader gets
 back the grounded answer). Research hosts need `read_url(*)` allowed in
 `~/.gemini/antigravity-cli/settings.json` (the `--setup-agents` hint). No
-model name is pinned.
+model name is pinned. Since 0.16.4 the wrapper appends `AGY_WEB_EVIDENCE_CLAUSE`
+to the END of every `--web` prompt (spec case C29): a `search_web` result is a
+pointer, never a citation; every cited web fact must come from a
+`read_url_content` fetch and carry that page's own date or version; unfetched
+or placeholder URLs and bare years are forbidden; the audit row and run-log
+record the prompt as sent — so a caller's brief states WHAT to find, not how
+to cite it.
 
 ## Read-only path v2 (`--sandbox read-only`, agy >= 1.1.18; spec `docs/superpowers/specs/2026-08-22-agy-readonly-v2-spec.md`)
 

@@ -282,6 +282,29 @@ AGY_RESEARCH_TOOLS = ("view_file", "grep_search", "list_dir", "find_by_name",
 AGY_READ_TOOLS_ADMIT = frozenset({"view_file", "grep_search", "list_dir", "find_by_name"})
 AGY_WEB_TOOLS_ADMIT = frozenset({"read_url_content", "search_web"})
 
+# Research dispatches (`--web`) get this rule appended LAST to the caller's prompt
+# (spec case C29, rule R-INVEST; seed of the shared clause `web-evidence`).
+# Origin 2026-09-19 (host-parity rounds r1/r2): the research agent made ZERO
+# read_url_content calls in both rounds and cited placeholder URLs in r2 —
+# nothing told it what counts as web evidence, and agy `search_web` returns a
+# model summary with grounding-redirect links, never a page (measured
+# 2026-09-16). The tail position follows the documented constraint-drop shape
+# (a rule at the START of a long prompt is the one most likely dropped). The
+# audit row and the run-log record the prompt AS SENT, clause included.
+AGY_WEB_EVIDENCE_CLAUSE = (
+    "WEB EVIDENCE PROCEDURE (appended by the caller to every research dispatch; it "
+    "binds every external fact in your answer). search_web returns a model-written "
+    "summary and grounding-redirect links: a POINTER to sources, never a citation. For "
+    "every fact you take from the web, call read_url_content on the source page itself "
+    "(the official document, the version-tagged source file, the release note or the "
+    "repository page) and cite the exact URL you fetched together with the date or "
+    "version string visible ON that page. Never write a URL you did not fetch, a "
+    "placeholder such as `https://example.com/...`, or a bare year in place of a page "
+    "date. If the fetch fails or the page shows no date or version, report that fact as "
+    "UNSURE and name the URL you tried. Local file facts come first, cited as "
+    "path:line; web facts follow, each with its fetched URL and page date."
+)
+
 _AGENT_BODY_RULES = (
     "Read files with view_file, search with grep_search using a SPECIFIC\n"
     "subdirectory as SearchPath (never a repository root; add Includes globs when\n"
@@ -1361,6 +1384,13 @@ def main() -> int:
         _common.log("--web selects the research agent on the read-only path only — "
                     "pass --sandbox read-only (hardened installs do so by default)")
         return _common.EXIT_ARG_ERROR
+
+    if args.web:
+        # C29: the web-evidence rule rides the END of the prompt on every research
+        # dispatch (after the empty-prompt check — the clause never rescues an
+        # empty dispatch). args.prompt is what audit/run-log record, so the
+        # record shows the prompt as sent.
+        args.prompt = args.prompt + "\n\n" + AGY_WEB_EVIDENCE_CLAUSE
 
     if args.sandbox == "read-only" and not args.web and args.cwd is None:
         # Review-agent grant precondition (owner ruling 2026-08-26): --add-dir
