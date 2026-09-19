@@ -1,4 +1,7 @@
 # Gemini CLI Policy Engine — per-call READ-ONLY policy for the gemini leg.
+# SHARED CONTRACT (triad-dispatch-spec rev-1 draft). A host vendors this FILE byte-for-byte at the revision it
+# adopts (README § How a host uses a revision, step 2: payload bytes unchanged, digest in an adjacent manifest); host
+# notes live outside this file. Host A checks byte identity in its test t50; the digest is in gemini-readonly.verify.toml.
 # Attached via `--policy <this file>` when the wrapper is run with
 # `--sandbox read-only`. Allows read tools, denies mutation + shell tools.
 # Used INSTEAD of `--approval-mode plan` (plan mode crashes the Node/V8 heap on
@@ -7,16 +10,21 @@
 #
 # Schema DOC-VERIFIED 2026-07-04 against geminicli.com/docs/reference/policy-engine
 # (rule table: toolName / decision allow|deny / priority; highest priority wins,
-# so the deny rules (200) override the allow rules (100)). `--policy` loads at
-# the User tier (4) and REPLACES ~/.gemini/policies for this call; only an
-# Admin-tier policy can outrank these denies (gemini-cli PR #18500).
-# `--policy` REPLACES only the USER-tier policy directory for this call (verified
-# 2026-09-19 against packages/core/src/policy/config.ts at v0.46.0 and v0.60.0);
-# system/admin, workspace and the built-in DEFAULT policies still load, so a tool
-# this file does not name keeps the default tier's decision. Live ENFORCEMENT of
-# the deny rows is verified where gemini is in service (CLI login, no API keys):
-# the shared spec's `contracts/gemini-readonly.verify.toml` lists the checks and
-# the owner briefs the result (spec R-GOOGLE / Q-N). D-9 web rows: see the end.
+# so the deny rules (200) override the allow rules (100)). `--policy` REPLACES
+# the USER-tier policy directory (~/.gemini/policies) for this call; system/admin,
+# workspace and built-in default policies still load, so an Admin-tier policy can
+# outrank these denies. VERIFIED 2026-09-19 against version-pinned source:
+# packages/core/src/policy/config.ts at v0.46.0 and v0.60.0 (identical ternary;
+# the CLI help string "Additional policy files" is misleading for the user tier).
+# Approved route = CLI login without API keys (reference/review-rules.md#R-NOCOST); the
+# older Vertex/API-key enforcement-test wording is HISTORICAL. Live enforcement of the denies
+# is PENDING confirmation where gemini is in service (owner briefing, R-GOOGLE) — no run evidence yet.
+# ROUND r2 FINDING (claude, verified against v0.60.0 default read-only.toml): before 2026-09-19 this file had no web
+# rows and no catch-all, and `--policy` replaces only the USER tier, so the DEFAULT tier's allow for google_web_search
+# (priority 50) was INHERITED on A's review posture; web_fetch was denied only by the default headless rule.
+# D-9 RULED 2026-09-19 (owner): review legs have no web tools — the explicit deny rows at the end of this file. Applied
+# without a live run (gemini is not in service where the author runs); the runtime effect is verified where gemini is
+# in service by the checks in `contracts/gemini-readonly.verify.toml`, reported through the owner briefing (R-GOOGLE).
 
 # --- allow read tools ---
 [[rule]]
