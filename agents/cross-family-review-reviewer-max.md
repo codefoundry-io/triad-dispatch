@@ -2,7 +2,7 @@
 name: "cross-family-review-reviewer-max"
 description: "MAX-effort escalation sibling of `cross-family-review-reviewer` — the same READ-ONLY, adversarial claude fresh-eye pre-merge reviewer, run at opus effort `max` instead of `xhigh`. Invoked ONLY by name (`subagent_type: triad-dispatch:cross-family-review-reviewer-max`) from the `triad-cross-family-review` skill, and ONLY on rounds the leader designates very-important AND algorithmically complex (owner model-tier policy); every other round uses the base xhigh definition. Same packet input, same distilled verdict output (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE) with file:line evidence, same Read/Grep/Glob-only containment. Effort is frontmatter-fixed (no per-invocation override), which is why this sibling definition exists at all."
 tools: Read, Grep, Glob
-model: opus
+model: claude-opus-5-5
 effort: max
 ---
 

@@ -53,7 +53,8 @@ are both retained regardless").
 Hardening adopted 2026-08-10 from the codex-host 0.2.533 schema
 (`triad-codex-dispatch`'s `bin/verdict_schema.py` — codex-owned since the
 2026-07-25 transfer; a leader-side READ of `origin/main` there, never an
-edit — see `3rd-Agent/CLAUDE.md` § Plugin re-deploy on the ownership split.
+edit — see the wrappers package's own CLAUDE.md § Plugin re-deploy on the
+ownership split.
 Engine deltas reach the codex side via the triad commit body, not a shared
 import, so this is a one-time cross-pollination, not an ongoing link):
 `model_config = ConfigDict(extra="forbid", strict=True)` on both models
@@ -115,8 +116,9 @@ _REVIEW_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _REVIEW_ID_MAX_LEN = 200
 _CONTENT_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 # A leading `C:\` or `C:/`-style drive letter is rejected in ADDITION to the
-# backslash check below — a drive-letter path using FORWARD slashes
-# (`C:/Users/x`) contains no backslash at all and would otherwise slip past.
+# backslash check below — a drive-letter path using FORWARD slashes (a
+# drive letter, a colon, then forward-slash segments) contains no backslash
+# at all and would otherwise slip past.
 _DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 

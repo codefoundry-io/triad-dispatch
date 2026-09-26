@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/codefoundry-io/triad-dispatch-spec/contracts/receipt-fields.json",
+  "title": "TRIAD common transport vocabulary v2",
+  "description": "The transport member of host audit/run-log records. Host envelopes and formal expected-binding checks stay separate. Null binary/version means not observed or not disclosed, never inferred.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "stdin_delivery": {
+      "enum": [
+        "not-used",
+        "not-started",
+        "complete",
+        "failed",
+        "unexposed"
+      ]
+    },
+    "route": {
+      "enum": [
+        "native",
+        "claude",
+        "codex",
+        "agy",
+        "gemini"
+      ]
+    },
+    "binary": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cli_version": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "schema_version",
+    "stdin_delivery",
+    "route",
+    "binary",
+    "cli_version",
+    "attempt"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "route": {
+            "const": "native"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "binary": {
+            "type": "null"
+          },
+          "cli_version": {
+            "type": "null"
+          },
+          "stdin_delivery": {
+            "enum": [
+              "not-used",
+              "unexposed"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
+

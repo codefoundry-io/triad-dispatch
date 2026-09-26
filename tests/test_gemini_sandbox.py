@@ -27,10 +27,19 @@ POLICY = BIN / "policies" / "gemini-readonly.toml"
 
 
 def _fake_gemini_dir(tmp_path: Path) -> str:
+    # The fake answers `--version` and `--help` because the real CLI does and
+    # the read-only (review) route now probes both before dispatching
+    # (spec case C16 — version floor >= 0.34.0 + capability preflight).
     fixture = tmp_path / "fake_gemini.py"
     fixture.write_text(
         "import json, os, sys\n"
-        "open(os.environ['ARGV_FILE'], 'w').write('\\n'.join(sys.argv[1:]))\n"
+        "argv = sys.argv[1:]\n"
+        "if '--version' in argv:\n"
+        "    print('0.60.0'); raise SystemExit(0)\n"
+        "if '--help' in argv:\n"
+        "    print('Options:\\n  --approval-mode\\n  --policy\\n"
+        "  -o, --output-format\\n'); raise SystemExit(0)\n"
+        "open(os.environ['ARGV_FILE'], 'w').write('\\n'.join(argv))\n"
         "print(json.dumps({'response': 'FAKE-OK', 'stats': {}, 'error': None}))\n"
     )
     shim = tmp_path / "gemini"
@@ -49,6 +58,12 @@ def _run(tmp_path: Path, *extra: str):
         # never mutate the (possibly installed-plugin) wrapper dir
         TRIAD_DISPATCH_LOG_DIR=str(tmp_path / "_logs"),
         PYTHONDONTWRITEBYTECODE="1",
+        # Hermetic auth-class preflight (C16): point the CLI's own settings
+        # locations at empty temp paths so the operator's real ~/.gemini never
+        # decides the outcome of this test. No settings = "auth class
+        # unexposed" = NOTE + proceed.
+        GEMINI_CLI_HOME=str(tmp_path / "gemini-home"),
+        GEMINI_CLI_SYSTEM_SETTINGS_PATH=str(tmp_path / "no-system-settings.json"),
     )
     r = subprocess.run(
         [sys.executable, str(BIN / "gemini_wrapper.py"), "--prompt", "hi", *extra],

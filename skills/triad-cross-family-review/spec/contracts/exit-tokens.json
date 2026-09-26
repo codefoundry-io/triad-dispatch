@@ -1,0 +1,125 @@
+{
+  "schema": "triad-exit-tokens.v1-draft",
+  "source": "host A 3rd-Agent/wrappers/_common.py map_classification_to_exit (8372428 / SoT 2026-09-19)",
+  "exit_codes": {
+    "EXIT_OK": 0,
+    "EXIT_CLI_FAIL": 1,
+    "EXIT_TIMEOUT": 2,
+    "EXIT_ARG_ERROR": 3,
+    "EXIT_BINARY_MISSING": 4,
+    "EXIT_RATE_GIVE_UP": 64,
+    "EXIT_TERMINAL": 65,
+    "EXIT_SCHEMA_FAIL": 66,
+    "EXIT_SCHEMA_REJECTED": 67,
+    "EXIT_FANOUT_PARTIAL": 68,
+    "EXIT_TASK_BLOCKED": 69
+  },
+  "tokens": [
+    {
+      "token": "ok",
+      "exit": 0,
+      "exit_name": "EXIT_OK"
+    },
+    {
+      "token": "server-capacity",
+      "exit": 64,
+      "exit_name": "EXIT_RATE_GIVE_UP"
+    },
+    {
+      "token": "cli-subscription-cap",
+      "exit": 65,
+      "exit_name": "EXIT_TERMINAL"
+    },
+    {
+      "token": "token-limit",
+      "exit": 65,
+      "exit_name": "EXIT_TERMINAL"
+    },
+    {
+      "token": "oauth-env",
+      "exit": 65,
+      "exit_name": "EXIT_TERMINAL"
+    },
+    {
+      "token": "timeout",
+      "exit": 2,
+      "exit_name": "EXIT_TIMEOUT"
+    },
+    {
+      "token": "extraction-error",
+      "exit": 1,
+      "exit_name": "EXIT_CLI_FAIL"
+    },
+    {
+      "token": "schema-fail",
+      "exit": 66,
+      "exit_name": "EXIT_SCHEMA_FAIL"
+    },
+    {
+      "token": "schema-rejected",
+      "exit": 67,
+      "exit_name": "EXIT_SCHEMA_REJECTED"
+    },
+    {
+      "token": "fanout-spawn-error",
+      "exit": 65,
+      "exit_name": "EXIT_TERMINAL"
+    },
+    {
+      "token": "config-conflict",
+      "exit": 65,
+      "exit_name": "EXIT_TERMINAL"
+    },
+    {
+      "token": "task-blocked",
+      "exit": 65,
+      "exit_name": "EXIT_TERMINAL"
+    },
+    {
+      "token": "vendor-error",
+      "exit": 65,
+      "exit_name": "EXIT_TERMINAL"
+    },
+    {
+      "token": "admission-refused",
+      "exit": 65,
+      "exit_name": "EXIT_TERMINAL"
+    },
+    {
+      "token": "vendor-timeout",
+      "exit": 65,
+      "exit_name": "EXIT_TERMINAL"
+    },
+    {
+      "token": "truncated-answer",
+      "exit": 65,
+      "exit_name": "EXIT_TERMINAL"
+    },
+    {
+      "token": "input-delivery-failed",
+      "exit": 65,
+      "exit_name": "EXIT_TERMINAL"
+    },
+    {
+      "token": "unknown",
+      "exit": 1,
+      "exit_name": "EXIT_CLI_FAIL"
+    }
+  ],
+  "notes": [
+    "B (105a1e4) shares the exit-code numbers 0-4 and 64-69 (bin/_common.py:56-66) but maps 16 tokens: `route-mismatch` is emitted by antigravity_wrapper.py:317 and reaches exit 65 via _fail without a map row; `input-delivery-failed` has no B token (B fails closed through RunResult._stdin_delivery_failed) — D-11 aligns the two tables.",
+    "A's `token-limit` and `cli-subscription-cap` rows are compatibility aliases kept until consumer evidence says otherwise (audit rank 14 / codex P4-14).",
+    "Conformance test shape (both hosts): every token the host EMITS is a member of this table; every table token maps to the same exit code; explicit exception lists name wrapper-only tokens.",
+    "Phase-specific exception (round r2, codex): A emits `input-delivery-failed` with exit 3 for a PRE-SPAWN encoding failure and exit 65 for post-spawn incomplete delivery — classifier mappings and direct wrapper exits are inventoried separately; a conformance test checks the phase, not one code."
+  ],
+  "b_delta": {
+    "emitted_without_map_row": [
+      "route-mismatch (antigravity_wrapper.py:317 → exit 65 via _fail)"
+    ],
+    "inert_compatibility_aliases": [
+      "permission-unavailable"
+    ],
+    "stdin_failure": "B fails closed through RunResult._stdin_delivery_failed without A's input-delivery-failed token/exit mapping — migration item (D-11)",
+    "rule": "inventory emitted tokens, direct wrapper exits and supported aliases separately; retain aliases until consumer evidence permits removal; do not describe today's exits as already identical"
+  }
+}

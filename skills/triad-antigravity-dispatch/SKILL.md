@@ -1,8 +1,21 @@
 ---
 name: triad-antigravity-dispatch
-description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg for individual-tier accounts; enterprise Gemini environments use `triad-gemini-dispatch`); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.16.4
+description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg; `triad-gemini-dispatch` exists for legacy compatibility with the older gemini CLI); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
+version: 0.16.6
 # changelog:
+#   0.16.6 (2026-09-26): doc resync. Step 4 `server-capacity` row states the
+#     per-attempt ladder: up to 2 re-runs after a 15 s / 45 s backoff, every
+#     attempt with the caller's full `--timeout` (timeout_s is per attempt).
+#     The gemini route is described as legacy compatibility with the older
+#     gemini CLI only. Doc-only.
+#   0.16.5 (2026-09-21): Step 1 gains two engine flags (host A v2 slices
+#     S6/S11). `--json-schema-file <abs>` passes a CALLER-OWNED schema file
+#     straight to agy `--json-schema` — transport only (no local validation,
+#     no repair re-run), read-only route only, mutually exclusive with
+#     `--pydantic`; it is the flag `triad-cross-family-review` v2 rounds use
+#     for their per-attempt producer schema projection. `--attempt <int>`
+#     (>= 1, default 1) is RECORDED on the transport receipt and the summary
+#     tail and never interpreted. Doc-only.
 #   0.16.4 (2026-09-19): research dispatches (`--web`) carry the wrapper's
 #     `AGY_WEB_EVIDENCE_CLAUSE` at the END of the prompt (spec case C29 /
 #     R-INVEST): a `search_web` result is a pointer, never a citation; every
@@ -153,10 +166,9 @@ version: 0.16.4
 
 Single-shot Antigravity CLI (`agy`) dispatch with classification-based routing
 and a self-improving repair loop. The leader's standard "call agy once" path.
-agy serves individual-tier Google accounts (the gemini CLI's successor for that
-lane) — Android / Google-ecosystem domain strength. Environments with an
-enterprise Gemini credential route to `triad-gemini-dispatch` instead; the lane
-rule lives in that skill's § Use when.
+agy is the Google-family leg (the gemini CLI's successor) — Android /
+Google-ecosystem domain strength. Compatibility with the older gemini CLI
+exists through `triad-gemini-dispatch` (legacy compatibility).
 
 ## Use when
 
@@ -380,10 +392,30 @@ TRIAD_AGY_PROMPT_EOF
   [--model <pinned-model-name>] \
   [--effort low|medium|high] \
   [--pydantic module:Class] \
+  [--json-schema-file /absolute/path/schema.json] \
+  [--attempt <int>] \
   [--timeout <seconds>] \
   [--debug])
 "${AGY_CMD[@]}"
 ```
+
+**`--json-schema-file <absolute-path>`** hands a CALLER-OWNED JSON schema file
+straight to agy `--json-schema` (which accepts a schema string OR a path, so
+the value is passed as-is — no read, no re-serialization). TRANSPORT ONLY: no
+local validation and no repair re-run, the caller admits the answer with its
+own validator (the path `triad-cross-family-review`'s v2 rounds use for their
+per-attempt producer schema projection). The wrapper still picks the channel:
+the result's `structured_output` is printed when present and an object; a
+PRESENT but unusable channel (null / non-object) is `schema-fail` 66,
+non-repairable, on this arm exactly as on `--pydantic` (gate-1 r4-13); only an
+ABSENT key falls back to the response text (logged). It belongs to the READ-ONLY
+route only (`--sandbox read-only`) and is mutually exclusive with `--pydantic`. The
+path must be absolute and an existing file; both checks run BEFORE any vendor
+work.
+
+**`--attempt <int>`** (>= 1, default 1) is the dispatch attempt number,
+RECORDED on the transport receipt and the summary tail and never interpreted
+— no control flow reads it, it drives no retry. Below 1 is refused pre-spawn.
 
 `--prompt-file` REPLACES the `--prompt` heredoc — argparse rejects both
 together, so delete the heredoc when switching to a file body.
@@ -426,8 +458,28 @@ emission only):
 
 ```bash
 SUMMARY=$(grep -E '^\[[^]]*\] \[wrapper\] antigravity ' <stderr-text> | tail -1)
-CLS=$(printf '%s' "$SUMMARY" | sed -E 's/.*\[wrapper\] antigravity ([a-z-]+) .*/\1/')
+CLS=$(printf '%s' "$SUMMARY" | sed -E 's/^\[[^]]*\] \[wrapper\] antigravity ([a-z-]+) .*/\1/')
 ```
+
+**BOTH patterns are ANCHORED to the line start** (gate-1 r9 row r9-3). The grep
+always was; the sed used to be greedy
+(`s/.*\[wrapper\] antigravity ([a-z-]+) .*/\1/`), so it took the LAST
+`[wrapper] antigravity <token> ` sequence ANYWHERE in the line — and the summary
+tail carries a FREE-TEXT field (`prompt_file=<abs>`), so a prompt file living
+under a directory literally named `…[wrapper] antigravity ok …` overrode the
+token the wrapper emitted: a demoted `extraction-error` run parsed as `ok`, and
+the MANDATORY repair-agent routing (Step 5) never fired. Since the same row the
+engine ALSO percent-escapes every free-text field of the summary
+(`_common._summary_field` — SPACE and `[` / `]` are outside the safe set, so the
+sequence is unconstructible inside `prompt_file=`; an ordinary POSIX path is
+emitted byte-identically and the audit row keeps the raw value), so the shape
+can no longer occur — but the ANCHORED parse is the CONTRACT here, and the two
+defences are independent. The wrapper's other stderr lines stay out of reach BY
+CONSTRUCTION: `run-log: <abs>`, `read-audit-file: <abs>` and
+`exec cwd=… argv=…` never carry the `[wrapper] antigravity <token> ` prefix AT
+THE LINE START; the read-audit digest line carries `read-audit` (not a token)
+after the cli name, and the demotion note keeps its colon
+(`[wrapper] antigravity: unemittable-payload — …`).
 
 Token set:
 `ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | timeout | extraction-error | vendor-error | admission-refused | vendor-timeout | truncated-answer | config-conflict | unknown`
@@ -437,7 +489,22 @@ coarse signal for shell control flow and does not identify the action on its own
 — `65` covers the terminal classes AND `truncated-answer`, which take different
 actions. Codes: `0` ok / `1` unknown or extraction-error / `2` timeout / `3` arg
 / `4` binary missing / `64` server-capacity exhausted / `65` terminal or
-truncated-answer / `66` schema fail. Caveat: an ARGPARSE rejection also exits 2
+truncated-answer / `66` schema fail. **`unknown` is ALWAYS exit 1**: exit `3`
+means an ARGUMENT error only. A vendor-spawn failure (Popen `OSError`) inside
+the shared engine classifies `unknown`, and since gate-1 r4 the agy driver
+CONFORMS every forwarded engine verdict through `map_classification_to_exit`,
+so that shape arrives as `unknown` / 1 and routes to the repair branch — it
+used to be forwarded verbatim as `unknown` at exit 3, a pairing the exit-token
+contract does not bind and this legend never carried. **`vendor-error` at 65 is
+the TRANSCRIPT refusal**, and since gate-1 r9 row r9-1 it covers two shapes: a
+`{`-prefixed stream line that could not be decoded (a HOLE), and a stream
+carrying MORE THAN ONE terminal `result` event (no unambiguous answer, so
+nothing is read out of it). Both are terminal and never retried by the wrapper
+— the LEADER re-dispatches once. A stream carrying ZERO result events is NOT
+this refusal: it stays the ordinary no-answer shape whose own diagnosis
+(`oauth-env`, `cli-subscription-cap`, the automatic capacity retry) is what the
+classifier exists for. Caveat: an ARGPARSE
+rejection also exits 2
 with NO `[wrapper]` summary line — an invocation error, not a timeout; fix the
 call, and never spawn the repair agent for it.
 
@@ -450,9 +517,9 @@ call, and never spawn the repair agent for it.
 | `admission-refused` (65) | The v2 admission census found a tool OUTSIDE the agent's allowlist in the stream (`manage_task` / `run_command` / `send_message` …) — the allowlist class only; framing / unexplained-degraded / read-blind refusals stay `vendor-error`. The COMPLETE answer is quarantined (run-log copy only, `quarantined answer (N chars)`). Surface, never repair. Review-leg callers: one retry, then terminally missing. If it recurs after 0.16.3, check the host re-ran `--setup-agents` (agent body carries the allowlist rule) — the model is TOLD the five permitted tools; agy still advertises 57. |
 | `vendor-timeout` (65) | agy's OWN turn timeout fired before the wrapper deadline (`result.status` ERROR, `result.error` "timeout waiting for response", empty response, vendor rc 1; live 2026-09-04 at 857 s of a 900 s budget with 33 allowlisted reads). Surface, never repair (the analyzer escalated: no existing class fits). Review-leg callers: re-dispatch ONCE with a narrower read scope (smaller packet / fewer cited sites), then terminally missing. |
 | `truncated-answer` (65) | agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB) and keeps NO full copy anywhere, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader remediation: re-dispatch under the output-file contract** (`references/long-answer.md` — agy's `write_file` is not subject to the fold), which needs the write-capable permissive baseline and is therefore unavailable on a hardened install and forbidden on the cross-family-review agy leg (re-dispatch once read-only for a COMPACT verdict there instead). **NOT** repair-agent territory (deterministic vendor behavior on the answer-present path; a classifier patch cannot express it). Retrying the same stdout-shaped dispatch folds again — do not plain-retry. |
-| `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff (cap 2 stream-json call re-runs) — EXCEPT on a read-only run that also called a tool outside the allowlist: that run returns after ONE dispatch (stderr + `extraction_error` name the forbidden tool), the caller's fresh dispatch being the contract's one retry (2026-09-05). |
-| `unknown` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** |
-| `extraction-error` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** agy ran but the driver found no usable answer — a `SUCCESS` status with an EMPTY `response` (`extraction_error = "empty-answer-body"`, agy self-reports success on a task it did not actually do), a fully empty capture, or garbage/no-result stream text with no matching pattern. The repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
+| `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already ran the capacity ladder: up to 2 stream-json call re-runs after a 15 s / 45 s backoff, EVERY attempt with the caller's full `--timeout` (the timeout is per attempt, so the leg can take up to 3 × `--timeout` + 60 s wall-clock) — EXCEPT on a read-only run that also called a tool outside the allowlist: that run returns after ONE dispatch (stderr + `extraction_error` name the forbidden tool), the caller's fresh dispatch being the contract's one retry (2026-09-05). |
+| `unknown` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** Includes the engine-decided transport failures the driver FORWARDS at the conformed exit 1 — a vendor-spawn `OSError` (nothing ran) and a reader/writer thread that failed to START (the child was killed and reaped, its stdout kept). Those two are transport defects, not classifier gaps, so expect the analyzer to ESCALATE rather than propose a pattern. |
+| `extraction-error` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** agy ran but the driver found no usable answer — a `SUCCESS` status with an EMPTY `response` (`extraction_error = "empty-answer-body"`, agy self-reports success on a task it did not actually do), a fully empty capture, or garbage/no-result stream text with no matching pattern — **or an UNEMITTABLE PAYLOAD**: the answer (typically a `structured_output` string carrying an escaped LONE SURROGATE) cannot be encoded on the payload channel and has no JSON-equivalent ASCII re-serialization, so `_payload_or_demote` demotes the run BEFORE the audit row and logs `[wrapper] antigravity: unemittable-payload — …` (note the COLON, which keeps the note out of the summary grep above). On THIS route the payload is decided above the result rebuild, so the canonical summary line, the audit row, the run-log and the exit code all agree — no re-emission is needed here, unlike the codex / gemini / claude routes. The repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
 | `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since a hang (the wrapper's own SIGTERM→SIGKILL process-group kill fired against agy's `--print-timeout`-bounded run) is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
 | arg (3) / binary missing (4) / `schema-fail` (66) | Surface to user with cause (empty prompt / `agy` not on PATH / `--pydantic` output still failed local validation after the one schema-repair re-run — fix the schema or prompt and re-dispatch). |
 
@@ -582,5 +649,5 @@ The leader (not the analyzer) is the only writer to the classifier extension —
 - the plugin `README.md` — wrapper contract + run-log schema.
 - `agents/agy-wrapper-repair.md` — repair sub-agent body (per-attempt workflow + outcome judgment).
 - `triad-codex-dispatch` — parallel SKILL for Codex.
-- `triad-gemini-dispatch` — parallel SKILL for Gemini (the enterprise-credential lane).
+- `triad-gemini-dispatch` — legacy compatibility with the older gemini CLI.
 - `triad-cross-family-review` — final pre-merge cross-family review (the agy leg there runs the setup-once `triad-readonly-review` agent — no shell / write / web tool — with `--add-dir`, admitted by the stream census; the by-design read residual persists — § Read-only path v2 + § Isolation).

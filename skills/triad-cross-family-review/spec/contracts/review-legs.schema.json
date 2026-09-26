@@ -1,0 +1,342 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/codefoundry-io/triad-dispatch-spec/contracts/review-legs.schema.json",
+  "title": "TRIAD named roster overrides v2",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "triad-review-legs.v2"
+    },
+    "legs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/legOverride"
+      }
+    },
+    "_comment": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "legs"
+  ],
+  "description": "Named override document. Hosts reject duplicate names, merge by name with shipped defaults, then validate resolvedRoster and actual adapter capabilities before inference.",
+  "$defs": {
+    "legOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "vendor": {
+          "enum": [
+            "claude",
+            "codex",
+            "google"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "acceptance": {
+          "enum": [
+            "required",
+            "participating",
+            "informational"
+          ]
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "note": {
+          "type": "string"
+        },
+        "claude": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/nullableText"
+            },
+            "model": {
+              "$ref": "#/$defs/nullableText"
+            },
+            "effort": {
+              "$ref": "#/$defs/nullableText"
+            }
+          }
+        },
+        "codex": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "$ref": "#/$defs/nullableText"
+            },
+            "reasoning": {
+              "$ref": "#/$defs/nullableText"
+            }
+          }
+        },
+        "google": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "route": {
+              "enum": [
+                "agy",
+                "gemini",
+                null
+              ]
+            }
+          }
+        },
+        "agy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "$ref": "#/$defs/nullableText"
+            },
+            "effort": {
+              "$ref": "#/$defs/nullableText"
+            }
+          }
+        },
+        "gemini": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "$ref": "#/$defs/nullableText"
+            },
+            "effort": {
+              "$ref": "#/$defs/nullableText"
+            }
+          }
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "resolvedLeg": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/legOverride"
+        },
+        {
+          "required": [
+            "name",
+            "vendor",
+            "enabled",
+            "acceptance",
+            "timeout_s"
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "vendor": {
+                    "const": "claude"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "claude"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "codex"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "google"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "agy"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "gemini"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "vendor": {
+                    "const": "codex"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "codex"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "claude"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "google"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "agy"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "gemini"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "vendor": {
+                    "const": "google"
+                  }
+                }
+              },
+              "then": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "agy"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "gemini"
+                    ]
+                  }
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "claude"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "codex"
+                      ]
+                    }
+                  ]
+                },
+                "allOf": [
+                  {
+                    "if": {
+                      "required": [
+                        "google"
+                      ],
+                      "properties": {
+                        "google": {
+                          "required": [
+                            "route"
+                          ],
+                          "properties": {
+                            "route": {
+                              "const": "agy"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "then": {
+                      "required": [
+                        "agy"
+                      ]
+                    }
+                  },
+                  {
+                    "if": {
+                      "required": [
+                        "google"
+                      ],
+                      "properties": {
+                        "google": {
+                          "required": [
+                            "route"
+                          ],
+                          "properties": {
+                            "route": {
+                              "const": "gemini"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "then": {
+                      "required": [
+                        "gemini"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "resolvedRoster": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "triad-review-legs.v2"
+        },
+        "legs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resolvedLeg"
+          }
+        },
+        "_comment": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "legs"
+      ]
+    },
+    "nullableText": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "\\S"
+    }
+  }
+}

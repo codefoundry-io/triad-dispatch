@@ -76,6 +76,37 @@ class AgyResult:
     # never spawned (config-conflict etc.), so the audit/run-log key is
     # omitted there — same shape rule as vendor_version.
     effective_cwd: Optional[str] = None
+    # ENGINE transport facts, carried so `main()`'s AgyResult -> RunResult
+    # rebuild does not drop them (gate-1 r4 row r4-8). `spawned` is the one
+    # `RunResult` field `_common.build_transport` reads that this driver can
+    # contradict: a Popen OSError creates no child, and a receipt built from
+    # the default True then claimed the binary and a stdin delivery that never
+    # happened. `orphans_reaped` is the C1/R-TERMINAL evidence that the owned
+    # process group had members to reap. The other receipt inputs need no
+    # carrier: `stdin_delivery` is structurally None on this route (agy takes
+    # the prompt by argv, so `_run_once` is never given `stdin_text`), and
+    # `vendor_version` / `dispatch_attempt` are set by `main()` itself.
+    # `_dispatch` stamps both from the engine's LAST RunResult.
+    #
+    # `spawned` DEFAULTS FALSE (gate-1 r5 row r5-5). It is an OBSERVATION,
+    # and the only observer is the engine: a True default meant every path
+    # that refuses BEFORE the engine is reached — the stream-json floor, the
+    # --model/--effort pin floor, the v2 read-only floor, a missing or
+    # mismatched allowlist agent — rebuilt a RunResult claiming a spawn that
+    # never happened, and `build_transport` then printed the resolved binary
+    # and a stdin-delivery vocabulary value for a child that was never
+    # created. Those receipts now read `binary: null` /
+    # `stdin_delivery: not-started`, which is what "the engine was never
+    # reached" means. Only the engine-stamped assignments in `_dispatch` can
+    # set it True.
+    spawned: bool = False
+    orphans_reaped: bool = False
+    # `RunResult.capture_complete` (gate-1 r5 row r5-2), carried for the same
+    # reason as the two above: `main()` REBUILDS a RunResult out of this
+    # record, so an engine fact that is not carried here is silently replaced
+    # by the dataclass default — and "the capture is a prefix" would then be
+    # missing from exactly the route whose driver can promote a nonzero rc.
+    capture_complete: bool = True
 
 
 def _build_cmd(prompt, agy_sandbox, model, timeout, *, json_schema=None,
@@ -568,7 +599,13 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
             continue
         try:
             obj = json.loads(s)
-        except ValueError:
+        except (ValueError, RecursionError):
+            # RecursionError joins ValueError here for the same reason the
+            # parser skips it (gate-1 r6 row r6-8): a line nested past the
+            # interpreter's limit is UNDECODABLE, and the framing rule is one
+            # blanket rule — a line that does not decode to a JSON object
+            # makes the run unusable. Without this the refusal the parser
+            # hands us was re-raised as a traceback one line later.
             obj = None
         if not isinstance(obj, dict):
             # name the offending line so a stray vendor stdout line is diagnosable
@@ -746,7 +783,16 @@ def _validate_structured_with_trigger(result, answer, pydantic_cls):
     by the shared `_common.nonrepairable_log_marker` so this driver and the
     shared engine cannot spell the token differently."""
     structured = result.get("structured_output") if isinstance(result, dict) else None
-    if structured is not None:
+    # PRESENCE is MEMBERSHIP, never truthiness (gate-1 r3 row r3-3b, the
+    # pydantic twin of r3-3). `.get()` collapses "no such key" and
+    # "`structured_output`: null" into the same None, so one JSON literal put
+    # an explicitly-null schema channel on the struct-ABSENT branch below and
+    # the raw `response` was validated and RETURNED as the answer — the
+    # divergent second answer the r4 rule suppresses whenever the vendor
+    # emitted a schema-checked channel. A present-but-unusable channel takes
+    # the suppression path; only a genuinely ABSENT one keeps the
+    # vendor-drift fallback.
+    if isinstance(result, dict) and "structured_output" in result:
         ok, payload, nonrepairable, trigger = _common.validate_response_with_trigger(
             json.dumps(structured, ensure_ascii=False, default=str), pydantic_cls)
         if ok:
@@ -790,10 +836,23 @@ def _validate_structured(result, answer, pydantic_cls):
     return ok, payload
 
 
+# The classification values that mean "the ENGINE reached no verdict here"
+# (gate-1 r4 row r4-2). `unclassified` is the sentinel `_common._run_once`
+# parks under `classify_and_log=False` on exactly the exits it leaves UNJUDGED
+# — the discriminator the forwarding guard below tests. `ok` is the
+# RunResult DATACLASS DEFAULT and is impossible from that call: the engine
+# either classifies (classify_and_log=True) or parks the sentinel. Pairing it
+# with a non-OK exit is self-contradictory, so it is treated as "no engine
+# verdict" rather than forwarded — forwarding would report `ok` at exit 0
+# with no answer, the silent success this whole rung exists to prevent.
+_ENGINE_UNDECIDED = frozenset(("unclassified", "ok"))
+
+
 def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                         repair_mode=False, pydantic_cls=None,
                         allow_skip_retry=True, admission=None,
-                        cmd_box=None) -> AgyResult:
+                        cmd_box=None, schema_file_mode=False,
+                        rr_box=None) -> AgyResult:
     """Dedicated extract-then-classify driver over the stream-json transport.
     See the plan's decision table (2026-07-31) — ORDER MATTERS. Spawn =
     _common._run_once(classify_and_log=False): shared scrubbed env + setsid +
@@ -827,22 +886,362 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             cmd_box[0] = list(cmd)   # the REAL argv of the attempt that runs (gate r3, codex)
         rr = _common._run_once("antigravity", cmd, cwd, timeout,
                                classify_and_log=False)
+        if rr_box is not None:
+            # the ENGINE's own transport facts of the attempt that runs, for
+            # the AgyResult rebuild in main() (row r4-8) — same out-parameter
+            # idiom as cmd_box, and for the same reason: every return below
+            # would otherwise have to thread them by hand
+            rr_box[0] = rr
         stream = rr.stdout
-        events, result = _common.parse_agy_stream(stream)
+        # A duplicate JSON member ANYWHERE in the stream refuses the whole
+        # stream (spec C14; gate-1 r3 row r3-2). It is held rather than
+        # returned on the spot so the TRANSPORT verdicts below keep their
+        # precedence: a killed run's tail is a fragment, and diagnosing a
+        # fragment as a content violation would mis-route the leader.
+        duplicate_member = None
+        # The census the parser had collected BEFORE a duplicate-member
+        # raise (gate-1 r9 row r9-15). It is kept apart from `undecodable`
+        # on purpose: the duplicate refusal has PRECEDENCE (it is the
+        # non-repairable content violation, schema-fail 66), so these lines
+        # are evidence on the refused attempt's digest, never a second
+        # refusal that would change the token.
+        partial_undecodable: list = []
+        try:
+            events, result, undecodable = _common.parse_agy_stream(stream)
+        except _common._DuplicateJSONMember as exc:
+            duplicate_member = exc
+            events, result, undecodable = [], None, []
+            partial_undecodable = list(exc.undecodable_lines)
         if admission is not None:
             _fb, _om, _er, _eo, _bl = _census(events, admission[0], admission[1])
             for _n in _fb:
                 if _n not in forbidden_seen:
                     forbidden_seen.append(_n)
             forbidden_omitted_seen = max(forbidden_omitted_seen, _om)   # MAX: a repeated set never over-counts
-        attempt_digests.append(_common.digest_agy_stream(events, result))
+        attempt_digest = _common.digest_agy_stream(events, result)
+        # PER-ATTEMPT capture evidence (gate-1 r6 row r6-1): the merged audit
+        # unions every attempt's reads, so it has to be able to say WHICH
+        # attempt's transcript was a prefix. `merge_agy_digests` carries the
+        # flag into `attempts[]` under the omit-when-default rule.
+        attempt_digest["capture_complete"] = bool(rr.capture_complete)
+        # PER-ATTEMPT undecodable-line census (gate-1 r7 row r7-k1), stamped
+        # on the SAME record and carried into `attempts[]` by the same
+        # omit-when-default rule, so the merged audit NAMES the hole in this
+        # attempt's transcript instead of presenting it as ordinary evidence.
+        if undecodable or partial_undecodable:
+            attempt_digest["undecodable_lines"] = (undecodable
+                                                   or partial_undecodable)
+        # THE TRANSCRIPT WAS CUT MID-LINE (gate-1 r9 row r9-10). The parser
+        # excludes a trailing fragment from its undecodable census — it is
+        # a CUT, not a hole, and refusing on it blinded the no-answer
+        # classifier to the actionable token (`oauth-env`,
+        # `cli-subscription-cap`, the capacity retry) the run really
+        # carried. The fact is still evidence, so it is recorded here under
+        # the same omit-when-default rule, from the SAME helper the parser
+        # uses, so the two can never disagree about which line it was.
+        truncated_tail = bool(_common._agy_tail_fragment(stream))
+        if truncated_tail:
+            attempt_digest["truncated_tail"] = True
+        # HOW MANY TERMINAL RESULTS THIS ATTEMPT'S TRANSCRIPT CARRIED
+        # (gate-1 r9 row r9-1). Omit-when-DEFAULT, the same rule
+        # `capture_complete` and `undecodable_lines` follow: the key appears
+        # exactly where the count is not the expected 1, so the merged audit
+        # NAMES the ambiguity instead of presenting the attempt as ordinary
+        # evidence. Stamped BEFORE the refusal below, so the refused
+        # attempt's own digest carries it.
+        n_results = sum(1 for ev in events
+                        if isinstance(ev, dict) and ev.get("event") == "result")
+        # NOT A COUNT THE PARSE EVER MADE (gate-1 r10 row r10-10). On a
+        # duplicate-member refusal the handler above resets `events` to `[]`
+        # — the parse is evidence of nothing, which is exactly why it does —
+        # so this stamped `result_events: 0` on the attempt digest and a
+        # reader of the merged audit saw a DRAINED transcript where the
+        # truth is "the stream was refused before it could be counted". The
+        # `undecodable_lines` partial census (row r9-15) and the
+        # `refused_attempt` marker already say what happened to this
+        # attempt; an invented count is not evidence.
+        if n_results != 1 and duplicate_member is None:
+            attempt_digest["result_events"] = n_results
+        # THE RUN WAS INTERRUPTED, SO ITS TRANSCRIPT IS A KNOWN PREFIX (gate-1
+        # r17 row r17-1). A run killed at the wrapper deadline whose capture
+        # happens to end on a line boundary carries none of the markers above
+        # — `capture_complete` comes from reader failures only and
+        # `truncated_tail` from a malformed fragment — yet the timeout return
+        # below itself calls the stream "a partial prefix". The engine exposes
+        # no `timed_out` field on the RunResult: EXIT_TIMEOUT is set on
+        # exactly its `timed_out` arm, so that exit IS the evidence. Any other
+        # NEGATIVE vendor rc is a child that died on a signal (POSIX
+        # `returncode`), which covers the engine's thread-start failure (it
+        # kills and reaps the child) as well as a kill from outside — but
+        # only for a SPAWNED child: a pre-spawn refusal keeps the dataclass
+        # default rc -1 with nothing run, so nothing was interrupted. The
+        # engine's other terminal classes do not cut the stream: the child of
+        # `truncated-answer` ran to rc 0 (its reader failure is already
+        # `capture_complete` false) and `input-delivery-failed` is a prompt
+        # the vendor never confirmed, not a cut output. Omit-when-default.
+        if rr.exit_code == _common.EXIT_TIMEOUT:
+            attempt_digest["interrupted"] = "timeout"
+        elif (rr.spawned and isinstance(rr.vendor_exit_code, int)
+              and rr.vendor_exit_code < 0):
+            attempt_digest["interrupted"] = "signal"
+        attempt_digests.append(attempt_digest)
         audit = _common.merge_agy_digests(attempt_digests)
+        # The key is DECODED VENDOR TEXT (row r4-6): logged verbatim, a
+        # newline plus the trusted `[wrapper] antigravity ` prefix — or a
+        # U+2028 / C0 control a `splitlines()` reader honours — forges
+        # leader-visible lines out of a refusal. Cap first (bounded input),
+        # then `ascii()`-escape, keeping the caller's own quoting; the same
+        # rule verdict_v2's `_safe` applies (row r2-8). Computed ONCE, here,
+        # for the marker below and the refusal's log line.
+        safe_key = (None if duplicate_member is None else ascii(
+            str(duplicate_member.key)[:_common._AGY_DIGEST_KEY_CAP])[1:-1])
+        # THE MARKER IS STAMPED BEFORE ANY RETURN (gate-1 r13 row r13-3).
+        # It lived inside the schema-fail branch below, so a refused attempt
+        # that ALSO ended on the wrapper timeout — or on any other engine-
+        # decided terminal verdict — returned first, and its census row read
+        # as a plain synthetic zero with no marker (the hook load check
+        # attributes a zero-step row nothing — 0 steps, no recorded id — for
+        # a run that may have made hooked calls; with the marker it refuses
+        # that census instead). Every return path now carries it; there is
+        # no `continue` between here and the returns, so the merged audit a
+        # return hands back is this object.
+        if duplicate_member is not None and audit is not None:
+            audit["refused_attempt"] = {"attempt": len(attempt_digests),
+                                        "line_no": duplicate_member.line_no,
+                                        "key": safe_key}
         if rr.exit_code == _common.EXIT_TIMEOUT:
             # Killed short-circuit FIRST: a killed run's stream is a partial
             # prefix — never trust a result event parsed out of it.
             return AgyResult(None, "timeout", _common.EXIT_TIMEOUT,
                              rr.vendor_exit_code, stream_output=stream,
                              stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd)
+        if (rr.exit_code != _common.EXIT_OK
+                and rr.classification not in _ENGINE_UNDECIDED):
+            # EVERY OTHER ENGINE-DECIDED verdict, on the same rung (gate-1 r3
+            # row r3-1, widened by r4 row r4-2). The timeout arm above used to
+            # be the only one, so a TERMINAL verdict `_run_once` reached on
+            # its own — `truncated-answer` (a reader died on a rc-0 run, so
+            # the capture is a PREFIX) or `input-delivery-failed` (the prompt
+            # was never confirmed delivered) — was invisible here: this driver
+            # re-derives its outcome from `vendor_exit_code` and the result
+            # `status`, and BOTH read perfectly healthy in exactly those two
+            # shapes, so the ok branches below printed a COMPLETE-looking
+            # answer at exit 0. The other three wrappers never had the gap:
+            # they reach `_run_once` only through `run_cli_with_retry`, whose
+            # attempt loop returns the RunResult unchanged for every class it
+            # neither retries nor promotes.
+            #
+            # THE DISCRIMINATOR IS THE CLASSIFICATION, NEVER THE EXIT CODE
+            # (row r4-2). The r3-1 spelling was `exit_code not in (EXIT_OK,
+            # EXIT_CLI_FAIL)`, which EXEMPTS every exit-1 result — and the
+            # engine returns EXIT_CLI_FAIL with classification `unknown` when
+            # a reader/writer thread fails to START (the child is killed and
+            # reaped, its stdout kept). That engine-DECIDED failure reached
+            # the ok branches again. `unclassified` is the sentinel the engine
+            # parks on exactly the pairs it leaves UNJUDGED under
+            # `classify_and_log=False`, so testing for it — not for an exit
+            # code — is what separates "this driver decides" from "the engine
+            # already decided".
+            #
+            # EVERY (exit_code, classification) pair `_run_once` can return
+            # under `classify_and_log=False` (_common.py `_run_once`):
+            #
+            #   exit               classification           who owns it here
+            #   -----------------  -----------------------  ----------------
+            #   EXIT_ARG_ERROR 3   input-delivery-failed    forwarded (pre-spawn
+            #                                               refusal: unencodable
+            #                                               stdin, never on this
+            #                                               argv route)
+            #   EXIT_ARG_ERROR 3   unknown                  forwarded (Popen
+            #                                               OSError; nothing ran)
+            #   EXIT_CLI_FAIL 1    unknown                  forwarded (reader/
+            #                                               writer thread start)
+            #   EXIT_TIMEOUT 2     unclassified             the timeout arm ABOVE
+            #                                               short-circuits first
+            #   EXIT_TERMINAL 65   input-delivery-failed    forwarded
+            #   EXIT_TERMINAL 65   truncated-answer         forwarded
+            #   EXIT_OK 0          unclassified             this driver decides
+            #   EXIT_CLI_FAIL 1    unclassified             this driver decides
+            #                                               (the rc-gate /
+            #                                               status-gate /
+            #                                               no-answer arms)
+            #
+            # A forwarded verdict keeps the engine's TOKEN — a second opinion
+            # re-derived from the same stdout is what this row forbids — but
+            # its EXIT is conformed to the vendored vocabulary
+            # (`spec/contracts/exit-tokens.json`, C8/R-TOKENS: `unknown` binds
+            # to 1). Forwarding a spawn OSError verbatim would have reported
+            # `unknown` at exit 3, a pairing that contract does not bind. The
+            # ONE carve-out is `input-delivery-failed`, whose PRE-SPAWN arm is
+            # deliberately an argument error (nothing was sent, no child
+            # existed); its post-spawn arm already sits at the mapped 65, so
+            # keeping `rr.exit_code` serves both. Stream and read-audit
+            # custody are kept so the run-log and the leg's read evidence
+            # survive the refusal.
+            forwarded_exit = (
+                rr.exit_code if rr.classification == "input-delivery-failed"
+                else _common.map_classification_to_exit(rr.classification))
+            return AgyResult(None, rr.classification, forwarded_exit,
+                             rr.vendor_exit_code, stream_output=stream,
+                             stderr=rr.stderr, read_audit=audit,
+                             effective_cwd=rr.effective_cwd)
+        if not rr.capture_complete:
+            # THE CAPTURE IS A PREFIX — TERMINAL, ABOVE EVERY BRANCH BELOW
+            # (gate-1 r5 row r5-2, HOISTED at r6 row r6-1). The engine's own
+            # reader gate fails a run closed only at `rc == 0` (a genuine
+            # vendor failure keeps its own diagnosis), so a rc != 0 run whose
+            # reader died arrives here looking like an ordinary degraded run.
+            # The r5-2 refusal sat INSIDE the answer-present admission arm,
+            # which left the NO-ANSWER shape open: a fragment carrying a
+            # capacity phrase reached `_classify_no_answer`, took the
+            # automatic `server-capacity` retry, and the next iteration
+            # replaced `rr` — only the FINAL attempt's flag propagated, while
+            # the MERGED read audit still carried the knowingly incomplete
+            # earlier transcript under an `ok` result. An attempt whose
+            # transcript is a fragment never earns a retry: the wrapper
+            # stops here and the LEADER re-dispatches (the contract's one
+            # retry), exactly as for every other terminal class.
+            #
+            # No new token — this is the existing `truncated-answer` terminal
+            # class, the same one the engine raises for the rc-0 shape of the
+            # identical fact. The stream and the merged read audit ride out
+            # for the run-log; no answer does, and nothing is parsed out of a
+            # prefix to decide otherwise (a duplicate member or a content
+            # verdict read off a fragment would mis-route the leader, the
+            # same precedence the killed-run short-circuit above keeps).
+            _common.log("the output capture is incomplete (a reader thread "
+                        "failed or did not join), so this attempt's "
+                        "transcript is a prefix — terminal, never retried")
+            return AgyResult(None, "truncated-answer", _common.EXIT_TERMINAL,
+                             rr.vendor_exit_code, stream_output=stream,
+                             stderr=rr.stderr, read_audit=audit,
+                             effective_cwd=rr.effective_cwd,
+                             capture_complete=False,
+                             extraction_error=(
+                                 f"incomplete output capture (vendor "
+                                 f"rc={rr.vendor_exit_code}): a reader thread "
+                                 f"failed or did not join, so everything this "
+                                 f"attempt produced came out of a PREFIX of "
+                                 f"the stream and is never admitted, never "
+                                 f"classified from, and never retried"))
+        if n_results > 1:
+            # MORE THAN ONE TERMINAL RESULT REFUSES THIS ATTEMPT (gate-1 r9
+            # row r9-1), on the same PRE-RETRY rung as the undecodable and
+            # duplicate-member refusals below and for the same reason: the
+            # transcript does not have one unambiguous terminal answer, so
+            # nothing may be read out of it.
+            #
+            # `parse_agy_stream` keeps the LAST result event, and the
+            # exactly-one-result rule lived in `admit()` — which runs ONLY
+            # in the answer-present v2 branch. So a FULLY CAPTURED stream
+            # carrying a completed BLOCKING verdict followed by an ERROR
+            # result with an empty `response` and a capacity phrase went the
+            # other way entirely: the empty last result took the no-answer
+            # road, `_classify_no_answer` read `model overloaded`, the
+            # driver took its automatic server-capacity RETRY, and a clean
+            # attempt 2 returned a SAFE answer that REPLACED the blocking
+            # one. The count is a property of the TRANSCRIPT, so it is
+            # checked here for every posture and every exit code.
+            #
+            # ZERO results is NOT this refusal. A drained attempt is the
+            # ordinary no-answer shape whose diagnosis (`oauth-env`,
+            # `cli-subscription-cap`, the capacity retry) is exactly what
+            # the arms below exist for; refusing it here would blind every
+            # actionable no-answer class. `admit()` keeps its own `!= 1`
+            # rule for the answer-present branch, where an answer is in hand
+            # and a missing terminal result IS a framing violation.
+            #
+            # Same token and exit as the sibling transcript refusals —
+            # `vendor-error` / EXIT_TERMINAL, TERMINAL, never retried: the
+            # LEADER re-dispatches (the contract's one retry).
+            reason = (f"{n_results} result events in the stream (expected "
+                      f"exactly 1), so this attempt has no unambiguous "
+                      f"terminal answer and nothing is read out of it")
+            # THE ALLOWLIST CLASS SURVIVES THIS RUNG (gate-1 r10 row r10-9).
+            # The refusal returned a generic `vendor-error` and dropped the
+            # census, so a multi-result stream that ALSO executed an
+            # off-allowlist tool stopped classifying `admission-refused` and
+            # stopped naming the tool — and the leader's handling of that
+            # class (`spec/leg-contracts.md` § admission-refused: one retry,
+            # then terminally missing, with the tool named) keys on the
+            # token. The answer-arm refusal has always appended the census
+            # to its reason (gate r1 row 2); same rule, same wording, on the
+            # pre-retry rung.
+            token = "vendor-error"
+            if forbidden_seen:
+                reason += ("; tool(s) outside the allowlist also appeared in "
+                           "the stream: "
+                           + _forbidden_shown(forbidden_seen,
+                                              forbidden_omitted_seen))
+                token = "admission-refused"
+            _common.log(f"admission refused: {reason}")
+            return AgyResult(None, token, _common.EXIT_TERMINAL,
+                             rr.vendor_exit_code, stream_output=stream,
+                             stderr=rr.stderr, read_audit=audit,
+                             effective_cwd=rr.effective_cwd,
+                             extraction_error=reason)
+        if undecodable:
+            # AN UNDECODABLE LINE REFUSES THIS ATTEMPT (gate-1 r7 row r7-k1),
+            # on the SAME rung as the duplicate member and for the same
+            # reason: the transcript has a hole, so nothing read out of it can
+            # be trusted — neither an answer, nor the absence of one, nor the
+            # capacity phrase that would otherwise earn the automatic retry
+            # below. r6-8 made the parser SKIP such a line rather than let it
+            # escape as a traceback (correct), but left no flag: a drained
+            # no-answer attempt carrying `model overloaded` took the
+            # server-capacity retry, and a clean second attempt returned `ok`
+            # with a merged audit that omitted the event entirely.
+            #
+            # The framing rule is ONE blanket rule and `admit` already emits
+            # exactly this class for a line that does not decode to a JSON
+            # object — `vendor-error` at EXIT_TERMINAL — but it runs only on
+            # the answer-present v2 path, so the no-answer shape and the whole
+            # permissive posture were open. Same token, same exit, decided
+            # here so every posture is covered. TERMINAL: the LEADER
+            # re-dispatches (the contract's one retry), as for every other
+            # terminal class. The log carries the LINE NUMBER and the
+            # EXCEPTION CLASS only — never the vendor bytes (row r4-6).
+            shown = json.dumps(undecodable[:_common._AGY_UNDECODABLE_LOG_CAP],
+                               ensure_ascii=True)
+            reason = (f"stream line(s) undecodable, so this attempt's "
+                      f"transcript has a hole and nothing is read out of it: "
+                      f"{shown}")
+            _common.log(f"admission refused: {reason}")
+            return AgyResult(None, "vendor-error", _common.EXIT_TERMINAL,
+                             rr.vendor_exit_code, stream_output=stream,
+                             stderr=rr.stderr, read_audit=audit,
+                             effective_cwd=rr.effective_cwd,
+                             extraction_error=reason)
+        if duplicate_member is not None:
+            # NON-REPAIRABLE (C14): a repair turn would re-dispatch on the
+            # very evidence the duplicate hid, so this takes EXIT_SCHEMA_FAIL
+            # directly instead of the one schema-repair re-run. The refused
+            # attempt's OWN digest is empty (it comes from the parse that just
+            # refused, so it is evidence of nothing); the raw stream still
+            # rides out for the run-log. `safe_key` is the escaped key
+            # computed once after the merge (rows r4-6 / r13-3).
+            _common.log(f"agy stream line {duplicate_member.line_no} carries a "
+                        f"duplicate JSON member '{safe_key}' "
+                        f"(original-text reject, spec C14) — the whole stream "
+                        f"is refused; a surviving sibling result event must "
+                        f"never be admitted in its place")
+            # CUSTODY (row r4-4): this return used to hand back `read_audit=
+            # None`, which discards the AGGREGATE — and on attempt 2 of a
+            # schema-repair chain the aggregate is the only record of attempt
+            # 1's reads. main() then wrote neither the read-audit line nor
+            # `agy-read-audit.json`, losing evidence gathered BEFORE the
+            # untrusted-input violation (evidence preservation is the
+            # terminating shape). The leg is INVALID either way — the token
+            # and the 66 are unchanged — so nothing can PASS on this audit;
+            # what it buys is that the reads stay accounted for. The marker
+            # names WHICH attempt was refused, so a reader never mistakes the
+            # aggregate for a complete transcript. The marker itself is
+            # stamped right after the merge, before every return (row
+            # r13-3), so this branch no longer re-stamps it.
+            return AgyResult(None, "schema-fail", _common.EXIT_SCHEMA_FAIL,
+                             rr.vendor_exit_code, stream_output=stream,
+                             stderr=rr.stderr, read_audit=audit,
+                             effective_cwd=rr.effective_cwd)
         # r1/R3: every field below is vendor-controlled. A non-dict result or
         # a non-string `response` (the model can emit a JSON object there)
         # must degrade to "no usable answer" — CLASSIFIED, audited, run-logged
@@ -853,7 +1252,60 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
         answer = raw_answer if isinstance(raw_answer, str) else ""
         bad_answer_type = (raw_answer is not None
                            and not isinstance(raw_answer, str))
-        if result is not None and answer.strip():
+        # THE STRUCTURED CHANNEL IS THE ANSWER on the two structured routes
+        # (gate-1 r4 row r4-10). The whole arm below used to be gated on a
+        # non-blank `response`, so a result carrying a schema-checked
+        # `structured_output` and an EMPTY `response` fell through to the
+        # no-answer section and was discarded as `extraction-error` /
+        # `empty-answer-body` — the authoritative channel thrown away because
+        # the incidental one was blank. The widening is scoped to the routes
+        # that HAVE a structured channel (`--json-schema-file` /
+        # `--pydantic`): on a plain call an empty response stays the no-answer
+        # failure it has always been. Admission still runs first, because the
+        # arm it guards is where the v2 census lives.
+        structured_member = (isinstance(result, dict)
+                             and "structured_output" in result)
+        structured_route = schema_file_mode or pydantic_cls is not None
+        if result is not None and (answer.strip()
+                                   or (structured_route and structured_member)):
+            if truncated_tail:
+                # AN ANSWER READ OUT OF A CUT TRANSCRIPT IS A FRAGMENT'S
+                # ANSWER (gate-1 r10 row r10-13). Row r9-10 exempts a
+                # trailing fragment from the undecodable census so the
+                # NO-ANSWER classifier can still name the actionable token
+                # (`oauth-env`, `cli-subscription-cap`, the capacity retry)
+                # — that path is untouched, and this rung sits INSIDE the
+                # answer-present branch for exactly that reason. But when
+                # an answer IS in hand, the cut is the thing that decided
+                # WHICH answer: a stream killed while a SECOND result event
+                # was being written returned result #1 as `ok` on the
+                # permissive posture. The v2 path was covered by `admit()`'s
+                # framing rule (a line that does not decode to a JSON object
+                # makes the run unusable), so this states the same rule on
+                # EVERY posture and with the precise token.
+                #
+                # `truncated-answer` / EXIT_TERMINAL is the existing class
+                # for "everything this attempt produced came out of a
+                # PREFIX" — the same token the incomplete-capture rung
+                # above uses for the identical fact. TERMINAL: the LEADER
+                # re-dispatches (the contract's one retry); no answer rides
+                # out, a bounded copy goes to the run-log.
+                snippet = (answer if len(answer) <= 2000
+                           else answer[:2000] + " …[truncated]")
+                reason = ("the transcript was CUT mid-line (a trailing "
+                          "fragment), so the answer this attempt carries is "
+                          "whatever the cut left behind — a later result "
+                          "event may have been in flight; nothing is "
+                          "admitted out of a fragment. quarantined answer "
+                          f"({len(answer)} chars): {snippet}")
+                _common.log("the stream was cut mid-line and this attempt "
+                            "carries an answer — terminal, never retried")
+                return AgyResult(None, "truncated-answer",
+                                 _common.EXIT_TERMINAL,
+                                 rr.vendor_exit_code, stream_output=stream,
+                                 stderr=rr.stderr, read_audit=audit,
+                                 effective_cwd=rr.effective_cwd,
+                                 extraction_error=reason)
             if admission is not None:
                 # v2 ADMISSION (spec § Admission): judged by what the stream
                 # shows — framing, one result, allowlist census, errored steps
@@ -956,6 +1408,79 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                                      "(own-line <truncated N bytes|lines> marker). "
                                      f"quarantined answer: {snippet}"))
             if pydantic_cls is None:
+                # --json-schema-file (caller-owned producer schema): the
+                # SCHEMA-CONSTRAINED channel is the answer, exactly as on the
+                # pydantic path (`_validate_structured_with_trigger` prefers
+                # `structured_output` and main() prints `validated`). Measured
+                # 2026-09-21: agy's result event carries BOTH channels, and
+                # `response` is the same JSON plus agy's own finish-tool
+                # metadata (`toolAction`, `toolSummary`) — printing it made
+                # verdict_v2 admission fail with "Additional properties are
+                # not allowed ('toolAction', 'toolSummary' were unexpected)".
+                # This wrapper still validates nothing and retries nothing:
+                # it only picks the channel the vendor schema-checked.
+                #
+                # PRESENCE is decided by MEMBERSHIP, never by truthiness
+                # (gate-1 r3 row r3-3): `.get()` returns None both for a
+                # missing key and for `"structured_output": null`, so one JSON
+                # literal put an explicitly-null schema channel on the ABSENT
+                # branch and printed the response text at exit 0 — the very
+                # divergent answer the present-but-unusable arm below refuses.
+                # `structured_member` is computed ONCE, above the answer
+                # guard, because that guard now reads it too (row r4-10).
+                structured = (result.get("structured_output")
+                              if isinstance(result, dict) else None)
+                if schema_file_mode:
+                    if isinstance(structured, dict):
+                        return AgyResult(answer, "ok", _common.EXIT_OK,
+                                         rr.vendor_exit_code, stream_output=stream,
+                                         stderr=rr.stderr, read_audit=audit,
+                                         effective_cwd=rr.effective_cwd,
+                                         validated=structured)
+                    if structured_member:
+                        # PRESENT but not an object (gate-1 r2 row r2-2): the
+                        # schema-constrained channel EXISTS and is unusable, so
+                        # this dispatch has NO admissible answer. Falling
+                        # through to `response` here would hand the caller a
+                        # divergent answer the vendor never schema-checked —
+                        # exactly the fallback the pydantic arm suppresses
+                        # (`_validate_structured_with_trigger`). The response
+                        # text is quarantined in the reason, never on stdout.
+                        #
+                        # ONE CONDITION, ONE TOKEN (gate-1 r4 row r4-13): the
+                        # IDENTICAL vendor shape on the `--pydantic` arm is
+                        # the suppressed-raw-fallback failure and emits
+                        # `schema-fail` / EXIT_SCHEMA_FAIL. This arm emitted
+                        # `extraction-error` / EXIT_CLI_FAIL for the same
+                        # fact, and `extraction-error` MANDATES a repair-agent
+                        # dispatch (dispatch SKILL Hard rule 8) — with nothing
+                        # for that agent to patch, because the defect is the
+                        # vendor's channel, not this host's classifier. It is
+                        # NON-REPAIRABLE by construction here: this arm runs
+                        # only when `pydantic_cls is None`, so there is no
+                        # schema-repair loop to re-enter, and the return is
+                        # terminal. Reason text takes the pydantic arm's
+                        # wording so one grep finds both.
+                        snippet = (answer if len(answer) <= 2000
+                                   else answer[:2000] + " …[truncated]")
+                        return AgyResult(None, "schema-fail",
+                                         _common.EXIT_SCHEMA_FAIL,
+                                         rr.vendor_exit_code, stream_output=stream,
+                                         stderr=rr.stderr, read_audit=audit,
+                                         effective_cwd=rr.effective_cwd,
+                                         extraction_error=(
+                                             f"structured_output present but "
+                                             f"unusable "
+                                             f"({type(structured).__name__}); "
+                                             f"raw-response fallback "
+                                             f"suppressed: the "
+                                             f"schema-constrained channel is "
+                                             f"the only answer the vendor "
+                                             f"checked and the response text "
+                                             f"is not a substitute. "
+                                             f"quarantined answer: {snippet}"))
+                    _common.log("json-schema-file: structured_output absent in "
+                                "the vendor result — printing the response text")
                 return AgyResult(answer, "ok", _common.EXIT_OK,
                                  rr.vendor_exit_code, stream_output=stream,
                                  stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd)
@@ -1011,8 +1536,13 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             # pre-existing pass-through: there the failing text is the
             # vendor's only answer, with no second payload to diverge from,
             # and surfacing it stays a debugging aid.
+            #
+            # PRESENCE is MEMBERSHIP here too (row r3-3b): this predicate has
+            # to agree with `_validate_structured_with_trigger`'s, or a null
+            # channel would be refused by the validator and then have its
+            # suppressed raw reply printed to stdout anyway.
             structured_present = (isinstance(result, dict)
-                                  and result.get("structured_output") is not None)
+                                  and "structured_output" in result)
             if nonrepairable or structured_present:
                 snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
                 return AgyResult(None, "schema-fail", _common.EXIT_SCHEMA_FAIL,
@@ -1190,7 +1720,13 @@ def _dispatch(args, ver, pydantic_cls, agy_bin, readonly: bool,
     exclusive settings guard (heals a stale `.agybak`) and the version-gated
     danger flag, as before v2."""
     start = time.monotonic()
-    json_schema = json.dumps(pydantic_cls.model_json_schema()) if pydantic_cls else None
+    # agy --json-schema takes a schema STRING or a path to a schema file
+    # (Tier 2: `agy --help`), so a caller-owned file rides the same argument
+    # as the pydantic-derived string; --json-schema-file and --pydantic are
+    # mutually exclusive, checked in main() before this point.
+    json_schema = getattr(args, "json_schema_file", None)
+    if json_schema is None and pydantic_cls:
+        json_schema = json.dumps(pydantic_cls.model_json_schema())
     if readonly:
         agent = AGY_RESEARCH_AGENT if args.web else AGY_REVIEW_AGENT
         allowlist = AGY_RESEARCH_TOOLS if args.web else AGY_REVIEW_TOOLS
@@ -1216,13 +1752,26 @@ def _dispatch(args, ver, pydantic_cls, agy_bin, readonly: bool,
                          effort=args.effort, agent=agent, add_dir=args.cwd)
         cmd[0] = agy_bin   # resolved/pinned path: a PATH shadow cannot win
         cmd_box = [cmd]
+        rr_box = [None]
+        # schema_file_mode is wired on the read-only route ONLY: main() refuses
+        # --json-schema-file on every other posture, so the permissive call
+        # below can never be in it.
         r = _run_agy_with_retry(cmd, args.prompt, args.timeout, cwd=args.cwd,
                                 repair_mode=args.repair_mode,
                                 pydantic_cls=pydantic_cls,
                                 allow_skip_retry=False,
-                                admission=(allowlist, read_set), cmd_box=cmd_box)
+                                admission=(allowlist, read_set), cmd_box=cmd_box,
+                                schema_file_mode=getattr(
+                                    args, "json_schema_file", None) is not None,
+                                rr_box=rr_box)
         r.elapsed = time.monotonic() - start
         r.cmd = cmd_box[0]   # the argv that actually ran last (a schema-repair retry rewrites -p)
+        # row r4-8: the engine's transport facts, or the AgyResult defaults
+        # when the engine was never reached (rr_box[0] is None).
+        if rr_box[0] is not None:
+            r.spawned = rr_box[0].spawned
+            r.orphans_reaped = rr_box[0].orphans_reaped
+            r.capture_complete = rr_box[0].capture_complete
         return r
 
     cmd = _build_cmd(args.prompt, False, args.model, args.timeout,
@@ -1232,11 +1781,13 @@ def _dispatch(args, ver, pydantic_cls, agy_bin, readonly: bool,
     cmd[0] = agy_bin
     r: Optional[AgyResult] = None
     cmd_box = [cmd]
+    rr_box = [None]
     try:
         with _agy_settings.agy_settings_guard([], lock_timeout=settings_lock_timeout):
             r = _run_agy_with_retry(cmd, args.prompt, args.timeout, cwd=args.cwd,
                                     repair_mode=args.repair_mode,
-                                    pydantic_cls=pydantic_cls, cmd_box=cmd_box)
+                                    pydantic_cls=pydantic_cls, cmd_box=cmd_box,
+                                    rr_box=rr_box)
         cmd = cmd_box[0]
     except (TimeoutError, json.JSONDecodeError, ValueError, OSError) as e:
         # Settings-transaction failure (lock timeout / corrupt settings.json /
@@ -1267,10 +1818,18 @@ def _dispatch(args, ver, pydantic_cls, agy_bin, readonly: bool,
             cmd = [agy_bin]   # transaction never opened: no vendor process ran
     r.elapsed = time.monotonic() - start
     r.cmd = cmd
+    # row r4-8, as on the read-only branch above.
+    if rr_box[0] is not None:
+        r.spawned = rr_box[0].spawned
+        r.orphans_reaped = rr_box[0].orphans_reaped
+        r.capture_complete = rr_box[0].capture_complete
     return r
 
 
 def main() -> int:
+    # The DIAGNOSTIC stream survives any locale; the PAYLOAD stream is never
+    # re-encoded (gate-1 r7 row r7-c2 — `_common` § payload vs diagnostic).
+    _common._relax_diagnostic_stream()
     # SIGTERM/SIGHUP unwind instead of dying mid-transaction, so the settings
     # guard restore + vendor child kill run on the way out (SIGKILL stays
     # uncoverable by design — .agybak + next-call heal owns that window).
@@ -1329,9 +1888,27 @@ def main() -> int:
                    help="pydantic class spec (module:Class) — native "
                         "--json-schema (model_json_schema()) + local "
                         "validate; one repair re-run then exit 66")
+    p.add_argument("--json-schema-file", default=None,
+                   help="ABSOLUTE path to a caller-owned JSON schema file, "
+                        "passed straight to agy --json-schema (which accepts "
+                        "a schema string OR a path). Transport only: no local "
+                        "validation and no repair re-run — the caller admits "
+                        "the answer with its own validator. Read-only v2 route "
+                        "only; mutually exclusive with --pydantic")
+    p.add_argument("--attempt", type=int, default=1,
+                   help="Dispatch attempt number carried on the transport "
+                        "receipt (>=1, default 1). RECORDED only — the wrapper "
+                        "never retries on it and no control flow reads it")
     # NOTE: --dangerously-* are intentionally NOT defined -> argparse rejects
     # them (danger flags are banned).
     args = p.parse_args()
+    # ONE NORMALIZED MODEL REQUEST (gate-1 r13 row r13-4 — the codex shape of
+    # row r12-3, generalized: the C35 / DL-3 sentence covers every leg).
+    # Empty or whitespace-only = NO request; the argv build and the record
+    # (`requested_model` on the summary tail, the audit row and the run-log)
+    # read this one value.
+    if args.model is not None and not args.model.strip():
+        args.model = None
 
     if args.setup_agents:
         d = agents_dir()
@@ -1340,8 +1917,18 @@ def main() -> int:
         except OSError as e:
             _common.log(f"--setup-agents failed: {e}")
             return _common.EXIT_ARG_ERROR
+        # THE PRINTED PATHS ARE PAYLOAD, NOT OPERATOR PROSE (gate-1 r8 row
+        # r8-8; the rule r7-x2 set for the dispatch lines one library over).
+        # `print()` uses this process's STRICT stdout handler, so under a
+        # non-UTF-8 locale a non-ASCII agents dir raised UnicodeEncodeError
+        # HERE — after the agent files had already been written — and the
+        # command died at exit 1 on a setup that had SUCCEEDED, printing
+        # neither the paths nor the hint. `os.fsencode` reproduces the
+        # on-disk bytes exactly (it reverses the surrogateescape a
+        # non-UTF-8 filesystem decode introduces), so the path the operator
+        # copies is the path that exists.
         for path in written:
-            print(path)
+            _common._emit_payload(os.fsencode(path) + b"\n")
         try:
             # heal a stale `.agybak` a pre-v2 read-only transaction may have left
             # (gate r1, claude): on a hardened host every dispatch is now read-only
@@ -1350,13 +1937,28 @@ def main() -> int:
                 pass
         except (TimeoutError, json.JSONDecodeError, ValueError, OSError) as e:
             _common.log(f"--setup-agents: settings heal skipped: {e}")
-        print("hint: research dispatches (--web) use read_url_content / search_web, "
-              "which need the `read_url(*)` permission allowed on this host "
-              "(~/.gemini/antigravity-cli/settings.json permissions.allow); review "
-              "dispatches need nothing beyond --add-dir (passed automatically).")
+        # Same channel, same rule (row r8-8): this line is operator-copied
+        # text on the payload stream, so it goes out as UTF-8 bytes too.
+        _common._emit_payload(
+            b"hint: research dispatches (--web) use read_url_content / "
+            b"search_web, which need the `read_url(*)` permission allowed "
+            b"on this host (~/.gemini/antigravity-cli/settings.json "
+            b"permissions.allow); review dispatches need nothing beyond "
+            b"--add-dir (passed automatically).\n")
         return _common.EXIT_OK
 
+    if args.attempt < 1:
+        _common.log(f"--attempt must be >= 1 (got {args.attempt})")
+        return _common.EXIT_ARG_ERROR
+
+    # C28: resolve the (possibly relative) --prompt-file once so the absolute
+    # path can be RECORDED on the summary line and in the audit/run-log
+    # records. load_prompt_text() re-resolves the same way and reads the text.
+    _prompt_file_resolved = None
     try:
+        if args.prompt_file:
+            _prompt_file_resolved = str(
+                _common.resolve_prompt_file(args.prompt_file))
         _prompt_text = _common.load_prompt_text(args.prompt, args.prompt_file)
     except Exception as e:
         _common.log(f"prompt load failed: {e}")
@@ -1405,6 +2007,41 @@ def main() -> int:
                     "it; pass --cwd <abs root the leg's reads must resolve in> "
                     "(a --web research dispatch is exempt)")
         return _common.EXIT_ARG_ERROR
+
+    # --json-schema-file: checked BEFORE any vendor work — a paid dispatch
+    # whose caller-owned schema was silently dropped is worse than an
+    # argument error.
+    if args.json_schema_file is not None:
+        if args.pydantic:
+            _common.log("--json-schema-file and --pydantic are mutually "
+                        "exclusive (two schema sources for one --json-schema "
+                        "flag)")
+            return _common.EXIT_ARG_ERROR
+        if args.sandbox != "read-only":
+            _common.log("--json-schema-file belongs to the read-only v2 route "
+                        "(pass --sandbox read-only)")
+            return _common.EXIT_ARG_ERROR
+        if not os.path.isabs(args.json_schema_file):
+            _common.log(f"--json-schema-file must be an absolute path (agy "
+                        f"resolves it against its own cwd): "
+                        f"{args.json_schema_file}")
+            return _common.EXIT_ARG_ERROR
+        if not os.path.isfile(args.json_schema_file):
+            _common.log(f"--json-schema-file is not a file: "
+                        f"{args.json_schema_file}")
+            return _common.EXIT_ARG_ERROR
+        # Same runtime-roots containment `--cwd` and `--prompt-file` get
+        # (gate-1 r2 row r2-5): the path is handed STRAIGHT to the vendor, so
+        # under TRIAD_WRAPPER_ALLOWED_ROOTS an out-of-root schema is an
+        # uncontained file-read -> vendor channel. Roots unset (lab default)
+        # -> returned resolved and unchanged; the resolved path is what agy
+        # then reads, so the file validated here is the file used.
+        try:
+            args.json_schema_file = str(_common._ensure_within_runtime_roots(
+                Path(args.json_schema_file), "--json-schema-file"))
+        except Exception as e:
+            _common.log(f"--json-schema-file validation failed: {e}")
+            return _common.EXIT_ARG_ERROR
 
     pydantic_cls = None
     if args.pydantic:
@@ -1471,6 +2108,25 @@ def main() -> int:
         if r.cmd:
             cmd = r.cmd  # the REAL argv for the audit row + run-log
 
+    # THE PAYLOAD IS DECIDED BEFORE THE AUDIT ROW (gate-1 r7 rows r7-c2 /
+    # r7-k5). stdout is the payload channel and was written LAST with the
+    # strict locale encoder, so two shapes lost a finished verdict after every
+    # record claimed `ok`: an em-dash under a non-UTF-8 locale, and a
+    # `structured_output` string carrying an escaped lone surrogate (which has
+    # no UTF-8 encoding at ANY locale). The bytes are built HERE, above the
+    # `rr` rebuild, so a demotion reaches the audit row, the run-log, the
+    # canonical summary line and this function's exit code by construction;
+    # `_common._emit_payload` at the tail only writes them.
+    if r.validated is not None:
+        _payload = _common._payload_or_demote(
+            "antigravity", r,
+            json.dumps(r.validated, ensure_ascii=False) + "\n", r.validated)
+    else:
+        _answer = r.final_answer or ""
+        if _answer and not _answer.endswith("\n"):
+            _answer += "\n"
+        _payload = _common._payload_or_demote("antigravity", r, _answer)
+
     # Build a RunResult for the shared audit / run-log / debug helpers.
     # vendor_version (agy telemetry slice, 2026-08-19): `ver` is the SAME
     # _probe_agy_version() tuple the stream-json floor gate above already
@@ -1490,6 +2146,12 @@ def main() -> int:
         read_audit=r.read_audit,
         vendor_version=".".join(map(str, ver)) if ver is not None else None,
         effective_cwd=r.effective_cwd,
+        # row r4-8: the ENGINE's transport facts, not this rebuild's defaults.
+        spawned=r.spawned,
+        orphans_reaped=r.orphans_reaped,
+        # row r5-2: the engine's reader outcome, so the receipt and the
+        # run-log say whether the transcript behind this record was whole.
+        capture_complete=r.capture_complete,
     )
 
     # Read-audit digest — emitted BEFORE the canonical summary line, on EVERY
@@ -1511,7 +2173,24 @@ def main() -> int:
         # — an IO failure here never changes rr.exit_code/classification.
         read_audit_path = _common.emit_read_audit("antigravity", rr)
         if read_audit_path is not None:
-            _common.log(f"read-audit-file: {read_audit_path}")
+            # THE VALUE IS PERCENT-ESCAPED FILESYSTEM BYTES (gate-1 r13 row
+            # r13-5). Written raw, a NEWLINE in the path split the line and
+            # an undecodable byte was rewritten by the `backslashreplace`
+            # diagnostic stream, so the custody check (`collect_v2.
+            # _agy_custody_reason`, which compares the SAME encoding) could
+            # never match a legitimate attempt. `_summary_field` is the
+            # summary tail's escaping: an ordinary POSIX path is emitted
+            # byte-identically, anything else is escaped onto ONE line.
+            _common.log(f"read-audit-file: {_common._summary_field(str(read_audit_path))}")
+
+    # Record-only receipt inputs (C9/C10 + C28): the agy driver calls
+    # _run_once with classify_and_log=False and emits its own summary below,
+    # so the two fields are attached to the RunResult here instead.
+    rr.dispatch_attempt = args.attempt
+    rr.prompt_file_resolved = _prompt_file_resolved
+    # C35 / DL-3 (gate-1 r13 row r13-4): the normalized model request rides
+    # the same record — audit row and run-log, omit-when-None.
+    rr.requested_model = args.model
 
     # Canonical 1-line summary — byte-match the format _run_once emits so the
     # dispatch SKILL grep + the parity test see the same shape.
@@ -1519,6 +2198,8 @@ def main() -> int:
         f"[wrapper] antigravity {r.classification} "
         f"exit={r.exit_code} vendor={r.vendor_exit_code} "
         f"elapsed={elapsed:.1f}s"
+        + _common._summary_tail(args.attempt, _prompt_file_resolved,
+                                args.model)
     )
 
     _common.audit("antigravity", cmd, args.prompt, rr)
@@ -1529,13 +2210,8 @@ def main() -> int:
     if run_log_path is not None:
         _common.log(f"run-log: {run_log_path}")
 
-    if r.validated is not None:
-        sys.stdout.write(json.dumps(r.validated, ensure_ascii=False) + "\n")
-    else:
-        sys.stdout.write(r.final_answer or "")
-        if r.final_answer and not r.final_answer.endswith("\n"):
-            sys.stdout.write("\n")
-    sys.stdout.flush()
+    # Stdout = the UTF-8 BYTES built above, never a locale re-encoding.
+    _common._emit_payload(_payload)
     return r.exit_code
 
 

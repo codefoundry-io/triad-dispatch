@@ -1,0 +1,54 @@
+{
+  "schema": "triad-review-legs.v2",
+  "_comment": "HOST A EXAMPLE — the owner's four-leg operating profile: ONE codex entry and THREE named Google entries, four legs over TWO families. The file name `four-leg` records that original profile; since 2026-09-25 it also carries the owner's COMPARISON entry `codex-astra` (gpt-6-astra / high beside the gpt-5.6-terra / xhigh codex baseline, spec R-ROSTER, case C35), so it resolves to five entries, still TWO families (two codex entries are one family). The comparison entry is an ordinary opt-in entry whose findings count under R-AGREE like any leg's, and the terra/astra difference is recorded as a ledger observation in the round ledger, never a vote or a policy. Copy this to <source-repo>/.claude/triad-review-legs.json (the project override `prepare --v2` reads from the LIVE checkout, never the round tree) and apply it as a REVIEWED DELTA over whatever that file already holds — do not overwrite unrelated owner configuration. Disabling the shipped `claude` and `google` entries is what makes the round exactly these five entries: the shipped `google` entry would otherwise run BESIDE its three named replacements, and `roster_v2` prints a WARNING for every shipped entry an override moves, at RESOLUTION — on `prepare`'s stderr, not at collect. TWO families is the POINT, not a defect: a clean round of five valid results over two families folds to OWNER_DECISION_REQUIRED (exit 6), which is the owner's decision boundary, never an implicit pass. THE EMPHASIS IS NOT A ROSTER FIELD: put the leg-name table in the bound brief before `prepare`, where the content digest covers it, and let each leg select its row by the `leg_name` its binding line already carries. `note` is operator prose and never reaches a prompt. HOST A TOPOLOGY: the codex entry is a CLI route (codex_wrapper.py, read-only sandbox) and A's NATIVE family is claude — B's native Codex child is not a template for A. OFF-SITE vs IN-COMPANY: `route` is pinned to agy here because agy is the off-site Google CLI; where gemini is the one in service, pin `\"route\": \"gemini\"` instead and move the tier into the `gemini` block — never copy an agy model slug into a gemini control. GOOGLE TIMEOUT 900 s (since 2026-09-26): in round r12 an agy Pro-high / high entry hit the previous 600 s wrapper timeout on a 59 KB gated diff + 26 KB brief (89 tool steps, the vendor turn still in progress; the same-basis retry completed in 434 s) — the wrapper derives its print deadline from --timeout, so the value is the roster DATA that decides it (shared dev log DL-5; a timeout change is a new basis, R-REREVIEW). THREE CONCURRENT GOOGLE CALLS ARE NOT VERIFIED: dispatch these legs SEQUENTIALLY until a real concurrent run is measured. Schema: spec/contracts/review-legs.schema.json (vendored); rules: spec reference/review-rules.md#R-ROSTER.",
+  "legs": [
+    {"name": "claude", "enabled": false},
+    {"name": "google", "enabled": false},
+    {
+      "name": "codex",
+      "enabled": true,
+      "acceptance": "required",
+      "codex": {"model": "gpt-5.6-terra", "reasoning": "xhigh"},
+      "timeout_s": 900
+    },
+    {
+      "name": "codex-astra",
+      "vendor": "codex",
+      "enabled": true,
+      "acceptance": "participating",
+      "codex": {"model": "gpt-6-astra", "reasoning": "high"},
+      "timeout_s": 900,
+      "note": "COMPARISON entry (owner 2026-09-25): gpt-6-astra at high beside the gpt-5.6-terra/xhigh baseline. An ordinary opt-in entry — its findings count under R-AGREE like any leg's; the terra/astra DIFFERENCE is recorded in the round ledger as an observation, never a vote or a policy. Same family as `codex` (two codex entries = one family)."
+    },
+    {
+      "name": "google-contracts",
+      "vendor": "google",
+      "enabled": true,
+      "acceptance": "participating",
+      "timeout_s": 900,
+      "google": {"route": "agy"},
+      "agy": {"model": "gemini-3.1-pro-high", "effort": "high"},
+      "note": "Emphasis (brief table, not a wire field): requirements, contracts, interfaces and affected consumers."
+    },
+    {
+      "name": "google-failures",
+      "vendor": "google",
+      "enabled": true,
+      "acceptance": "participating",
+      "timeout_s": 900,
+      "google": {"route": "agy"},
+      "agy": {"model": "gemini-3.1-pro-high", "effort": "high"},
+      "note": "Emphasis (brief table, not a wire field): boundary inputs, failure paths and regression evidence."
+    },
+    {
+      "name": "google-state",
+      "vendor": "google",
+      "enabled": true,
+      "acceptance": "participating",
+      "timeout_s": 900,
+      "google": {"route": "agy"},
+      "agy": {"model": "gemini-3.1-pro-high", "effort": "high"},
+      "note": "Emphasis (brief table, not a wire field): state transitions, ordering and interactions between components."
+    }
+  ]
+}

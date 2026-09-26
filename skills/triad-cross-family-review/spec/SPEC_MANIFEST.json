@@ -1,0 +1,24 @@
+{
+  "schema": "triad-spec-manifest.v1",
+  "source_repo": "https://github.com/codefoundry-io/triad-dispatch-spec",
+  "candidate_commit": "140dda4ce66dfb5b34ba86d7e4c1356dafd026a0",
+  "candidate_ref": "codex/host-b-preimplementation-audit (not on main; rev-0 = the only tag; reading a candidate is not adoption)",
+  "vendored_at": "2026-09-21",
+  "note": "Payload bytes UNCHANGED from the source commit (README \u00a7 How a host uses a revision, step 2). review-legs.default.json is HOST A DATA, not a spec payload; it is listed for integrity only.",
+  "files": {
+    "contracts/exit-tokens.json": "0e27186c915d0bc4f26246830daabed2dd1f737c491dbdf5144afcd5bd943bfd",
+    "contracts/leg-verdict.schema.json": "d755905ac60348542fc1dbbeb37b92bc3fab0a2dc34b7a1b454c935d0be04184",
+    "contracts/receipt-fields.json": "3682df395b867c2775359513b11aeb51b7a4a0cb2735037ddfc8cfe5921f591d",
+    "contracts/review-legs.example.json": "7f9bdc484c31486bdddb9dfe4271ad718af855d81fd527d00090bdd6bae4c644",
+    "contracts/review-legs.schema.json": "1611655cda859a6738ec8ff52dd3d3aa08539cc8ba01741c8a72426abda37cb9",
+    "prompts/common-clauses.md": "4fe9aa6e6aa768d25d972812aaf6075cdbb6f193073b962ee32e4c1a3fb268a1",
+    "prompts/investigation.md": "424223be8384c3b43cbb62ddda28caee3ffa4d4da9277d5214a638397dfbb8f7",
+    "prompts/leg-claude.md": "813c79815aaaf606c01e62a38607ef80914adb56c9e9012849f1551b79373d28",
+    "prompts/leg-codex.md": "cc502625d9eb34cac7a4eef12903f9c16c10c8ba5edfbe9b56ca7503f7fe1075",
+    "prompts/leg-google.md": "b5249de47c552adfbdfd5b8a1e381bf95a2ff8bfe961a7ddf34935f873eb69dd",
+    "review-legs.default.json": "3eb31f01bfb638a2a4f265077d35de824c6e1293972f066f1431f246395dcd0c"
+  },
+  "host_data": [
+    "review-legs.default.json"
+  ]
+}

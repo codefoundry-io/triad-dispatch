@@ -1,0 +1,94 @@
+# Gemini CLI Policy Engine — per-call INVESTIGATION (research) policy for the
+# gemini leg. HOST-A-LOCAL FILE, NOT the shared review contract.
+#
+# `policies/gemini-readonly.toml` is the vendored, byte-identical SHARED review
+# policy (triad-dispatch-spec `contracts/gemini-readonly.toml`, checked by t50)
+# and it DENIES `google_web_search` / `web_fetch` — D-9 RULED 2026-09-19: the
+# REVIEW operation has no web on any family. This file is the other side of that
+# rule: an explicitly web-authorized INVESTIGATION (rule R-INVEST, case C29,
+# `gemini_wrapper.py --web`), which keeps web and still never mutates or
+# executes. Nothing here is vendored and nothing here may be used on a review
+# dispatch — the wrapper refuses `--web` together with `--sandbox`, so exactly
+# one of the two policies is ever attached.
+#
+# Schema: same reference as the review policy — geminicli.com/docs/reference/
+# policy-engine (rule table: toolName / decision allow|deny / priority; highest
+# priority wins, so the deny rows (200) override the allow rows (100)).
+# `mcp_*` wildcard is documented on that page.
+#
+# `--policy` REPLACES the USER-tier policy directory for this call only;
+# system/admin, workspace and built-in default policies still load (VERIFIED
+# against version-pinned source: packages/core/src/policy/config.ts at v0.46.0
+# and v0.60.0), so an admin-tier policy can still outrank these rows and the
+# CLI help string "Additional policy files" is misleading for the user tier.
+# That is why the mutation/shell denies are stated EXPLICITLY here rather than
+# left to a default tier.
+#
+# NOT RUN LIVE: gemini is not in service where this file was authored (owner
+# 2026-09-18), so the runtime EFFECT of these rows is unverified; the argv, the
+# file's parse and its rule set are pinned by t58. Live confirmation rides the
+# same owner-briefing route as the review policy (R-GOOGLE).
+
+# --- allow read tools (same read set as the review profile) ---
+[[rule]]
+toolName = "read_file"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "read_many_files"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "glob"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "search_file_content"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "list_directory"
+decision = "allow"
+priority = 100
+
+# --- allow the two web tools: THIS is what makes the profile an investigation.
+# R-INVEST: web evidence is a FETCHED page — `web_fetch` is the citation tool,
+# `google_web_search` only a pointer to it. Both are named by the shared clause
+# `web-evidence` the wrapper appends to the prompt (case C29). ---
+[[rule]]
+toolName = "web_fetch"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "google_web_search"
+decision = "allow"
+priority = 100
+
+# --- deny mutation + shell tools (higher priority). An investigation reads;
+# it does not edit the tree or run commands. ---
+[[rule]]
+toolName = "write_file"
+decision = "deny"
+priority = 200
+
+[[rule]]
+toolName = "replace"
+decision = "deny"
+priority = 200
+
+[[rule]]
+toolName = "run_shell_command"
+decision = "deny"
+priority = 200
+
+# --- defense-in-depth: deny MCP-server tools, so the profile does not depend on
+# a headless ask_user->deny default for tools it never named. ---
+[[rule]]
+toolName = "mcp_*"
+decision = "deny"
+priority = 200

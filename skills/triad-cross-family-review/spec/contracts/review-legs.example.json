@@ -1,0 +1,72 @@
+{
+  "schema": "triad-review-legs.v2",
+  "legs": [
+    {
+      "name": "claude",
+      "vendor": "claude",
+      "enabled": true,
+      "acceptance": "required",
+      "claude": {
+        "agent": "cross-family-review-reviewer",
+        "model": null,
+        "effort": "xhigh"
+      },
+      "timeout_s": 900,
+      "note": "model null = the host's default (A: the agent's frontmatter; B: its claude CLI default); agent applies on A only"
+    },
+    {
+      "name": "codex",
+      "vendor": "codex",
+      "enabled": true,
+      "acceptance": "required",
+      "codex": {
+        "model": null,
+        "reasoning": "xhigh"
+      },
+      "timeout_s": 900,
+      "note": "model null = the host's default codex model"
+    },
+    {
+      "name": "google",
+      "vendor": "google",
+      "enabled": true,
+      "acceptance": "participating",
+      "agy": {
+        "model": "<dispatch-time slug>",
+        "effort": "high"
+      },
+      "gemini": {
+        "model": "<route-valid Pro model id; HIGH comes from its default thinking level>",
+        "effort": null
+      },
+      "timeout_s": 600,
+      "note": "Google route pin: google.route = agy or gemini; otherwise preserve the host's selection chain. Default Pro family with verifiable HIGH; model placeholders must be replaced from the route catalog. Adapter-specific timeout and effort support remain mandatory."
+    },
+    {
+      "name": "x-claude-high",
+      "vendor": "claude",
+      "enabled": false,
+      "acceptance": "informational",
+      "claude": {
+        "agent": "cross-family-review-reviewer-high",
+        "effort": "high",
+        "model": null
+      },
+      "note": "opt-in example of a second claude arm (enable to run it); acceptance is data only — a verified blocking finding from this leg blocks the round (R-AGREE)",
+      "timeout_s": 900
+    },
+    {
+      "name": "trial",
+      "vendor": "google",
+      "enabled": false,
+      "acceptance": "informational",
+      "agy": {
+        "model": "<slug under test>",
+        "effort": "high"
+      },
+      "note": "opt-in trial model on the Google family (agy block); acceptance is data only (R-AGREE)",
+      "timeout_s": 900
+    }
+  ],
+  "_comment": "ILLUSTRATIVE TEMPLATE, not a runnable default: the three enabled legs are the default roster shape; placeholder model values must be replaced from each host's recorded catalog before dispatch. Fields and resolution rules: reference/review-rules.md#R-ROSTER; keys deliberately absent: CHANGELOG.md rev-0"
+}

@@ -1,0 +1,50 @@
+{
+  "schema": "triad-review-legs.v2",
+  "legs": [
+    {
+      "name": "claude",
+      "vendor": "claude",
+      "enabled": true,
+      "acceptance": "required",
+      "claude": {
+        "agent": "cross-family-review-reviewer",
+        "model": null,
+        "effort": null
+      },
+      "timeout_s": 900,
+      "note": "Host A native leg: an in-session Agent, never a CLI child. model/effort null = the named agent's frontmatter pins (the tier table lives in the owner's model-tier policy)."
+    },
+    {
+      "name": "codex",
+      "vendor": "codex",
+      "enabled": true,
+      "acceptance": "required",
+      "codex": {
+        "model": "gpt-5.6-terra",
+        "reasoning": "xhigh"
+      },
+      "timeout_s": 900,
+      "note": "Host A codex leg: codex_wrapper.py with --sandbox read-only, stdin prompt transport; model = the recommended explicit codex ID (spec R-ROSTER, owner 2026-09-25) so the baseline does not depend on the operator's ~/.codex/config.toml; an explicit null override = the CLI's config default, frozen as null; REVIEW never passes --search (D-9)."
+    },
+    {
+      "name": "google",
+      "vendor": "google",
+      "enabled": true,
+      "acceptance": "participating",
+      "google": {
+        "route": null
+      },
+      "agy": {
+        "model": "gemini-3.1-pro-high",
+        "effort": "high"
+      },
+      "gemini": {
+        "model": "gemini-3.1-pro-preview",
+        "effort": null
+      },
+      "timeout_s": 600,
+      "note": "route null = the host chain (explicit pin, else agy if installed, else gemini, else skip and log — R-GOOGLE). Data values, not code constants (owner Q-W: Pro family + verifiable HIGH). gemini model = the v0.60.0 defaultModelConfigs.ts entry bound to ThinkingLevel.HIGH; untested off-site (gemini not in service here). gemini takes no effort flag."
+    }
+  ],
+  "_comment": "Host A shipped default roster (data). A project override at <worktree>/.claude/triad-review-legs.json merges by name (lib/roster_v2.py). Fields and rules: spec reference/review-rules.md#R-ROSTER; schema: spec/contracts/review-legs.schema.json (vendored)."
+}

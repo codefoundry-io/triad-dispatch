@@ -1,8 +1,17 @@
 ---
 name: triad-gemini-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Gemini CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 gemini_wrapper.py` raw; the user asks to call gemini once, have gemini handle a task, or run a one-shot gemini analysis; a higher-level orchestration SKILL needs the Gemini leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (`triad-codex-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.6.2
+version: 0.6.3
 # changelog:
+#   0.6.3 (2026-09-21): Step 1 records the flags S10/S6 landed — `--web` (the
+#     INVESTIGATION route: research policy + the shared web-evidence clause
+#     LAST; refused with `--sandbox`, with `auto_edit`, and with a
+#     verdict-schema `--pydantic`) and `--attempt <int>` (recorded on the
+#     transport receipt, never interpreted) — plus the C16 review-route
+#     preflight (version floor >= 0.34.0, `--help` capability probe, auth
+#     class) as pre-spawn refusals. NOT RUN live: gemini is not in service at
+#     the leaders' site, so these are implementation facts (t57/t58), not
+#     measured runtime behaviour. Doc-only.
 #   0.6.2 (2026-08-26): write-posture `--cwd` guard ENFORCED (owner ruling,
 #     closing the codex/claude symmetry gap) — `--sandbox workspace-write` or
 #     `--approval-mode auto_edit` without `--cwd` is refused EXIT_ARG_ERROR
@@ -90,14 +99,50 @@ TRIAD_GEMINI_PROMPT_EOF
   [--cwd /absolute/path] \
   [--sandbox read-only|workspace-write] \
   [--approval-mode default|auto_edit] \
+  [--web] \
   [--model <pinned-model-name>] \
   [--skip-trust] \
+  [--attempt <int>] \
   [--timeout <seconds>] \
   [--pydantic module:Class]
 ```
 
 `--prompt-file` REPLACES the `--prompt` heredoc — argparse rejects both
 together, so delete the heredoc when switching to a file body.
+
+**`--web` = the INVESTIGATION route (spec C29 / R-INVEST), never a review.**
+It attaches the wrapper-adjacent research profile
+`policies/gemini-research.toml` (read tools + `web_fetch` +
+`google_web_search`; write / shell / mcp denied) and appends the shared
+web-evidence clause LAST — a search result is a POINTER, a cited web fact
+comes from a `web_fetch` of the page with that page's own date or version,
+and an unfetched or placeholder URL is not evidence. It is REFUSED with
+`--sandbox` (the read-only REVIEW profile denies both web tools — D-9, "review
+has no web on any family" — so a `--web` review dispatch could only mean
+"loosen the review profile", and a write posture contradicts the research
+profile's own denies), with `--approval-mode auto_edit`, and with a
+`verdict_schema` `--pydantic` class (an investigation returns research, never
+a leg verdict). Each refusal is an arg error before any spawn.
+
+**`--attempt <int>`** (>= 1, default 1) is the dispatch attempt number,
+RECORDED on the transport receipt and the summary tail and never interpreted.
+Below 1 is refused pre-spawn.
+
+**Review-route preflight (spec C16) — three provider-free checks run BEFORE
+any vendor call** whenever `--sandbox read-only` is in effect (including the
+hardened-install default), after the effective posture is computed: a VERSION
+FLOOR (`gemini >= 0.34.0`, the release carrying the headless policy-allow fix
+PR #20639 — below it the `--policy` rows do not take effect headlessly, so
+the posture is a claim rather than a control); a CAPABILITY probe (`--help`
+must advertise `--policy`, `--approval-mode`, `--output-format`); and an AUTH
+CLASS check (`security.auth.selectedType` from the CLI's own settings chain —
+`gemini-api-key` / `vertex-ai` / `compute-default-credentials` are REFUSED as
+billed routes, `oauth-personal` is the approved subscription login, and an
+unexposed or unknown class is reported on stderr and allowed to run). An
+investigation or write dispatch keeps its single spawn and is not probed.
+**NOT RUN live**: gemini is not in service at the leaders' site, so these are
+deterministic implementation facts (`tests/unit/wrappers/t57`), not measured
+runtime behaviour.
 
 Defaults: no `--sandbox` policy and `--approval-mode default` (read auto, write/shell prompt). `--sandbox read-only` attaches the wrapper-adjacent `policies/gemini-readonly.toml` for that call only. `auto_edit` = write/shell auto (only on explicit leader request) and conflicts with `--sandbox read-only`. `--approval-mode plan/yolo` is rejected by argparse. **Write postures require `--cwd` (owner ruling 2026-08-26, enforced)**: `--sandbox workspace-write` or `--approval-mode auto_edit` without `--cwd` is refused `EXIT_ARG_ERROR` before any vendor spawn — a write-enabled dispatch's blast radius must be an isolated directory, never the wrapper's inherited cwd (the same guard codex `--task code` and claude workspace-write already carry). Build `--cwd` from the real working directory read at dispatch time (`pwd`), never an assumed session cwd (leader CLAUDE.md Pitfall #5).
 
@@ -118,9 +163,26 @@ Wrapper stderr contains:
 Grep the summary line; extract classification. **Use the LAST `[wrapper]` line** — when extraction-error happens (Gemini empty `response` field, valid JSON envelope but no answer), `_run_once` emits an early `ok` summary that is later corrected by a second emission with `extraction-error`. Take the last one only:
 
 ```bash
-SUMMARY=$(grep '^\[.*\] \[wrapper\] gemini ' <stderr-text> | tail -1)
-CLS=$(printf '%s' "$SUMMARY" | sed -E 's/.*\[wrapper\] gemini ([a-z-]+) .*/\1/')
+SUMMARY=$(grep -E '^\[[^]]*\] \[wrapper\] gemini ' <stderr-text> | tail -1)
+CLS=$(printf '%s' "$SUMMARY" | sed -E 's/^\[[^]]*\] \[wrapper\] gemini ([a-z-]+) .*/\1/')
 ```
+
+**BOTH patterns are ANCHORED to the line start** (gate-1 r9 row r9-3). The sed
+used to be greedy (`s/.*\[wrapper\] gemini ([a-z-]+) .*/\1/`), so it took the
+LAST `[wrapper] gemini <token> ` sequence ANYWHERE in the line — and the summary
+tail carries a FREE-TEXT field (`prompt_file=<abs>`), so a prompt file living
+under a directory literally named `…[wrapper] gemini ok …` overrode the token
+the wrapper emitted: a demoted `extraction-error` run parsed as `ok`, and the
+MANDATORY repair-agent routing (Step 5) never fired. Since the same row the
+engine ALSO percent-escapes every free-text field of the summary
+(`_common._summary_field` — SPACE and `[` / `]` are outside the safe set, so the
+sequence is unconstructible inside `prompt_file=`; an ordinary POSIX path is
+emitted byte-identically and the audit row keeps the raw value), so the shape
+can no longer occur — but the ANCHORED parse is the CONTRACT here, and the two
+defences are independent. The wrapper's other stderr lines stay out of reach BY
+CONSTRUCTION: `run-log: <abs>` and `exec cwd=… argv=…` never carry the
+`[wrapper] gemini <token> ` prefix AT THE LINE START, and the demotion note
+keeps its colon (`[wrapper] gemini: unemittable-payload — …`).
 
 Token set:
 `ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | timeout | extraction-error | unknown`
@@ -135,7 +197,7 @@ Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) / `4` (bin
 | terminal (65) — cli-subscription-cap / token-limit / oauth-env | Surface to user with cause (re-login / Code Assist license daily-quota or API-key RPM-tier reset / prompt size — see the Lane note in § Use when). **NOT** repair-agent territory. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper retried per backoff (plus Gemini's own internal retries). |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 7). Spawn it even when you are busy or also surfacing the failure — never skip.** |
-| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 7).** Vendor returned rc=0 but extractor found no answer (empty `response` field, unparseable JSON, vendor refusal text). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
+| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 7).** Vendor returned rc=0 but extractor found no answer (empty `response` field, unparseable JSON, vendor refusal text) — **or the answer is an UNEMITTABLE PAYLOAD**: a lone surrogate this host cannot encode on the payload channel, demoted before the audit row (the stderr line is `[wrapper] gemini: unemittable-payload — …` — note the COLON, which keeps it out of the summary grep above; after the demotion the wrapper RE-EMITS the canonical summary with the final classification, so the LAST `[wrapper] gemini ` line reads `extraction-error exit=1`). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
 | `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since hang is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
 | arg (3) / binary missing (4) / schema fail (66) | Surface to user with cause. |
 

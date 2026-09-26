@@ -38,7 +38,13 @@ from pathlib import Path
 
 from _common import (
     validate_wrapper_cwd,
+    _emit_payload,
+    _emit_canonical_summary,
+    _payload_or_demote,
+    _summary_tail,
+    _relax_diagnostic_stream,
     load_prompt_text,
+    resolve_prompt_file,
     _ensure_within_runtime_roots,
     EXIT_ARG_ERROR,
     EXIT_FANOUT_PARTIAL,
@@ -48,6 +54,7 @@ from _common import (
     debug_log,
     emit_run_log,
     extract_implementer_status,
+    install_terminal_signal_handlers,
     load_pydantic_class,
     log,
     prune_stale_tmp_dirs,
@@ -110,6 +117,13 @@ def codex_invocation(search: bool) -> list[str]:
 
 
 def main() -> int:
+    # The DIAGNOSTIC stream survives any locale; the PAYLOAD stream is never
+    # re-encoded (gate-1 r7 row r7-c2 — `_common` § payload vs diagnostic).
+    _relax_diagnostic_stream()
+    # SIGTERM/SIGHUP -> SystemExit(128+signum) so a signalled wrapper unwinds
+    # through _run_once's abnormal-unwind arm and reaps the vendor group
+    # instead of orphaning it (spec case C1 / R-TERMINAL).
+    install_terminal_signal_handlers()
     p = argparse.ArgumentParser(description="Codex CLI single-shot wrapper",
                                 allow_abbrev=False)
     prompt_group = p.add_mutually_exclusive_group(required=True)
@@ -138,7 +152,10 @@ def main() -> int:
         default=None,
         help="Override model for this dispatch (`-c model=\"<slug>\"`); free-form "
              "catalog slug from `codex debug models` (default: config-alive model). "
-             "No slug is ever hardcoded here — dispatch-time pin only",
+             "No slug is ever hardcoded here — dispatch-time pin only. "
+             "Recorded as `model=<slug>` on the `[wrapper] codex` summary line and "
+             "as `requested_model` in the audit row; absent = the CLI's config "
+             "default was used (the round record freezes the roster value)",
     )
     p.add_argument(
         "--search",
@@ -150,6 +167,14 @@ def main() -> int:
         "--pydantic",
         default=None,
         help="pydantic class spec (module.path:ClassName) for schema enforcement",
+    )
+    p.add_argument(
+        "--output-schema-file",
+        default=None,
+        help="ABSOLUTE path to a caller-owned JSON schema file, passed straight "
+             "to codex --output-schema. Transport only: the wrapper validates "
+             "nothing and retries nothing (the caller admits the answer with "
+             "its own validator). Mutually exclusive with --pydantic",
     )
     p.add_argument(
         "--image",
@@ -197,9 +222,34 @@ def main() -> int:
         help="Append a human-readable markdown row to "
              "_debug/<UTC-YYYY-MM-DD>/codex.md (per-call summary)",
     )
+    p.add_argument(
+        "--attempt",
+        type=int,
+        default=1,
+        help="Dispatch attempt number carried on the transport receipt "
+             "(>=1, default 1). RECORDED only — the wrapper never retries "
+             "on it and no control flow reads it",
+    )
     args = p.parse_args()
+    # ONE NORMALIZED MODEL REQUEST (gate-1 r12 row r12-3). The argv build
+    # dropped an empty `--model` by truthiness while the engine recorded
+    # `requested_model=''`, and a whitespace-only value reached the vendor as
+    # `-c model="   "`. Empty or whitespace-only = NO request; both sites
+    # below read this one value.
+    if args.model is not None and not args.model.strip():
+        args.model = None
 
+    if args.attempt < 1:
+        log(f"--attempt must be >= 1 (got {args.attempt})")
+        return EXIT_ARG_ERROR
+
+    # C28: resolve the (possibly relative) --prompt-file once so the absolute
+    # path can be RECORDED on the summary line and in the audit/run-log
+    # records. load_prompt_text() re-resolves the same way and reads the text.
+    _prompt_file_resolved = None
     try:
+        if args.prompt_file:
+            _prompt_file_resolved = str(resolve_prompt_file(args.prompt_file))
         _prompt_text = load_prompt_text(args.prompt, args.prompt_file)
     except Exception as e:
         log(f"prompt load failed: {e}")
@@ -234,6 +284,35 @@ def main() -> int:
         log("--task and --pydantic are mutually exclusive "
             "(fan-out report vs schema validation are different modes)")
         return EXIT_ARG_ERROR
+
+    # --output-schema-file: checked BEFORE any vendor work — a paid dispatch
+    # that would run with no schema (or with the caller's schema silently
+    # ignored) is worse than an argument error.
+    if args.output_schema_file is not None:
+        if args.pydantic:
+            log("--output-schema-file and --pydantic are mutually exclusive "
+                "(two schema sources for one --output-schema flag)")
+            return EXIT_ARG_ERROR
+        if not os.path.isabs(args.output_schema_file):
+            log(f"--output-schema-file must be an absolute path (codex "
+                f"resolves it against its own cwd): {args.output_schema_file}")
+            return EXIT_ARG_ERROR
+        if not os.path.isfile(args.output_schema_file):
+            log(f"--output-schema-file is not a file: "
+                f"{args.output_schema_file}")
+            return EXIT_ARG_ERROR
+        # Same runtime-roots containment --image already gets below (gate-1 r2
+        # row r2-5): the path is handed STRAIGHT to codex --output-schema, so
+        # under TRIAD_WRAPPER_ALLOWED_ROOTS an out-of-root schema is an
+        # uncontained file-read -> vendor channel. Roots unset (lab default)
+        # -> returned resolved and unchanged; codex then reads exactly the
+        # file that was validated.
+        try:
+            args.output_schema_file = str(_ensure_within_runtime_roots(
+                Path(args.output_schema_file), "--output-schema-file"))
+        except Exception as e:
+            log(f"--output-schema-file validation failed: {e}")
+            return EXIT_ARG_ERROR
     if args.task is not None:
         task_sandbox = codex_tasks.TASKS[args.task]["sandbox"]
         if args.sandbox is not None and args.sandbox != task_sandbox:
@@ -338,6 +417,11 @@ def main() -> int:
                     pass
             return EXIT_ARG_ERROR
 
+    # The value handed to codex --output-schema: either the wrapper-built
+    # pydantic temp file (cleaned up below) or the caller's own file, which
+    # the wrapper never writes, reads, or deletes.
+    output_schema_arg = args.output_schema_file or schema_path
+
     # Per-PID last-message file (concurrent-safe).
     fd, last_msg_path = tempfile.mkstemp(prefix=f"codex_last_{os.getpid()}_", suffix=".txt")
     os.close(fd)
@@ -384,8 +468,8 @@ def main() -> int:
             cmd += ["-c", f'model_reasoning_effort="{args.reasoning}"']
         if args.model:
             cmd += ["-c", f'model="{args.model}"']
-        if schema_path is not None:
-            cmd += ["--output-schema", schema_path]
+        if output_schema_arg is not None:
+            cmd += ["--output-schema", output_schema_arg]
         if args.image:
             for img in args.image:
                 cmd += ["-i", img]
@@ -404,6 +488,9 @@ def main() -> int:
             last_msg_path=last_msg_path,
             repair_mode=args.repair_mode,
             prompt_via_stdin=True,
+            dispatch_attempt=args.attempt,
+            prompt_file_resolved=_prompt_file_resolved,
+            requested_model=args.model,
         )
     finally:
         try:
@@ -441,8 +528,13 @@ def main() -> int:
             log(f"report-write failed (non-fatal, result preserved): {e}")
         if partial and result.exit_code == 0:
             result.exit_code = EXIT_FANOUT_PARTIAL
+            # The promotion's line carries the recorded-facts tail like every
+            # other summary emission (gate-1 r12 row r12-3).
             log(f"[wrapper] codex fanout-partial exit={result.exit_code} "
-                f"vendor={result.vendor_exit_code} elapsed={result.elapsed_s:.1f}s")
+                f"vendor={result.vendor_exit_code} elapsed={result.elapsed_s:.1f}s"
+                + _summary_tail(result.dispatch_attempt,
+                                result.prompt_file_resolved,
+                                result.requested_model))
         elif partial:
             # underlying codex call already failed (non-zero) — the real exit code
             # and its [wrapper] classification take priority; do NOT mask it with 68
@@ -460,7 +552,39 @@ def main() -> int:
             result.exit_code = EXIT_TASK_BLOCKED
             log(f"[wrapper] codex task-blocked status={status} "
                 f"exit={result.exit_code} vendor={result.vendor_exit_code} "
-                f"elapsed={result.elapsed_s:.1f}s")
+                f"elapsed={result.elapsed_s:.1f}s"
+                + _summary_tail(result.dispatch_attempt,
+                                result.prompt_file_resolved,
+                                result.requested_model))
+
+    # THE PAYLOAD IS DECIDED BEFORE THE AUDIT ROW (gate-1 r7 rows r7-c2 /
+    # r7-k5). stdout is the payload channel and was written LAST, with the
+    # strict locale encoder: an em-dash in the answer raised
+    # UnicodeEncodeError after every record already said `ok`, and the
+    # consumer's captured file was left empty. The bytes are built here, so
+    # an answer this host cannot carry demotes the result while the audit
+    # row is still unwritten; `_emit_payload` at the tail only writes them.
+    _pre_payload_classification = result.classification
+    if pydantic_cls and result.validated is not None:
+        payload = _payload_or_demote(
+            "codex", result,
+            json.dumps(result.validated, ensure_ascii=False) + "\n",
+            result.validated)
+    else:
+        out = result.final_answer or ""
+        if partial:
+            out = ("> **INCOMPLETE** — fan-out did not fully complete; this "
+                   "output is partial (see the report). \n\n") + out
+        if out and not out.endswith("\n"):
+            out += "\n"
+        payload = _payload_or_demote("codex", result, out)
+    # THE SUMMARY LINE IS CORRECTED BY A SECOND EMISSION (gate-1 r8 row
+    # r8-5): the canonical line was printed inside run_cli_with_retry, i.e.
+    # BEFORE the demotion above, so without this the LAST `[wrapper] codex`
+    # line the dispatch SKILL parses still said `ok exit=0` for a run that
+    # exits 1 with an empty stdout.
+    if result.classification != _pre_payload_classification:
+        _emit_canonical_summary("codex", result)
 
     # Fix F: audit is called AFTER both exit-code promotions (partial→68 and
     # STATUS→69) so audit.jsonl records the final promoted exit code, not the
@@ -475,19 +599,9 @@ def main() -> int:
     if run_log_path is not None:
         log(f"run-log: {run_log_path}")
 
-    # Stdout = validated JSON (if --pydantic) or raw final answer.
-    if pydantic_cls and result.validated is not None:
-        sys.stdout.write(json.dumps(result.validated, ensure_ascii=False))
-        sys.stdout.write("\n")
-    else:
-        out = result.final_answer or ""
-        if partial:
-            out = ("> **INCOMPLETE** — fan-out did not fully complete; this "
-                   "output is partial (see the report). \n\n") + out
-        sys.stdout.write(out)
-        if out and not out.endswith("\n"):
-            sys.stdout.write("\n")
-    sys.stdout.flush()
+    # Stdout = validated JSON (if --pydantic) or raw final answer, as the
+    # UTF-8 BYTES built above.
+    _emit_payload(payload)
     return result.exit_code
 
 

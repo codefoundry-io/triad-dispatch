@@ -22,6 +22,7 @@ the maintenance agent's responsibility.
 from __future__ import annotations
 
 import enum
+import errno
 import fcntl
 import importlib
 import json
@@ -35,8 +36,9 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
@@ -159,9 +161,13 @@ def nonrepairable_log_marker(trigger: NonrepairableTrigger) -> str:
     return f"[NONREPAIRABLE trigger={nonrepairable_trigger_label(trigger)}]"
 
 
-def map_classification_to_exit(cls: str) -> int:
-    """Map a classify() result string to a wrapper EXIT_* code (pure helper)."""
-    return {
+# The classification-token → EXIT_* table, lifted OUT of the function body so the
+# set of EXPLICIT keys is readable as DATA (`EXIT_MAP_TOKENS`). `.get(cls, ...)`
+# below means the function can never report a missing key, so a membership test
+# needs the keys themselves — spec case C8 / rule R-TOKENS ("a membership test
+# replaces the vacuous `is not None` assert shipped on both hosts"); the shared
+# vocabulary is the vendored `spec/contracts/exit-tokens.json`, pinned by t55.
+_EXIT_BY_CLASSIFICATION: dict[str, int] = {
         "ok": EXIT_OK,
         "server-capacity": EXIT_RATE_GIVE_UP,
         "cli-subscription-cap": EXIT_TERMINAL,
@@ -180,7 +186,44 @@ def map_classification_to_exit(cls: str) -> int:
         "truncated-answer": EXIT_TERMINAL,  # agy: CLI-side mid-answer fold (driver hardcodes 65 too; the row keeps the map and the registry comment in agreement — gate r2 row 17)
         "input-delivery-failed": EXIT_TERMINAL,  # wrapper-SET, never a classify() result: the stdin prompt was not confirmed delivered (write/flush/encode failed or unconfirmed) while the child exited 0 — surface, NOT repair (codex handoff 2026-09-18; t48/f12)
         "unknown": EXIT_CLI_FAIL,
-    }.get(cls, EXIT_CLI_FAIL)
+}
+
+# The map's EXPLICIT keys — the token vocabulary this host can put on an exit
+# code. Public because the membership contract (C8) is checked against it.
+EXIT_MAP_TOKENS: frozenset[str] = frozenset(_EXIT_BY_CLASSIFICATION)
+
+# Every wrapper exit code this engine may return, as data. A map value outside
+# this set is a typo, not a code (checked at import together with membership).
+KNOWN_EXIT_CODES: frozenset[int] = frozenset((
+    EXIT_OK, EXIT_CLI_FAIL, EXIT_TIMEOUT, EXIT_ARG_ERROR, EXIT_BINARY_MISSING,
+    EXIT_RATE_GIVE_UP, EXIT_TERMINAL, EXIT_SCHEMA_FAIL, EXIT_SCHEMA_REJECTED,
+    EXIT_FANOUT_PARTIAL, EXIT_TASK_BLOCKED,
+))
+assert all(
+    isinstance(_v, int) and _v in KNOWN_EXIT_CODES
+    for _v in _EXIT_BY_CLASSIFICATION.values()
+), "map_classification_to_exit maps a token to a code outside KNOWN_EXIT_CODES"
+
+# The two verdicts that mean "the ENGINE did not decide this run" (gate-1 r8
+# row r8-3, the shared-driver statement of the agy driver's r3-1 / r4-2 rule;
+# `antigravity_wrapper._ENGINE_UNDECIDED` is the same set for the driver that
+# spawns `_run_once` itself). `unclassified` is the sentinel `_run_once` parks
+# on every pair it leaves UNJUDGED under `classify_and_log=False`; `ok` is the
+# rc-0 verdict a later layer may legitimately correct once it has read the
+# answer. Everything else `_run_once` returns it reached from the reader /
+# writer records a later layer cannot see, so no layer above re-derives it
+# from the same stdout.
+_ENGINE_UNDECIDED: frozenset[str] = frozenset(("unclassified", "ok"))
+
+
+def map_classification_to_exit(cls: str) -> int:
+    """Map a classify() result string to a wrapper EXIT_* code (pure helper).
+
+    Unmapped input keeps falling back to `EXIT_CLI_FAIL` (a caller must never
+    crash on an unexpected token); the DRIFT guard is the import-time
+    membership assert beside `CLASSIFICATION_TOKENS`, not this fallback.
+    """
+    return _EXIT_BY_CLASSIFICATION.get(cls, EXIT_CLI_FAIL)
 
 
 # ─── Pattern lists (seed — living value, Step D maintenance updates) ──────
@@ -205,6 +248,16 @@ SERVER_CAPACITY_PATTERNS: tuple[str, ...] = (
     # the phrase form, add a more specific substring (e.g. `"http 429"`,
     # `"status: 503"`) — never bare `"429"` / `"503"`.
     "service unavailable",
+    "unavailable (code 503)",  # 2026-09-26: agy's structured UNAVAILABLE
+    # error (`error: UNAVAILABLE (code 503): Deadline expired before operation
+    # could complete.` + `AGY_ERROR {"status":"UNAVAILABLE","error_code":503,
+    # "retryable":true}`), vendor rc 3 — measured on agy 1.2.11, gate-1 r20
+    # google-state attempt 1, run-log 20260926T020525Z-78105-da2d3ccf. The
+    # phrase form differs from "service unavailable" above; distinctive
+    # vendor text, never a bare `"503"`. Promoted from the agy-wrapper-repair
+    # proposal: the in-company site and the claude-host dist never see the
+    # operator's classifier extension, and there the driver's own ladder is
+    # the ONLY retry. Retry-eligible.
     "too many requests",
     "aborterror",  # 2026-05-02: Gemini CLI _recoverFromLoop tool-call loop detection abort; transient — retry eligible. github.com/google-gemini/gemini-cli/issues/23509
 )
@@ -344,6 +397,78 @@ ANTIGRAVITY_VENDOR_EXIT_MAP: dict[int, str] = {
 AGY_AUTH_BANNER_PATTERNS = ("authentication required. please visit the url",)
 
 
+# ── Original-text JSON guard: duplicate members (spec C14 / R-BIND) ───────
+# `json.loads` and pydantic's `model_validate_json` both ACCEPT a repeated
+# member and keep the LAST value, so a reply that states a blocking fact and
+# then repeats the member with a benign one arrives looking clean — the
+# evidence is gone before any validator runs. R-BIND: "Duplicate JSON members
+# are rejected at the original-text boundary before extraction or
+# normalization can discard evidence (verified gap on BOTH hosts)."
+#
+# The scan is schema-AGNOSTIC (the engine validates against whatever
+# `--pydantic module:Class` names) and reports only the FIRST duplicated key,
+# at any depth: the caller needs a reason string, not an inventory. A text that
+# is not JSON at all reports None — that failure belongs to the caller's own
+# parser, whose message is unchanged.
+
+
+class _DuplicateJSONMember(ValueError):
+    """Raised by the object_pairs_hook; carries the offending key name.
+
+    `line_no` is filled in by a LINE-ORIENTED caller (`parse_agy_stream`) —
+    the hook itself sees one object, not a stream — and stays None for the
+    whole-document scans. It is 1-based so a wrapper log line points at the
+    stream line an operator would count to.
+
+    `undecodable_lines` carries the PARTIAL census the line-oriented caller
+    had already collected when it raised (gate-1 r9 row r9-15). The agy
+    driver used to reset that list to `[]` on the raise, so an undecodable
+    line at N followed by a duplicate member at M>N left the refused
+    attempt's digest saying nothing about line N — and the duplicate
+    refusal, which deliberately KEEPS the read audit (row r4-4) precisely
+    so the evidence gathered before it survives, is where a reader most
+    needs to know the transcript also had a hole in it. Empty for the
+    whole-document scans, which have no line census.
+    """
+
+    def __init__(self, key: str, line_no: int | None = None,
+                 undecodable_lines: list | None = None):
+        super().__init__(f"duplicate JSON member '{key}'")
+        self.key = key
+        self.line_no = line_no
+        self.undecodable_lines = list(undecodable_lines or ())
+
+
+def _reject_duplicate_pairs(pairs):
+    """`object_pairs_hook` that refuses a repeated member in ONE object.
+
+    Sibling objects that each carry the same key are NOT duplicates — the hook
+    is called once per object, so the check is correctly scoped.
+    """
+    seen: set = set()
+    for key, _value in pairs:
+        if key in seen:
+            raise _DuplicateJSONMember(key)
+        seen.add(key)
+    return dict(pairs)
+
+
+def _duplicate_json_member(text: str) -> Optional[str]:
+    """The first duplicated member name in `text` at ANY depth, else None.
+
+    None also for text that is not valid JSON (see the section comment).
+    """
+    if not text:
+        return None
+    try:
+        json.loads(text, object_pairs_hook=_reject_duplicate_pairs)
+    except _DuplicateJSONMember as e:
+        return e.key
+    except (ValueError, TypeError, RecursionError):
+        return None
+    return None
+
+
 # ── agy stream-json transport helpers (2026-07-31 migration) ──────────────
 # agy >= 1.1.8 print mode emits typed NDJSON (`init` / `step_update` /
 # terminal `result`). These two pure helpers are the ONLY place that couples
@@ -384,10 +509,64 @@ _AGY_TOOL_CLASSES = (("read", _AGY_READ_TOOLS), ("write", _AGY_WRITE_TOOLS),
 # The digest's capped lists — each merged pairwise with its _omitted counter.
 _AGY_DIGEST_LISTS = ("files_read", "writes", "commands", "denied", "web",
                      "read_attempts")
+# Per-stream cap on the UNDECODABLE-line log (row r6-8): the line count is
+# vendor-controlled, so the diagnostic is bounded like every other
+# vendor-driven emission here — the overflow is reported once at the end.
+_AGY_UNDECODABLE_LOG_CAP = 5
+
+
+def _agy_tail_fragment(text: str) -> int:
+    """1-based line number of a TRAILING FRAGMENT, or 0 when there is none
+    (gate-1 r9 row r9-10).
+
+    A fragment is the FINAL segment of a stream that does not end in `\\n`,
+    starts with `{`, and does not decode — i.e. exactly the tail a killed or
+    crashed vendor leaves behind. The three conditions are all load-bearing:
+    a newline-terminated last line is COMPLETE (a malformed one is a hole in
+    the transcript and must still refuse), a non-`{` tail already belongs to
+    the framing rule, and a tail that DECODES is the ordinary shape of a
+    clean stream whose writer simply did not emit the final newline.
+
+    A duplicate member in the tail is NOT a cut: it is the content violation
+    `parse_agy_stream` refuses the whole stream for, so it returns 0 and the
+    raise stands.
+
+    NEITHER IS A DECODER-LIMIT FAILURE (gate-1 r10 row r10-4). The exemption
+    used to catch `(RecursionError, ValueError)`, which covers two failures
+    that say nothing about truncation: a COMPLETE object nested past the
+    interpreter's recursion limit, and a COMPLETE object carrying an integer
+    literal over the 4300-digit conversion limit (a bare `ValueError`).
+    Nothing was cut off either of them — the whole document is there and
+    this host simply cannot decode it — so exempting them dropped a real
+    hole out of the undecodable census and let the attempt be classified
+    from a transcript the parser had already refused to read. Only
+    `json.JSONDecodeError`, the SYNTAX class, is the cut this helper names.
+
+    Both `parse_agy_stream` (which excludes the line from its census) and
+    the agy driver (which stamps `truncated_tail` on the attempt digest)
+    call this, so the two can never disagree about which line it is.
+    """
+    if not text or text.endswith("\n"):
+        return 0
+    lines = text.split("\n")
+    stripped = lines[-1].strip()
+    if not stripped.startswith("{"):
+        return 0
+    try:
+        json.loads(stripped, object_pairs_hook=_reject_duplicate_pairs)
+    except _DuplicateJSONMember:
+        return 0
+    except json.JSONDecodeError:
+        return len(lines)
+    except (RecursionError, ValueError):
+        # A decoder LIMIT, not truncation (row r10-4): the line stays in
+        # `parse_agy_stream`'s undecodable census and the attempt is refused.
+        return 0
+    return 0
 
 
 def parse_agy_stream(text: str) -> tuple:
-    """Parse agy `--output-format stream-json` NDJSON into (events, result).
+    """Parse agy stream-json NDJSON into (events, result, undecodable).
 
     Tolerant by design: non-JSON lines, truncated trailing lines (killed
     runs), and non-dict payloads are skipped — a partial stream still yields
@@ -399,23 +578,120 @@ def parse_agy_stream(text: str) -> tuple:
     JSON string output — so one legal NDJSON line carrying any of them would
     be cut in half, both halves would fail to parse, and a COMPLETE answer
     would vanish silently. A trailing `\\r` is absorbed by the `.strip()`.
+
+    DUPLICATE MEMBERS (spec C14 / R-BIND): every line is parsed with the
+    original-text hook, and a repeated member anywhere in a line RAISES
+    `_DuplicateJSONMember` (carrying the key and the 1-based line number) out
+    of this function — the whole stream is refused, never edited. Silently
+    keeping the last value is how a blocking verdict launders into a benign
+    one; DROPPING the line is how it launders one layer up (gate-1 r3 row
+    r3-2): the caller's framing check reparses the stream WITHOUT this hook
+    and counts `result` events among the SURVIVORS, so a clean SAFE result
+    followed by a duplicate-bearing second result looked like exactly one
+    result and the first was admitted, and a dropped tool event vanished from
+    the allowlist census. The refusal is NON-REPAIRABLE at the caller (a
+    repair turn would replay the discarded half).
+
+    UNDECODABLE LINES ARE REPORTED, NOT JUST SKIPPED (gate-1 r7 row r7-k1,
+    widened at r8 row r8-1). The third member is the bounded census of the
+    `{`-prefixed lines this parse could not decode AT ALL — an ordinary
+    malformed line (JSONDecodeError), one nested past the recursion limit
+    (RecursionError) and an integer literal past the 4300-digit conversion
+    limit (a bare ValueError) alike: one
+    `{"line": <1-based>, "error": "<ExceptionClass>"}` per line, capped at
+    `_AGY_UNDECODABLE_LOG_CAP` entries, NEVER carrying the vendor bytes.
+    r6-8 skipped such a line so the parse would not cost the caller its
+    classification, audit row and run-log — correct — but left no flag, so a
+    drained NO-ANSWER attempt carrying a capacity phrase took the driver's
+    automatic retry and a clean second attempt returned `ok` over a merged
+    audit that omitted the event and said nothing. r7-k1 flagged the two
+    EXOTIC classes only, leaving that hole open for the likeliest shape.
+
+    The list stays EMPTY for a line that does not START with `{`: prose on
+    stdout (a vendor banner) belongs to the framing rule, and counting it
+    here would refuse every partial stream.
+
+    A TRAILING FRAGMENT IS A CUT, NOT A HOLE (gate-1 r9 row r9-10). r8-1
+    claimed the exemption above also covered "a killed run's trailing
+    fragment" — true only for a fragment that does not start with `{`, and
+    a stream cut mid-EVENT usually does. Such a fragment therefore entered
+    the census and the caller's r7-k1 rung refused the attempt as a generic
+    `vendor-error` BEFORE `_classify_no_answer` could name the ACTIONABLE
+    token the run really carried (`oauth-env`, `cli-subscription-cap`, the
+    capacity retry) — a diagnosis regression. The FINAL segment of a text
+    that does not end in `\\n` is excluded from the census (see
+    `_agy_tail_fragment`); the caller records it as `truncated_tail`
+    instead. Everything else is unchanged: a complete-but-malformed line
+    anywhere — the LAST line included, as long as it is newline-terminated
+    — is still a hole and still refuses.
     """
     events: list = []
     result = None
-    for line in (text or "").split("\n"):
+    undecodable = 0
+    undecodable_lines: list = []
+    tail_fragment_line = _agy_tail_fragment(text)
+    for line_no, line in enumerate((text or "").split("\n"), 1):
         line = line.strip()
         if not line.startswith("{"):
             continue
         try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
+            obj = json.loads(line, object_pairs_hook=_reject_duplicate_pairs)
+        except _DuplicateJSONMember as e:
+            # The partial census rides OUT on the exception (row r9-15): the
+            # caller keeps the read audit for this refusal, so the lines it
+            # had already found undecodable must not vanish with the raise.
+            raise _DuplicateJSONMember(e.key, line_no,
+                                       undecodable_lines) from None
+        except (RecursionError, ValueError) as e:
+            # EVERY `{`-PREFIXED LINE THAT DOES NOT DECODE IS RECORDED
+            # (gate-1 r6 row r6-8, WIDENED at r8 row r8-1). `json.loads`
+            # raises more than JSONDecodeError — a line nested past the
+            # interpreter's recursion limit raises RecursionError, and an
+            # integer literal over the 4300-digit conversion limit raises a
+            # bare ValueError — and r6-8 caught those two so they could not
+            # escape this "tolerant by design" parser as a traceback. But the
+            # ORDINARY malformed line (a plain JSONDecodeError: a truncated
+            # or mangled event) kept its own silent `continue` above this
+            # arm, so the common case left NO flag: a drained no-answer
+            # attempt carrying a capacity phrase took the driver's automatic
+            # retry and a clean second attempt returned `ok` over a merged
+            # audit that omitted the event (the r7-1 hole, reached through
+            # the likeliest shape). JSONDecodeError IS a ValueError, so one
+            # arm now covers all three; `_DuplicateJSONMember` is a
+            # ValueError too and is caught ABOVE, so the order matters. The
+            # line is skipped either way — the caller's framing check refuses
+            # the stream exactly as it does for a non-JSON line. Logged
+            # (bounded: the line NUMBER and the exception CLASS, never the
+            # vendor bytes) and capped, so a stream of bad lines cannot flood
+            # the leader-visible log.
+            if line_no == tail_fragment_line:
+                # THE CUT TAIL IS NOT A HOLE (row r9-10). The caller stamps
+                # `truncated_tail` on the attempt digest from the same
+                # helper, so the fact is recorded — it just does not refuse
+                # the transcript and blind the no-answer classifier.
+                log(f"agy stream line {line_no} is a TRAILING FRAGMENT "
+                    f"(the stream was cut mid-line) — recorded as a "
+                    f"truncated tail, not as an undecodable line")
+                continue
+            undecodable += 1
+            if undecodable <= _AGY_UNDECODABLE_LOG_CAP:
+                # Same cap on the RETURNED census (row r7-k1): the line count
+                # is vendor-controlled, so the caller's audit entry is bounded
+                # exactly like this log.
+                undecodable_lines.append({"line": line_no,
+                                          "error": type(e).__name__})
+                log(f"agy stream line {line_no} is undecodable "
+                    f"({type(e).__name__}) — line skipped")
             continue
         if not isinstance(obj, dict):
             continue
         events.append(obj)
         if obj.get("event") == "result" and isinstance(obj.get("result"), dict):
             result = obj["result"]
-    return events, result
+    if undecodable > _AGY_UNDECODABLE_LOG_CAP:
+        log(f"agy stream: {undecodable - _AGY_UNDECODABLE_LOG_CAP} further "
+            f"undecodable line(s) skipped (log capped)")
+    return events, result, undecodable_lines
 
 
 def _agy_params_hint(params) -> dict:
@@ -550,6 +826,31 @@ def _agy_tool_class(name: str) -> str:
     return "command" if name == "run_command" else "other"
 
 
+def _agy_conversation_ids(values) -> tuple:
+    """(ids, omitted) — the ORDERED, DEDUPED vendor conversation ids among
+    `values`, bounded by the list cap (gate-1 r13 row r13-2, spec case C23).
+
+    The hook load check attributes each PreToolUse hook row to the run that
+    made it BY THIS ID, so an id is recorded WHOLE or not at all: a
+    non-string or empty value is ignored, and an id longer than the value cap
+    is never truncated (a truncated id is a DIFFERENT id and would attribute
+    nothing) — it is counted in `omitted` with the ids beyond the list cap.
+    Transport only: the wrapper records what the stream says and validates
+    nothing."""
+    ids: list = []
+    seen: set = set()
+    over = 0
+    for v in values:
+        if not isinstance(v, str) or not v or v in seen:
+            continue
+        seen.add(v)
+        if len(v) > _AGY_DIGEST_VALUE_CAP or len(ids) >= _AGY_DIGEST_LIST_CAP:
+            over += 1
+            continue
+        ids.append(v)
+    return ids, over
+
+
 def digest_agy_stream(events: list, result=None) -> dict:
     """Fold a parsed event list into a bounded, deterministic read-audit
     digest. REPORT-ONLY: no policy, no judgment — the caller (leader /
@@ -582,16 +883,61 @@ def digest_agy_stream(events: list, result=None) -> dict:
     read_attempts: list = []
     tool_steps = 0
     error_steps = 0
+    # WHOSE run this was (gate-1 r13 row r13-2, spec case C23): the vendor
+    # conversation id on the `init` event (top level) and on EVERY
+    # `step_update` — MEASURED 2026-09-26 to be the id the PreToolUse hook
+    # logs. Collected before any step filter, so a run whose only call was a
+    # `finish` or a hook-denied prompt-shaped call still records its id.
+    conv_seen: list = []
+    # TOOL STEPS STILL IN FLIGHT (gate-1 r18 row r18-1, r19 row r19-1). A
+    # tool call emits `ACTIVE` and later a terminal `DONE`/`ERROR` under the
+    # SAME `step_index` (MEASURED, id spike 2026-09-26; the hook row carries
+    # it as `step_idx`). A run that exits on its own between the two updates
+    # counts that step nowhere, so a real zero is indistinguishable from a
+    # lost step. PER INDEX, LAST STATE WINS: a `step_type: tool` ACTIVE with
+    # an int `step_index` OPENS that index; ANY later DONE / ERROR update with
+    # the same index CLOSES it WHATEVER its step_type — MEASURED 2026-09-26
+    # (agy 1.2.11, a review-shaped run): the final `finish` call goes ACTIVE
+    # as `step_type: tool` and ends as `step_type: finish` DONE under the same
+    # index, so pairing tool-typed terminals only stamped every successful
+    # run; a later ACTIVE with the same index REOPENS it (index reuse is
+    # unobserved — handled by construction). Only DONE / ERROR close; an
+    # unknown state leaves the step open (fail-closed). An update with no int
+    # `step_index` cannot be paired by index: an index-less tool ACTIVE is
+    # closed only by a LATER index-less terminal of a tool call (`tool` or
+    # `finish`, the two measured terminal types), first in first out — never
+    # by another index's terminal, which closes its own step.
+    open_idx: dict = {}       # step_index -> True while that step is open
+    loose_open = 0            # index-less tool ACTIVEs not yet closed (FIFO)
     for ev in events or []:
+        if isinstance(ev, dict) and ev.get("event") == "init":
+            conv_seen.append(ev.get("conversation_id"))
         su = ev.get("step_update") if isinstance(ev, dict) else None
         if not isinstance(su, dict):
             continue
+        conv_seen.append(su.get("conversation_id"))
         stype = su.get("step_type")
+        state = su.get("state")
+        state_s = state if isinstance(state, str) else ""
+        idx = su.get("step_index")
+        has_idx = isinstance(idx, int) and not isinstance(idx, bool)
+        if state_s == "ACTIVE" and stype == "tool":
+            if has_idx:
+                open_idx[idx] = True
+            else:
+                loose_open += 1
+        elif state_s in ("DONE", "ERROR"):
+            if has_idx:
+                if open_idx.get(idx):
+                    open_idx[idx] = False
+            elif loose_open and stype in ("tool", "finish"):
+                loose_open -= 1
         if stype == "error_message":
             error_steps += 1
             continue
-        state = su.get("state")
-        state_s = state if isinstance(state, str) else ""
+        # The ACCOUNTING below is unchanged: only a terminal `step_type:
+        # tool` update is a tool step. The `finish` terminal (step_type
+        # `finish`) closes its step above and is not counted as one.
         if stype != "tool" or state_s == "ACTIVE":
             continue
         info = su.get("tool_info")
@@ -631,6 +977,12 @@ def digest_agy_stream(events: list, result=None) -> dict:
         "tool_steps": tool_steps,
         "error_steps": error_steps,
     }
+    # Omit-when-DEFAULT (the rule every per-attempt marker follows): the key
+    # appears exactly on a transcript that ends with a tool step in flight. A
+    # plain count like `tool_steps`, bounded by the event count.
+    steps_open = sum(1 for is_open in open_idx.values() if is_open) + loose_open
+    if steps_open:
+        digest["steps_open"] = steps_open
     # EVERY capped list carries its own omitted counter (r1/R6 — only
     # files_read did, so a truncated writes/commands/denied/web list looked
     # complete to the leader).
@@ -639,6 +991,10 @@ def digest_agy_stream(events: list, result=None) -> dict:
                         ("web", web), ("read_attempts", read_attempts)):
         digest[key] = values[:_AGY_DIGEST_LIST_CAP]
         digest[key + "_omitted"] = max(0, len(values) - _AGY_DIGEST_LIST_CAP)
+    # ALWAYS present, possibly empty: "recorded none" must read differently
+    # from an older audit that has no key at all.
+    digest["conversation_ids"], digest["conversation_ids_omitted"] = \
+        _agy_conversation_ids(conv_seen)
     if isinstance(result, dict):
         # r2/C3: `status` was the ONE uncapped vendor string left in the
         # digest, and it is replicated into the merged terminal fields AND
@@ -714,6 +1070,17 @@ def merge_agy_digests(digests) -> Optional[dict]:
         omitted += max(0, len(union) - _AGY_DIGEST_LIST_CAP)
         merged[key] = union[:_AGY_DIGEST_LIST_CAP]
         merged[key + "_omitted"] = omitted
+    # The UNION of every attempt's conversation ids (gate-1 r13 row r13-2),
+    # bounded like the lists above; each attempt's own ids ride on its
+    # `attempts[]` row below, which is what the hook load check attributes.
+    conv_all: list = []
+    conv_omitted = 0
+    for d in items:
+        vals = d.get("conversation_ids")
+        conv_all.extend(vals if isinstance(vals, list) else [])
+        conv_omitted += int(d.get("conversation_ids_omitted") or 0)
+    merged["conversation_ids"], over = _agy_conversation_ids(conv_all)
+    merged["conversation_ids_omitted"] = conv_omitted + over
     last = items[-1]
     for key in ("status", "duration_seconds", "usage"):
         if key in last:
@@ -723,10 +1090,60 @@ def merge_agy_digests(digests) -> Optional[dict]:
         entry: dict = {"attempt": i + 1, "status": d.get("status"),
                        "tool_steps": d.get("tool_steps", 0),
                        "error_steps": d.get("error_steps", 0)}
+        # WHICH attempt's transcript was a prefix (gate-1 r6 row r6-1). The
+        # driver stamps the engine's reader outcome onto each attempt's own
+        # digest, so a merged audit can never present a knowingly incomplete
+        # earlier attempt as ordinary evidence. Omit-when-DEFAULT, the same
+        # rule the audit row and the run-log apply to this flag.
+        if d.get("capture_complete") is False:
+            entry["capture_complete"] = False
+        # WHICH lines this attempt's transcript could not decode (gate-1 r7
+        # row r7-k1). Same omit-when-default rule as `capture_complete`: the
+        # key appears exactly where the transcript had a hole, so a reader can
+        # never mistake an incomplete attempt for ordinary evidence. The value
+        # is already bounded by the parser's own cap.
+        if d.get("undecodable_lines"):
+            entry["undecodable_lines"] = d["undecodable_lines"]
+        # HOW MANY TERMINAL `result` EVENTS this attempt's transcript
+        # carried (gate-1 r9 row r9-1). The driver stamps it only when the
+        # count is not the expected 1 (omit-when-default, as above), so the
+        # key appears exactly on an attempt whose terminal answer was
+        # ambiguous or absent.
+        if d.get("result_events") is not None:
+            entry["result_events"] = d["result_events"]
+        # WHETHER this attempt's transcript was CUT MID-LINE (gate-1 r9 row
+        # r9-10). Same omit-when-default rule: a cut tail does not refuse
+        # the attempt, so the merged audit is the only place a reader can
+        # see that the transcript stops short of the vendor's last event.
+        if d.get("truncated_tail"):
+            entry["truncated_tail"] = True
+        # WHETHER this attempt's run was INTERRUPTED (gate-1 r17 row r17-1):
+        # the driver stamps `timeout` (the wrapper killed it at its deadline)
+        # or `signal` (a negative vendor rc). Same omit-when-default rule: a
+        # transcript that ends on a line boundary carries neither marker
+        # above, and this is what tells a reader it is a known prefix.
+        if d.get("interrupted"):
+            entry["interrupted"] = d["interrupted"]
+        # HOW MANY TOOL STEPS WERE STILL IN FLIGHT when this attempt's
+        # transcript ended (gate-1 r18 row r18-1): an ACTIVE update with no
+        # terminal one, so the step is counted nowhere else. Same
+        # omit-when-default rule; a per-attempt fact, never at the top level.
+        if d.get("steps_open"):
+            entry["steps_open"] = d["steps_open"]
         for key in _AGY_DIGEST_LISTS:
             vals = d.get(key)
             entry[key] = (len(vals) if isinstance(vals, list) else 0) \
                 + int(d.get(key + "_omitted") or 0)
+        # THIS attempt's own conversation ids (gate-1 r13 row r13-2, spec
+        # case C23) — ALWAYS present, possibly empty, so the hook load check
+        # can attribute hook rows to the run that made them. The omitted
+        # count follows the omit-when-default rule of this row.
+        vals = d.get("conversation_ids")
+        entry["conversation_ids"], over = _agy_conversation_ids(
+            vals if isinstance(vals, list) else [])
+        over += int(d.get("conversation_ids_omitted") or 0)
+        if over:
+            entry["conversation_ids_omitted"] = over
         attempts.append(entry)
     merged["attempts"] = attempts
     merged["attempts_omitted"] = max(0, len(items) - _AGY_DIGEST_ATTEMPT_CAP)
@@ -976,6 +1393,51 @@ class RunResult:
     # classification input-delivery-failed) — a successful write proves
     # TRANSPORT progress only, never that the vendor processed every byte.
     stdin_delivery: Optional[str] = None
+    # ─── Common transport receipt inputs (spec C9/C10, R-RECEIPT) ───────────
+    # Caller-supplied dispatch attempt number (`--attempt`, default 1). RECORDED,
+    # never interpreted: the wrapper does not retry on it and no control flow
+    # reads it — it exists so a cross-host reader can join a wrapper record to
+    # the round/attempt the caller allocated.
+    dispatch_attempt: int = 1
+    # Absolute path the --prompt-file argument resolved to (C28), or None when
+    # the prompt came from argv text. Audit/run-log key OMITTED when None (the
+    # vendor_version shape rule); masked under hardened redaction.
+    prompt_file_resolved: Optional[str] = None
+    # The model slug the caller REQUESTED (codex `--model`, spec C35 / shared
+    # dev log DL-3), or None when none was requested (= the CLI's config
+    # default; the round record freezes the roster value as null). RECORD-ONLY:
+    # never a runtime identity (codex exposes none) and never inferred. Audit /
+    # run-log key OMITTED when None; NOT redacted — a catalog slug is not
+    # prompt-bearing (the vendor_version class).
+    requested_model: Optional[str] = None
+    # False only when NO vendor process was ever created for this result (the
+    # pre-spawn stdin refusal and a Popen OSError). The receipt reports
+    # `binary: null` + `stdin_delivery: not-started` in that case — a path that
+    # never ran must never claim a binary. Results built outside _run_once keep
+    # the True default (their `cmd[0]` is the binary the caller did invoke).
+    spawned: bool = True
+    # True when the child's OWN process group still had members after the
+    # child exited NORMALLY and `_kill_proc_group` reaped them before this
+    # result was returned (spec case C1 / R-TERMINAL: success requires the
+    # reap, not the absence of descendants). False on an ordinary run, on the
+    # timeout path (the reap there is the timeout's own escalation) and on any
+    # result built outside `_run_once`. Audit / run-log key OMITTED when
+    # False — the same omit-when-default shape rule as `vendor_version`.
+    orphans_reaped: bool = False
+    # False when ANY output reader RAISED or was still alive after the bounded
+    # join — the capture this result carries is a PREFIX, not the transcript.
+    # Recorded INDEPENDENTLY of rc and of the timeout (gate-1 r5 row r5-2).
+    # The `reader_failed` rung below fails a run closed only at `rc == 0`,
+    # deliberately: a genuine vendor failure keeps its own, more specific
+    # diagnosis. The cost was that the reader evidence then VANISHED — a
+    # rc != 0 result looked exactly like one whose capture was whole — and a
+    # downstream driver that re-derives its own outcome from
+    # `vendor_exit_code` + the parsed result (the agy stream-json driver's
+    # degraded acceptance) could promote a truncated transcript to `ok`.
+    # This field is the evidence, kept on every path. Audit / run-log key
+    # OMITTED when True — the same omit-when-default shape rule as
+    # `orphans_reaped`, so the ordinary record is unchanged byte-for-byte.
+    capture_complete: bool = True
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
@@ -983,6 +1445,104 @@ class RunResult:
 def log(msg: str) -> None:
     ts = time.strftime("%Y-%m-%dT%H:%M:%S")
     print(f"[{ts}] {msg}", file=sys.stderr)
+
+
+# ── payload vs diagnostic streams (gate-1 r7 rows r7-c2 / r7-k5) ─────────
+# STDOUT IS THE PAYLOAD. It carries the leg's verdict, and a consumer
+# captures it as `verdict.json`; STDERR is the diagnostic stream (`log()`,
+# the canonical summary line, the read-audit line). The two get OPPOSITE
+# encoder rules, and conflating them cost a verdict either way:
+#   * strict on the payload -> an em-dash in the answer raised
+#     UnicodeEncodeError under a non-UTF-8 locale AFTER the audit row and
+#     the run-log had claimed `ok`, leaving the captured file EMPTY;
+#   * relaxed (`backslashreplace`) on the payload -> the same answer is
+#     silently REWRITTEN, which is worse: the consumer admits bytes the leg
+#     never produced (the r7-x2 class, measured one library over).
+# The payload is therefore encoded ONCE, as UTF-8, and written to the binary
+# buffer; only the diagnostic stream is relaxed.
+
+
+def _relax_diagnostic_stream() -> None:
+    """Relax the DIAGNOSTIC stream's error handler. Entry-point only.
+
+    Wrapper log lines are em-dash-bearing English, so under a non-UTF-8
+    locale a strict `sys.stderr` would drop the very diagnosis a failure
+    exists to deliver. Only the ERROR HANDLER changes (the encoding is
+    untouched), and a stream that cannot be reconfigured is left alone.
+    `sys.stdout` is deliberately NOT touched: see the section note."""
+    try:
+        sys.stderr.reconfigure(errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
+
+
+def _emit_payload(data: bytes) -> None:
+    """Write the answer BYTES to stdout and flush.
+
+    `sys.stdout` is flushed first so anything a caller already wrote as text
+    keeps its order. A harness that replaced `sys.stdout` with a text object
+    has no `.buffer`; there the bytes are decoded back, which is what an
+    in-process caller asked for."""
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is None:
+        sys.stdout.write(data.decode("utf-8", errors="replace"))
+        sys.stdout.flush()
+        return
+    sys.stdout.flush()
+    buffer.write(data)
+    buffer.flush()
+
+
+def _payload_or_demote(cli: str, result, text: str, obj=None) -> bytes:
+    """The payload BYTES for `result`, or b"" with `result` DEMOTED.
+
+    Call this BEFORE the audit row (that is the whole point of row r7-k5):
+    an answer that cannot reach stdout is not an `ok` run, and the record
+    must say so rather than being written first and contradicted by a
+    traceback afterwards.
+
+    TWO steps, in order:
+      1. UTF-8. The answer is text the vendor produced and this is the
+         encoding every consumer of the payload channel reads.
+      2. `ensure_ascii=True` re-serialization, for a JSON payload only. A
+         `structured_output` string can carry an escaped LONE SURROGATE
+         (an escaped D800): `json.loads` yields the code point, and the text has
+         no UTF-8 encoding at all — but `json.dumps(..., ensure_ascii=True)`
+         escapes it back, which is BYTE-SAFE and JSON-EQUIVALENT (a consumer
+         re-parses the same object). Only the spelling changes, never the
+         value, so this is not a rewrite of the answer.
+    Neither step applies -> the payload cannot be emitted, so the run is
+    reclassified `extraction-error` (the repair-routed class: an answer the
+    host could not carry IS the wrapper's own extraction failure) and the
+    reason is recorded on the result before anything is audited."""
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    if obj is not None:
+        try:
+            return (json.dumps(obj, ensure_ascii=True) + "\n").encode("utf-8")
+        except (UnicodeEncodeError, TypeError, ValueError):
+            pass
+    note = ("the answer cannot be emitted on the payload channel: it is not "
+            "UTF-8-encodable and has no JSON-equivalent ASCII serialization")
+    result.classification = "extraction-error"
+    result.exit_code = EXIT_CLI_FAIL
+    result.extraction_error = (f"{result.extraction_error} | {note}"
+                               if result.extraction_error else note)
+    # THE NOTE IS A DIAGNOSTIC, NOT A SUMMARY LINE (gate-1 r8 row r8-5, the
+    # x-leg amendment). It was spelled `[wrapper] <cli> unemittable-payload
+    # — …`, which MATCHES the dispatch SKILLs' summary parse
+    # (`grep '\[wrapper\] <cli> ' | tail -1`, then a `([a-z-]+)` sed): being
+    # the last such line, it made the parsed classification the non-token
+    # `unemittable-payload`, so the `extraction-error` routing the demotion
+    # exists to trigger never fired. A COLON after the cli name keeps the
+    # familiar prefix for a human reader while putting the line out of that
+    # grep's reach by construction. It is emitted BEFORE the corrected
+    # canonical summary each wrapper's main() re-emits
+    # (`_emit_canonical_summary`), so `tail -1` reads the summary.
+    log(f"[wrapper] {cli}: unemittable-payload — {note}")
+    return b""
 
 
 def require_binary(name: str) -> str:
@@ -1145,48 +1705,94 @@ def _ensure_within_runtime_roots(path: Path, label: str) -> Path:
     return resolved
 
 
+# Process-ENTRY working directory (C28, owner directive 2026-09-19). Captured
+# ONCE at import, before any wrapper code can chdir, so a relative --prompt-file
+# / --cwd always resolves against the directory the operator actually launched
+# the wrapper from — never against a later cwd and never against the CHILD's
+# --cwd. None when the cwd was already unlinked at import (a deleted worktree):
+# the relative forms then refuse, the absolute forms are unaffected.
+try:
+    _PROCESS_ENTRY_CWD: Optional[Path] = Path.cwd()
+except OSError:  # pragma: no cover - cwd removed before the wrapper started
+    _PROCESS_ENTRY_CWD = None
+
+
+def _resolve_against_entry_cwd(raw: str, label: str) -> Tuple[Path, str]:
+    """Expand `raw` and, when relative, rebase it on `_PROCESS_ENTRY_CWD`.
+
+    Returns (candidate, origin) where `origin` is the phrase used in a refusal
+    so a relative input is diagnosed with BOTH the text given and the path it
+    resolved to (the record the owner's mechanical-resolution directive asks
+    for), while an absolute input keeps its original wording."""
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path, ""
+    if _PROCESS_ENTRY_CWD is None:
+        raise ValueError(
+            f"{label} {raw!r} is relative but the wrapper's process-entry "
+            f"working directory is gone — pass an absolute path")
+    candidate = _PROCESS_ENTRY_CWD / path
+    return candidate, (f"{label} {raw!r} resolved against process cwd "
+                       f"{_PROCESS_ENTRY_CWD} -> ")
+
+
+def resolve_prompt_file(prompt_file: str) -> Path:
+    """Resolve --prompt-file to an existing, contained, absolute file path.
+
+    C28 (owner directive 2026-09-19) SUPERSEDES the P3.b D-2 decision (spec
+    3-way unanimous 2026-07-11) that a relative --prompt-file must fail loud:
+    the refusal fired a third time on a real dispatch, so resolution is now
+    MECHANICAL — rebase on the process-entry cwd, then run EVERY pre-existing
+    validation unchanged (containment roots, existence, is_file; the wrappers'
+    own non-empty check still follows). The hazard D-2 guarded — a reverted
+    cwd naming a same-named WRONG file — is now covered by RECORDING the
+    resolved absolute path on the wrapper summary line and in the audit row
+    (`prompt_file_resolved`), so a mis-resolution is legible afterwards
+    instead of being refused up front."""
+    candidate, origin = _resolve_against_entry_cwd(prompt_file, "--prompt-file")
+    try:
+        resolved = _ensure_within_runtime_roots(candidate, "--prompt-file")
+    except (FileNotFoundError, NotADirectoryError):
+        raise ValueError(f"{origin}{candidate}: not a file") from None
+    if not resolved.is_file():
+        raise ValueError(f"{origin}{resolved}: not a file")
+    return resolved
+
+
 def load_prompt_text(prompt: Optional[str], prompt_file: Optional[str]) -> str:
-    """Load the wrapper prompt from argv text or an absolute UTF-8 file.
+    """Load the wrapper prompt from argv text or a UTF-8 file.
 
     argparse enforces the XOR at the CLI; this re-check is defense-in-depth
-    for direct callers."""
+    for direct callers. Path resolution (incl. the C28 relative form) lives in
+    `resolve_prompt_file`, which the wrappers also call directly to RECORD the
+    resolved path — the return type stays a plain `str` so every existing
+    caller is unchanged."""
     if prompt is not None and prompt_file:
         raise ValueError("--prompt and --prompt-file are mutually exclusive")
     if prompt is not None:
         return prompt
     if not prompt_file:
         raise ValueError("either --prompt or --prompt-file is required")
-    path = Path(prompt_file).expanduser()
-    if not path.is_absolute():
-        # P3.b D-2 (spec 3-way unanimous 2026-07-11): stay FAIL-LOUD —
-        # silent relative resolution against a reverted/unexpected cwd could
-        # read the wrong same-named file and pass containment silently. The
-        # candidate below is cwd-DERIVED, not necessarily the intended path.
-        cwd = Path.cwd()
-        raise ValueError(
-            f"--prompt-file must be an absolute path (got {prompt_file!r}; "
-            f"caller cwd: {cwd}). If that cwd is the intended base, retry "
-            f"with --prompt-file {cwd / path}; note the foreground shell cwd "
-            f"can revert between turns — verify it before trusting the "
-            f"candidate."
-        )
-    resolved = _ensure_within_runtime_roots(path, "--prompt-file")
-    if not resolved.is_file():
-        raise ValueError(f"--prompt-file must be a file: {resolved}")
-    return resolved.read_text(encoding="utf-8")
+    return resolve_prompt_file(prompt_file).read_text(encoding="utf-8")
 
 
 
 def validate_wrapper_cwd(cwd: Optional[str]) -> Optional[str]:
-    """Validate a vendor cwd without expanding the no-prompt trust boundary."""
+    """Validate a vendor cwd without expanding the no-prompt trust boundary.
+
+    C28: a relative --cwd is rebased on the process-entry cwd (never on
+    anything the child controls), then the pre-existing containment + is_dir
+    checks run unchanged and the refusal names the RESOLVED candidate."""
     if not cwd:
         return None
-    path = Path(cwd).expanduser()
-    if not path.is_absolute():
-        raise ValueError("--cwd must be an absolute path")
-    resolved = _ensure_within_runtime_roots(path, "--cwd")
+    candidate, origin = _resolve_against_entry_cwd(cwd, "--cwd")
+    try:
+        resolved = _ensure_within_runtime_roots(candidate, "--cwd")
+    except (FileNotFoundError, NotADirectoryError):
+        raise ValueError(
+            f"{origin}{candidate}: not an existing directory") from None
     if not resolved.is_dir():
-        raise ValueError(f"--cwd must be an existing directory: {resolved}")
+        raise ValueError(f"{origin}{resolved}: not an existing directory")
     return str(resolved)
 
 
@@ -1223,6 +1829,196 @@ def _redact_prompt_args(cmd: list[str]) -> list[str]:
         redacted.append("<redacted:missing-value>")
     return redacted
 
+
+
+# ─── Common transport receipt (shared spec C9/C10, rule R-RECEIPT) ────────
+# The receipt vocabulary names the Google CLI `agy`; host A's own `cli` field
+# keeps saying `antigravity`. An unmapped cli (a synthetic caller) reports
+# `native`, whose contract branch forbids a binary/version.
+_TRANSPORT_ROUTE_BY_CLI: dict[str, str] = {
+    "codex": "codex",
+    "gemini": "gemini",
+    "claude": "claude",
+    "antigravity": "agy",
+}
+# Routes that hand the prompt to the vendor over STDIN. Every other route
+# passes it by argv (gemini `-p`, claude `-p`, agy `-p`), where "stdin was not
+# used" is the accurate statement, not "delivery unknown".
+_TRANSPORT_STDIN_ROUTES: frozenset[str] = frozenset({"codex"})
+TRANSPORT_BINARY_REDACTED = "<redacted:binary-path>"
+PROMPT_FILE_REDACTED = "<redacted:prompt-file>"
+
+
+def build_transport(
+    cli: str,
+    cmd: list[str],
+    stdin_delivery: Optional[str],
+    vendor_version: Optional[str],
+    attempt: int,
+    pre_spawn: bool,
+) -> dict:
+    """Build the common transport receipt for one wrapper record.
+
+    Pure — no IO, no env reads. Output validates against the vendored
+    `spec/contracts/receipt-fields.json` (schema_version 2) for EVERY input
+    combination the wrappers can produce. Null `binary` / `cli_version` mean
+    NOT OBSERVED; neither is ever inferred from a REQUEST (nothing here is
+    filled from what the caller asked for; agy's stream DOES expose a runtime
+    model identity on its `init` event — spec DL-9 — but no wrapper records it
+    yet, so it is not a source here either). `cli_version` sources, both
+    observations of the BINARY that ran: the agy wrapper's own pre-spawn
+    `agy --version` probe of the resolved binary, and the gemini REVIEW route
+    (C16 — compatibility with the older gemini CLI) carrying the version its
+    preflight probed from the same resolved binary moments before the
+    dispatch. A route that probes nothing (codex) keeps null.
+    """
+    route = _TRANSPORT_ROUTE_BY_CLI.get(cli, "native")
+    if pre_spawn:
+        delivery = "not-started"
+    elif stdin_delivery is None:
+        # A's non-stdin callers record nothing; "not-used" is only true for a
+        # route that never intended stdin.
+        delivery = "unexposed" if route in _TRANSPORT_STDIN_ROUTES else "not-used"
+    elif stdin_delivery == "complete":
+        delivery = "complete"
+    elif stdin_delivery.startswith("failed:"):
+        delivery = "failed"
+    else:
+        # "unconfirmed" — the writer was not reconciled within the bound, so
+        # the outcome is genuinely not exposed. Any future A-internal token
+        # lands here too rather than inventing a receipt value.
+        delivery = "unexposed"
+    binary: Optional[str] = None
+    version: Optional[str] = None
+    if route != "native":
+        if not pre_spawn and cmd and isinstance(cmd[0], str) and cmd[0].strip():
+            binary = cmd[0]
+        if vendor_version and vendor_version.strip():
+            version = vendor_version
+    elif delivery not in ("not-used", "unexposed"):
+        # Contract: the `native` branch admits only these two delivery values.
+        delivery = "unexposed"
+    return {
+        "schema_version": 2,
+        "stdin_delivery": delivery,
+        "route": route,
+        "binary": binary,
+        "cli_version": version,
+        "attempt": attempt if isinstance(attempt, int) and attempt >= 1 else 1,
+    }
+
+
+_SUMMARY_FIELD_SAFE = "/._-~+=@,:"
+
+
+def _summary_field(value: str) -> str:
+    """One FREE-TEXT value, escaped so it cannot forge a summary line
+    (gate-1 r9 row r9-3).
+
+    The dispatch SKILLs read the classification off this line with a GREEDY
+    regex — `sed -E 's/.*\\[wrapper\\] <cli> ([a-z-]+) .*/\\1/'` — which takes
+    the LAST `[wrapper] <cli> <token> ` occurrence ANYWHERE in the line. The
+    tail's only free-text member is a vendor- or caller-supplied PATH, and a
+    path is allowed to contain spaces and brackets, so a prompt file living
+    under a directory literally named `…[wrapper] codex ok …` overrode the
+    token the wrapper emitted: a demoted `extraction-error` run parsed as
+    `ok`, and the mandatory repair-agent routing never fired.
+
+    `shlex.quote` does NOT close this — it wraps the value in single quotes
+    and leaves every inner byte alone, so the forged sequence survives
+    inside the quotes. Percent-escaping does: the safe set below excludes
+    SPACE and `[` / `]`, so `[wrapper] <cli> <token> ` is unconstructible
+    inside the field, and the whole field is ASCII (a U+2028 a
+    `splitlines()` reader would honour as a line break cannot survive
+    either). An ordinary POSIX path — alphanumerics plus the safe
+    punctuation — is emitted BYTE-IDENTICALLY, so the C28 receipt an
+    operator reads is unchanged; only an exotic path is visibly escaped, and
+    the audit row keeps the raw value either way.
+
+    THE VALUE IS FILESYSTEM BYTES, NOT TEXT (gate-1 r10 row r10-5).
+    `quote()` on a `str` encodes it STRICTLY as UTF-8, and a path is bytes:
+    Python hands an undecodable byte back as a lone surrogate
+    (`surrogateescape`, the documented `os.fsdecode` round-trip), so a
+    prompt file under such a name raised `UnicodeEncodeError` here — inside
+    the summary emission, i.e. AFTER the vendor had answered and BEFORE the
+    audit row and the answer were written. A completed dispatch lost its
+    answer, its record and its receipt to a filename. `os.fsencode`
+    reproduces the filesystem's own bytes exactly (it is the inverse of the
+    decode that produced the surrogate) and `quote` percent-escapes any
+    byte outside the safe set, so an ordinary POSIX path is still emitted
+    byte-identically and an exotic one is escaped rather than fatal.
+    """
+    if isinstance(value, str):
+        value = os.fsencode(value)
+    return urllib.parse.quote(value, safe=_SUMMARY_FIELD_SAFE)
+
+
+def _summary_tail(dispatch_attempt: int, prompt_file_resolved: Optional[str],
+                  requested_model: Optional[str] = None) -> str:
+    """Recorded-facts tail of the one-line `[wrapper] <cli> …` summary.
+
+    Appended AFTER `elapsed=` so the dispatch SKILLs' prefix grep
+    (`[wrapper] <cli> <classification> …`) and `tests/lib/dispatch.sh`'s sed
+    extraction are unaffected. The path is escaped by `_summary_field` (row
+    r9-3); the REDACTION sentinel is wrapper-authored ASCII and is emitted
+    as it is. `model=` (spec C35 / DL-3) follows `prompt_file=` only when a
+    model was REQUESTED; it is escaped by the same `_summary_field` and never
+    redacted (a catalog slug is not prompt-bearing). Absent = the CLI's config
+    default was used."""
+    tail = f" attempt={dispatch_attempt}"
+    if prompt_file_resolved:
+        tail += (" prompt_file="
+                 + (PROMPT_FILE_REDACTED if _audit_redact_enabled()
+                    else _summary_field(prompt_file_resolved)))
+    if requested_model is not None:
+        tail += " model=" + _summary_field(requested_model)
+    return tail
+
+
+def _emit_canonical_summary(cli: str, result) -> None:
+    """Re-emit the canonical one-line summary from a RunResult's CURRENT state.
+
+    gate-1 r8 row r8-5. codex / gemini / claude print their summary inside
+    `run_cli_with_retry`, i.e. BEFORE main() calls `_payload_or_demote` — so
+    after a demotion the last `[wrapper]` line on stderr still said `ok
+    exit=0` while the process exited 1 and the audit row said
+    `extraction-error`. A SECOND emission carrying the final classification
+    is the contract the dispatch SKILLs already document ("use the LAST
+    `[wrapper]` line — an early `ok` summary is corrected by a second
+    emission"), and the engine itself already re-emits on the terminal /
+    schema / capacity-exhaust promotions for exactly this reason.
+
+    EVERY PROMOTION RE-EMITS THROUGH THIS FUNCTION (gate-1 r12 row r12-3).
+    `run_cli_with_retry`'s promotions (schema-fail, the terminal classes,
+    schema-rejected, the capacity give-up, extraction-error) used to
+    hand-build the line WITHOUT `_summary_tail`, so the LAST line of a
+    promoted result carried no `attempt=` / `prompt_file=` / `model=` and
+    "absent model = the CLI default" was wrong exactly on failure paths.
+
+    BYTE-FORMAT IDENTICAL to `_run_once`'s own line, `_summary_tail`
+    included, so one grep + sed reads either emission. The agy wrapper needs
+    no call: its driver emits its canonical summary AFTER the demotion
+    already."""
+    log(
+        f"[wrapper] {cli} {result.classification} "
+        f"exit={result.exit_code} vendor={result.vendor_exit_code} "
+        f"elapsed={result.elapsed_s:.1f}s"
+        + _summary_tail(result.dispatch_attempt, result.prompt_file_resolved,
+                        result.requested_model)
+    )
+
+
+def _record_transport(result: RunResult, cli: str, cmd: list[str]) -> dict:
+    """build_transport() bound to a RunResult — the one shape audit() and
+    emit_run_log() both write, so the two records can never drift."""
+    return build_transport(
+        cli,
+        cmd,
+        result.stdin_delivery,
+        result.vendor_version,
+        result.dispatch_attempt,
+        pre_spawn=not result.spawned,
+    )
 
 
 def _json_len(value: Any) -> int:
@@ -1588,6 +2384,20 @@ def validate_response_with_trigger(
     load-bearing, and `nonrepairable_log_marker` for the emitted token.
     """
     cleaned = strip_markdown_fences(answer_text)
+    # ORIGINAL-TEXT duplicate-member reject (spec C14 / R-BIND) — BEFORE
+    # `model_validate_json`, which shares `json.loads` last-wins semantics and
+    # so cannot see the discarded half. NON-REPAIRABLE for the same reason as
+    # `NONREPAIRABLE_MARKER`: replaying the reply into the one repair turn asks
+    # the model to resend the version that survived, and the caller would only
+    # ever see the laundered object. Reported as CONTENT — the refusal comes
+    # from the payload's own bytes, not from a validator arm (which never ran).
+    dup_key = _duplicate_json_member(cleaned)
+    if dup_key is not None:
+        return (False,
+                f"duplicate JSON member '{dup_key}' — rejected at the original "
+                f"text (spec C14): a repeated member discards the first value, "
+                f"so the reply cannot be read as sent",
+                True, NonrepairableTrigger.CONTENT)
     try:
         obj = cls.model_validate_json(cleaned)
         return True, obj.model_dump(mode="json"), False, NonrepairableTrigger.NONE
@@ -1940,19 +2750,94 @@ _CHILD_ENV_SCRUB = (
     "BASH_ENV", "ENV", "PERL5LIB", "RUBYOPT", "RUBYLIB",
 )
 
+# Vendor CREDENTIAL / ENDPOINT / MODEL-SELECTOR variables, scrubbed from the
+# vendor child on EVERY route (spec cases C11 + C17, rule R-NOCOST).
+#
+# Why: login is the CLI's OWN OAuth login — "wrappers check the binary and never
+# enter or store credentials", and "billing follows the AUTHENTICATION type, not
+# the model flag". A key, a base URL or a model selector left in the ambient
+# environment would silently move the dispatch onto a paid API route or a
+# different model, with nothing in the audit row to show it. Scrubbing is
+# HYGIENE, NOT PROOF of the billing route (R-NOCOST says so in those words):
+# the wrapper still cannot observe which credential the CLI finally used.
+#
+# One route-independent tuple rather than a per-CLI seam: a name that belongs to
+# one family is inert in another family's child, and one list is one thing to
+# review. Deliberately NOT scrubbed: PATH (see the note above), the CLIs' own
+# config-dir pointers, and any variable that selects the APPROVED OAuth route
+# (Google `GOOGLE_GENAI_USE_GCA` selects LOGIN_WITH_GOOGLE — removing it could
+# DOWNGRADE a correctly configured host).
+#
+# Names are Tier-2 facts read from the installed CLIs on 2026-09-21, one comment
+# per line; nothing here is guessed.
+_CHILD_ENV_SCRUB_CREDENTIALS = (
+    # ── Google (gemini CLI 0.60.0 bundle: packages/core/dist/src/core/
+    # contentGenerator.js `getAuthTypeFromEnv`, and the settings loader's
+    # `AUTH_ENV_VAR_WHITELIST`) ──
+    "GOOGLE_API_KEY",                 # API-key auth (AUTH_ENV_VAR_WHITELIST)
+    "GEMINI_API_KEY",                 # -> AuthType USE_GEMINI (api-key route)
+    "GOOGLE_APPLICATION_CREDENTIALS",  # ADC service-account credential file
+    "GOOGLE_GENAI_USE_VERTEXAI",      # -> AuthType USE_VERTEX_AI
+    "GEMINI_CLI_USE_COMPUTE_ADC",     # -> AuthType COMPUTE_ADC
+    "CLOUD_SHELL",                    # -> AuthType COMPUTE_ADC (Cloud Shell)
+    "GOOGLE_CLOUD_PROJECT",           # billing project (AUTH_ENV_VAR_WHITELIST)
+    "GOOGLE_CLOUD_LOCATION",          # billing region (AUTH_ENV_VAR_WHITELIST)
+    "GOOGLE_GEMINI_BASE_URL",         # -> AuthType GATEWAY (endpoint override)
+    "GOOGLE_VERTEX_BASE_URL",         # Vertex endpoint override
+    "GEMINI_MODEL",                   # ambient model selector
+    # ── OpenAI / codex (strings of the installed codex native binary,
+    # @openai/codex vendor/<triple>/bin/codex) ──
+    "OPENAI_API_KEY",                 # API-key auth
+    "CODEX_API_KEY",                  # codex-specific API-key auth
+    "CODEX_ACCESS_TOKEN",             # pre-issued access token
+    "OPENAI_BASE_URL",                # endpoint override
+    "OPENAI_ORGANIZATION",            # billing organization selector
+    "OPENAI_PROJECT",                 # billing project selector
+    # ── Anthropic / claude (strings of the installed Claude Code binary
+    # 2.1.271) ──
+    "ANTHROPIC_API_KEY",              # API-key auth
+    "ANTHROPIC_AUTH_TOKEN",           # pre-issued bearer token
+    "ANTHROPIC_BASE_URL",             # endpoint override
+    "ANTHROPIC_MODEL",                # ambient model selector
+    "ANTHROPIC_SMALL_FAST_MODEL",     # ambient small-model selector
+)
+
+# One membership set for the spawn site; the two tuples stay separate so each
+# keeps its own rationale, and disjoint so no name carries two policies.
+_CHILD_ENV_SCRUB_ALL: frozenset[str] = frozenset(
+    _CHILD_ENV_SCRUB) | frozenset(_CHILD_ENV_SCRUB_CREDENTIALS)
+assert not (set(_CHILD_ENV_SCRUB) & set(_CHILD_ENV_SCRUB_CREDENTIALS)), (
+    "a variable is listed in BOTH child-env scrub tuples"
+)
+
 
 def scrubbed_child_env(base=None) -> dict:
     """The single-source vendor-child env: `base` (default `os.environ`) minus the
-    `_CHILD_ENV_SCRUB` injection vars. Applied at the single vendor-child spawn
-    site (`_run_once`, Popen — codex/gemini/claude/agy all go through it since
-    the 2026-07-31 pty-transport deletion), so the scrub policy lives in
-    exactly ONE place. Returns a fresh dict (safe to mutate)."""
+    `_CHILD_ENV_SCRUB` injection vars AND the `_CHILD_ENV_SCRUB_CREDENTIALS`
+    vendor credential / endpoint / model-selector vars (C11/C17). Applied at the
+    single vendor-child spawn site (`_run_once`, Popen — codex/gemini/claude/agy
+    all go through it since the 2026-07-31 pty-transport deletion), so the scrub
+    policy lives in exactly ONE place. Returns a fresh dict (safe to mutate)."""
     src = base if base is not None else os.environ
-    return {k: v for k, v in src.items() if k not in _CHILD_ENV_SCRUB}
+    return {k: v for k, v in src.items() if k not in _CHILD_ENV_SCRUB_ALL}
 
 
-def _drain(stream, accum: list[str], passthrough) -> None:
-    """Reader thread — line iter, accumulate, optional mirror to passthrough."""
+def _drain(stream, accum: list[str], passthrough, state: Optional[dict] = None) -> None:
+    """Reader thread — line iter, accumulate, optional mirror to passthrough.
+
+    `state`, when the caller supplies it, is that reader's completion record
+    (spec R-TERMINAL / case C1): `state["done"] = True` once the stream hit
+    EOF and was closed, `state["error"] = "<ExceptionClass>: <msg>"` when the
+    read raised. Before 2026-09-21 the exception was ONLY logged, and
+    `_run_once` never looked at the join result either — so an undecodable
+    vendor byte (the pipes are strict UTF-8) ended the reader early and the
+    captured PREFIX was returned as a rc-0 success. The caller adjudicates;
+    this function still never raises into the thread.
+
+    A passthrough (display-mirror) failure stays deliberately swallowed and
+    is NOT recorded: R-TERMINAL distinguishes "failed to mirror for the human"
+    from "failed to capture the result", and only the latter voids a run.
+    """
     try:
         for line in iter(stream.readline, ""):
             accum.append(line)
@@ -1966,21 +2851,26 @@ def _drain(stream, accum: list[str], passthrough) -> None:
             stream.close()
         except Exception:
             pass
+        if state is not None:
+            state["done"] = True
     except Exception as e:
         log(f"reader thread error: {e}")
+        if state is not None:
+            state["error"] = f"{type(e).__name__}: {e}"
 
 
 def _kill_proc_group(proc: subprocess.Popen, pgid: Optional[int] = None) -> None:
     """SIGTERM->SIGKILL escalation against the child's own process GROUP.
 
     `pgid` is captured by the CALLER at SPAWN time (r1/R10) — right after
-    `Popen` returns, which is after the child has already run the `setsid`
-    preexec_fn, and while the child is still unreaped. Resolving it inside
-    this function instead meant calling `getpgid` on a child that the very
-    next line may already have reaped, i.e. reading a pgid that could have
-    been recycled. `pgid=None` means "no usable group" (no `setsid` on this
-    platform, the spawn-time lookup failed, or the child never got its own
-    group): the escalation then falls back to the DIRECT CHILD
+    `Popen` returns, which is after the child has already entered its own
+    session (`start_new_session=True`), and while the child is still
+    unreaped. Resolving it inside this function instead meant calling
+    `getpgid` on a child that the very next line may already have reaped,
+    i.e. reading a pgid that could have been recycled. `pgid=None` means "no
+    usable group" (no group primitives on this platform, the spawn-time
+    lookup failed, or the child never got its own group): the escalation then
+    falls back to the DIRECT CHILD
     (`terminate()`/`kill()` + the wait-timeout gate), never to a killpg on a
     group we did not verify is the child's own.
 
@@ -2055,6 +2945,42 @@ def _kill_proc_group(proc: subprocess.Popen, pgid: Optional[int] = None) -> None
         log("zombie: SIGKILL also unresponsive")
 
 
+def _terminal_signal_to_exit(signum, frame) -> None:  # noqa: ARG001 — signal ABI
+    """SIGTERM/SIGHUP handler: turn the signal into a normal Python unwind."""
+    raise SystemExit(128 + signum)
+
+
+def install_terminal_signal_handlers() -> None:
+    """Route SIGTERM/SIGHUP through `SystemExit(128 + signum)` (spec case C1).
+
+    A wrapper that dies from the DEFAULT disposition never runs `_run_once`'s
+    abnormal-unwind arm, so the vendor child — and everything it left in the
+    child's own process group — is orphaned. Raising `SystemExit` from the
+    handler interrupts the blocked `proc.wait()`, which kills and reaps the
+    group before the exception continues up the stack; the process still
+    exits 128+signum. SIGKILL and SIGSTOP stay uncoverable by design.
+
+    Call it ONCE at the top of `main()`. Not installed by `_run_once` itself:
+    the signal disposition belongs to the process, and a library that mutated
+    it on every call would fight an embedding caller (and `signal.signal`
+    raises outside the main thread, e.g. an in-process test harness — caught
+    here so the call is always safe).
+
+    `antigravity_wrapper.py` keeps its OWN local handler rather than calling
+    this one: agy's permissive baseline unwinds through the exclusive settings
+    guard (`.agybak` restore), so its handler is bound to that transaction's
+    lifetime and is verified together with it (`agy-proc/s1-proc-lifecycle`).
+    """
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue  # platform without this signal — nothing to install
+        try:
+            signal.signal(sig, _terminal_signal_to_exit)
+        except (ValueError, OSError):
+            pass  # not the main thread / signal not settable: keep defaults
+
+
 def _run_once(
     cli: str,
     cmd: list[str],
@@ -2062,6 +2988,9 @@ def _run_once(
     timeout: int,
     stdin_text: Optional[str] = None,
     classify_and_log: bool = True,
+    dispatch_attempt: int = 1,
+    prompt_file_resolved: Optional[str] = None,
+    requested_model: Optional[str] = None,
 ) -> RunResult:
     """One Popen invocation.
 
@@ -2077,11 +3006,24 @@ def _run_once(
     final_answer blank; a child with rc != 0 keeps its own classification and
     only carries the `stdin_delivery` annotation. Callers must not treat this
     seam as "exit 0 iff the child exited 0" any more.
+    Terminal contract (spec R-TERMINAL / cases C1-C2, 2026-09-21): success
+    ALSO requires that the owned process group was reaped (probed and reaped
+    after a normal child exit, `orphans_reaped` recorded) and that both output
+    readers completed without error — an errored or still-running reader on a
+    rc-0, non-timed-out run returns EXIT_TERMINAL (65) with classification
+    "truncated-answer" and the captured PREFIX preserved for the run-log. A
+    writer/reader thread that fails to START kills and reaps the child and
+    returns "unknown" at EXIT_CLI_FAIL. Precedence: timeout > vendor rc != 0 >
+    stdin delivery failure > reader incompleteness > ok.
     classify_and_log: default True keeps codex/gemini/claude byte-identical
     (classify() + the "[wrapper] <cli> ..." summary line run here as before).
     False skips BOTH — the agy stream-json driver decides classification and
     emits its own canonical summary line later; a premature line here would
     duplicate the one the dispatch SKILL greps.
+    dispatch_attempt / prompt_file_resolved / requested_model: RECORD-ONLY
+    inputs for the common transport receipt (C9/C10), the C28 path record and
+    the C35 requested-model record. None influences any decision here; all
+    ride the RunResult to audit()/emit_run_log() and the summary tail.
     """
     effective_cwd = cwd or os.getcwd()
     log(f"exec cwd={effective_cwd} timeout={timeout}s argv={cmd}")
@@ -2111,12 +3053,17 @@ def _run_once(
                 classification="input-delivery-failed",
                 effective_cwd=effective_cwd,
                 stdin_delivery=f"failed:{type(e).__name__}",
+                dispatch_attempt=dispatch_attempt,
+                prompt_file_resolved=prompt_file_resolved,
+                requested_model=requested_model,
+                spawned=False,
             )
             if classify_and_log:
                 log(
                     f"[wrapper] {cli} input-delivery-failed "
                     f"exit={result.exit_code} vendor={result.vendor_exit_code} "
                     f"elapsed={elapsed:.1f}s"
+                    + _summary_tail(dispatch_attempt, prompt_file_resolved, requested_model)
                 )
             return result
 
@@ -2134,8 +3081,15 @@ def _run_once(
         encoding="utf-8",
         bufsize=1,
     )
-    if hasattr(os, "setsid"):
-        popen_kwargs["preexec_fn"] = os.setsid
+    # Own session (= own process group) for the vendor child, so the whole
+    # subtree can be signalled as one unit. `start_new_session=True` is the
+    # documented spelling of the same `setsid()` call and, unlike a
+    # `preexec_fn`, it is fork-safe (CPython runs it in the pre-exec child via
+    # the C helper instead of executing arbitrary Python between fork and
+    # exec). P4-13 trap: the pgid-capture predicate below keys on THIS kwarg —
+    # changing one spelling without the other silently disables the group kill.
+    if hasattr(os, "getpgid"):
+        popen_kwargs["start_new_session"] = True
 
     try:
         proc = subprocess.Popen(cmd, **popen_kwargs)
@@ -2145,16 +3099,20 @@ def _run_once(
         return RunResult(
             EXIT_ARG_ERROR, "", f"spawn failed: {e}\n", elapsed,
             classification="unknown", effective_cwd=effective_cwd,
+            dispatch_attempt=dispatch_attempt,
+            prompt_file_resolved=prompt_file_resolved,
+            requested_model=requested_model,
+            spawned=False,
         )
 
     # Capture the child's process group NOW (r1/R10), while it is guaranteed
     # to be the child's own and the child is still unreaped. Popen only
-    # returns after the child ran preexec_fn (setsid) and reached exec — the
-    # parent blocks on the exec-error pipe — so the group is already
-    # established here. Doing this inside _kill_proc_group instead meant a
-    # post-reap getpgid on a possibly-recycled pid.
+    # returns after the child entered its new session (start_new_session) and
+    # reached exec — the parent blocks on the exec-error pipe — so the group
+    # is already established here. Doing this inside _kill_proc_group instead
+    # meant a post-reap getpgid on a possibly-recycled pid.
     pgid: Optional[int] = None
-    if popen_kwargs.get("preexec_fn") is not None and hasattr(os, "getpgid"):
+    if popen_kwargs.get("start_new_session") and hasattr(os, "getpgid"):
         try:
             pgid = os.getpgid(proc.pid)
         except OSError as e:
@@ -2188,18 +3146,80 @@ def _run_once(
                 except Exception:
                     pass
         t_in = threading.Thread(target=_feed_stdin, daemon=True)
-        t_in.start()
 
     stdout_buf: list[str] = []
     stderr_buf: list[str] = []
+    out_state: dict = {"done": False, "error": None}
+    err_state: dict = {"done": False, "error": None}
     t_out = threading.Thread(
-        target=_drain, args=(proc.stdout, stdout_buf, None), daemon=True
+        target=_drain, args=(proc.stdout, stdout_buf, None, out_state), daemon=True
     )
     t_err = threading.Thread(
-        target=_drain, args=(proc.stderr, stderr_buf, sys.stderr), daemon=True
+        target=_drain, args=(proc.stderr, stderr_buf, sys.stderr, err_state), daemon=True
     )
-    t_out.start()
-    t_err.start()
+
+    # Every helper thread starts INSIDE the block that owns the child (spec
+    # case C2). Before 2026-09-21 these three `start()` calls sat outside any
+    # try: a RuntimeError from the SECOND one (thread-limit exhaustion,
+    # interpreter shutdown) propagated out of _run_once with the vendor child
+    # still running and half its pipes unread — a leaked subtree and no
+    # record. Now the child is killed and reaped, the threads that DID start
+    # are joined, and the call returns the existing `unknown` token (exit 1 —
+    # "the wrapper could not run this call"). No success token is produced;
+    # the caller writes its audit row and failure run-log as for any failure.
+    started: list[threading.Thread] = []
+    try:
+        if t_in is not None:
+            t_in.start()
+            started.append(t_in)
+        t_out.start()
+        started.append(t_out)
+        t_err.start()
+        started.append(t_err)
+    except BaseException as e:  # noqa: BLE001 — recorded, child reaped below
+        log(f"reader/writer thread start failed: {e}")
+        try:
+            _kill_proc_group(proc, pgid)
+        except BaseException as cleanup_exc:  # noqa: BLE001 — never displace e
+            log(f"vendor-subtree cleanup failed after thread-start failure: "
+                f"{cleanup_exc!r}")
+        for t in started:
+            t.join(timeout=2)  # the child is dead: these see EOF and exit
+        for pipe in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                if pipe is not None:
+                    pipe.close()
+            except Exception:
+                pass
+        elapsed = time.monotonic() - start
+        result = RunResult(
+            EXIT_CLI_FAIL, "".join(stdout_buf),
+            f"reader/writer thread start failed: {e}\n", elapsed,
+            classification="unknown",
+            effective_cwd=effective_cwd,
+            dispatch_attempt=dispatch_attempt,
+            prompt_file_resolved=prompt_file_resolved,
+            requested_model=requested_model,
+            # NO READER COMPLETED HERE (gate-1 r6 row r6-7). This return
+            # inherited the dataclass default `True` and so reported a
+            # COMPLETE capture out of the one path where a reader provably
+            # did not finish: the buffer below is whatever the thread that
+            # DID start had read before the child was killed, i.e. a prefix
+            # by construction. The two PRE-SPAWN returns above stay at the
+            # default deliberately — no child, no capture, and their
+            # `spawned=False` is what says so.
+            capture_complete=False,
+        )
+        result.vendor_exit_code = (
+            proc.returncode if proc.returncode is not None else -1)
+        if classify_and_log:
+            log(
+                f"[wrapper] {cli} unknown "
+                f"exit={result.exit_code} vendor={result.vendor_exit_code} "
+                f"elapsed={elapsed:.1f}s"
+                + _summary_tail(dispatch_attempt, prompt_file_resolved, requested_model)
+            )
+        return result
 
     timed_out = False
     try:
@@ -2231,8 +3251,50 @@ def _run_once(
             log(f"vendor-subtree cleanup failed during unwind: {cleanup_exc!r}")
         raise
 
+    # Reap the OWNED group after a normal child exit (spec case C1 /
+    # R-TERMINAL: "the owned process group reaped" — success requires the
+    # REAP, not the absence of descendants). `proc.wait()` reaps the DIRECT
+    # child only, so anything the vendor left behind in the child's own group
+    # keeps running; when it inherited the child's stdout/stderr it also holds
+    # the capture pipes open, which is why this runs BEFORE the reader joins
+    # below — otherwise the readers could never reach EOF. The probe is signal
+    # 0, so the ordinary run (empty group) costs one syscall and signals
+    # nothing. `PermissionError` keeps `_kill_proc_group`'s conservatism: it
+    # cannot confirm the group is empty (and is the other arm of the
+    # pid-recycle hazard disclosed there), so it counts as "members remain".
+    orphans_reaped = False
+    if not timed_out and pgid is not None and hasattr(os, "killpg"):
+        try:
+            os.killpg(pgid, 0)
+            members_remain = True
+        except ProcessLookupError:
+            members_remain = False
+        except PermissionError:
+            members_remain = True
+        if members_remain:
+            log("owned process group still has members after the child exited; "
+                "reaping before the result is returned")
+            _kill_proc_group(proc, pgid)
+            orphans_reaped = True
+
     t_out.join(timeout=2)
     t_err.join(timeout=2)
+    # Reader completion gate (spec case C1 / R-TERMINAL: "all reader threads
+    # joined without error"). A reader that RAISED — the pipes are strict
+    # UTF-8, so one undecodable vendor byte ends it — or that is still alive
+    # after the bounded join captured a PREFIX, not the transcript. The prefix
+    # stays in stdout/stderr for the run-log; it is never returned as success.
+    reader_failures: list[str] = []
+    for _name, _thread, _rstate in (
+        ("stdout", t_out, out_state), ("stderr", t_err, err_state),
+    ):
+        if _rstate["error"] is not None:
+            reader_failures.append(f"{_name} reader error: {_rstate['error']}")
+        elif _thread.is_alive():
+            reader_failures.append(
+                f"{_name} reader incomplete: still alive after 2 s")
+    for _f in reader_failures:
+        log(_f)
     # Reconcile the stdin writer within the same bound (requirement 3). The
     # child has terminated (normally or killed), so a writer still blocked on
     # a full pipe can only be held by an inherited descriptor — that case is
@@ -2263,6 +3325,17 @@ def _run_once(
         stdin_delivery is not None and stdin_delivery != "complete"
         and not timed_out and rc == 0
     )
+    # Reader incompleteness is the LAST rung before ok (spec case C1): a
+    # wrapper timeout, a genuine vendor rc != 0 and an unconfirmed stdin
+    # delivery each carry a more specific diagnosis and keep it. `rc == 0`
+    # plus a broken capture is the one shape that would otherwise have been
+    # reported as success. Token: `truncated-answer` — the EXISTING
+    # wrapper-SET terminal class for "the answer we hold is a fragment"
+    # (EXIT_TERMINAL 65, surface-never-repair); no new token is introduced.
+    reader_failed = (
+        bool(reader_failures) and not timed_out and rc == 0
+        and not delivery_failed
+    )
     if timed_out:
         log(f"timed out elapsed={elapsed:.1f}s")
         result = RunResult(EXIT_TIMEOUT, stdout, stderr, elapsed)
@@ -2271,6 +3344,11 @@ def _run_once(
             f"{stdin_delivery}; failing closed")
         result = RunResult(EXIT_TERMINAL, stdout, stderr, elapsed,
                            classification="input-delivery-failed")
+    elif reader_failed:
+        log(f"exit={rc} elapsed={elapsed:.1f}s but the output readers did not "
+            f"complete ({'; '.join(reader_failures)}); failing closed")
+        result = RunResult(EXIT_TERMINAL, stdout, stderr, elapsed,
+                           classification="truncated-answer")
     else:
         log(f"exit={rc} elapsed={elapsed:.1f}s")
         ec = EXIT_OK if rc == 0 else EXIT_CLI_FAIL
@@ -2279,13 +3357,22 @@ def _run_once(
     result.vendor_exit_code = rc
     result.effective_cwd = effective_cwd
     result.stdin_delivery = stdin_delivery
+    result.dispatch_attempt = dispatch_attempt
+    result.prompt_file_resolved = prompt_file_resolved
+    result.requested_model = requested_model
+    result.orphans_reaped = orphans_reaped
+    # Row r5-2: the reader outcome as EVIDENCE, independent of the rung that
+    # consumed it. `reader_failed` above is gated on `rc == 0`; this is not.
+    result.capture_complete = not reader_failures
     if classify_and_log:
         # SEMANTIC stderr classification (tool-not-installed / vendor warning)
         # stays the leader's judgment over the mirrored raw stderr. A
         # delivery failure is decided ABOVE from the writer's own record and
         # is never re-derived from stderr text (requirement 6: no
-        # error-text reclassification can promote it or trigger a retry).
-        if not delivery_failed:
+        # error-text reclassification can promote it or trigger a retry). A
+        # reader failure is decided the same way, from the reader's own
+        # record — and classify() must not overwrite it back to "ok".
+        if not delivery_failed and not reader_failed:
             result.classification = classify(
                 cli, stderr, stdout, result.exit_code, vendor_exit_code=rc,
             )
@@ -2294,8 +3381,9 @@ def _run_once(
             f"[wrapper] {cli} {result.classification} "
             f"exit={result.exit_code} vendor={result.vendor_exit_code} "
             f"elapsed={elapsed:.1f}s"
+            + _summary_tail(dispatch_attempt, prompt_file_resolved, requested_model)
         )
-    elif not delivery_failed:
+    elif not delivery_failed and not reader_failed:
         # r1/R8: do NOT leave the field at its "ok" default — a shared struct
         # reading "ok" for a run that was never classified is a trap for any
         # future consumer of this RunResult. NOT a new classify() token
@@ -2318,6 +3406,9 @@ def run_cli_with_retry(
     last_msg_path: Optional[str] = None,
     repair_mode: bool = False,
     prompt_via_stdin: bool = False,
+    dispatch_attempt: int = 1,
+    prompt_file_resolved: Optional[str] = None,
+    requested_model: Optional[str] = None,
 ) -> RunResult:
     """Top-level driver.
 
@@ -2346,11 +3437,7 @@ def run_cli_with_retry(
         r.exit_code = EXIT_SCHEMA_FAIL
         r.classification = "schema-fail"
         r.final_answer = ""
-        log(
-            f"[wrapper] {cli} schema-fail "
-            f"exit={r.exit_code} vendor={r.vendor_exit_code} "
-            f"elapsed={r.elapsed_s:.1f}s"
-        )
+        _emit_canonical_summary(cli, r)
         return r
 
     terminal_classes = (
@@ -2366,11 +3453,7 @@ def run_cli_with_retry(
         r.exit_code = EXIT_TERMINAL
         r.classification = cls
         r.final_answer = ""
-        log(
-            f"[wrapper] {cli} {cls} "
-            f"exit={r.exit_code} vendor={r.vendor_exit_code} "
-            f"elapsed={r.elapsed_s:.1f}s"
-        )
+        _emit_canonical_summary(cli, r)
         return r
 
     def promote_claude_extraction(r: RunResult, ext_err: str) -> Optional[RunResult]:
@@ -2417,11 +3500,7 @@ def run_cli_with_retry(
             r.exit_code = EXIT_SCHEMA_REJECTED
             r.classification = cls
             r.final_answer = ""
-            log(
-                f"[wrapper] {cli} {cls} "
-                f"exit={r.exit_code} vendor={r.vendor_exit_code} "
-                f"elapsed={r.elapsed_s:.1f}s"
-            )
+            _emit_canonical_summary(cli, r)
             return r
         return None
 
@@ -2436,6 +3515,11 @@ def run_cli_with_retry(
             r = _run_once(
                 cli, cmd, cwd=cwd, timeout=timeout,
                 stdin_text=effective_prompt if prompt_via_stdin else None,
+                # Record-only (C9/C10 + C28): the caller's dispatch attempt is
+                # NOT this loop's server-cap `attempt`, which stays internal.
+                dispatch_attempt=dispatch_attempt,
+                prompt_file_resolved=prompt_file_resolved,
+                requested_model=requested_model,
             )
             r.repair_attempt = attempt if repair_mode else 0
             r.schema_repair_attempt = schema_repair_attempt
@@ -2447,7 +3531,58 @@ def run_cli_with_retry(
                 r.mode = "normal"
             result = r
             cls = r.classification
-            if cli == "claude":
+            # AN ENGINE-DECIDED RESULT IS NEVER RE-INTERPRETED (gate-1 r8 row
+            # r8-3). `_run_once` reaches its own TERMINAL verdicts from the
+            # reader / writer records this layer cannot see — `truncated-
+            # answer` (a rc-0 run whose reader died, so the capture is a
+            # PREFIX) and `input-delivery-failed` (the prompt was never
+            # confirmed delivered). The claude arm below re-reads the
+            # envelope out of THAT stdout and, for a retryable cause,
+            # overwrites `cls` / `r.classification` with `server-capacity`,
+            # so a successful retry replaced the terminal verdict and its
+            # incomplete-capture evidence with an `ok` the engine had already
+            # refused. This is the r3-1 / r4-2 rule the agy driver enforces,
+            # stated for the shared driver: interpretation runs only on a
+            # pair the engine LEFT UNDECIDED, and everything else falls
+            # through to the fail-fast rung below, which returns the
+            # RunResult unchanged.
+            #
+            # THE LICENCE IS THE UNDECIDED TOKEN, NOT THE EXIT CODE (gate-1
+            # r9 row r9-14). The r8-3 spelling ALSO carried
+            # `r.exit_code == EXIT_OK`, and on a NONZERO vendor rc that
+            # skipped the claude arm twice over: `classify()` returns `ok`
+            # only at exit 0 and `_run_once` never parks `unclassified`
+            # under `classify_and_log=True`, so a failed claude run arrives
+            # here as the L3 fallback `unknown`. The two TERMINAL signals
+            # that exist ONLY in the envelope —
+            # `subtype=error_max_structured_output_retries` (schema-fail
+            # 66) and a `permission_denials` block with an empty result
+            # (task-blocked 65) — therefore landed on `unknown` (1), which
+            # the dispatch SKILLs route to a MANDATORY repair-agent
+            # dispatch with nothing to patch. `unknown` IS the engine's own
+            # "I did not decide" token, so it joins the sentinel here; an
+            # engine-DECIDED terminal (`truncated-answer`,
+            # `input-delivery-failed`) still falls through to the rung
+            # below and is returned UNCHANGED, which is exactly what r8-3
+            # required. Promotion never rewrites a decided terminal.
+            #
+            # AN ENGINE-DETECTED TRANSPORT FAILURE IS NOT "UNDECIDED"
+            # (gate-1 r10 row r10-3). `unknown` is also what `_run_once`
+            # returns for the two shapes where it HAS decided and the
+            # stdout it carries is not a transcript: the reader/writer
+            # THREAD-START failure (the child is killed and reaped and the
+            # buffer is a PREFIX by construction — `capture_complete=False`,
+            # row r6-7) and the PRE-SPAWN refusals (`spawned=False`, no
+            # child ever existed). An overload envelope sitting in such a
+            # prefix was re-classified `server-capacity` and RETRIED, and a
+            # clean second attempt then REPLACED the incomplete-capture
+            # failure with an `ok` — the r5-2 / r8-3 rule ("interpretation
+            # runs only on a pair the engine LEFT undecided"), reached
+            # through the one token r9-14 opened. Both facts are recorded
+            # on the RunResult, so the guard reads them rather than
+            # re-deriving anything from the bytes.
+            if (cli == "claude" and r.capture_complete and r.spawned
+                    and (cls in _ENGINE_UNDECIDED or cls == "unknown")):
                 _answer, ext_err = extract_claude_answer(r.stdout, r.stderr)
                 if ext_err:
                     promoted = promote_claude_extraction(r, ext_err)
@@ -2481,11 +3616,7 @@ def run_cli_with_retry(
                 return promote_terminal(r, cls)
             if cls == "schema-rejected":
                 r.exit_code = EXIT_SCHEMA_REJECTED
-                log(
-                    f"[wrapper] {cli} {cls} "
-                    f"exit={r.exit_code} vendor={r.vendor_exit_code} "
-                    f"elapsed={r.elapsed_s:.1f}s"
-                )
+                _emit_canonical_summary(cli, r)
                 return r
             if cls == "server-capacity":
                 if attempt < max_retries:
@@ -2503,17 +3634,19 @@ def run_cli_with_retry(
                     continue
                 r.exit_code = EXIT_RATE_GIVE_UP
                 # Re-emit — promote rc=1 → 64 in the [wrapper] line.
-                log(
-                    f"[wrapper] {cli} {cls} "
-                    f"exit={r.exit_code} vendor={r.vendor_exit_code} "
-                    f"elapsed={r.elapsed_s:.1f}s"
-                )
+                _emit_canonical_summary(cli, r)
                 return r
-            # cls in {"unknown", "timeout", "input-delivery-failed"} — fail-fast
-            # (the last one arrives from _run_once already at exit 65 with the
-            # answer blanked; no retry, no repair dispatch). The first two surface as
+            # cls in {"unknown", "timeout", "input-delivery-failed",
+            # "truncated-answer"} — fail-fast. The last two arrive from
+            # `_run_once` ALREADY judged (exit 65, the answer blanked), and
+            # this rung returns that RunResult UNCHANGED: it is where the
+            # three shared-driver wrappers honour an engine-decided terminal
+            # exit, and the reason the r3-1 defect was agy-only (that driver
+            # spawns `_run_once` itself). Do not "re-classify" here — the
+            # engine decided from the reader and writer records, which this
+            # layer cannot see. `unknown` and `timeout` surface as
             # repair-agent territory at the dispatch SKILL layer (timeout =
-            # likely ESCALATE since hang isn't a classifier gap, but the
+            # likely ESCALATE since a hang isn't a classifier gap, but the
             # SKILL still routes through the same path for uniformity).
             return r
 
@@ -2543,11 +3676,7 @@ def run_cli_with_retry(
                 # gets the corrected token (2026-05-03 later-3).
                 result.exit_code = EXIT_CLI_FAIL
                 result.classification = "extraction-error"
-                log(
-                    f"[wrapper] {cli} extraction-error "
-                    f"exit={result.exit_code} vendor={result.vendor_exit_code} "
-                    f"elapsed={result.elapsed_s:.1f}s"
-                )
+                _emit_canonical_summary(cli, result)
             return result
 
         result.final_answer = answer
@@ -2698,6 +3827,48 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
         # content, so no redaction. Key omitted for the non-stdin callers,
         # same shape rule as vendor_version above (t48 axis 7).
         rec["stdin_delivery"] = result.stdin_delivery
+    if result.prompt_file_resolved is not None:
+        # C28 record (owner directive 2026-09-19): the ABSOLUTE path a
+        # possibly-relative --prompt-file resolved to. This is the artifact
+        # that replaces the retired fail-loud refusal — a mis-resolved
+        # same-named file is legible here afterwards. A host path, so it is
+        # masked under the hardened custody mode (unlike `effective_cwd`,
+        # which predates the receipt work and keeps its own shape).
+        rec["prompt_file_resolved"] = (
+            PROMPT_FILE_REDACTED if redact else result.prompt_file_resolved)
+    if result.requested_model is not None:
+        # C35 record (shared dev log DL-3): the model slug the caller
+        # REQUESTED — not a runtime identity. A catalog slug is not
+        # prompt-bearing, so no redaction; key omitted when None (= the CLI's
+        # config default), same shape rule as prompt_file_resolved above.
+        rec["requested_model"] = result.requested_model
+    if result.orphans_reaped:
+        # Owned-group reap after a normal child exit (spec C1). A boolean
+        # observation of our own transport — no prompt or host content, so no
+        # redaction. Key omitted when False (the overwhelming majority), same
+        # shape rule as vendor_version above: the ordinary record is unchanged
+        # byte-for-byte and the flag only appears where there was something to
+        # reap.
+        rec["orphans_reaped"] = True
+    if not result.capture_complete:
+        # Capture completeness (spec case C1 / R-TERMINAL; gate-1 r5 row
+        # r5-2). A boolean observation of our own transport — no prompt or
+        # host content, so no redaction. Key omitted when True (the
+        # overwhelming majority), the same shape rule as `orphans_reaped`:
+        # the flag appears exactly where the captured transcript is a prefix,
+        # including on the rc != 0 rows whose own classification says nothing
+        # about the capture.
+        rec["capture_complete"] = False
+    # Common transport receipt (spec C9/C10, R-RECEIPT) — written on EVERY
+    # audit row, success or failure. Purely ADDITIVE: no pre-existing key is
+    # removed or renamed, and A's richer `stdin_delivery` / `vendor_version`
+    # stay exactly as they were beside it.
+    transport = _record_transport(result, cli, cmd)
+    if redact and isinstance(transport.get("binary"), str):
+        # The receipt is not a licence to leak host paths: same custody rule
+        # the prompt-bearing argv already follows in this mode.
+        transport["binary"] = TRANSPORT_BINARY_REDACTED
+    rec["transport"] = transport
     if redact:
         rec["stderr_len"] = len(result.stderr or "")
     if ok:
@@ -2829,11 +4000,18 @@ CLASSIFICATION_TOKENS: frozenset[str] = frozenset(
     )
 )
 # Assert the enum stays in lock-step with map_classification_to_exit() — the SoT.
-# `.get(cls, ...)` there means every literal branch is a valid classification;
-# a drift here (token added to one and not the other) fails fast at import.
-assert all(
-    map_classification_to_exit(_t) is not None for _t in CLASSIFICATION_TOKENS
-), "CLASSIFICATION_TOKENS drifted from map_classification_to_exit"
+# MEMBERSHIP, not `is not None` (spec case C8 / R-TOKENS): the old form asked
+# whether the helper returned something, and because the helper ends in
+# `.get(cls, EXIT_CLI_FAIL)` the answer was ALWAYS yes — a token dropped from the
+# map silently fell through to exit 1 and the assert still passed (vacuous on
+# BOTH hosts, host-parity audit 2026-09-19 § 2 row C8). The real invariant is
+# that every classify() token has its OWN row in the table; `EXIT_MAP_TOKENS`
+# exposes those explicit keys, and the value side is asserted where the table is
+# defined (`KNOWN_EXIT_CODES`). t55 proves this assert can fire.
+assert set(CLASSIFICATION_TOKENS) <= EXIT_MAP_TOKENS, (
+    "CLASSIFICATION_TOKENS drifted from map_classification_to_exit: "
+    + ", ".join(sorted(set(CLASSIFICATION_TOKENS) - EXIT_MAP_TOKENS))
+)
 
 PATTERN_LIST_NAMES: frozenset[str] = frozenset(
     (
@@ -3302,6 +4480,30 @@ def emit_run_log(
         # gap — the repair analyzer must be able to see that from the one
         # artifact it may open and decline to propose a pattern.
         **({"stdin_delivery": result.stdin_delivery} if result.stdin_delivery is not None else {}),
+        # prompt_file_resolved (C28, 2026-09-21): same omit-when-None spread.
+        # The run-log is the transient repair-IPC artifact and keeps FULL
+        # values in redact mode (the t28 axis-7 rule), so no masking here.
+        **({"prompt_file_resolved": result.prompt_file_resolved}
+           if result.prompt_file_resolved is not None else {}),
+        # requested_model (C35 / DL-3): same omit-when-None spread.
+        **({"requested_model": result.requested_model}
+           if result.requested_model is not None else {}),
+        # orphans_reaped (spec C1, 2026-09-21): same omit-when-default spread.
+        # The repair analyzer reads ONLY this run-log, and "the vendor left a
+        # descendant behind in its own group" is a TRANSPORT observation it
+        # must be able to see before it proposes a classifier pattern.
+        **({"orphans_reaped": True} if result.orphans_reaped else {}),
+        # capture_complete (spec C1, gate-1 r5 row r5-2): same
+        # omit-when-default spread. "the answer I am looking at is a prefix"
+        # is a TRANSPORT observation the repair analyzer must be able to see
+        # in the one artifact it may open, before it reads anything into the
+        # vendor's own rc.
+        **({"capture_complete": False} if not result.capture_complete else {}),
+        # transport (spec C9/C10, R-RECEIPT): the same receipt object audit()
+        # writes, on EVERY run-log record — the repair analyzer may open only
+        # this artifact, and "which binary ran, at which attempt, did the
+        # prompt arrive" is exactly what a transport defect turns on.
+        "transport": _record_transport(result, cli, vendor_cmd),
     }
     # errors="backslashreplace": the run-log keeps the prompt HEAD (200 chars)
     # plus the full wrapper argv (an inline `--prompt` rides there whole), so
@@ -3323,6 +4525,7 @@ def _prune_dir_by_caps(
     preserve: Optional[Path],
     glob_patterns: tuple[str, ...],
     extra_preserve: Optional[Path] = None,
+    age_floor_s: Optional[float] = None,
 ) -> None:
     """Shared oldest-first prune-by-cap logic (file count + total bytes).
 
@@ -3340,6 +4543,19 @@ def _prune_dir_by_caps(
     large fresh artifact IS the current call's own IPC and must survive even
     when it alone exceeds the byte cap (mtime order alone did not protect
     the only-file case).
+
+    `age_floor_s` (spec case C3 / rule R-CLEANUP, 2026-09-21) — a MINIMUM AGE
+    below which a file is never deleted to satisfy a cap: "mtime is not only a
+    sort key". Before it, the oldest-first order alone decided, so a sibling
+    leg's run-log written SECONDS ago — the live IPC of a concurrent dispatch
+    — was deleted the moment the dir crossed a cap. When the floor leaves the
+    dir over its cap the overflow is TOLERATED (a retention cap is a budget,
+    not an invariant) and reported once on stderr. `None` (the default) reads
+    the module constant `_STALE_IPC_AGE_FLOOR_S` — the same floor the
+    TIME-based sweep (`prune_stale_run_logs`) uses — AT CALL TIME rather than
+    binding it as a function default: the constant is defined further down
+    this module, and the call-time read is the same rule the cap constants
+    above follow, so a test can shrink either.
 
     `extra_preserve` (fix wave W1 item 5, claude m1, 2026-08-19) — an
     OPTIONAL second path to protect in the SAME call, additive to
@@ -3383,18 +4599,35 @@ def _prune_dir_by_caps(
             continue
     over_bytes = total_bytes - max_bytes
 
+    floor_s = _STALE_IPC_AGE_FLOOR_S if age_floor_s is None else age_floor_s
+    floor_cut = time.time() - floor_s
+    fresh_left = 0
     for f in files:
         if over_count <= 0 and over_bytes <= 0:
             break
         if f.resolve(strict=False) in preserve_paths:
             continue
         try:
-            sz = f.stat().st_size
+            st = f.stat()
+        except OSError:
+            continue  # vanished between the listing and here — never a delete
+        if st.st_mtime > floor_cut:
+            # YOUNGER than the floor: another dispatch's live IPC. The cap is
+            # left exceeded on purpose (C3) — deleting here is the failure.
+            fresh_left += 1
+            continue
+        try:
             f.unlink()
             over_count -= 1
-            over_bytes -= sz
+            over_bytes -= st.st_size
         except Exception:
             pass
+    if fresh_left and (over_count > 0 or over_bytes > 0):
+        try:
+            log(f"prune {dir_path}: cap exceeded by {fresh_left} fresh files "
+                f"(age floor {floor_s:g}s) — left in place")
+        except Exception:
+            pass  # a best-effort prune never raises out of its own report
 
 
 def _prune_run_logs(runs_dir: Path, preserve: Optional[Path] = None) -> None:
@@ -3437,6 +4670,45 @@ _READ_AUDIT_MAX_FILES = 200
 _READ_AUDIT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB total cap, same policy shape as run-logs
 
 
+def _publish_json(path: Path, doc: dict, mode: int,
+                  refuse_link: bool = False) -> None:
+    """Publish `doc` at `path` ATOMICALLY (gate-1 r19 row r19-4): the JSON is
+    written to a temp file in the SAME directory
+    (`<final-name>.tmp-<pid>-<uuid8>`, created O_EXCL | O_NOFOLLOW with
+    `mode`), fsync'd, then `os.replace`d over the final name — so the final path is always either absent (or its
+    previous complete content) or the new complete document, never an empty
+    or partial one a concurrent reader (the collector's retry guard / hook
+    check reading a sibling still being written) would pronounce permanently
+    unreadable. On ANY failure the temp is removed and the error re-raised,
+    so the caller's best-effort handling is unchanged.
+
+    `refuse_link`: a symlink AT the final name is refused (OSError ELOOP)
+    instead of replaced — the caller-NAMED override path's O_NOFOLLOW
+    contract (a planted link is refused and left in place, never written
+    through; `os.replace` would not follow it either, but would remove it)."""
+    if refuse_link and os.path.islink(path):
+        raise OSError(errno.ELOOP, "refusing to publish over a symlink",
+                      str(path))
+    # the uuid nonce (gate-1 r20 row r20-5): a process killed between create
+    # and replace leaves its temp behind, and a later wrapper that got the
+    # SAME pid failed O_EXCL on `<name>.tmp-<pid>` and emitted NO audit
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_NOFOLLOW", 0), mode)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
     """Write the per-call read-audit digest to a durable JSON file.
 
@@ -3466,15 +4738,20 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
     every other clause here — a copy-write failure never touches the
     (already-succeeded) override write or the wrapper's exit code/classification.
 
-    The OVERRIDE-path write uses `os.open(..., O_NOFOLLOW)` (final-gate fix
-    round, converged claude must-fix / codex hardening): the override path is
-    CALLER-supplied (an env var a review-leg dispatch sets), so a symlink
-    planted there must be refused rather than followed — the same
-    leader-privileged-write convention `setup_permissions.py`'s
-    `read_settings_nofollow`/lock-file opens already use elsewhere in this
-    repo. The DEFAULT-dir path stays a plain `path.open("w")`: its basename
-    is a fresh uuid8 this function itself mints, so it cannot be
-    pre-planted the way a caller-NAMED override path can.
+    The OVERRIDE-path write refuses a symlink at the final name (final-gate
+    fix round, converged claude must-fix / codex hardening — it was an
+    `os.open(..., O_NOFOLLOW)`): the override path is CALLER-supplied (an env
+    var a review-leg dispatch sets), so a symlink planted there must be
+    refused rather than followed — the same leader-privileged-write
+    convention `setup_permissions.py`'s `read_settings_nofollow`/lock-file
+    opens already use elsewhere in this repo. The DEFAULT-dir path needs no
+    such refusal: its basename is a fresh uuid8 this function itself mints,
+    so it cannot be pre-planted the way a caller-NAMED override path can.
+
+    EVERY write here is an ATOMIC PUBLISH (`_publish_json`, gate-1 r19 row
+    r19-4): temp file in the same directory, fsync, `os.replace` — the final
+    path is absent (or its previous complete content) or the new complete
+    document, never a partial one a concurrent reader could see.
 
     File content is a single JSON object with exactly two top-level keys, so
     digest keys can never collide with metadata keys:
@@ -3532,13 +4809,14 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
             },
             "digest": result.read_audit,
         }
+        # ATOMIC PUBLISH (gate-1 r19 row r19-4) — `_publish_json`. The
+        # override keeps its 0600 mode and its refusal of a symlink at the
+        # caller-named path; the default-dir file keeps the plain
+        # `open("w")` mode (0666 less the umask).
         if override:
-            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(rec, f, ensure_ascii=False, indent=2)
+            _publish_json(path, rec, 0o600, refuse_link=True)
         else:
-            with path.open("w", encoding="utf-8") as f:
-                json.dump(rec, f, ensure_ascii=False, indent=2)
+            _publish_json(path, rec, 0o666)
 
         if not override:
             _prune_dir_by_caps(
@@ -3582,9 +4860,9 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
                 # it cannot be pre-planted the way a caller-NAMED override
                 # path can; the sensitivity of the DATA (the same digest)
                 # still warrants the same explicit permission bits.
-                copy_fd = os.open(str(copy_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                with os.fdopen(copy_fd, "w", encoding="utf-8") as f:
-                    json.dump(copy_rec, f, ensure_ascii=False, indent=2)
+                # Published atomically like the override (gate-1 r19 row
+                # r19-4): a failed copy leaves no partial file behind.
+                _publish_json(copy_path, copy_rec, 0o600)
                 # extra_preserve (fix wave W1 item 5, claude m1): protect
                 # THIS call's own override write too, when it happens to sit
                 # inside `copy_dir` (TRIAD_READ_AUDIT_FILE parked under the
@@ -3600,7 +4878,11 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
                     preserve=copy_path, glob_patterns=("*.json",),
                     extra_preserve=extra,
                 )
-                log(f"read-audit-copy: {copy_path}")
+                # percent-escaped filesystem bytes, the same formatter as
+                # the caller's `read-audit-file:` line (gate-1 r13 row
+                # r13-5): an ordinary path is byte-identical, an exotic one
+                # stays ONE line
+                log(f"read-audit-copy: {_summary_field(str(copy_path))}")
             except Exception as e:
                 log(f"emit_read_audit: failed to write default-location copy — {e}")
         return path

@@ -1,8 +1,20 @@
 ---
 name: triad-codex-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Codex CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 codex_wrapper.py` raw; the user asks to call codex once, have codex handle a task, or run a one-shot codex analysis; a higher-level orchestration SKILL needs the Codex leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Gemini (`triad-gemini-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.9.4
+version: 0.9.5
 # changelog:
+#   0.9.5 (2026-09-21): Step 1 gains two engine flags (host A v2 slices
+#     S6/S7/S11). `--attempt <int>` (>= 1, default 1; below 1 = exit 3
+#     pre-spawn) is RECORDED on the transport receipt and the summary tail
+#     and never interpreted — no retry reads it. `--output-schema-file <abs>`
+#     passes a CALLER-OWNED JSON schema file straight to codex
+#     `--output-schema`: transport only (the wrapper validates nothing and
+#     retries nothing), mutually exclusive with `--pydantic`, and it is the
+#     flag the cross-family-review v2 path uses for its per-attempt producer
+#     schema projection. Also recorded: C28 — a RELATIVE `--prompt-file` /
+#     `--cwd` is no longer refused, it resolves against the wrapper's
+#     process-entry cwd and the resolved absolute path is recorded; ABSOLUTE
+#     stays the form this SKILL prints. Doc-only.
 #   0.9.4 (2026-09-18): `input-delivery-failed` (65) — the shared engine's
 #     stdin prompt transport (codex `prompt_via_stdin`) now fails CLOSED: a
 #     codex child that exited 0 while the wrapper's stdin writer failed
@@ -104,6 +116,8 @@ TRIAD_CODEX_PROMPT_EOF
   [--search] \
   [--timeout <seconds>] \
   [--pydantic module:Class] \
+  [--output-schema-file /absolute/path/schema.json] \
+  [--attempt <int>] \
   [--image /absolute/path.png ...] \
   [--format text|markdown|json] \
   [--task review|analyze|brainstorm|code] \
@@ -113,6 +127,29 @@ TRIAD_CODEX_PROMPT_EOF
 
 `--prompt-file` REPLACES the `--prompt` heredoc — argparse rejects both
 together, so delete the heredoc when switching to a file body.
+
+**`--output-schema-file <absolute-path>`** hands a CALLER-OWNED JSON schema
+file straight to codex `--output-schema`. It is TRANSPORT ONLY: the wrapper
+validates nothing, repairs nothing and retries nothing — the caller admits
+the answer with its own validator (this is the path
+`triad-cross-family-review`'s v2 rounds use for their per-attempt producer
+schema projection). Mutually exclusive with `--pydantic`, which owns the
+massage-and-validate path instead. The path must be absolute and an existing
+file; both checks run BEFORE any vendor work, so a bad path costs no dispatch.
+
+**`--attempt <int>`** (>= 1, default 1) is the dispatch attempt number. It is
+RECORDED on the transport receipt in the audit row / run-log and on the
+summary tail (` attempt=<n>`), and is never interpreted — no wrapper control
+flow reads it and it drives no retry. Below 1 is refused with exit 3 before
+any spawn.
+
+**Relative paths (C28, 2026-09-19).** A relative `--prompt-file` / `--cwd` is
+no longer refused: the wrapper resolves it against its OWN process-entry
+working directory (never the child `--cwd`), runs every pre-existing
+validation unchanged, and RECORDS the resolved absolute path on the summary
+line (`prompt_file=<abs>`) and in the audit row (`prompt_file_resolved`).
+ABSOLUTE remains the form this SKILL prints — the record makes a
+mis-resolution legible afterwards, it does not prevent one.
 
 Defaults: `--sandbox read-only`. Triad policy disallows `danger-full-access` — argparse rejects it at parse time.
 
@@ -141,9 +178,26 @@ Wrapper stderr contains:
 Grep the summary line; extract classification. **Use the LAST `[wrapper]` line** — when extraction-error happens, `_run_once` emits an early `ok` summary that is later corrected by a second emission with `extraction-error`. Take the last one only:
 
 ```bash
-SUMMARY=$(grep '^\[.*\] \[wrapper\] codex ' <stderr-text> | tail -1)
-CLS=$(printf '%s' "$SUMMARY" | sed -E 's/.*\[wrapper\] codex ([a-z-]+) .*/\1/')
+SUMMARY=$(grep -E '^\[[^]]*\] \[wrapper\] codex ' <stderr-text> | tail -1)
+CLS=$(printf '%s' "$SUMMARY" | sed -E 's/^\[[^]]*\] \[wrapper\] codex ([a-z-]+) .*/\1/')
 ```
+
+**BOTH patterns are ANCHORED to the line start** (gate-1 r9 row r9-3). The sed
+used to be greedy (`s/.*\[wrapper\] codex ([a-z-]+) .*/\1/`), so it took the
+LAST `[wrapper] codex <token> ` sequence ANYWHERE in the line — and the summary
+tail carries a FREE-TEXT field (`prompt_file=<abs>`), so a prompt file living
+under a directory literally named `…[wrapper] codex ok …` overrode the token the
+wrapper emitted: a demoted `extraction-error` run parsed as `ok`, and the
+MANDATORY repair-agent routing (Step 5) never fired. Since the same row the
+engine ALSO percent-escapes every free-text field of the summary
+(`_common._summary_field` — SPACE and `[` / `]` are outside the safe set, so the
+sequence is unconstructible inside `prompt_file=`; an ordinary POSIX path is
+emitted byte-identically and the audit row keeps the raw value), so the shape
+can no longer occur — but the ANCHORED parse is the CONTRACT here, and the two
+defences are independent. The wrapper's other stderr lines stay out of reach BY
+CONSTRUCTION: `run-log: <abs>` and `exec cwd=… argv=…` never carry the
+`[wrapper] codex <token> ` prefix AT THE LINE START, and the demotion note keeps
+its colon (`[wrapper] codex: unemittable-payload — …`).
 
 Token set:
 `ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | schema-rejected | fanout-spawn-error | config-conflict | input-delivery-failed | timeout | extraction-error | unknown | fanout-partial`
@@ -159,7 +213,7 @@ Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg; also an un
 | `input-delivery-failed` (65; 3 when refused pre-spawn) | The wrapper's OWN stdin transport did not confirm delivery of the prompt (write/flush failed — typically the child closed its stdin early —, the writer had not finished within the bounded join, or the prompt was not UTF-8-encodable and nothing was sent) while codex exited 0 and answered like a success. The answer is BLANKED (stdout empty) and the raw vendor rc is kept. The cause is on the wrapper's OWN stderr, the deterministic line right before the summary — `exit=0 … but stdin delivery failed:<ExceptionClass>; failing closed` (or `unconfirmed`) — which the leader may read; the audit record and the failure run-log ALSO carry it as `stdin_delivery`, for the analyzer and for forensics only (Hard rule 2: the leader does not read the run-log). Surface to user with that cause; a re-dispatch is reasonable. Leave the failure run-log alone — no Step 5 arm ran, and the NEXT dispatch's own IPC cleanup prunes it (the wrapper clears prior residue on start). **NOT** repair-agent territory (a wrapper transport defect, not a classifier gap — the token is never a repair proposal). A genuine vendor error (rc != 0) after an early close keeps ITS classification; the delivery failure is an annotation there. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff. |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 6). Spawn it even when you are busy or also surfacing the failure — never skip.** |
-| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 6).** Vendor returned rc=0 but extractor found no answer (empty JSON envelope, missing last-message file). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
+| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 6).** Vendor returned rc=0 but extractor found no answer (empty JSON envelope, missing last-message file) — **or the answer is an UNEMITTABLE PAYLOAD**: a lone surrogate this host cannot encode on the payload channel, demoted before the audit row (the stderr line is `[wrapper] codex: unemittable-payload — …` — note the COLON, which keeps it out of the summary grep above; after the demotion the wrapper RE-EMITS the canonical summary with the final classification, so the LAST `[wrapper] codex ` line reads `extraction-error exit=1`). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
 | `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since hang is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
 | `schema-rejected` (67) | Surface to user: the pydantic class / massaged schema is invalid for codex strict mode, or codex strict-rule drift. Fix the class / massage and re-dispatch. **NOT** repair-agent territory (deterministic, not transient). Distinct from `schema fail (66)` = post-hoc pydantic validation failing after a well-formed answer. |
 | `fanout-partial` (68) | The `--task` fan-out did not fully complete (partial / zero / fewer-than-requested subagents). stdout carries an INCOMPLETE banner. Treat the synthesis as partial; inspect the per-agent raw + report. **NOT** repair territory. |
