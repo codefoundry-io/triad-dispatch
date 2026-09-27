@@ -108,9 +108,9 @@ Two consequences the admission rule is built on:
   escaped marker inside its RAW pass, a transport that escaped angle brackets
   but not quotes left `&lt;` / `&gt;` entities intact inside the admitted
   strings while the legacy validator on the same reply produced clean ones.
-  The one rule now in force (marker literal → raw-first; marker only
+  The admission rule (marker literal → raw-first; marker only
   unescapes-to-literal → whole-text unescape + NOTICE) makes the two agree by
-  construction (gate-1 r3 row r3-8, cross-checked on the r3 bytes).
+  construction (cross-checked on the measured bytes).
 
 ## Measured timeouts
 

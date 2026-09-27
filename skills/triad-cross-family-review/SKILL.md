@@ -150,7 +150,7 @@ Five references carry the detail — open one only when its column applies.
    '<END-VERDICT>' --admitted-out <attempt>/admitted.json`; no repair path,
    and an unparseable reply takes the ONE-targeted-re-ask-then-INVALID chain
    whose definitional home is `references/triage.md` § Verdict release. A
-   leader-completed reply is never admissible (2026-08-30 hardening). Legacy
+   leader-completed reply is never admissible. Legacy
    v1 rounds keep `lib/validate_verdict.py` unchanged.
 5. **Fix→re-review loop — NO round cap (owner directive), NO focused pass.**
    Findings → fix each (own implementer + per-fix review, SDD/TDD — the leader
@@ -196,15 +196,15 @@ Five references carry the detail — open one only when its column applies.
    reads): forbidden are file MUTATION, external-state change, and CANDIDATE
    EXECUTION (running tests/scripts/builds or the code under review, spawning
    vendor CLIs). TWO legs' directives are SCOPED to a READ-GRANT: the CODEX
-   leg (read-only shell commands explicitly PERMITTED — the old blanket
-   wording banned the very commands codex reads files with) and the AGY leg
+   leg (read-only shell commands explicitly PERMITTED — they are the very
+   commands codex reads files with) and the AGY leg
    (the worktree BRIEF read FIRST, the read-audit gate's required entry, then
    verification reads across the pinned tree with file:line cites); both
    trailers are in `references/leg-contracts.md`. For both, the round's
    capture/verify integrity gate (`references/packet-lifecycle.md` § Round
    integrity) is the compensating control — mutation detection, not a
    sandbox claim alone, decides admission. For the AGY leg the containment
-   is MECHANICAL since 0.35.0 (S2): the round worktree carries a PreToolUse
+   is MECHANICAL: the round worktree carries a PreToolUse
    hook (`lib/agy_hook.py`, written by `prepare` into
    `<worktree>/.agents/hooks.json`) that denies every tool outside the
    five-name review allow set before it runs — whatever agent
@@ -264,7 +264,7 @@ Five references carry the detail — open one only when its column applies.
    One entry plus one attempt number is ONE allocation (exclusive create): a
    retry allocates the NEXT number and never touches attempt K. Layout and
    census rules: `references/packet-lifecycle.md`. **The packet
-   dir is HELPER-OWNED** (owner ruling 2026-09-17): manual manipulation beyond
+   dir is HELPER-OWNED** (owner ruling): manual manipulation beyond
    the ONE documented recovery — `references/packet-lifecycle.md` § Removing a
    stray checkout — is out of scope, and for any state it cannot name as its own
    round tree the helper REFUSES WITHOUT DELETING, states what it OBSERVES, and
@@ -274,9 +274,8 @@ Five references carry the detail — open one only when its column applies.
    block, and the capture/verify procedure: `references/packet-lifecycle.md`.
 9. **codex leg: DE-INLINED — it reads the round worktree like every other leg
    (`--cwd` + READ-GRANT trailer).** The read grant is what lets it
-   VERIFY claims (the historical cannot-open-a-file failure was the old
-   blanket no-exec directive, not the sandbox — reads were never
-   sandbox-blocked, writes still are). Its trailer text, the rescoped fast-SAFE
+   VERIFY claims (the read-only sandbox blocks writes, never reads; a
+   blanket no-exec directive is what would leave it unable to open a file). Its trailer text, the rescoped fast-SAFE
    heuristic, the call-site shape and the single-quoted-heredoc pitfall it must
    avoid are in `references/leg-contracts.md` § codex leg.
 10. **claude fresh-eye leg = a TRUE fresh-eye Agent, MAX thinking, adversarial.**
@@ -323,7 +322,7 @@ Five references carry the detail — open one only when its column applies.
     healthy signal is not a conflict either: independent legs finding the SAME
     defect is a CONVERGENCE floor (two entries of one family = one leg —
     `references/triage.md`) — fix it and run the next FULL round.
-    **Scope freeze (2026-08-22):** from round 3 on, a finding must cite a hunk
+    **Scope freeze:** from round 3 on, a finding must cite a hunk
     of the gated diff; anything else (a pre-existing line, a neighbouring
     design, a hypothetical input shape) opens a NEW slice rather than another
     round of this one. **Two-family floor:** a single-family
@@ -347,7 +346,7 @@ Five references carry the detail — open one only when its column applies.
     by default (`run_in_background` overrides per call) and fires a completion
     task-notification; a completed agent is resumed by id/name via `SendMessage`;
     wrapper legs are background Bash plus their completion notification.
-    **Session-cwd pinning (probe-measured 2026-08-26):** the leader's
+    **Session-cwd pinning (probe-measured):** the leader's
     foreground cwd is NOT durable across the wait — it resets to the primary
     working directory at context reinitialization, which lands exactly at
     long-leg wake-up boundaries. At every wake-up or dispatch boundary,
@@ -428,8 +427,8 @@ it and update the manifest. The producer projection a vendor receives
 requires are in `references/leg-contracts.md` § Producer schema projection —
 admission always runs the FULL canonical schema, never the projection.
 
-**Legacy v1 rounds.** A packet prepared WITHOUT `--v2` keeps the pre-0.37.0
-contract unchanged: three fixed leg bodies, `validate_verdict.py` admission,
+**Legacy v1 rounds.** A packet prepared WITHOUT `--v2` keeps the v1
+contract: three fixed leg bodies, `validate_verdict.py` admission,
 and the ADVISORY fourth-leg (X-leg) arms — `--x-leg` (repeatable) /
 `--no-x-leg` (the two together refused, exit 2), the project file read as
 `triad-review-legs.v1`, the user file
@@ -513,7 +512,7 @@ hits a v2 `prepare` as a refusal naming `--v2`, and a v2 file hits the legacy
      result but fewer than three FAMILIES are covered (the owner's four-leg
      profile lands here by design). Call the OWNER with what is missing and
      why; there is no implicit degraded pass.
-   - **`BASIS CHANGED` (2)** — the round record's frozen `contract_digest` (the ADMISSION schema every reply is judged against) is absent or no longer matches the installed contract. A changed basis is a NEW ROUND, never a re-collection (`references/triage.md` § Collect outcomes).
+   - **`BASIS CHANGED` (2)** — the round record's frozen `contract_digest` (the ADMISSION schema every reply is judged against) is absent or does not match the installed contract. A changed basis is a NEW ROUND, never a re-collection (`references/triage.md` § Collect outcomes).
    - **`HOST FAULT` (64)** — THIS host cannot admit any reply (`jsonschema` absent, the vendored contract unusable in ANY way — unreadable, invalid UTF-8, non-JSON, over-nested, not Draft 2020-12) or an agy evidence tool (read-audit gate / hook check) could not RUN at all. `collect` STOPS and writes NO per-entry state: nothing about any leg is known, so repair the host and collect AGAIN — never re-dispatch paid legs over it. A contract that cannot LOAD is 64; one that loads and DIFFERS is the exit-2 basis refusal above (`references/triage.md` § Collect outcomes).
    Then run rule 4's consolidation over the collected findings: fact-check
    each against the source, and classify the round CONVERGING / CONFLICTED /

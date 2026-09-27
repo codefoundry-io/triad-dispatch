@@ -55,7 +55,7 @@ exported installs.
 - `… close <abs-dir>` at review end — the primary cleanup path. The
   prune-at-next-open is only the crash backstop. Close first REPORTS whether
   the highest captured round carries a `.verified-r<N>.json` — a WARNING when
-  it does not (the owner-ruled disposition is to proceed, 2026-09-17), never a
+  it does not (the owner-ruled disposition is to proceed), never a
   refusal — then writes a `.claim` ownership record inside the dir, renames it
   to `<name>.pruning` and deletes it. A SECOND `close` of the same (now
   absent) dir is a NO-OP at rc 0 with every shape check still run (C7): the
@@ -141,186 +141,157 @@ does not carry, apply it before `prepare` (it reads the LIVE checkout; the
 round record freezes the resolved roster) and restore that file to `HEAD` after
 `collect` — never between `prepare` and the round's final `verify`.
 
-**An ORPHAN `attempt-K+1/` is ADOPTED, not skipped** (gate-1 r4 row r4-9).
+**An ORPHAN `attempt-K+1/` is ADOPTED, not skipped.**
 `retry` allocates first and diagnoses second, so a failed diagnosis/record
 write leaves attempt K+1 on disk while `.roster-r<N>.json` still says K. The
 next `retry` adopts that directory when its own `binding.json` binds THIS
 entry at THAT attempt — ALL SIX derived values, through the one
-`_expected_binding` derivation admission uses (gate-1 r6 row r6-3) — AND its
-`dispatch.json` equals the round's own re-render on `kind`, the whole
-`native` block and the six wrapper members (gate-1 r8 row r8-2), AND the two
-files the invocation FEEDS THE VENDOR are PROVEN: `prompt.txt` byte-for-byte
-against a pure re-render whose clause manifest matched the frozen
-`prompt_manifests[<name>]` first, and `schema.projected.json` against the
-frozen `projection_digest` (gate-1 r8 row r8-7 — both were tested for
-EXISTENCE only, so a planted prompt or projection rode in under a matching
-binding; a record carrying no frozen manifest or digest cannot prove the
-basis and is refused), AND — since gate-1 r9 — the frozen
-`prompt_spec_dir` is REQUIRED and COMPARED, exactly as the normal `retry` does
-it (row r9-5: digests alone do not say WHERE the clause bytes came from), with
-both byte reads going through the helper's hardened
+`_expected_binding` derivation admission uses — AND its `dispatch.json`
+equals the round's own re-render on `kind`, the whole `native` block and the
+six wrapper members, AND the two files the invocation FEEDS THE VENDOR are
+PROVEN: `prompt.txt` byte-for-byte against a pure re-render whose clause
+manifest matched the frozen `prompt_manifests[<name>]` first, and
+`schema.projected.json` against the frozen `projection_digest` (a record
+carrying no frozen manifest or digest cannot prove the basis and is
+refused), AND the frozen `prompt_spec_dir` is REQUIRED and COMPARED, exactly
+as the normal `retry` does it (digests alone do not say WHERE the clause
+bytes came from), with both byte reads going through the helper's hardened
 `_read_regular_file` (`lstat` → `O_NOFOLLOW|O_NONBLOCK` → `fstat` S_ISREG)
-instead of `Path.read_bytes()`, which FOLLOWS a symlink planted at either name
-(row r9-11), and an unreadable CLAUSE file refusing in one line at both layers
-rather than as a traceback (row r9-13). Only then does it
-re-print the frozen `dispatch.json`, and it re-renders NOTHING INTO the
-attempt — every re-render above is a discarded comparison basis; a directory
-whose records are unreadable, whose `binding.json` or `dispatch.json` is a
-non-object (r6-4), or whose binding names something else, is refused BY NAME
-and left in place — the packet dir is helper-owned, so the tool deletes
-nothing it did not write. Further conditions gate the adoption, each refusing
-by name and deleting nothing (gate-1 r5, amended at r6): the allocation must
-have FINISHED — every file the writer produces for that route, the producer
-projection included, since it is written LAST and its absence ships an argv
-pointing at a file nobody wrote (r5-3); `dispatch.json` is TYPE-checked on
-EVERY member the print reads, not just three non-empty ones — `kind`, the
-identifying member for that kind (`native.subagent_type` a non-empty string /
-`argv` a non-empty list OF strings), `stdout_path` / `stderr_path`, `env` as
-a string→string mapping, `read_audit_path` — the KEY required on EVERY
-wrapper route, `null` where the route takes none, because the check used to
-accept an absent key while the print INDEXED it and raised a `KeyError` after
-the diagnosis was written (r7-6) — and
-`schema_file` when named (r5-8 corrected by r6-5; `argv: [1]` used to pass
-and raise inside `shlex.quote` mid-print); the record is then COMPARED
-against a fresh RE-RENDER of the same attempt from the round's own frozen
-roster entry, and adoption is refused when any of `argv` / `env` /
-`stdout_path` / `stderr_path` / `read_audit_path` / `schema_file` differs —
+instead of `Path.read_bytes()`, which FOLLOWS a symlink planted at either
+name, and an unreadable CLAUSE file refusing in one line at both layers
+rather than as a traceback. Only then does it re-print the frozen
+`dispatch.json`, and it re-renders NOTHING INTO the attempt — every
+re-render above is a discarded comparison basis; a directory whose records
+are unreadable, whose `binding.json` or `dispatch.json` is a non-object, or
+whose binding names something else, is refused BY NAME and left in place —
+the packet dir is helper-owned, so the tool deletes nothing it did not
+write. Further conditions gate the adoption, each refusing by name and
+deleting nothing: the allocation must have FINISHED — every file the writer
+produces for that route, the producer projection included, since it is
+written LAST and its absence ships an argv pointing at a file nobody wrote;
+`dispatch.json` is TYPE-checked on EVERY member the print reads — `kind`,
+the identifying member for that kind (`native.subagent_type` a non-empty
+string / `argv` a non-empty list OF strings), `stdout_path` /
+`stderr_path`, `env` as a string→string mapping, `read_audit_path` — the KEY
+required on EVERY wrapper route, `null` where the route takes none — and
+`schema_file` when named; the record is then COMPARED against a fresh
+RE-RENDER of the same attempt from the round's own frozen roster entry, and
+adoption is refused when `kind`, the `native` block or any of `argv` / `env`
+/ `stdout_path` / `stderr_path` / `read_audit_path` / `schema_file` differs —
 the adopted record is what the operator RUNS, so it is proven to be this
-round's invocation rather than read back verbatim (r7-11; on equality the
-ON-DISK bytes are adopted and nothing is re-rendered INTO the attempt); a gap
-of MORE than one attempt is
-refused naming both numbers, because only the one-step orphan has an attempt
-this tool can honestly call "the one that failed" (r5-10); and attempt K's
-`retry-diagnosis.txt` is RETAINED when it is a regular NON-BLANK file (under
-the distinct `existing diagnosis retained … the typed text was NOT stored`
-line), REPLACED when it is a regular but EMPTY file — what an interrupted
-write leaves behind — with the print saying so, and REFUSED when it is a
-symlink or any other non-regular path; any write `OSError` surfaces as a
-one-line refusal (r5-9 corrected by r6-6).
+round's invocation rather than read back verbatim (on equality the ON-DISK
+bytes are adopted and nothing is re-rendered INTO the attempt); a gap of
+MORE than one attempt is refused naming both numbers, because only the
+one-step orphan has an attempt this tool can honestly call "the one that
+failed"; and attempt K's `retry-diagnosis.txt` is RETAINED when it is a
+regular NON-BLANK file (under the distinct `existing diagnosis retained …
+the typed text was NOT stored` line), REPLACED when it is a regular but
+EMPTY file — what an interrupted write leaves behind — with the print saying
+so, and REFUSED when it is a symlink or any other non-regular path; any
+write `OSError` surfaces as a one-line refusal.
 
-**The NON-ADOPT `retry`'s diagnosis write is guarded too** (gate-1 r9 row
-r9-12). It was bare, so an `OSError` — an unwritable attempt directory, a full
-disk — escaped as a traceback out of the one recovery command the round offers,
-AFTER `v2_write_attempt` had already allocated attempt K+1. It now refuses in
-one line naming the allocated directory and stating that the round record still
-names attempt K, so the allocated attempt is ADOPTED on the next `retry` rather
-than re-allocated — the rule the adoption path had always applied.
+**The NON-ADOPT `retry`'s diagnosis write is guarded too.** An `OSError` —
+an unwritable attempt directory, a full disk — AFTER `v2_write_attempt` has
+allocated attempt K+1 is a one-line refusal naming the allocated directory
+and stating that the round record still names attempt K, so the allocated
+attempt is ADOPTED on the next `retry` rather than re-allocated — the same
+rule the adoption path applies.
 
-**Adoption's write order** (gate-1 r6 row r6-5): validate everything → write
-the diagnosis → print the dispatch block → bump `.roster-r<N>.json` LAST. The
-record write used to precede the print, so anything the print refused left
-the record already bumped and the next `retry` fabricated a diagnosis into an
-attempt nobody dispatched. The printed `--expected-*` flags come from the
-DERIVED binding, never read back from the attempt's own `binding.json`, and
-every interpolated value is `shlex.quote`d (r6-3).
+**Adoption's write order**: validate everything → write the diagnosis →
+print the dispatch block → bump `.roster-r<N>.json` LAST, so a refused print
+never leaves the record bumped over an attempt nobody dispatched. The
+printed `--expected-*` flags come from the DERIVED binding, never read back
+from the attempt's own `binding.json`, and every interpolated value is
+`shlex.quote`d.
 
-**THE ROUND RECORD NAMES THE ATTEMPT THAT IS EVALUATED** (gate-1 r9 row r9-2).
-`collect` used to admit the HIGHEST attempt directory on disk. Allocation is
-the RECORD's act — `prepare` writes attempt 1, `retry` bumps the entry
+**THE ROUND RECORD NAMES THE ATTEMPT THAT IS EVALUATED.** Allocation is the
+RECORD's act — `prepare` writes attempt 1, `retry` bumps the entry
 (allocating or ADOPTING) before it returns — so an on-disk attempt ABOVE the
-record's is one this round never dispatched, and the packet dir is
-helper-owned: a planted or restored `attempt-N/` whose binding satisfied the
-derivation and whose verdict was a schema-valid SAFE superseded the recorded
-attempt's BLOCKING verdict. It is now that ENTRY's `invalid`, named
-(`<dir> is an attempt this round never allocated: the round record names
-attempt <K> for this entry …`), nothing is deleted, every other entry still
-collects and the round lands on INCOMPLETE — but only when the recorded
-attempt did not itself return a valid verdict (a completed review is never
-vetoed by an unallocated directory). Exactly `attempt-<record.attempt>/` is
-evaluated: a RECORDED attempt missing from disk is that entry's `invalid`, and
-`retry` refuses it before allocating (restore it, or re-prepare the round). The
-ADOPTION path recovers only the one-step orphan, whose recorded attempt is on
-disk.
+record's is one this round never dispatched, and a planted or restored
+`attempt-N/` whose binding satisfies the derivation and whose verdict is a
+schema-valid SAFE could otherwise supersede the recorded attempt's BLOCKING
+verdict. It is that ENTRY's `invalid`, named (`<dir> is an attempt this
+round never allocated: the round record names attempt <K> for this entry
+…`), nothing is deleted, every other entry still collects and the round
+lands on INCOMPLETE — but only when the recorded attempt did not itself
+return a valid verdict (a completed review is never vetoed by an
+unallocated directory). Exactly `attempt-<record.attempt>/` is evaluated: a
+RECORDED attempt missing from disk is that entry's `invalid`, and `retry`
+refuses it before allocating (restore it, or re-prepare the round). The
+ADOPTION path recovers only the one-step orphan, whose recorded attempt is
+on disk.
 
-**THE ROUND RECORD'S SHAPE IS CHECKED BEFORE ANYTHING WALKS IT** (gate-1 r9
-row r9-6). `_read_record` probed only that `entries` was PRESENT, so
-`"entries": null` / `[null]` loaded cleanly and then met the iteration and
-`entry.get(...)` as a TypeError / AttributeError traceback, while a record
-missing `results_dir` crashed inside `_evaluate` and one missing `review_id` /
-`content_digest` / `worktree` degraded SILENTLY (a derived binding of None
-mismatches every entry, so a tampered record reads as "every leg answered
-wrong"). `_check_record_shape` refuses with exit 2 NAMING THE FIELD, for the
-members this helper dereferences only; the members with their own dedicated
-refusal downstream (`projection_digest`, `contract_digest`, `prompt_spec_dir`,
-`hook_log`) are TYPE-checked when present but never required here, so a record
-that omits one still reaches the refusal that explains what it was for
-(`references/triage.md` § Collect outcomes).
+**THE ROUND RECORD'S SHAPE IS CHECKED BEFORE ANYTHING WALKS IT.**
+`_check_record_shape` refuses with exit 2 NAMING THE FIELD, for the members
+this helper dereferences only; the members with their own dedicated refusal
+downstream (`projection_digest`, `contract_digest`, `prompt_spec_dir`,
+`hook_log`) are TYPE-checked when present but never required here, so a
+record that omits one still reaches the refusal that explains what it is
+for (`references/triage.md` § Collect outcomes).
 
 **`collect-r<N>.json` and the round record share ONE lstat-refusing writer**
-(`collect_v2._write_json`, gate-1 r6 row r6-11). `collect` used a plain
-`write_text`, which FOLLOWS a symlink planted at that path. Both records now
-go through: `lstat` → refuse a non-regular target BY NAME → temp file →
-`os.replace`. The TEMP is exclusive-created as well —
-`O_CREAT|O_EXCL|O_NOFOLLOW`, the rule the sibling writers always applied —
-because the staging `write_text` followed a link planted at the predictable
-`.tmp-<pid>-<name>`, and a `finally` UNLINKS a temp the staging never
-consumed so a refused write leaves no residue for `verify` to report as an
-uncovered packet file (gate-1 r7 row r7-2). **When that unlink itself fails
-the residue is DISCLOSED, never swallowed** (gate-1 r8 row r8-6): the
-refusal already in flight stays the reported error — re-raising from a
-`finally` would REPLACE it with a cleanup detail — and one
-`collect_v2: NOTE: the staging file <path> could not be removed (…)` line
-goes to the diagnostic stream beside it, so an operator is told about a
-`.tmp-…` sitting in a directory this helper owns. Every record LOAD on these paths
-catches `RecursionError` alongside `OSError` / `ValueError` /
-`UnicodeDecodeError`, so a document nested past the interpreter's limit is a
-named one-line refusal rather than a traceback that aborts the collection
-(row r7-8).
+(`collect_v2._write_json`): `lstat` → refuse a non-regular target BY NAME →
+temp file → `os.replace`, so a symlink planted at either path is never
+written through. The TEMP is exclusive-created as well —
+`O_CREAT|O_EXCL|O_NOFOLLOW`, the rule the sibling writers apply — so a link
+planted at the predictable `.tmp-<pid>-<name>` is refused, and a `finally`
+UNLINKS a temp the staging never consumed so a refused write leaves no
+residue for `verify` to report as an uncovered packet file. **When that
+unlink itself fails the residue is DISCLOSED, never swallowed**: the refusal
+already in flight stays the reported error — re-raising from a `finally`
+would REPLACE it with a cleanup detail — and one `collect_v2: NOTE: the
+staging file <path> could not be removed (…)` line goes to the diagnostic
+stream beside it, so an operator is told about a `.tmp-…` sitting in a
+directory this helper owns. Every record LOAD on these paths catches
+`RecursionError` alongside `OSError` / `ValueError` / `UnicodeDecodeError`,
+so a document nested past the interpreter's limit is a named one-line
+refusal rather than a traceback that aborts the collection.
 
-**A HOST FAULT stops the collection instead of blaming a leg** (gate-1 r7 row
-r7-7, widened at r8 rows r8-4 / r8-9). `verdict_v2` exit 64 means the
-admission could not RUN at all on this host — `jsonschema` absent, or the
-vendored contract unusable in ANY way: unreadable, invalid UTF-8, not JSON,
-nested past the interpreter's limit, or not Draft 2020-12 (r8-4 brought the
-last three onto this exit; two of them used to escape as a traceback out of
-the one path the collector relies on). The agy entry's two EVIDENCE TOOLS are
-the same class (r8-9): `read_audit_gate.sh` and `agy_hook.py check` both
-reserve rc 64 for "this invocation could not RUN at all" — a required file the
-round named is gone, a re-pinned worktree, an absent `hook_log`, an unusable
-argv — so that is a host fault, never that leg's `invalid`. `collect` /
-`retry` exit 64 with a one-line host-fault reason
-and write NO per-entry state, because nothing about any leg is known. Repair
-the host and collect again — never re-dispatch paid legs over it
-(`references/triage.md` § Collect outcomes).
+**A HOST FAULT stops the collection instead of blaming a leg.** `verdict_v2`
+exit 64 means the admission could not RUN at all on this host — `jsonschema`
+absent, or the vendored contract unusable in ANY way: unreadable, invalid
+UTF-8, not JSON, nested past the interpreter's limit, or not Draft 2020-12.
+The agy entry's two EVIDENCE TOOLS are the same class: `read_audit_gate.sh`
+and `agy_hook.py check` both reserve rc 64 for "this invocation could not
+RUN at all" — a required file the round named is gone, a re-pinned
+worktree, an absent `hook_log`, an unusable argv — so that is a host fault,
+never that leg's `invalid`. `collect` / `retry` exit 64 with a one-line
+host-fault reason and write NO per-entry state, because nothing about any
+leg is known. Repair the host and collect again — never re-dispatch paid
+legs over it (`references/triage.md` § Collect outcomes).
 
-A directory named `attempt-<non-decimal>` is refused the same way (row
-r4-15), never silently skipped, because skipping it would make the collector
-read a LOWER attempt than the tree holds — but inside `collect` that refusal
-is scoped to the offending ENTRY (row r5-11): that entry is `invalid` with
-the directory named, every other entry still collects, and the round lands
-on INCOMPLETE. The same per-entry refusal covers a NON-CANONICAL decimal
-spelling — `attempt-01`, `attempt-001`, non-ASCII decimals, all of which
-`int()` maps onto the canonical number, so two directories claimed one
-allocation and filesystem order decided which verdict was credited (row
-r6-9) — and an `attempt-*` entry that is a SYMLINK or not a directory, which
-used to be silently SKIPPED so the collector read a LOWER attempt (row
-r6-10). `retry` runs the same scan itself and still refuses.
-Admission of an attempt's result never trusts the attempt's own
-`binding.json` either: the six expected values are DERIVED from the round
-record, the frozen roster entry and the directory name, and the binding must
-EQUAL them (row r5-1; ONE derivation now serves admission AND adoption, row
-r6-3; a non-object `binding.json` invalidates that ONE entry, row r6-4;
-`references/triage.md` § Collect outcomes). `retry`
-also refuses outright when the round's frozen `prompt_manifests` no longer
-match the clause bytes a re-render produces — and equally when the record
-carries NO frozen manifest for that entry or NO frozen `prompt_spec_dir`
-(row r5-7) — a changed or unprovable basis is a new ROUND (row r4-16;
-`references/triage.md` § Collect outcomes). The PRODUCER SCHEMA is half of
-that basis: `prepare` freezes `projection_digest` (the sha256 of the
-projected producer schema) in the round record and `retry` refuses on a
-MISMATCH **or on ABSENCE** (row r7-3) — so a round record prepared before
-that wave cannot be retried at all; prepare a new round. **The ADMISSION
-CONTRACT is the last basis, and `collect` checks it too** (gate-1 r8 row
-r8-10): `contract_digest` (the sha256 of the canonical
-`spec/contracts/leg-verdict.schema.json` `verdict_v2` judges every reply
-against, read through `verdict_v2._schema_path()` so a seam round is
-distinguishable from a vendored one) is frozen at prepare, and BOTH `collect`
-and `retry` re-derive and refuse with exit 2 on a mismatch or on absence,
-BEFORE any entry is judged. It was the one basis re-read LIVE while all the
-others were frozen, and the one no leg artifact evidences — an admitted
-`verdict.json` says nothing about the schema that let it through. ORDER: a
-contract this host cannot LOAD at all is the HOST FAULT 64 below, not this
-exit-2 refusal.
+A directory named `attempt-<non-decimal>` is refused the same way, never
+silently skipped, because skipping it would make the collector read a LOWER
+attempt than the tree holds — but inside `collect` that refusal is scoped to
+the offending ENTRY: that entry is `invalid` with the directory named, every
+other entry still collects, and the round lands on INCOMPLETE. The same
+per-entry refusal covers a NON-CANONICAL decimal spelling — `attempt-01`,
+`attempt-001`, non-ASCII decimals, all of which `int()` maps onto the
+canonical number, so two directories would claim one allocation — and an
+`attempt-*` entry that is a SYMLINK or not a directory. `retry` runs the
+same scan itself and refuses too. Admission of an attempt's result never
+trusts the attempt's own `binding.json` either: the six expected values are
+DERIVED from the round record, the frozen roster entry and the directory
+name, and the binding must EQUAL them (ONE derivation serves admission AND
+adoption; a non-object `binding.json` invalidates that ONE entry;
+`references/triage.md` § Collect outcomes). `retry` also refuses outright
+when the round's frozen `prompt_manifests` do not match the clause bytes a
+re-render produces — and equally when the record carries NO frozen manifest
+for that entry or NO frozen `prompt_spec_dir` — a changed or unprovable
+basis is a new ROUND (`references/triage.md` § Collect outcomes). The
+PRODUCER SCHEMA is half of that basis: `prepare` freezes `projection_digest`
+(the sha256 of the projected producer schema) in the round record and
+`retry` refuses on a MISMATCH **or on ABSENCE** — a round record without it
+cannot be retried at all; prepare a new round. **The ADMISSION CONTRACT is
+the last basis, and `collect` checks it too**: `contract_digest` (the sha256
+of the canonical `spec/contracts/leg-verdict.schema.json` `verdict_v2`
+judges every reply against, read through `verdict_v2._schema_path()` so a
+seam round is distinguishable from a vendored one) is frozen at prepare, and
+BOTH `collect` and `retry` re-derive and refuse with exit 2 on a mismatch or
+on absence, BEFORE any entry is judged — it is the one basis no leg artifact
+evidences, since an admitted `verdict.json` says nothing about the schema
+that let it through. ORDER: a contract this host cannot LOAD at all is the
+HOST FAULT 64 above, not this exit-2 refusal.
 
 **Census rules.** `capture` freezes the files that exist AT capture —
 including each attempt's `binding.json` / `prompt.txt` / `dispatch.json` /
@@ -341,7 +312,7 @@ worktree by the fingerprint, each attempt's inputs by this census.
 
 ### Removing a stray checkout
 
-The packet dir is HELPER-OWNED (owner ruling 2026-09-17): the steps below are
+The packet dir is HELPER-OWNED (owner ruling): the steps below are
 the ONLY supported manual intervention in it, and everything else — renaming,
 moving or locking a round tree, dropping a foreign clone or worktree in, or
 re-pinning from a repository other than the gate's source — is out of scope, so
@@ -366,7 +337,7 @@ refusal said `unresolvable` — the gate's own source repository.
    copied tree), or a gitfile git cannot read:
    `rm -rf <path>` then `git -C <repo> worktree prune`
    (the first deletes the directory and everything in it; the second clears the
-   registration git still holds for a tree that is no longer where that
+   registration git still holds for a tree that is not where that
    registration says). When the entry's `.git` entry is a **DIRECTORY** — a
    clone or a primary repository, which no `.git/worktrees` registration
    anywhere names — `rm -rf <path>` alone is the whole of it; there is nothing
@@ -383,7 +354,7 @@ file to assemble. When a diff approaches a leg's context ceiling, narrow it:
 `--tests-path <pathspec>` limits `diff.tests.patch` (omitted → that file is written EMPTY, 0 bytes: test churn never rides in the gated patch). The tests patch is the `--diff-path` scope INTERSECTED with `--tests-path`, so a tests directory must be in `--diff-path` too, or `diff.tests.patch` comes out empty. `--excerpt
 <rel>:<start>-<end>` pins a hot function INTO `brief.md`. Prefer shrinking
 over raising `--timeout` (SKILL rule 7). Telling a vendor leg to self-assemble
-a large diff itself is what used to time out (`references/evidence.md`).
+a large diff itself times out (`references/evidence.md`).
 
 ## Packet order and fencing
 
@@ -399,8 +370,7 @@ Canonical for EVERY leg, inline or file:
    ("Your binding values: review_id=…, family=…, content_digest=…"):
    `content_digest` is the sha256 OF the packet file — writing it inside
    that file is self-referentially impossible — and `family` is per-leg
-   while the packet is one file for all legs (adopt-gate r1 made this
-   explicit; the first live round had improvised placeholders). The
+   while the packet is one file for all legs. The
    closing instruction requires the leg to ECHO
    `review_id`/`family`/`content_digest` verbatim in its LegVerdict
    (`references/leg-contracts.md` § Verdict binding), and admission
@@ -418,12 +388,11 @@ Canonical for EVERY leg, inline or file:
 3. the **suspect questions** (rule 2) and the required output shape LAST,
    anchored "based on the material above".
 
-**Per-round excerpt policy (FU10 plan-gate lesson, 2026-08-10).** Every
+**Per-round excerpt policy.** Every
 round's packet — NARROW re-confirm rounds included — carries the code
-excerpts its questions ride on. The FU10 gate dropped the excerpts from
-its narrow rounds and the packet-only leg went blind exactly there (a
-missed defect and a refuted trigger, both traceable to absent code).
-The marginal size of two or three functions is noise; the blind spot is
+excerpts its questions ride on: a packet-only leg goes blind exactly where
+they are absent (`docs/reviews/2026-09-18-cfr-skill-history.md` records the
+incident). The marginal size of two or three functions is noise; the blind spot is
 not. The codex leg's READ-GRANT (leg-contracts § codex leg) is the
 verification channel, not a substitute for carrying the evidence.
 
@@ -437,7 +406,7 @@ and containment needs the same protection.
 ## Deterministic round preparation — prepare
 
 `lib/review_scratch.py prepare` is the NORMAL path for building a round
-(owner directive 2026-08-11): the leader authors ONE brief and names the
+(owner directive): the leader authors ONE brief and names the
 evidence; everything else — the delivered artifacts, the delivery and
 digest records, and the leg prompts (on a `--v2` round one `prompt.txt` per
 enabled non-skipped roster entry under § Per-entry results tree; on a
@@ -456,7 +425,7 @@ python3 <skill>/lib/review_scratch.py prepare <abs-packet-dir> \
   [--prior-residual /abs/residuals.md]
 ```
 
-`--v2` is the STANDARD path (SKILL 0.37.0): it keeps this whole packet
+`--v2` is the STANDARD path: it keeps this whole packet
 pipeline and replaces only the leg-facing half — instead of three fixed
 `*-r<N>.txt` bodies and the X-leg renders it resolves the NAMED ROSTER and
 allocates § Per-entry results tree. `--v2` is mutually exclusive with
@@ -475,7 +444,7 @@ both paths unless it names one.
   not round evidence; a brief placed INSIDE the packet dir under a fixed
   name becomes a censused round-invariant INPUT, and editing it for the
   next round while legs are still out fires a false "round evidence
-  changed" (r1 finding, claude). If it must live inside, round-suffix it
+  changed". If it must live inside, round-suffix it
   (`brief-r<N>.md`).
 - **Every bulk byte moves FILE-TO-FILE.** `--diff` is REQUIRED — it names the
   reviewed change and pins the round worktree at the resolved right-hand side,
@@ -498,7 +467,7 @@ both paths unless it names one.
   slips; content a program copies costs neither.
 - **Rendered outputs are ROUND-SUFFIXED** (`delivery-r<N>.md` — the record
   listing the delivered artifacts with their sha256s, which is what the
-  verdict binding hashes now that there is no assembled packet —
+  verdict binding hashes, since there is no assembled packet —
   `digest-r<N>.txt`, and on a LEGACY v1 round only `codex-body-r<N>.txt`,
   `agy-prompt-r<N>.txt`, `claude-prompt-r<N>.txt`; a `--v2` round writes
   `.roster-r<N>.json` and the per-entry attempt records instead) and written
@@ -507,7 +476,7 @@ both paths unless it names one.
   worktree at `<packet-dir>/wt-r<N>` (the round is in the NAME), NOT in the packet dir; `verify` re-checks
   them against `delivery-r<N>.md`, which keeps their integrity independent
   of the reviewed repo's own `.gitignore`. Beside them `prepare` writes
-  `.agents/hooks.json` (S2, 0.35.0) — the round's agy PreToolUse hook config,
+  `.agents/hooks.json` — the round's agy PreToolUse hook config,
   pointing at `<skill>/lib/agy_hook.py` with `--log
   <packet-dir>/agy-hook-r<N>.jsonl`. It is OURS like the four artifacts
   (cleanup unlinks it; the re-pin owns it), written after them and BEFORE the
@@ -524,8 +493,7 @@ both paths unless it names one.
 - **Pre-mutation boundary: everything that can refuse DETERMINISTICALLY runs
   before the first byte moves.** The order is `_precheck_packet_dir` → (v2)
   the PURE render of every enabled non-skipped roster entry → (v2) the
-  two SPEC-BASIS DIGESTS (`projection_digest` + `contract_digest`, gate-1 r8
-  row r8-11) →
+  two SPEC-BASIS DIGESTS (`projection_digest` + `contract_digest`) →
   `_preserve_round_invariants` → `_worktree_remove` of the outgoing tree →
   `_worktree_add` → the WRITES (`v2_write_attempt`, the delivery record, the
   four artifacts, `.agents/hooks.json`) → `capture`. The v2 render is PURE —
@@ -534,14 +502,12 @@ both paths unless it names one.
   there: the refusals only a render can surface (an unrenderable clause set,
   an unresolvable wrapper layout, a non-absolute path token) are
   DETERMINISTIC properties of the install and the roster, not of the tree.
-  It used to run AFTER the worktree re-pin, so such a refusal destroyed round
-  N-1's DELIVERED tree and burned the round label before the message was even
-  printed; now a clause-file or layout refusal leaves `wt-r<N-1>` intact and
-  the same label can be retyped (gate-1 r3 rows r3-12 + r3-17). Only the
+  Run there, a clause-file or layout refusal leaves round N-1's DELIVERED
+  tree `wt-r<N-1>` intact and the same label can be retyped. Only the
   WRITES stay after `_worktree_add`, which is the actual invariant: no
   attempt directory exists until the round's own tree does.
   **The UNTRACKED half of the worktree precheck stays AFTER the writes, by
-  design** (gate-1 r9 row r9-8, raised and LEFT WITH REASON).
+  design**.
   `_precheck_worktree` is split in two: the `untracked=False` arm (index
   flags / sparse checkout / unborn HEAD) runs immediately after
   `_worktree_add`, the earliest point at which the tree exists; the
@@ -550,20 +516,19 @@ both paths unless it names one.
   `capture`. A fresh detached checkout has exactly ZERO untracked entries, so
   moving that walk ahead of the rotation gives it NO SUBJECT at all — and the
   unreadable artifact it exists to catch would then fail at capture with every
-  output already written, burning the round label. The residual the row names
-  is real and DISCLOSED: an unreadable artifact still refuses after the
+  output already written, burning the round label. The residual is real and DISCLOSED: an unreadable artifact still refuses after the
   rotation, so that refusal burns the label; it is the cheaper of the two
   failures, and the walk cannot be both subject-bearing and pre-mutation
-  (r7 W9, measured).
+  (measured).
 - **The round record freezes BOTH halves of the round's basis.**
   `.roster-r<N>.json` carries the frozen roster, each entry's attempt, the
-  `prompt_manifests` (WHICH clause bytes each entry received) and —
-  since gate-1 r7 row r7-3 — **`projection_digest`**, the sha256 of the
+  `prompt_manifests` (WHICH clause bytes each entry received) and
+  **`projection_digest`**, the sha256 of the
   PROJECTED producer schema. The projection is re-derived from the vendored
   `spec/contracts/leg-verdict.schema.json` on EVERY render, a `retry`'s
   included, so without the frozen digest a spec re-vendoring between
-  `prepare` and `retry` moved the producer schema with nothing comparing the
-  two. `retry` re-derives and compares it before allocating, and refuses on a
+  `prepare` and `retry` would move the producer schema with nothing comparing
+  the two. `retry` re-derives and compares it before allocating, and refuses on a
   mismatch OR on absence (`references/triage.md` § Collect outcomes). The
   round record is written through the same lstat-refusing,
   exclusive-create-staged writer as `collect-r<N>.json`.
@@ -573,7 +538,7 @@ both paths unless it names one.
   (`_emit_payload`), never re-encoded by the locale, and a path token this
   host cannot represent as UTF-8 is REFUSED rather than escaped — a mangled
   path in a command the operator copies would dispatch against a different
-  file (gate-1 r7 row r7-4; `references/triage.md` § Collect outcomes,
+  file (`references/triage.md` § Collect outcomes,
   the plugin `README.md` § Payload vs diagnostic streams).
 - **`prepare` ends by running `capture` for the same label**, after
   auto-preserving round-invariant leg outputs — so the census freezes
@@ -587,21 +552,18 @@ both paths unless it names one.
   prompt is the rendered `claude-prompt-r<N>.txt` content. Per-leg flags:
   `references/leg-contracts.md`.
 
-## Round integrity — capture / verify (MECHANIZED 2026-08-10)
+## Round integrity — capture / verify
 
-Origin: an owner directive after a round in which the leader edited the
-tree mid-round and the legs had certified a stale snapshot. The manual
-`shasum` procedure that implemented it is superseded by two
-`lib/review_scratch.py` subcommands (adopted from codex-host 0.2.533,
-adapted to this skill's REUSED packet-dir model — python3 stdlib, no
-platform branch; run on macOS so far, not yet on Ubuntu 24.04):
+Two `lib/review_scratch.py` subcommands guard the round (this skill's
+REUSED packet-dir model — python3 stdlib, no platform branch; exercised on
+macOS, not yet on Ubuntu 24.04):
 
 - **Before dispatching round N** (packet assembled, prompts built):
   `python3 <skill>/lib/review_scratch.py capture <abs-packet-dir>
   <abs-packet-dir>/wt-r<N> r<N>` — the second positional is the ROUND WORKTREE
   (`prepare` runs this itself; it is spelled out here for a hand-built round).
   A HAND-BUILT round is supported ONLY when it writes its own
-  `delivery-r<N>.md` AND captures under the ROUND label `r<N>` (r11 AA7). The
+  `delivery-r<N>.md` AND captures under the ROUND label `r<N>`. The
   record's format is what `prepare` writes, and `prepare`'s output is the
   template to copy: a `Review metadata: <review-id> …` line, then one
   `- <artifact>  sha256=<64 hex>  (<size note>)` line for each of `brief.md`,
@@ -627,19 +589,19 @@ platform branch; run on macOS so far, not yet on Ubuntu 24.04):
   the round is INVALID, never released. A ROUND-shaped label
   (`r<N>`, `r0<N>`) resolves its delivery record by the SUPPLIED spelling
   first and by the round NUMBER second — so a pre-canonical `delivery-r04.md`
-  answers for `verify … r04` (r10 Z4) — and REFUSES when NEITHER is in the
-  packet dir (r9 Y3): the
+  answers for `verify … r04` — and REFUSES when NEITHER is in the
+  packet dir: the
   fingerprint's two arms both omit paths the REVIEWED repo gitignores, so
   without the record's four sha256s a mutated `diff.prod.patch` in a repo
   carrying `*.patch` certifies clean. A HAND-BUILT round therefore writes that
-  record, exactly as `prepare` does (r11 AA7). A NON-round label is an OPERATOR
+  record, exactly as `prepare` does. A NON-round label is an OPERATOR
   capture, never a round: it verifies the packet evidence and the fingerprint
   only, and its token line SAYS so — `ROUND_INTEGRITY_OK <label> (artifact
   hashes NOT checked — no delivery record)`, on stdout, so the round gate's
   token (`ROUND_INTEGRITY_OK r<N>`, SKILL rule 8) can never be satisfied
-  silently (r10 Z17). This verify is the
+  silently. This verify is the
   COMPENSATING CONTROL for legs with native read tools (the codex
-  leg's 2026-08-10 READ-GRANT contract, and the agy leg's
+  leg's READ-GRANT contract, and the agy leg's
   intent-not-enforcement residual): mutation detection, not a sandbox
   claim alone, decides admission.
 - Leg INPUT files must ALL exist before capture — the delivery record,
@@ -647,8 +609,7 @@ platform branch; run on macOS so far, not yet on Ubuntu 24.04):
   each attempt's `binding.json` / `prompt.txt` / `dispatch.json` /
   `schema.projected.json`; on a LEGACY v1 round `codex-body-r<N>.txt`,
   `agy-prompt-r<N>.txt`, `claude-prompt-r<N>.txt`): the bytes a leg actually reviews must sit
-  inside the census (adopt-gate r1: bodies built after capture left two
-  legs' real input uncensused while verify still passed). The `prepare`
+  inside the census. The `prepare`
   subcommand (§ Deterministic round preparation) guarantees this by
   construction — it writes every input and THEN captures; a hand-built
   round owes the same order manually. `verify` mechanically FAILS on any
@@ -660,13 +621,13 @@ platform branch; run on macOS so far, not yet on Ubuntu 24.04):
   `claude-r*.json`, `*-verdict.json` — plus, on a v2 round, everything under
   the `results-r<N>/` TOP-LEVEL DIRECTORY and the basename `collect-r<N>.json`
   (§ Per-entry results tree), plus, for the v1 fourth leg, the
-  explicit shape rule `_is_x_leg_output`, and, since 0.35.0, the agy hook log
+  explicit shape rule `_is_x_leg_output`, and the agy hook log
   `agy-hook-r<N>.jsonl` (`_is_hook_log_output`: the hook appends to it while an
   agy-family leg runs; same basename rule — `agy-hook-r1/notes.jsonl` and
   `agy-hook-r1.txt` stay uncovered). That rule is a REGEX on the
-  basename, not a glob (CFR 0.29.2 gate r2): the globs are `fnmatchcase`d
+  basename, not a glob: the globs are `fnmatchcase`d
   against the whole POSIX RELPATH, where `*` also spans `/`, so an X glob such
-  as `x-*-r[0-9]*-raw.json` still exempted `x-fixtures-r1/notes-raw.json` and
+  as `x-*-r[0-9]*-raw.json` would exempt `x-fixtures-r1/notes-raw.json` and
   `x-c-r1-notes-raw.json`. An X output must therefore contain NO `/` (it lives
   directly in the packet dir) and its basename must fullmatch
   `x-<lowercase-alnum>[-part]…-r<N>[-attempt<K>]` followed by
@@ -674,25 +635,22 @@ platform branch; run on macOS so far, not yet on Ubuntu 24.04):
   Route every leg's redirected
   stdout/stderr and verdict to those shapes when BUILDING the dispatch
   command — e.g. `codex-r<N>-verdict.json` + `codex-r<N>.err`, never
-  `codex-stderr-r<N>.txt` (observed 2026-08-27, P4 entry gate r1: a
-  stderr redirect named outside the globs made `verify` report an
-  uncovered non-output file; a rename recovered it, but naming outputs
-  correctly at dispatch time avoids touching the packet dir after
-  capture at all). The globs are SUFFIX matches — a verdict name must
+  `codex-stderr-r<N>.txt` (a stderr redirect named outside the globs makes
+  `verify` report an uncovered non-output file; naming outputs correctly at
+  dispatch time avoids touching the packet dir after capture at all). The globs are SUFFIX matches — a verdict name must
   END in `-verdict.json`, so the round goes BEFORE `-verdict`
   (`<leg>-r<N>-verdict.json`). The plausible inversion
   `<leg>-verdict-r<N>.json` carries the round yet matches NO glob and
-  fails `verify` the same way (observed 2026-08-27, P4-A merge gate r1:
-  both wrapper verdicts named inverted; rename recovered).
-- The round-invariant rule covers INPUTS too (adopt-gate r3 Minor): a
+  fails `verify` the same way.
+- The round-invariant rule covers INPUTS too: a
   censused file that CHANGES per round must carry the round in its
   NAME — the digest record is `digest-r<N>.txt`, one per round, written
   pre-capture and immutable after. An APPENDED round-invariant file
-  (the old single `digest.txt`) silently breaks RE-verification of
+  (a single shared `digest.txt`) silently breaks RE-verification of
   every EARLIER round's census: each append changes the bytes that an
   older snapshot froze, so `verify` of a closed round reports "round
-  evidence changed" on an unmutated packet. SCOPE THE BENEFIT HONESTLY
-  (adopt-gate r4, codex+claude convergence): per-round naming fixes the
+  evidence changed" on an unmutated packet. SCOPE THE BENEFIT HONESTLY:
+  per-round naming fixes the
   BYTE-MUTATION half only — the censused bytes of a closed round stay
   immutable and independently recomputable — but a FULL `verify` of a
   CLOSED round is UNSUPPORTED in the reused-dir model: the NEXT round's
@@ -714,29 +672,27 @@ platform branch; run on macOS so far, not yet on Ubuntu 24.04):
   name, never in the packet dir; on a v2 round it is `raw.json` inside the
   entry's attempt dir, which the `results-r<N>/` directory rule already
   exempts (`references/leg-contracts.md` § claude leg, RAW-STAGING RULE
-  0.28.5 + its v2 raw-path note).
+  + its v2 raw-path note).
 - (LEGACY v1 rounds.) A leg OUTPUT whose NAME is round-invariant — the v1 agy read-audit
   literal `agy-read-audit.json` — must be PRESERVED-AND-CLEARED to its
   round-suffixed name BEFORE the next round's capture
   (`references/leg-contracts.md` § agy leg, Read-audit binding): a
   censused copy that a later dispatch rewrites is a guaranteed false
-  "round evidence changed" on an unmutated tree (adopt-gate r2
-  must-fix). MECHANIZED since 2026-08-11: both `prepare` and `capture`
+  "round evidence changed" on an unmutated tree. Both `prepare` and `capture`
   auto-rename it to the suffix of the round that PRODUCED it — the
   latest captured `.snapshot-r<K>.json`, never label-minus-one, so an
   operator label skip cannot stamp false provenance — and fail loud on
   an unparseable label, a leftover with no captured round to attribute
-  it to, or a rename-target collision; the manual `mv` is now the
-  fallback for hand-built rounds only (the leader did it by hand 7x in
-  one gate; one slip = a deterministic false round-INVALID). Per-leg
+  it to, or a rename-target collision; the manual `mv` is the
+  fallback for hand-built rounds only (one slip = a deterministic false
+  round-INVALID). Per-leg
   consolidation artifacts avoid the same trap by
   carrying the round in their name (`<leg>-r<N>-verdict.json`,
   `references/triage.md`).
 - **(LEGACY v1 rounds only — a `--v2` `retry` allocates attempt K+1 under
   `results-r<N>/` and its artifacts are never renamed or moved.)** **A
   RE-DISPATCHED leg's earlier attempt is renamed into the allowlist,
-  never left under a free-form name** (observed 2026-09-05, P6 entry-plan
-  gate r2: `verify` refused `agy-read-audit-r2-attempt1.json`). Before the
+  never left under a free-form name**. Before the
   retry, rename attempt K's artifacts to `<leg>-r<N>-attempt<K>.err`,
   `<leg>-r<N>-attempt<K>-read-audit.json`, and
   `<leg>-r<N>-attempt<K>-verdict.json` (a claude X leg's staged reply:
@@ -746,11 +702,11 @@ platform branch; run on macOS so far, not yet on Ubuntu 24.04):
   the round's evidence keeps both attempts without tripping the
   uncovered-file refusal.
 - **NEVER hand-move `agy-read-audit.json`** (v1) — `prepare` and `capture`
-  auto-rename it to its producing round's suffix (mechanized 2026-08-11), so
+  auto-rename it to its producing round's suffix, so
   a manual `cp`/`mv` is at best redundant and at worst destructive. Above
   all, never CHAIN such a file operation before a dispatch (`mv … && …
-  wrapper`): the codex r2 launch of the 2026-09-05 P6 gate never happened
-  because the chained hand-move failed first. The helper owns the packet
+  wrapper`): when the chained hand-move fails first, the dispatch never
+  launches. The helper owns the packet
   dir. The same rule covers the X-leg artifacts: `<name>-prompt-r<N>.txt` /
   `<name>-body-r<N>.txt` and `.x-legs-r<N>.json` are ROUND EVIDENCE (written
   before capture, censused with the standing inputs) — never hand-remove them,
@@ -779,6 +735,4 @@ platform branch; run on macOS so far, not yet on Ubuntu 24.04):
   NOTHING between `prepare` and the round's final `verify` —
   consolidation-ledger writes go BEFORE `prepare` (pre-capture) or AFTER
   `verify`, never between. A ledger edit during the frozen round mutates the worktree
-  fingerprint and INVALIDATES an otherwise-clean round (observed
-  2026-08-27, P4-A2 merge gate r3: the leader wrote consolidation rows
-  mid-round; the focused pass was discarded and re-run as r4).
+  fingerprint and INVALIDATES an otherwise-clean round.

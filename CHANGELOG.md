@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.974 — 2026-09-26
+## 0.2.979 — 2026-09-27
 
 **Cross-family review 0.31.0 — advisory X legs are configured in a
 JSON file, not a shell variable.** `review_scratch.py prepare` now
