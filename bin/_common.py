@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -3743,7 +3744,30 @@ def run_cli_with_retry(
 # ephemeral per the Claude Code plugin docs).
 _LOG_DIR = Path(os.environ.get("TRIAD_DISPATCH_LOG_DIR")
                 or Path(__file__).resolve().parent / "_logs")
-_DEBUG_DIR = Path(__file__).resolve().parent / "_debug"
+
+
+def _debug_dir_from_env() -> Path:
+    """TRIAD_DEBUG_DIR overrides the --debug markdown root (the sibling of
+    TRIAD_DISPATCH_LOG_DIR; day dirs, rows and their expiry all move with it).
+    Absolute paths only: empty -> the wrapper-adjacent _debug/; a relative
+    value -> one note + that default (a cwd-relative dump dir would scatter);
+    a value resolving to the filesystem root -> one note + that default."""
+    default = Path(__file__).resolve().parent / "_debug"
+    raw = os.environ.get("TRIAD_DEBUG_DIR", "")
+    if not raw:
+        return default
+    if not os.path.isabs(raw):
+        log(f"[wrapper] debug: ignoring relative TRIAD_DEBUG_DIR {raw!r} "
+            f"(absolute path only); using {default}")
+        return default
+    if os.path.realpath(raw) == os.path.realpath(os.sep):
+        log(f"[wrapper] debug: ignoring TRIAD_DEBUG_DIR {raw!r} "
+            f"(the filesystem root); using {default}")
+        return default
+    return Path(raw)
+
+
+_DEBUG_DIR = _debug_dir_from_env()
 
 
 def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
@@ -5027,6 +5051,11 @@ def prune_stale_tmp_dirs(
 # Audit.jsonl remains the SoT for full data; debug.md is a sample-grade
 # human aid for live triage (cat / glow / bat).
 _DEBUG_CELL_LIMIT = 200
+# Day-dir retention: `_debug/<YYYY-MM-DD>/` dirs older than this many days are
+# removed after a write (`_prune_debug_days`). Env override
+# `TRIAD_DEBUG_MAX_AGE_DAYS` (1-3650; anything else -> note + this default).
+_DEBUG_MAX_AGE_DAYS = 30
+_DEBUG_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _debug_cell(s: str, n: int = _DEBUG_CELL_LIMIT) -> str:
@@ -5034,6 +5063,12 @@ def _debug_cell(s: str, n: int = _DEBUG_CELL_LIMIT) -> str:
     truncated = len(s) > n
     s = s[:n].replace("\r", "").replace("|", "\\|").replace("\n", "<br>")
     return s + ("…" if truncated else "")
+
+
+def _debug_header(cli: str, day: str) -> str:
+    """The first line `debug_log` writes into `<day>/<cli>.md` — and the
+    allocation record `_debug_day_owned` reads back (one literal, both sides)."""
+    return f"# {cli} debug log — {day} (UTC)"
 
 
 def debug_log(cli: str, prompt: str, result: RunResult) -> None:
@@ -5066,7 +5101,7 @@ def debug_log(cli: str, prompt: str, result: RunResult) -> None:
             # 2026-05-03 fault test exposed: parallel writers all saw
             # tell()==0 and emitted duplicate headers.
             if os.fstat(f.fileno()).st_size == 0:
-                f.write(f"# {cli} debug log — {today} (UTC)\n\n")
+                f.write(f"{_debug_header(cli, today)}\n\n")
                 f.write("| time | request | exitcode | stderr | stdout |\n")
                 f.write("|---|---|---|---|---|\n")
             ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -5091,3 +5126,157 @@ def debug_log(cli: str, prompt: str, result: RunResult) -> None:
                 fcntl.flock(f, fcntl.LOCK_UN)
             except Exception:
                 pass
+    _prune_debug_days(today)
+
+
+def _debug_max_age_days() -> int:
+    raw = os.environ.get("TRIAD_DEBUG_MAX_AGE_DAYS", "")
+    if not raw:
+        return _DEBUG_MAX_AGE_DAYS
+    try:
+        days = int(raw)
+    except ValueError:
+        days = 0
+    if days < 1 or days > 3650:
+        log(f"[wrapper] debug: ignoring invalid TRIAD_DEBUG_MAX_AGE_DAYS "
+            f"{raw!r} (valid: 1-3650 days); using {_DEBUG_MAX_AGE_DAYS}")
+        return _DEBUG_MAX_AGE_DAYS
+    return days
+
+
+def _debug_day_records(d: Path) -> list[str]:
+    """Names of the REGULAR `<stem>.md` files in day dir `d` whose first line
+    is `debug_log`'s own header naming that day (`_debug_header(<stem>,
+    <d.name>)`) — the dir's allocation records. The record is the header,
+    never the name shape; a symlinked `.md` never counts. Reads at most 200
+    bytes per file. A `.md` that vanishes mid-read is not a record. Raises
+    OSError when the dir or a `.md` in it cannot be read."""
+    with os.scandir(d) as it:
+        entries = [e for e in it if e.name.endswith(".md")]
+    records: list[str] = []
+    for e in entries:
+        if not e.is_file(follow_symlinks=False):
+            continue
+        want = _debug_header(e.name[:-3], d.name).encode("utf-8")
+        try:
+            fd = os.open(e.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                head = os.read(fd, 200)
+            finally:
+                os.close(fd)
+        except FileNotFoundError:
+            continue  # gone mid-read (a concurrent sweep): not a record
+        if head.split(b"\n", 1)[0] == want:
+            records.append(e.name)
+    return records
+
+
+def _debug_day_owned(d: Path) -> bool:
+    """True when day dir `d` holds at least one allocation record
+    (`_debug_day_records`). Raises OSError as that does."""
+    return bool(_debug_day_records(d))
+
+
+def _remove_debug_day(d: Path) -> bool:
+    """Remove owned day dir `d` with its allocation records LAST: every other
+    entry, then the records, then the dir. A failed removal therefore leaves
+    the records in place, so the residue stays owned (the caller restores the
+    dir's mtime, so the very next sweep retries it); an interruption between
+    the records and the rmdir leaves an EMPTY dir, which the caller's
+    empty-dir rule removes. Per-entry errors are absorbed; True only when `d`
+    is gone. Raises OSError when `d` cannot be listed."""
+    records = set(_debug_day_records(d))
+    with os.scandir(d) as it:
+        entries = [(e.name, e.path, e.is_dir(follow_symlinks=False))
+                   for e in it if e.name not in records]
+    for _name, path, is_dir in entries:
+        if is_dir:
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    with os.scandir(d) as it:
+        if any(e.name not in records for e in it):
+            return False
+    for name in records:
+        try:
+            os.unlink(d / name)
+        except OSError:
+            pass
+    try:
+        os.rmdir(d)
+    except OSError:
+        pass
+    return not os.path.lexists(d)
+
+
+def _prune_debug_days(today: str) -> None:
+    """Expire `_debug/<YYYY-MM-DD>/` day dirs older than the age floor.
+
+    Runs after `debug_log` has written and released its lock. Candidates are
+    DIRECTORIES (never symlinks, never followed) whose name is date-shaped,
+    which are not `today`'s dir, and whose mtime is older than the floor —
+    the floor, not the name, decides the age — and which `debug_log` provably
+    wrote (`_debug_day_owned`); an old date dir without that header is skipped
+    and counted — except an EMPTY one, which `os.rmdir` removes (it can only
+    remove an empty dir, so nothing is lost). Removal takes the header
+    records LAST (`_remove_debug_day`); a failed removal restores the dir's
+    pre-attempt mtime so the next sweep retries it at once. A candidate that
+    no longer exists is skipped (neither removed nor failed).
+    Best-effort: nothing here ever raises into the caller; one stderr note
+    each for removed, skipped and unremovable dirs (a candidate still present
+    after the removal, or an OSError on its lstat/read while it still exists),
+    and one note naming the exception class when the sweep itself fails.
+    """
+    try:
+        days = _debug_max_age_days()
+        cutoff = time.time() - days * 86400
+        removed = 0
+        unowned: list[str] = []
+        failed: list[str] = []
+        for d in _DEBUG_DIR.iterdir():
+            try:
+                if d.name == today or not _DEBUG_DAY_RE.fullmatch(d.name):
+                    continue
+                st = d.lstat()
+                if not stat.S_ISDIR(st.st_mode) or st.st_mtime >= cutoff:
+                    continue
+                if not _debug_day_owned(d):
+                    try:
+                        os.rmdir(d)  # EMPTY: rmdir removes only an empty dir
+                        removed += 1
+                    except OSError:
+                        if os.path.lexists(d):
+                            unowned.append(d.name)
+                    continue
+                if _remove_debug_day(d):
+                    removed += 1
+                elif os.path.lexists(d):
+                    failed.append(d.name)
+                    try:  # keep it a candidate for the very next sweep
+                        os.utime(d, ns=(st.st_atime_ns, st.st_mtime_ns),
+                                 follow_symlinks=False)
+                    except OSError:
+                        pass
+            except OSError:
+                # a candidate that vanished (a concurrent sweep took it) is
+                # neither removed nor failed — skip it
+                if os.path.lexists(d):
+                    failed.append(d.name)
+        if removed:
+            log(f"[wrapper] debug: removed {removed} day dir(s) older than "
+                f"{days} days")
+        if unowned:
+            log(f"[wrapper] debug: skipped {len(unowned)} unowned day dir(s) "
+                f"(no debug header; e.g. {sorted(unowned)[0]})")
+        if failed:
+            log(f"[wrapper] debug: could not remove {len(failed)} day dir(s) "
+                f"(e.g. {sorted(failed)[0]})")
+    except Exception as e:  # noqa: BLE001 - retention is best-effort
+        # the debug row is already written; name the class, never a traceback
+        try:
+            log(f"[wrapper] debug: day-dir expiry skipped ({type(e).__name__})")
+        except Exception:  # noqa: BLE001 - never raise into debug_log
+            pass

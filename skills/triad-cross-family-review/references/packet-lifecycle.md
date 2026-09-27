@@ -48,12 +48,20 @@ exported installs.
   date-dir WITHOUT a regular `.active` file is unmanaged: it is skipped with a
   note and never deleted (the wrong-root fence). `open` is create-NEW-only — a
   same-day duplicate slug is refused loud rather than silently shared.
+  The same stale sweep also runs after every successful `close`, over the
+  closed packet's root. The root holds packet dirs and nothing else: the
+  helper deletes only what it owns, so a file parked at the root is never
+  touched — the leader keeps its own scratch (brief drafts, round scripts,
+  digests) outside `_runs/review/`, in the session scratchpad.
   `<abs-root>` = the ABSOLUTE `<repo>/_runs/review` path (canonicalized; the
   final component must not be a symlink).
-- `… touch <abs-dir>` when a fix→re-confirm loop spans days, so an ACTIVE loop's
-  heartbeat outlives the floor.
+- `… touch <abs-dir>` when a fix→re-confirm loop spans days with no
+  `prepare` / `capture` / `verify` inside the floor, so an ACTIVE loop's
+  heartbeat outlives it — those three refresh the heartbeat themselves, after
+  their input checks: an invocation refused on its label or its worktree /
+  source argument does not refresh it.
 - `… close <abs-dir>` at review end — the primary cleanup path. The
-  prune-at-next-open is only the crash backstop. Close first REPORTS whether
+  prune at the next `open` or `close` is only the crash backstop. Close first REPORTS whether
   the highest captured round carries a `.verified-r<N>.json` — a WARNING when
   it does not (the owner-ruled disposition is to proceed), never a
   refusal — then writes a `.claim` ownership record inside the dir, renames it
@@ -61,25 +69,27 @@ exported installs.
   absent) dir is a NO-OP at rc 0 with every shape check still run (C7): the
   first one already deleted it, so a repeat must not look like a failure.
 - **Deletion follows a CLAIM RECORD, never a name shape (C4/C5).** A
-  `<name>.pruning` directory is reclaimed by a later `open` only when
+  `<name>.pruning` directory is reclaimed by a later `open` or `close` sweep only when
   `<name>.pruning/.claim` PROVES this helper claimed THAT directory: a
   regular non-symlink file under 4096 bytes, parsing as a JSON object,
   carrying the provenance magic, and naming an `original` equal to the
   directory's own name minus the suffix. A foreign tree that merely wears the
   suffix, a record copied from another dir, or a symlinked record is NOT ours
   and is preserved and reported. Disposal removes the `.claim` LAST, so an
-  interrupted disposal always leaves either nothing or residue WITH the proof
-  that resumes it.
+  interrupted disposal leaves nothing, residue WITH the proof that resumes
+  it, or an EMPTY `<name>.pruning` dir — which the sweep removes with
+  `rmdir` (it can only remove an empty dir) once it is older than the floor;
+  a fresher one is reported and left.
 
 Symlinks are refused (root and children), non-date-prefixed entries and plain
 files are never touched, and the root is always an explicit absolute path (never
 cwd-derived). EVERY ownership-checked operation — the `close`/prune deletions and
-the `touch` heartbeat refresh alike — operates ONLY on dirs carrying the helper's
+the heartbeat refresh (`touch` / `prepare` / `capture` / `verify`) alike — operates ONLY on dirs carrying the helper's
 `.active` ownership marker WITH its provenance magic inside; a foreign file that
 merely happens to be named `.active` never qualifies. An arbitrary date-named dir
 is skipped or refused rather than rmtree'd, so even a typo'd root cannot reap
 foreign directories. A deliberately KEPT record dir retains `.active` and is
-pruned by a later `open` once its heartbeat passes the floor, so keep long-term
+pruned by a later `open` or `close` once its heartbeat passes the floor, so keep long-term
 records outside the packet root.
 
 Packet `close` DELETES the dir, so copy the residual table to its durable record

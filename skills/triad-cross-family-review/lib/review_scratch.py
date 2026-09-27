@@ -22,7 +22,9 @@ Subcommands (absolute paths only):
                              proceed), then claims the dir with a `.claim`
                              ownership record before deleting it. A SECOND
                              close of the same (now absent) dir is a no-op,
-                             rc 0 — every shape check still runs.
+                             rc 0 — every shape check still runs. A close
+                             that deleted its dir then runs the stale sweep
+                             over the root (best-effort).
     capture <abs-packet-dir> <abs-worktree-root> <label>
                              snapshot a round's evidence: sha256 census of
                              the packet dir + canonical worktree fingerprint,
@@ -100,22 +102,27 @@ Subcommands (absolute paths only):
                              mirrored to stderr, and a gemini fourth leg WITH
                              an effort field adds its effort NOTE.
 
-Prune rules (applied only during `open`, only to DIRECT children of the
-explicit root, only to DATE-PREFIXED (YYYY-MM-DD-...) real directories that
-CARRY the helper's `.active` ownership marker):
+Prune rules (applied during `open` and after a successful `close`, only to
+DIRECT children of the explicit root, only to DATE-PREFIXED (YYYY-MM-DD-...)
+real directories that CARRY the helper's `.active` ownership marker, or that
+wear the helper-reserved `.pruning` suffix under its own rule below):
     - stale when the `.active` heartbeat mtime is older than the floor (a
-      crashed loop stops refreshing it; a normally-closed dir was deleted
-      whole by `close`, so every helper-managed dir carries the marker).
-    - `.active` absent -> NOT helper-managed -> skipped with a note, never
-      deleted. This makes every deletion in this file ownership-fenced: a
-      typo'd root cannot reap foreign date-named directories. TWO bounded
-      self-healing exceptions: an EMPTY unmanaged date-dir is os.rmdir'd
-      (an open-crash shell; rmdir can only ever remove an empty dir, never
-      content), and a `<name>.pruning` dir (the helper-reserved claim
-      suffix) is reclaimed — it passed the fence when a prior prune/close
-      renamed it and its deletion failed partway.
+      crashed loop stops refreshing it; `touch`, `prepare`, `capture` and
+      `verify` refresh it; a normally-closed dir was deleted whole by
+      `close`, so every helper-managed dir carries the marker).
+    - `.active` absent on any other name -> NOT helper-managed -> skipped
+      with a note, never deleted: a typo'd root cannot reap foreign
+      date-named directories. An empty unmanaged date dir is reported and
+      left.
+    - a `<name>.pruning` dir (the helper-reserved claim suffix) is reclaimed
+      only when it carries the `.claim` record a prior prune/close wrote
+      before renaming it; an empty unclaimed `<name>.pruning` residue older
+      than the floor is removed by `rmdir`, which can only remove an empty
+      directory (owner ruling 2026-09-27, spec R-CLEANUP amendment). Any
+      other unclaimed one is reported and left.
     - symlinks are refused (never followed, never deleted); non-date names
-      and plain files are never touched.
+      and plain files are never touched. `close` runs the same sweep after it
+      has deleted its own dir.
 
 Floor: TRIAD_REVIEW_SCRATCH_MAX_AGE_DAYS (default 7).
 
@@ -197,7 +204,7 @@ _DEFAULT_FLOOR_DAYS = 7
 _MARKER_MAGIC = b"review_scratch/1\n"
 # Helper-reserved suffix: a stale dir is atomically RENAMED to <name>.pruning
 # before rmtree; a partially-failed deletion is therefore reclaimed by the
-# next open regardless of its (possibly already-deleted) marker.
+# next open or close regardless of its (possibly already-deleted) marker.
 _PRUNING_SUFFIX = ".pruning"
 # The round's git worktree — the REVIEWED TREE the legs read, at
 # <packet-dir>/wt-r<N>. It is NOT packet evidence, and `_packet_relpaths` skips
@@ -696,13 +703,15 @@ def _is_managed_marker(heartbeat: Path) -> bool:
         return False  # unreadable — never treat as owned
 
 
-# The CLAIM RECORD (spec cases C4/C5, rule R-CLEANUP, 2026-09-21). Deletion
-# had two name-shaped holes: the `*.pruning` reclaim fired on the NAME alone,
-# and an EMPTY unmanaged date dir was rmdir'd. R-CLEANUP admits neither —
-# "ownership is proven by an allocation record or marker, never by a name
-# shape; an empty directory ... can still be foreign". So the claim step that
-# precedes every rename now WRITES its proof INSIDE the directory it is about
-# to take, and the reclaim reads that proof back. Same provenance magic as the
+# The CLAIM RECORD (spec cases C4/C5, rule R-CLEANUP). "Ownership is proven by
+# an allocation record or marker, never by a name shape; an empty directory ...
+# can still be foreign": the `*.pruning` reclaim never fires on the NAME, and an
+# empty unmanaged date dir is reported and left. The claim step that precedes
+# every rename WRITES its proof INSIDE the directory it is about to take, and
+# the reclaim reads that proof back. The one empty-directory removal: an empty
+# unclaimed `<name>.pruning` residue older than the floor is removed by
+# `rmdir`, which can only remove an empty directory (owner ruling 2026-09-27,
+# spec R-CLEANUP amendment). Same provenance magic as the
 # `.active` marker (derived from it, never a second literal), same bounded
 # BINARY read, same never-follow rule.
 _CLAIM_FILENAME = ".claim"
@@ -776,10 +785,11 @@ def _dispose_claimed_dir(claimed: Path) -> bool:
     in readdir order, so an interrupted disposal could take the claim record
     with it and leave the residue UNPROVABLE — the next `open` would then have
     to preserve it forever. Removing the proof last means an interrupted
-    disposal always leaves either nothing, or residue WITH the proof that
-    resumes it. Best-effort throughout (this runs inside `open`'s prune and
-    inside `close`): every per-entry failure is absorbed and reported by the
-    caller's existing `claim.exists()` arm."""
+    disposal leaves nothing, or residue WITH the proof that resumes it — or,
+    killed between the two, an EMPTY dir that `_prune_stale` removes with
+    `rmdir` once it is older than the floor. Best-effort throughout (this
+    runs inside `open`'s prune and inside `close`): every per-entry failure is
+    absorbed and reported by the caller's existing `claim.exists()` arm."""
     try:
         entries = list(claimed.iterdir())
     except OSError:
@@ -843,19 +853,29 @@ def _prune_stale(root: Path, keep: Path, now: datetime, floor_days: int) -> None
         if not _DATE_PREFIX_RE.match(child.name):
             continue
         if child.name.endswith(_PRUNING_SUFFIX):
-            # A prior claimed-but-failed deletion (round-4 failure atomicity):
-            # the dir passed the ownership fence WHEN it was claimed/renamed
-            # (open refuses *.pruning slugs, so no live packet can wear this
-            # name), so reclaim it even though its `.active` marker may
-            # already be gone.
+            # A claimed-but-unfinished deletion: the dir passed the ownership
+            # fence when it was claimed and renamed (open refuses *.pruning
+            # slugs, so no live packet can wear this name), so it is reclaimed
+            # even though its `.active` marker may already be gone.
             #
-            # The NAME is not the proof (C4/C5, R-CLEANUP): before this fence
-            # any date-prefixed directory a foreign tool happened to leave
-            # under `<date>-<slug>.pruning` was rmtree'd by the next `open`.
-            # The proof is the CLAIM RECORD the claim step writes inside the
-            # directory; without a valid one this loop observes and preserves,
-            # exactly like every other residue it cannot name as its own.
+            # The NAME is not the proof (C4/C5, R-CLEANUP): the proof is the
+            # CLAIM RECORD the claim step writes inside the directory. Without
+            # a valid one this loop observes and preserves, exactly like every
+            # other residue it cannot name as its own.
             if not _claim_proves_ownership(child):
+                # One exception: an EMPTY unclaimed residue OLDER than the
+                # floor (a disposal that removed the claim and died before its
+                # rmdir) is removed by `rmdir`, which can only remove an empty
+                # directory (owner ruling 2026-09-27, spec R-CLEANUP
+                # amendment). A fresh or non-empty one -> refused.
+                try:
+                    if child.lstat().st_mtime < cutoff_ts:
+                        child.rmdir()
+                        print(f"review_scratch: removed empty residue "
+                              f"{child.name}", file=sys.stderr)
+                        continue
+                except OSError:
+                    pass
                 print(f"review_scratch: foreign or unclaimed *.pruning dir "
                       f"observed, NOTHING deleted: {child.name}. Observed: "
                       f"{_observe_entry(child, None)}. {_RECOVERY_POINTER}",
@@ -864,7 +884,7 @@ def _prune_stale(root: Path, keep: Path, now: datetime, floor_days: int) -> None
             _dispose_claimed_dir(child)
             if child.exists():
                 print(f"review_scratch: reclaim FAILED for {child.name} "
-                      f"(left for the next open)", file=sys.stderr)
+                      f"(left for the next open or close)", file=sys.stderr)
             else:
                 print(f"review_scratch: reclaimed {child.name}",
                       file=sys.stderr)
@@ -877,14 +897,13 @@ def _prune_stale(root: Path, keep: Path, now: datetime, floor_days: int) -> None
             # is NOT ours: a typo'd root must never reap foreign date-named
             # directories.
             #
-            # The EMPTY-dir exception is GONE (C4, R-CLEANUP 2026-09-21): an
-            # `os.rmdir` can only delete an empty shell, but "empty" is not
-            # ownership either — "an empty directory ... can still be
-            # foreign", and the round-4 open-crash residue it self-healed
-            # (mkdir landed, the marker mint did not) is a same-day slug
-            # collision an operator resolves in one command. Both shapes are
-            # now REPORTED and left alone; only the wording differs, so the
-            # operator can see which one they have.
+            # An EMPTY unmanaged date dir is reported and left, like a
+            # non-empty one (C4, R-CLEANUP): "empty" is not ownership — "an
+            # empty directory ... can still be foreign" — and an open-crash
+            # shell (mkdir landed, the marker mint did not) is a same-day slug
+            # collision an operator resolves in one command. Only the wording
+            # differs, so the operator can see which one they have. The one
+            # empty-directory removal is the `.pruning` branch above.
             try:
                 empty = not any(child.iterdir())
             except OSError:
@@ -1016,7 +1035,7 @@ def _prune_stale(root: Path, keep: Path, now: datetime, floor_days: int) -> None
             _dispose_claimed_dir(claim)
             if claim.exists():
                 print(f"review_scratch: prune FAILED for {child.name} "
-                      f"(left for the next open)", file=sys.stderr)
+                      f"(left for the next open or close)", file=sys.stderr)
             else:
                 print(f"review_scratch: pruned stale {child.name}",
                       file=sys.stderr)
@@ -1081,14 +1100,35 @@ def cmd_open(root_arg: str, slug: str) -> None:
     print(target)
 
 
+def _refresh_heartbeat(path: Path) -> None:
+    """Refresh the `.active` heartbeat mtime of an ownership-checked packet.
+
+    `touch` calls it after its ownership check; `prepare` calls it after
+    every refusal, right before its first write; `capture` and `verify` call
+    it after the checks on the label and the worktree argument. A packet in
+    active use never looks stale to a sibling `open`/`close` sweep however
+    many days its gate spans, and an invocation refused on its label or its
+    worktree / source argument never refreshes it. `verify` and `capture` can
+    still refuse AFTER the refresh on the packet's own state (no delivery
+    record or snapshot for the label, a snapshot taken for another worktree,
+    a label without a round number beside a round-invariant output)."""
+    marker = path / ".active"
+    try:
+        # refresh-only: utime on the EXISTING regular marker — a refresh must
+        # never mint ownership (the marker vanished mid-call) and never follow
+        # a link swapped in after the ownership check.
+        if not stat.S_ISREG(os.lstat(marker).st_mode):
+            _fail("packet heartbeat could not be refreshed (not a regular "
+                  "file) — a refresh never mints ownership")
+        os.utime(marker, follow_symlinks=False)
+    except OSError as e:
+        _fail(f"packet heartbeat could not be refreshed ({type(e).__name__}) "
+              f"— a refresh never mints ownership")
+
+
 def cmd_touch(dir_arg: str) -> None:
     path = _require_date_dir(_require_abs(dir_arg, "dir"), "dir")
-    try:
-        # refresh-only (round-3): utime on the EXISTING marker — touch must
-        # never mint ownership, even if the marker vanishes mid-call.
-        os.utime(path / ".active")
-    except FileNotFoundError:
-        _fail("heartbeat vanished mid-refresh — touch never mints ownership")
+    _refresh_heartbeat(path)
 
 
 def _verified_record(packet_dir: Path, round_no: int):
@@ -1319,7 +1359,7 @@ def cmd_close(dir_arg: str) -> None:
     # claim-then-delete (round-4 failure atomicity, same mechanism as the
     # prune): a partially-failed rmtree would otherwise strip `.active` and
     # leave a dir the fence refuses forever; a claimed `.pruning` dir is
-    # reclaimed by the next open. The claim RECORD is written first (C4/C5):
+    # reclaimed by the next open or close. The claim RECORD is written first (C4/C5):
     # the suffix alone no longer authorizes that reclaim, so a close that
     # cannot record its claim must not delete — it would leave residue no
     # `open` may ever touch.
@@ -1336,8 +1376,18 @@ def cmd_close(dir_arg: str) -> None:
     _dispose_claimed_dir(claim)
     if claim.exists():
         _fail(f"close left partial state at {claim.name} — the next open "
-              f"reclaims it")
+              f"or close reclaims it")
     print(f"review_scratch: closed {path.name}", file=sys.stderr)
+    # The same stale sweep `open` runs, over the closed packet's root, so a
+    # close also reclaims stale sibling packets (never anything else).
+    # Best-effort: the close has already succeeded, so a sweep failure is a
+    # note, never an exit status.
+    try:
+        _prune_stale(path.parent, keep=path, now=datetime.now(timezone.utc),
+                     floor_days=_floor_days())
+    except Exception as e:  # noqa: BLE001 - best-effort sweep
+        print(f"review_scratch: post-close sweep skipped ({e})",
+              file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -2175,6 +2225,7 @@ def cmd_capture(packet_arg: str, worktree_arg: str, label: str) -> None:
         _fail(f"label {label!r} already captured at {snapshot_path.name} — "
               f"one label = one round; a re-capture is a FRESH label")
     worktree = _require_worktree_toplevel(worktree_arg)
+    _refresh_heartbeat(packet_dir)
 
     # AFTER every doomed-call check, BEFORE the census: a round-invariant
     # leg output still on disk from the prior round must move to its
@@ -2381,6 +2432,7 @@ def cmd_verify(packet_arg: str, worktree_arg: str, label: str) -> None:
     if not (snapshot_file.is_symlink() or snapshot_file.exists()):
         _require_label(label)
     worktree = _require_worktree_toplevel(worktree_arg)
+    _refresh_heartbeat(packet_dir)
 
     # TWO round trees is never a valid round (r8 X11): `_packet_relpaths` skips
     # every top-level `wt-r<N>` directory, so a stray one is invisible to the
@@ -5712,6 +5764,7 @@ def cmd_prepare(packet_arg: str, worktree_arg: str, label: str,
         # a refusal that is a deterministic property of the INSTALL belongs
         # on this side of the first mutation.
         v2_basis = _v2_basis_digests()
+    _refresh_heartbeat(packet_dir)
     _preserve_round_invariants(packet_dir, label)
     if outgoing is not None:
         _worktree_remove(source, outgoing, packet_dir)
