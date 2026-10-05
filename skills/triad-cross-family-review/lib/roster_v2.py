@@ -17,8 +17,17 @@ Rules this file implements (shared spec `reference/review-rules.md`):
     resolution: explicit pin, else agy if installed, else gemini, else skip and
     log. The resolved route is frozen for the attempt; a started leg never
     switches route, and "neither installed" is never agreement.
-  * D-9 — a REVIEW leg has no web on any family: the codex argv never carries
-    `--search`, the agy argv never carries `--web`.
+  * R-REVIEW-WEB (case C32) — the round's BOUND `review_web_authorized`
+    (`DispatchCtx.review_web_authorized`) decides each route's launch switch:
+    true adds codex `--search`, agy / gemini `--review-web` and the claude
+    preset's web twin (`CLAUDE_WEB_TWINS`); false keeps the no-web argv and
+    dispatches a directly named web preset as its no-web base preset. The
+    claude leg selects only a preset this host ships, and every shipped
+    preset has a twin, so no claude leg runs as a silent no-web leg. The agy
+    argv never carries the investigation `--web` (R-INVEST).
+  * R-BIND — every wrapper dispatch's env names the attempt's own run-log
+    namespace (`TRIAD_REVIEW_LOG_DIR=<attempt>/logs`); the wrapper's run-log
+    there is the receipt of the argv it ran with, compared by `collect_v2`.
   * PRD "Configuration and dispatch" — merge objects field by field, replace
     scalars and arrays; reject duplicate names, unknown properties, invalid
     vendor blocks and unresolved placeholders; validate the COMPLETE resolved
@@ -48,6 +57,7 @@ must never have its binary probe redirected by a stray environment variable.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -139,23 +149,28 @@ GOOGLE_SKIP_NONE = ("no Google CLI installed — skip and log (R-GOOGLE); "
 # operator's half-edited slug ("pro-<slug>-high") would otherwise reach the
 # vendor as a literal model name.
 PLACEHOLDER_RE = re.compile(r"<[^<>\n]+>")
-# A claude entry names its reviewer agent explicitly: `subagent_type: None`
-# would spawn the layout default, i.e. the GATING reviewer, under an advisory
-# leg's name.
-#
-# EXACTLY ONE `<scope>:<agent>` scope is representable (gate-1 r4 row r4-1),
-# mirroring the v1 X-leg rule (`review_scratch._X_LEG_AGENT_RE`): in a plugin
-# install the shadow-proof identity is the plugin-scoped id, and the HOST
-# derives that qualification from its own layout at RENDER time, so the roster
-# DATA stays bare. An operator who needs to override that derivation must be
-# able to SAY the scoped id — with no colon allowed at all the explicit
-# override was refused outright. Two scopes and a bare/leading/trailing colon
-# stay refused (a second colon used to rejoin silently into one "agent id" on
-# v1). The component class is this file's own (lowercase start, kebab), NOT
-# v1's wider `[A-Za-z0-9._-]`: the v2 roster is DATA validated at resolve
-# time, so a narrower spelling rule costs nothing and an unexpected spelling
-# gets a refusal naming the pattern.
-CLAUDE_AGENT_RE = re.compile(r"^[a-z0-9][a-z0-9-]*(?::[a-z0-9][a-z0-9-]*)?$")
+# R-ROSTER On A, R-REVIEW-WEB (cases C12, C32): THE CLOSED LIST of reviewer
+# presets this host ships (`agents/<name>.md`), each base preset with its web
+# twin. A claude entry names one of the eight by its BARE name — the host
+# scopes it in a plugin install (`review_scratch._qualify_claude_agent_id`) —
+# and any other name is refused at resolve: `subagent_type: None` would spawn
+# the layout default (the gating reviewer), and a preset this host does not
+# ship cannot be bound to the round. Model and effort live only in the preset
+# files (a different model or effort is a different shipped preset); a twin
+# maps to itself under a true review-web condition and to its base under a
+# false one.
+CLAUDE_WEB_TWINS = {
+    "cross-family-review-reviewer": "cross-family-review-reviewer-web",
+    "cross-family-review-reviewer-high": "cross-family-review-reviewer-high-web",
+    "cross-family-review-reviewer-max": "cross-family-review-reviewer-max-web",
+    "cross-family-review-reviewer-older": "cross-family-review-reviewer-older-web",
+}
+# A shipped preset's two pins, one line each in its frontmatter (the shape the
+# build-time check of the shipped files fixes; no YAML is parsed).
+_PRESET_PIN_RE = re.compile(r"^(model|effort): (\S+)$", re.M)
+# This install's own layout root (the dev tree's `.claude/`, a plugin's root):
+# its `agents/` holds the presets the install ships.
+_LAYOUT_ROOT = Path(__file__).resolve().parents[3]
 WHICH_ENV = "TRIAD_ROSTER_WHICH"
 TEST_SEAMS_ENV = "TRIAD_TEST_SEAMS"
 # TOP-LEVEL fields of a SHIPPED default entry whose override drift is
@@ -236,6 +251,9 @@ class DispatchCtx:
     # wrapper's audit row and run-log record the real attempt instead of
     # defaulting to 1 on every retry (gate 1 r2 row r2-4).
     attempt: int = 1
+    # The round's BOUND review-web condition (R-REVIEW-WEB, case C32): true
+    # selects each route's web launch switch, false keeps the no-web argv.
+    review_web_authorized: bool = False
 
 
 @dataclass(frozen=True)
@@ -479,6 +497,49 @@ def _check_blocks(leg: dict) -> None:
             f"'gemini' block (the Google CLI is named only by its route block)")
 
 
+def _claude_web_twin(agent, web: bool) -> str:
+    """The shipped preset a claude entry's native spawn names: under a true
+    review-web condition the web twin of `agent`, under a false one its base
+    preset (a twin maps to itself, resp. to its base) — or a RosterError when
+    `agent` is not one of the presets this host ships (`CLAUDE_WEB_TWINS`)."""
+    bases = {twin: base for base, twin in CLAUDE_WEB_TWINS.items()}
+    base = bases.get(agent, agent) if isinstance(agent, str) else None
+    if base not in CLAUDE_WEB_TWINS:
+        raise RosterError(
+            f"{agent!r} is not a reviewer preset this host ships — name one "
+            f"of {', '.join(sorted([*CLAUDE_WEB_TWINS, *bases]))} by its bare "
+            f"name (the host scopes it); a preset fixes its own model and "
+            f"effort, so another model or effort is another shipped preset")
+    return CLAUDE_WEB_TWINS[base] if web else base
+
+
+def _claude_preset(named: str, web: bool) -> dict:
+    """`{agent, file_sha256, model, effort}` of the shipped preset a claude
+    entry spawns (`_claude_web_twin`), read from this install's own
+    `agents/<agent>.md` — or a RosterError (R-ROSTER, cases C12 / C19 / C33).
+    `prepare` binds it into the round record; `collect` and `retry` re-read
+    it and compare the digest, which covers model, effort and body alike.
+    `model` and `effort` come from the same bytes, for the record and the
+    roster preview."""
+    agent = _claude_web_twin(named, web)
+    path = _LAYOUT_ROOT / "agents" / f"{agent}.md"
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise RosterError(f"the shipped preset {path} cannot be read "
+                          f"({exc.strerror or exc}) — reinstall this host") \
+            from exc
+    head = data.decode("utf-8", "replace").split("\n---", 1)[0]
+    found = _PRESET_PIN_RE.findall(head)
+    pins = dict(found)
+    if len(found) != 2 or len(pins) != 2:
+        raise RosterError(f"the shipped preset {path} does not carry exactly "
+                          f"one `model:` and one `effort:` line — reinstall "
+                          f"this host")
+    return {"agent": agent, "file_sha256": hashlib.sha256(data).hexdigest(),
+            "model": pins["model"], "effort": pins["effort"]}
+
+
 def _check_capabilities(leg: dict) -> None:
     """Refusals EVERY entry must pass — enabled or not.
 
@@ -486,6 +547,10 @@ def _check_capabilities(leg: dict) -> None:
     disabled entry is a leg the operator intends to switch on later, so
     letting its slug rot unnoticed only moves the failure to the round that
     finally enables it (gate 1, row 17).
+
+    A claude entry names a preset this host ships (`_claude_web_twin`); every
+    shipped preset has a web twin, so the claude route supports web under
+    either condition (R-REVIEW-WEB, case C32).
     """
     name = leg["name"]
     for value in _strings({k: v for k, v in leg.items() if k != "note"}):
@@ -496,19 +561,16 @@ def _check_capabilities(leg: dict) -> None:
                 f"{hit.group(0)!r} in {value!r} — replace it with a real value "
                 f"from the route's catalog or remove the entry")
     if leg.get("vendor") == "claude":
-        agent = (leg.get("claude") or {}).get("agent")
-        # `fullmatch`, never `match` (gate-1 r5 row r5-4): `$` matches BEFORE
-        # a trailing newline, so `match()` admitted
-        # "cross-family-review-reviewer\n" — the JSON string type carries
-        # the byte happily and the NATIVE claude dispatch never passes
-        # through `_token`, so it rode into the spawn instruction. The
-        # anchors stay in the pattern because the refusal PRINTS it.
-        if not isinstance(agent, str) or not CLAUDE_AGENT_RE.fullmatch(agent):
+        # An exact member of the closed list: a trailing newline or any other
+        # byte (gate-1 r5 row r5-4) is not a member, so it never rides into
+        # the spawn instruction.
+        try:
+            _claude_web_twin((leg.get("claude") or {}).get("agent"), False)
+        except RosterError as exc:
             raise RosterError(
-                f"claude entry '{name}' requires claude.agent (an explicit "
-                f"reviewer agent; the layout default would be the gating "
-                f"reviewer), matching {CLAUDE_AGENT_RE.pattern} — got "
-                f"{agent!r}")
+                f"claude entry '{name}' requires claude.agent naming a "
+                f"reviewer preset (the layout default would be the gating "
+                f"reviewer): {exc}") from None
     gemini = leg.get("gemini") or {}
     if gemini.get("effort") is not None:
         raise RosterError(
@@ -524,10 +586,10 @@ def _check_capabilities(leg: dict) -> None:
     if claude.get("effort") is not None:
         # Same shape as the gemini rule above, and for the same reason: the
         # HOST cannot apply the value. A claude leg is a NATIVE in-session
-        # Agent spawn, and the only thing that dispatch can name is a
-        # `subagent_type` — the effort tier is pinned INSIDE the named agent
-        # preset (owner model-tier policy: effort has no per-invocation
-        # override, so a different tier is a different agent id). Accepting
+        # Agent spawn, and that spawn has no effort parameter — the effort
+        # tier is pinned INSIDE the named agent preset (owner model-tier
+        # policy: effort has no per-invocation override, so a different tier
+        # is a different agent id). Accepting
         # the field validated it, recorded it in `Dispatch.native` and then
         # dropped it on the floor, which reads as a configured tier that
         # silently never applied (gate-1 r3 row r3-4).
@@ -537,18 +599,20 @@ def _check_capabilities(leg: dict) -> None:
             f"different tier is a different agent id); set claude.effort to "
             f"null")
     if claude.get("model") is not None:
-        # The SIBLING field, same rule and same reason (gate-1 r4 row r4-3).
-        # A claude leg is a NATIVE in-session Agent spawn, and the only thing
-        # that dispatch can name is a `subagent_type`: the MODEL rides in the
-        # named agent preset's frontmatter exactly as the effort tier does.
+        # The SIBLING field (gate-1 r4 row r4-3). The Agent tool DOES take a
+        # per-call `model`, and it outranks the subagent's `model`
+        # frontmatter; host A's dispatch passes none (the printed native line
+        # says so), so the MODEL rides in the named agent preset's
+        # frontmatter exactly as the effort tier does.
         # Accepting the field validated it, recorded it in `Dispatch.native`
         # and then dropped it on the floor — a configured model that silently
         # never applied, which is the r3-4 defect one field over.
         raise RosterError(
             f"roster entry '{name}': claude.model is not applicable on host A "
-            f"— the model is pinned by the named agent preset (the native "
-            f"Agent spawn can only name a subagent_type); set claude.model to "
-            f"null")
+            f"— the model is pinned by the named agent preset's frontmatter "
+            f"and the native Agent spawn passes no `model` parameter (one "
+            f"would override that pin); name a preset in claude.agent and set "
+            f"claude.model to null")
     agy = leg.get("agy") or {}
     if agy.get("effort") is not None and agy["effort"] not in AGY_EFFORT:
         raise RosterError(
@@ -591,8 +655,8 @@ def _drift_warnings(base: dict | None, merged: dict) -> list[str]:
 
     R-ROSTER keeps every leg switchable, so this is not a veto; but silently
     dropping a shipped required family is exactly the change a round record
-    must carry. The collector's family-coverage rule turns the
-    under-three-families case into OWNER_DECISION_REQUIRED.
+    must carry. Family coverage is descriptive in the collector, never a
+    threshold (R-AGREE).
 
     Scope: ANY changed field of a shipped entry — top-level (`DRIFT_FIELDS`)
     and every adapter-block field (`DRIFT_ADAPTER_FIELDS`) — gets one
@@ -618,8 +682,9 @@ def _drift_warnings(base: dict | None, merged: dict) -> list[str]:
         dedicated.add("enabled")
         out.append(
             f"shipped {base.get('acceptance')} leg '{name}' disabled "
-            f"by the project override (enabled true->false) — fewer than three "
-            f"families is released only by an owner decision (R-AGREE)")
+            f"by the project override (enabled true->false) — it no longer "
+            f"reviews; family coverage is reported, never a threshold "
+            f"(R-AGREE)")
     for field_name in DRIFT_FIELDS:
         if field_name in dedicated:
             continue
@@ -779,6 +844,12 @@ def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
             route=route, skipped_reason=skipped))
 
     enabled = [e for e in entries if e.enabled]
+    if not enabled:
+        # R-ROSTER / R-AGREE: the owner selects any NONEMPTY roster; a round
+        # with no selected entry could never be agreement.
+        raise RosterError("the selected roster is empty — no entry is "
+                          "enabled; select at least one entry (R-ROSTER, "
+                          "R-AGREE)")
     startable = [e for e in enabled if not e.skipped_reason]
     return Resolved(legs=entries, enabled=enabled,
                     families={e.vendor for e in startable}, source=source,
@@ -800,6 +871,16 @@ def _token(value, what: str, *, absolute: bool = False) -> str:
         # different file from the one the caller meant.
         raise RosterError(f"{what} must be an ABSOLUTE path: {text!r}")
     return text
+
+
+def _argv_digest(tokens: list) -> str:
+    """sha256 of the recorded wrapper argv (without the interpreter token) in
+    the ONE canonical form the wrapper recomputes from its own `sys.argv`
+    before it spawns the vendor (`_common._review_argv_refusal`; t12 axis 38
+    and t64 pin the two equal): compact ASCII JSON."""
+    return hashlib.sha256(json.dumps(list(tokens), ensure_ascii=True,
+                                     separators=(",", ":")).encode("ascii")
+                          ).hexdigest()
 
 
 def _deep_drop(node):
@@ -891,19 +972,37 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
 
     if entry.vendor == "claude":
         block = entry.claude or {}
+        agent = block.get("agent")
+        if isinstance(agent, str):
+            # The preset's WEB TWIN under a true condition, its no-web base
+            # under a false one (R-REVIEW-WEB); the record names it as
+            # `subagent_type`.
+            agent = _claude_web_twin(agent, ctx.review_web_authorized)
         return Dispatch(
             kind="native", argv=None, env={},
             # `effort` is recorded, and on host A it is ALWAYS null:
             # `_check_capabilities` refuses any other value, because the tier
-            # rides in the named agent preset and this dispatch can only name
-            # a subagent_type (row r3-4). The key stays so the record shape
+            # rides in the named agent preset and this dispatch passes no
+            # effort and no `model` parameter (row r3-4; a per-call model
+            # would override the preset's pin). The key stays so the record shape
             # does not differ between hosts.
-            native={"subagent_type": block.get("agent"),
+            native={"subagent_type": agent,
                     "model": block.get("model"),
                     "effort": block.get("effort")},
             stdout_path=ctx.attempt_dir / "raw.json", stderr_path=stderr_path)
 
     stdout_path = ctx.attempt_dir / "verdict.json"
+    # THE RECEIPT NAMESPACE (R-BIND): with this env member the wrapper writes
+    # its run-log — the argv it actually ran with — into the attempt's own
+    # `logs/<cli>/runs/` on success too, and `collect` compares it with this
+    # dispatch's argv, so a line edited before it ran never counts. The argv
+    # DIGEST lets the wrapper itself refuse an edited line before it spawns
+    # the vendor (C32: refused before inference).
+    logs_dir = _token(ctx.attempt_dir / "logs", "review log dir", absolute=True)
+
+    def review_env(full_argv: list) -> dict:
+        return {"TRIAD_REVIEW_LOG_DIR": logs_dir,
+                "TRIAD_REVIEW_ARGV_SHA256": _argv_digest(full_argv[1:])}
     common_tail = ["--prompt-file",
                    _token(ctx.prompt_file, "prompt file", absolute=True),
                    "--cwd", _token(ctx.worktree, "worktree", absolute=True),
@@ -914,12 +1013,15 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
 
     if entry.vendor == "codex":
         block = entry.codex or {}
-        # NEVER --search (D-9: a REVIEW leg has no web) and never --pydantic
-        # (v2 admission runs on the output file, in verdict_v2.py).
+        # `--search` only for a true review-web condition (R-REVIEW-WEB); the
+        # read-only sandbox stays. Never --pydantic (v2 admission runs on the
+        # output file, in verdict_v2.py).
         argv = ["python3",
                 _token(ctx.wrapper_dir / "codex_wrapper.py", "wrapper",
                        absolute=True),
                 "--sandbox", "read-only"]
+        if ctx.review_web_authorized:
+            argv.append("--search")
         if block.get("reasoning"):
             argv += ["--reasoning", _token(block["reasoning"], "codex reasoning")]
         if block.get("model"):
@@ -927,7 +1029,8 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
         schema_file = ctx.attempt_dir / PROJECTED_SCHEMA_NAME
         argv += ["--output-schema-file",
                  _token(schema_file, "producer schema projection", absolute=True)]
-        return Dispatch(kind="wrapper", argv=argv + common_tail, env={},
+        return Dispatch(kind="wrapper", argv=argv + common_tail,
+                        env=review_env(argv + common_tail),
                         native=None, stdout_path=stdout_path,
                         stderr_path=stderr_path, schema_file=schema_file,
                         schema_text=projected_schema_text())
@@ -939,6 +1042,10 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
                 _token(ctx.wrapper_dir / "antigravity_wrapper.py", "wrapper",
                        absolute=True),
                 "--sandbox", "read-only"]
+        if ctx.review_web_authorized:
+            # The wrapper's REVIEW web option: the research agent without the
+            # investigation clause (R-REVIEW-WEB); never `--web` (R-INVEST).
+            argv.append("--review-web")
         if block.get("model"):
             argv += ["--model", _token(block["model"], "agy model")]
         if block.get("effort"):
@@ -946,9 +1053,10 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
         schema_file = ctx.attempt_dir / PROJECTED_SCHEMA_NAME
         argv += ["--json-schema-file",
                  _token(schema_file, "producer schema projection", absolute=True)]
-        # NEVER --web (D-9). The read audit is part of the agy leg's contract.
+        # The read audit is part of the agy leg's contract.
         return Dispatch(kind="wrapper", argv=argv + common_tail,
-                        env={"TRIAD_READ_AUDIT_FILE":
+                        env={**review_env(argv + common_tail),
+                             "TRIAD_READ_AUDIT_FILE":
                              _token(read_audit, "read audit file", absolute=True)},
                         native=None, stdout_path=stdout_path,
                         stderr_path=stderr_path, read_audit_path=read_audit,
@@ -961,11 +1069,15 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
                 _token(ctx.wrapper_dir / "gemini_wrapper.py", "wrapper",
                        absolute=True),
                 "--sandbox", "read-only", "--approval-mode", "default"]
+        if ctx.review_web_authorized:
+            # The complete web profile, never an overlay (R-REVIEW-WEB).
+            argv.append("--review-web")
         if block.get("model"):
             argv += ["--model", _token(block["model"], "gemini model")]
         # No effort flag on this route, ever (PRD: never translate an agy effort
         # into an unsupported Gemini argument).
-        return Dispatch(kind="wrapper", argv=argv + common_tail, env={},
+        return Dispatch(kind="wrapper", argv=argv + common_tail,
+                        env=review_env(argv + common_tail),
                         native=None, stdout_path=stdout_path,
                         stderr_path=stderr_path)
 
@@ -1033,6 +1145,27 @@ def main(argv: list | None = None) -> int:
     except RosterError as exc:
         print(f"roster_v2: refused: {_flat(exc)}", file=sys.stderr)
         return EXIT_REFUSE
+    # THE RESOLVED ROSTER IS PRINTED BEFORE DISPATCH (C12, A2): each startable
+    # claude entry shows the model and effort its shipped preset pins, read
+    # the way prepare reads them from BOTH files a round may spawn — the base
+    # preset and its web twin (every round under the standing authorization
+    # spawns the twin; the build-time check keeps the two pairs equal); a
+    # file prepare could not bind is refused here the same way.
+    legs = []
+    for entry in resolved.legs:
+        leg = _entry_json(entry)
+        if entry.vendor == "claude" and entry.enabled \
+                and not entry.skipped_reason:
+            try:
+                preset = _claude_preset(entry.claude["agent"], False)
+                _claude_preset(entry.claude["agent"], True)
+            except RosterError as exc:
+                print(f"roster_v2: refused: roster entry '{entry.name}': "
+                      f"{_flat(exc)}", file=sys.stderr)
+                return EXIT_REFUSE
+            leg["preset"] = {"model": preset["model"],
+                             "effort": preset["effort"]}
+        legs.append(leg)
     for warning in resolved.warnings:
         print(f"roster_v2: WARNING: {_flat(warning)}", file=sys.stderr)
     print(json.dumps({"source": resolved.source,
@@ -1041,7 +1174,7 @@ def main(argv: list | None = None) -> int:
                       "skipped": [{"name": e.name, "reason": e.skipped_reason}
                                   for e in resolved.legs if e.skipped_reason],
                       "families": sorted(resolved.families),
-                      "legs": [_entry_json(e) for e in resolved.legs],
+                      "legs": legs,
                       "warnings": resolved.warnings}, indent=2))
     return 0
 

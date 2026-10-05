@@ -52,7 +52,7 @@ def test_stale_run_log_prune_removes_repair_json_pair(tmp_path: Path) -> None:
     fresh = runs_dir / "fresh.json"
     for path in (run_log, repair, fresh):
         path.write_text("{}\n", encoding="utf-8")
-    old = time.time() - 10_000
+    old = time.time() - 2 * 86400  # past the one-day minimum (slice 23b fix 1)
     os.utime(run_log, (old, old))
     os.utime(repair, (old, old))
 

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "roots": [
+    {"role": "review-small", "root": "_runs/review", "proof": "marker:.triad-small-round", "min_age_s": 604800},
+    {"role": "review-scratch", "root": "_runs/review", "proof": "marker:.active", "min_age_s": 604800},
+    {"role": "wrapper-run-logs", "root": "$HOST_DIR/_logs", "proof": "inside-owned-packet", "min_age_s": 86400},
+    {"role": "wrapper-audit-archives", "root": "$HOST_DIR/_logs", "proof": "inside-owned-packet", "min_age_s": 0},
+    {"role": "wrapper-debug", "root": "$HOST_DIR/_debug", "proof": "alloc-record", "min_age_s": 2592000},
+    {"role": "code-worktrees", "root": "_runs/worktrees", "proof": "git-registered", "min_age_s": 0}
+  ]
+}

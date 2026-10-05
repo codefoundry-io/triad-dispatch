@@ -29,7 +29,6 @@ Options:
 from __future__ import annotations
 
 import argparse
-import codex_tasks
 import json
 import os
 import sys
@@ -39,25 +38,24 @@ from pathlib import Path
 from _common import (
     validate_wrapper_cwd,
     _emit_payload,
+    _guarded_main,
     _emit_canonical_summary,
     _payload_or_demote,
-    _summary_tail,
+    _prune_empty_worktrees,
+    _review_argv_refusal,
     _relax_diagnostic_stream,
     load_prompt_text,
     resolve_prompt_file,
     _ensure_within_runtime_roots,
+    _resolve_input_file,
+    _refusal_path,
     EXIT_ARG_ERROR,
-    EXIT_FANOUT_PARTIAL,
-    EXIT_OK,
-    EXIT_TASK_BLOCKED,
     audit,
     debug_log,
     emit_run_log,
-    extract_implementer_status,
     install_terminal_signal_handlers,
     load_pydantic_class,
     log,
-    prune_stale_tmp_dirs,
     pydantic_to_codex_schema,
     require_binary,
     run_cli_with_retry,
@@ -66,38 +64,6 @@ from _common import (
 
 SANDBOX_CHOICES = ("read-only", "workspace-write")  # danger-full-access banned (triad no-yolo invariant)
 REASONING_CHOICES = ("low", "medium", "high", "xhigh", "max")  # ultra excluded: self-delegates subagents (runaway single-shot) + not every variant supports it
-
-
-def write_fanout_report(
-    report_dir: str, task: str, synthesis: str, agents: list, partial: bool
-) -> list[str]:
-    """Write codex-<task>-synthesis.md + codex-<task>-agentN-raw.md. Returns paths."""
-    os.makedirs(report_dir, exist_ok=True)
-    paths = []
-    banner = (
-        "> **INCOMPLETE** — one or more subagents did not complete; this "
-        "synthesis is partial.\n\n"
-    ) if partial else ""
-    syn_path = os.path.join(report_dir, f"codex-{task}-synthesis.md")
-    with open(syn_path, "w", encoding="utf-8") as f:
-        f.write(banner + (synthesis or ""))
-    paths.append(syn_path)
-    for i, a in enumerate(agents, 1):
-        raw_path = os.path.join(report_dir, f"codex-{task}-agent{i}-raw.md")
-        with open(raw_path, "w", encoding="utf-8") as f:
-            f.write(a.get("message") or "")
-        paths.append(raw_path)
-    return paths
-
-
-def fanout_is_partial(complete: bool, agents: list, fanout) -> bool:
-    """A --task fan-out is partial if extraction said incomplete, OR (for an
-    explicit integer --fanout N) fewer than N subagents reached a terminal state."""
-    if not complete:
-        return True
-    if isinstance(fanout, int) and len(agents) < fanout:
-        return True
-    return False
 
 
 def codex_invocation(search: bool) -> list[str]:
@@ -117,12 +83,20 @@ def codex_invocation(search: bool) -> list[str]:
 
 
 def main() -> int:
+    return _guarded_main("codex", _main)
+
+
+def _main(ctx: dict) -> int:
     # The DIAGNOSTIC stream survives any locale; the PAYLOAD stream is never
     # re-encoded (gate-1 r7 row r7-c2 — `_common` § payload vs diagnostic).
     _relax_diagnostic_stream()
-    # SIGTERM/SIGHUP -> SystemExit(128+signum) so a signalled wrapper unwinds
-    # through _run_once's abnormal-unwind arm and reaps the vendor group
-    # instead of orphaning it (spec case C1 / R-TERMINAL).
+    # SIGTERM/SIGHUP: from the first dispatch on the handler only records the
+    # signal. During a dispatch _run_once reaps the vendor group and the run
+    # ends as the interrupted-run record (`unknown` / 1), `oauth-env` / 65 on a
+    # carrier STOP, or `timeout` / 2 when the run had already timed out (the
+    # timeout verdict outranks it); a signal after the last _run_once
+    # is not consumed (the completed answer is published). Before the first
+    # dispatch the handler exits 128+signum (spec case C1 / R-TERMINAL).
     install_terminal_signal_handlers()
     p = argparse.ArgumentParser(description="Codex CLI single-shot wrapper",
                                 allow_abbrev=False)
@@ -137,7 +111,7 @@ def main() -> int:
         "--sandbox",
         default=None,
         choices=SANDBOX_CHOICES,
-        help="Sandbox policy (default: read-only for raw calls; pinned per --task)",
+        help="Sandbox policy (default: read-only)",
     )
     p.add_argument("--cwd", default=None, help="Process working directory")
     p.add_argument("--timeout", type=int, default=600, help="Timeout in seconds")
@@ -145,7 +119,9 @@ def main() -> int:
         "--reasoning",
         default=None,
         choices=REASONING_CHOICES,
-        help="Override model_reasoning_effort (default: vendor default)",
+        help="Override model_reasoning_effort (default: vendor default). "
+             "Recorded as `reasoning=<tier>` on the `[wrapper] codex` summary "
+             "line and as `requested_reasoning` in the audit row",
     )
     p.add_argument(
         "--model",
@@ -171,7 +147,8 @@ def main() -> int:
     p.add_argument(
         "--output-schema-file",
         default=None,
-        help="ABSOLUTE path to a caller-owned JSON schema file, passed straight "
+        help="Path (a relative one rebased on the process-entry cwd, C28) to a "
+             "caller-owned JSON schema file, passed straight "
              "to codex --output-schema. Transport only: the wrapper validates "
              "nothing and retries nothing (the caller admits the answer with "
              "its own validator). Mutually exclusive with --pydantic",
@@ -181,35 +158,6 @@ def main() -> int:
         action="append",
         default=None,
         help="Image file path for vision input (repeatable) -> codex -i",
-    )
-    p.add_argument(
-        "--format",
-        default=None,
-        choices=("text", "markdown", "json"),
-        help="Output intent: text/markdown=prose via -o file; json=loose JSON. "
-             "Omit for auto (prose normally; json with --pydantic). "
-             "Explicit markdown/text are mutually exclusive with --pydantic.",
-    )
-    p.add_argument(
-        "--task",
-        default=None,
-        choices=tuple(codex_tasks.TASKS),
-        help="Task type. Analysis tasks (review/analyze/brainstorm) are read-only "
-             "fan-out; code task is workspace-write single-implementer. Augments "
-             "the prompt with a deterministic framing from codex_tasks.py.",
-    )
-    p.add_argument(
-        "--fanout",
-        default=None,
-        help="Fan-out tier (requires --task): int 1-12 (explicit N) or 'auto' "
-             "(codex decides via skill). Omit for the task's default (3).",
-    )
-    # --report-dir / fanout_value are consumed by the --task wiring in a later task.
-    p.add_argument(
-        "--report-dir",
-        default=None,
-        help="Directory for --task report files (synthesis + per-agent raw). "
-             "Default: a temp dir, path printed to stderr.",
     )
     p.add_argument(
         "--repair-mode",
@@ -238,9 +186,14 @@ def main() -> int:
     # below read this one value.
     if args.model is not None and not args.model.strip():
         args.model = None
+    ctx.update(attempt=args.attempt, model=args.model, reasoning=args.reasoning)
 
     if args.attempt < 1:
         log(f"--attempt must be >= 1 (got {args.attempt})")
+        return EXIT_ARG_ERROR
+    _refused = _review_argv_refusal()
+    if _refused is not None:  # C32: an edited review line, before any vendor work
+        log(_refused)
         return EXIT_ARG_ERROR
 
     # C28: resolve the (possibly relative) --prompt-file once so the absolute
@@ -255,34 +208,24 @@ def main() -> int:
         log(f"prompt load failed: {e}")
         return EXIT_ARG_ERROR
     args.prompt = _prompt_text  # downstream code keeps using args.prompt
+    ctx.update(prompt=args.prompt, prompt_file=_prompt_file_resolved)
 
     try:
         args.cwd = validate_wrapper_cwd(args.cwd)
     except Exception as e:
         log(f"--cwd validation failed: {e}")
         return EXIT_ARG_ERROR
+    if args.sandbox == "workspace-write" and not args.cwd:
+        log("--sandbox workspace-write requires --cwd (codex edits files in its "
+            "working directory — the blast radius must be an isolated directory)")
+        return EXIT_ARG_ERROR
 
-    # Next-run IPC cleanup: sweep prior leaked `codex_report_*` mkdtemp dirs
-    # (the --task fan-out path auto-creates one per call and never unlinks it).
-    # Age-floor protects the current run's dir, created later in this call.
-    prune_stale_tmp_dirs("codex_report_")
+    # Next-run cleanup: the empty leftovers under the code-worktrees root
+    # (R-CLEANUP / C69).
+    _prune_empty_worktrees()
 
     if not args.prompt.strip():
         log("empty prompt")
-        return EXIT_ARG_ERROR
-
-    if args.pydantic and args.format in ("markdown", "text"):
-        log("--format markdown/text is mutually exclusive with --pydantic "
-            "(use --format json or drop --pydantic)")
-        return EXIT_ARG_ERROR
-
-    if args.fanout is not None and args.task is None:
-        log("--fanout requires --task")
-        return EXIT_ARG_ERROR
-
-    if args.task is not None and args.pydantic:
-        log("--task and --pydantic are mutually exclusive "
-            "(fan-out report vs schema validation are different modes)")
         return EXIT_ARG_ERROR
 
     # --output-schema-file: checked BEFORE any vendor work — a paid dispatch
@@ -293,84 +236,31 @@ def main() -> int:
             log("--output-schema-file and --pydantic are mutually exclusive "
                 "(two schema sources for one --output-schema flag)")
             return EXIT_ARG_ERROR
-        if not os.path.isabs(args.output_schema_file):
-            log(f"--output-schema-file must be an absolute path (codex "
-                f"resolves it against its own cwd): {args.output_schema_file}")
-            return EXIT_ARG_ERROR
-        if not os.path.isfile(args.output_schema_file):
-            log(f"--output-schema-file is not a file: "
-                f"{args.output_schema_file}")
-            return EXIT_ARG_ERROR
-        # Same runtime-roots containment --image already gets below (gate-1 r2
-        # row r2-5): the path is handed STRAIGHT to codex --output-schema, so
-        # under TRIAD_WRAPPER_ALLOWED_ROOTS an out-of-root schema is an
-        # uncontained file-read -> vendor channel. Roots unset (lab default)
-        # -> returned resolved and unchanged; codex then reads exactly the
-        # file that was validated.
+        # C28 (spec ccf168a): a relative path is rebased on the process-entry
+        # cwd like --prompt-file (codex itself would resolve it against the
+        # child --cwd), then the same runtime-roots containment --image gets
+        # (gate-1 r2 row r2-5: under TRIAD_WRAPPER_ALLOWED_ROOTS an out-of-root
+        # schema is an uncontained file-read -> vendor channel). codex reads
+        # exactly the RESOLVED file validated here, and the argv the audit row
+        # records carries that absolute path.
         try:
-            args.output_schema_file = str(_ensure_within_runtime_roots(
-                Path(args.output_schema_file), "--output-schema-file"))
+            args.output_schema_file = str(_resolve_input_file(
+                args.output_schema_file, "--output-schema-file"))
         except Exception as e:
             log(f"--output-schema-file validation failed: {e}")
             return EXIT_ARG_ERROR
-    if args.task is not None:
-        task_sandbox = codex_tasks.TASKS[args.task]["sandbox"]
-        if args.sandbox is not None and args.sandbox != task_sandbox:
-            log(f"--task {args.task} pins --sandbox {task_sandbox}; refusing "
-                f"conflicting --sandbox {args.sandbox} (drop --sandbox)")
-            return EXIT_ARG_ERROR
-
-    fanout_value = None
-    if args.task is not None:
-        if args.fanout is None:
-            fanout_value = codex_tasks.TASKS[args.task]["default_fanout"]
-        elif args.fanout == "auto":
-            fanout_value = "auto"
-        else:
-            try:
-                n = int(args.fanout)
-            except ValueError:
-                log(f"--fanout must be an int 1-12 or 'auto': {args.fanout!r}")
-                return EXIT_ARG_ERROR
-            if not (codex_tasks.FANOUT_MIN <= n <= codex_tasks.FANOUT_MAX):
-                log(f"--fanout out of range 1-12: {n}")
-                return EXIT_ARG_ERROR
-            # code = single implementer: only N==1 (== default) is a valid explicit
-            # int; N>1 conflicts. 'auto' (handled in the elif above) is the escalation.
-            if args.task == "code" and n != 1:
-                log("--task code runs a single implementer; explicit --fanout "
-                    "N>1 conflicts (parallel edits on one workspace). For a "
-                    "complex task use '--task code --fanout auto' (codex "
-                    "self-decomposes); for a simple one omit --fanout.")
-                return EXIT_ARG_ERROR
-            fanout_value = n
-
-    # Fix D: --task code requires --cwd (workspace-write edits would otherwise
-    # land in the wrapper's own cwd = the live repo). Reject before any codex spawn.
-    if args.task == "code" and args.cwd is None:
-        log("--task code requires --cwd <isolated git worktree> (codex edits with "
-            "workspace-write; without --cwd it would write into the current "
-            "directory). Create a worktree and pass it as --cwd.")
-        return EXIT_ARG_ERROR
-
     effective_user_prompt = args.prompt
-    if args.task is not None:
-        spec = codex_tasks.TASKS[args.task]
-        args.sandbox = spec["sandbox"]  # pin per-task: read-only (analysis) / workspace-write (code)
-        if args.format is None:
-            args.format = spec["output_mode"]
-        effective_user_prompt = codex_tasks.augment_prompt(
-            args.task, fanout_value, args.prompt)
-    elif args.sandbox is None:
-        args.sandbox = "read-only"  # default for raw (non-task) calls
+    if args.sandbox is None:
+        args.sandbox = "read-only"  # the default posture
 
     codex_bin = require_binary("codex")
+    ctx["cmd"] = [codex_bin]
 
     if args.image:
         contained_images = []
         for img in args.image:
             if not os.path.isfile(img):
-                log(f"--image path not found: {img}")
+                log(f"--image path not found: {_refusal_path(img, '--image')}")
                 return EXIT_ARG_ERROR
             # Route --image through the SAME runtime-roots containment as
             # --prompt-file (load_prompt_text) and --cwd (validate_wrapper_cwd):
@@ -491,6 +381,7 @@ def main() -> int:
             dispatch_attempt=args.attempt,
             prompt_file_resolved=_prompt_file_resolved,
             requested_model=args.model,
+            requested_reasoning=args.reasoning,
         )
     finally:
         try:
@@ -503,59 +394,9 @@ def main() -> int:
             except Exception:
                 pass
 
+    ctx["result"] = result
     audit_cmd = build_cmd(args.prompt)
-
-    partial = False
-    # Fan-out extraction only applies when codex is expected to spawn subagents
-    # (analysis default_fanout=3, explicit N, or auto). A single implementer
-    # (fanout_value == 1) produces no spawn markers, so extract_codex_fanout
-    # would false-positive 'partial' on its empty-seen heuristic — skip it.
-    # Fix B-68: the code task is also excluded — for code+auto, codex may
-    # self-decide to work single-threaded (no spawn markers), which would
-    # false-positive as partial-68 on a DONE task. The STATUS line (below) is
-    # the authoritative signal for the code task.
-    if args.task is not None and args.task != "code" and fanout_value != 1:
-        from _common import extract_codex_fanout
-        agents, complete = extract_codex_fanout(result.stdout)
-        partial = fanout_is_partial(complete, agents, fanout_value)
-        try:
-            report_dir = args.report_dir or tempfile.mkdtemp(prefix="codex_report_")
-            write_fanout_report(
-                report_dir, args.task, result.final_answer or "", agents, partial=partial)
-            log(f"report: {report_dir} ({len(agents)} agents, partial={partial})")
-        except OSError as e:
-            # report writing is a side-effect — never lose the codex result over it
-            log(f"report-write failed (non-fatal, result preserved): {e}")
-        if partial and result.exit_code == 0:
-            result.exit_code = EXIT_FANOUT_PARTIAL
-            # The promotion's line carries the recorded-facts tail like every
-            # other summary emission (gate-1 r12 row r12-3).
-            log(f"[wrapper] codex fanout-partial exit={result.exit_code} "
-                f"vendor={result.vendor_exit_code} elapsed={result.elapsed_s:.1f}s"
-                + _summary_tail(result.dispatch_attempt,
-                                result.prompt_file_resolved,
-                                result.requested_model))
-        elif partial:
-            # underlying codex call already failed (non-zero) — the real exit code
-            # and its [wrapper] classification take priority; do NOT mask it with 68
-            # nor add the partial banner to stdout.
-            log(f"fanout-partial suppressed — real failure exit={result.exit_code} "
-                f"takes priority over the partial-fanout signal")
-            partial = False
-
-    # Archetype B: code task self-reported BLOCKED/NEEDS_CONTEXT → exit 69 so the
-    # SKILL can branch (skip verify/commit, re-dispatch with context) without
-    # semantic parsing. Authoritative only over OK/68 — never masks a real failure.
-    if args.task == "code" and result.exit_code in (EXIT_OK, EXIT_FANOUT_PARTIAL):
-        status = extract_implementer_status(result.final_answer or "")
-        if status in ("BLOCKED", "NEEDS_CONTEXT"):
-            result.exit_code = EXIT_TASK_BLOCKED
-            log(f"[wrapper] codex task-blocked status={status} "
-                f"exit={result.exit_code} vendor={result.vendor_exit_code} "
-                f"elapsed={result.elapsed_s:.1f}s"
-                + _summary_tail(result.dispatch_attempt,
-                                result.prompt_file_resolved,
-                                result.requested_model))
+    ctx["cmd"] = audit_cmd
 
     # THE PAYLOAD IS DECIDED BEFORE THE AUDIT ROW (gate-1 r7 rows r7-c2 /
     # r7-k5). stdout is the payload channel and was written LAST, with the
@@ -572,9 +413,6 @@ def main() -> int:
             result.validated)
     else:
         out = result.final_answer or ""
-        if partial:
-            out = ("> **INCOMPLETE** — fan-out did not fully complete; this "
-                   "output is partial (see the report). \n\n") + out
         if out and not out.endswith("\n"):
             out += "\n"
         payload = _payload_or_demote("codex", result, out)
@@ -586,15 +424,15 @@ def main() -> int:
     if result.classification != _pre_payload_classification:
         _emit_canonical_summary("codex", result)
 
-    # Fix F: audit is called AFTER both exit-code promotions (partial→68 and
-    # STATUS→69) so audit.jsonl records the final promoted exit code, not the
-    # pre-promotion value.
+    # The audit row records the final exit code (after any payload demotion).
     audit("codex", audit_cmd, args.prompt, result)
+    ctx["recorded"] = True
 
     if args.debug:
         debug_log("codex", args.prompt, result)
 
-    # Per-execution run-log (failure only) — dispatch SKILL input artifact.
+    # Per-execution run-log (failure only; a v2 review attempt with
+    # TRIAD_REVIEW_LOG_DIR: every outcome) — dispatch SKILL input artifact.
     run_log_path = emit_run_log("codex", sys.argv, audit_cmd, args.prompt, result)
     if run_log_path is not None:
         log(f"run-log: {run_log_path}")

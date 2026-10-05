@@ -24,8 +24,7 @@
 # That is why the mutation/shell denies are stated EXPLICITLY here rather than
 # left to a default tier.
 #
-# NOT RUN LIVE: gemini is not in service where this file was authored (owner
-# 2026-09-18), so the runtime EFFECT of these rows is unverified; the argv, the
+# NOT RUN LIVE on this host, so the runtime EFFECT of these rows is unverified; the argv, the
 # file's parse and its rule set are pinned by t58. Live confirmation rides the
 # same owner-briefing route as the review policy (R-GOOGLE).
 

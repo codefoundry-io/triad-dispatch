@@ -74,8 +74,10 @@ For review-worthy or correctness/security-critical work — *especially* when yo
 chose to omit or simplify something from a vetted source — run **three
 independent reviewers from different model families**, not one:
 
-1. a **Claude fresh-eye sub-agent** (a general-purpose `Agent`, NOT the leader
-   reasoning in-line — the leader shares its own blind spot),
+1. a **Claude fresh-eye sub-agent** (a shipped read-only reviewer preset spawned
+   by name, NOT the leader reasoning in-line — the leader shares its own blind
+   spot; its model and effort are fixed in the preset file, so another model or
+   effort is another shipped preset — see the plugin README),
 2. **Codex** via `triad-codex-dispatch`,
 3. **Gemini** via `triad-gemini-dispatch` (or `triad-cross-family-review`, which
    orchestrates all three).

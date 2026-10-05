@@ -92,9 +92,9 @@ def test_workspace_write_has_no_policy(tmp_path: Path) -> None:
 def test_workspace_write_without_cwd_rejected_before_spawn(tmp_path: Path) -> None:
     # Owner ruling 2026-08-26 (codex/claude symmetry): a write-enabled
     # dispatch's blast radius must be an isolated directory, never the
-    # wrapper's inherited cwd — codex --task code and claude workspace-write
-    # already carry this guard; gemini was the one write-capable wrapper
-    # without it.
+    # wrapper's inherited cwd — claude workspace-write already carries this
+    # guard, and so does codex workspace-write;
+    # gemini was the one write-capable wrapper without it.
     r, argv = _run(tmp_path, "--sandbox", "workspace-write")
     assert r.returncode != 0, "workspace-write without --cwd must be rejected"
     assert "requires --cwd" in r.stderr

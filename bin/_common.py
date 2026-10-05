@@ -24,7 +24,9 @@ from __future__ import annotations
 import enum
 import errno
 import fcntl
+import functools
 import importlib
+import hashlib
 import json
 import math
 import os
@@ -78,8 +80,6 @@ EXIT_RATE_GIVE_UP = 64   # transient retry exhausted → Sonnet repair sub-agent
 EXIT_TERMINAL = 65       # cli-sub-cap / token-limit / oauth-env → user escalate
 EXIT_SCHEMA_FAIL = 66    # pydantic validation failed even after 1 retry
 EXIT_SCHEMA_REJECTED = 67  # codex refused --output-schema at submit (massage/strict-rule drift)
-EXIT_FANOUT_PARTIAL = 68   # --task fan-out incomplete (partial / zero / fewer-than-requested subagents) — surfaced, never silent
-EXIT_TASK_BLOCKED = 69   # --task code: codex self-reported BLOCKED / NEEDS_CONTEXT (no edit to commit)
 
 # ─── Non-repairable schema-validation contract ─────────────────────────────
 # A `--pydantic module:Class` schema marks a validator arm NON-REPAIRABLE by
@@ -178,9 +178,8 @@ _EXIT_BY_CLASSIFICATION: dict[str, int] = {
         "extraction-error": EXIT_CLI_FAIL,
         "schema-fail": EXIT_SCHEMA_FAIL,
         "schema-rejected": EXIT_SCHEMA_REJECTED,
-        "fanout-spawn-error": EXIT_TERMINAL,
         "config-conflict": EXIT_TERMINAL,
-        "task-blocked": EXIT_TERMINAL,
+        "task-blocked": EXIT_TERMINAL,  # claude: permission_denials with an empty result (promote_claude_extraction)
         "vendor-error": EXIT_TERMINAL,  # agy: rc!=0 but a non-empty answer — surface, NOT repair
         "admission-refused": EXIT_TERMINAL,  # agy: a tool OUTSIDE the agent allowlist in the stream (v2 census) — surface, NOT repair
         "vendor-timeout": EXIT_TERMINAL,  # agy: the vendor's OWN turn timeout (result.error "timeout waiting for response", empty answer) — surface, NOT repair
@@ -198,7 +197,6 @@ EXIT_MAP_TOKENS: frozenset[str] = frozenset(_EXIT_BY_CLASSIFICATION)
 KNOWN_EXIT_CODES: frozenset[int] = frozenset((
     EXIT_OK, EXIT_CLI_FAIL, EXIT_TIMEOUT, EXIT_ARG_ERROR, EXIT_BINARY_MISSING,
     EXIT_RATE_GIVE_UP, EXIT_TERMINAL, EXIT_SCHEMA_FAIL, EXIT_SCHEMA_REJECTED,
-    EXIT_FANOUT_PARTIAL, EXIT_TASK_BLOCKED,
 ))
 assert all(
     isinstance(_v, int) and _v in KNOWN_EXIT_CODES
@@ -227,127 +225,81 @@ def map_classification_to_exit(cls: str) -> int:
     return _EXIT_BY_CLASSIFICATION.get(cls, EXIT_CLI_FAIL)
 
 
-# ─── Pattern lists (seed — living value, Step D maintenance updates) ──────
+# ─── Pattern lists (per-CLI MEASURED sentences; new ones = extension entries) ─
 # Lowercase substring match. Terminal-first ordering when classifying.
 
-SERVER_CAPACITY_PATTERNS: tuple[str, ...] = (
-    "model_capacity_exhausted",
-    "resource_exhausted",
-    "ratelimitexceeded",
-    "model overloaded",
-    "overloaded_error",  # 2026-07-05: Anthropic 529 overload api_error_status enum,
-    # surfaced by extract_claude_answer into the claude is_error ext_err blob
-    # (`is_error=true (api_error_status=overloaded_error): ...`). Retry-eligible.
-    # Specific vendor enum token — passes the false-positive guard (unlike bare
-    # `"529"`). `rate_limit_error` (429) deliberately NOT added: it is ambiguous
-    # between a transient rate limit (retry) and a subscription cap (terminal),
-    # and mis-routing it either way costs a wasted cycle.
-    # `"503"`, `"429"` removed 2026-05-03 (later-2): standalone numeric matched
-    # natural occurrences in answer text (line numbers, byte counts, timestamps,
-    # spec docs e.g. "see RFC 429"). The phrase forms below already cover real
-    # capacity errors. If a future failure surfaces a status-only stderr without
-    # the phrase form, add a more specific substring (e.g. `"http 429"`,
-    # `"status: 503"`) — never bare `"429"` / `"503"`.
-    "service unavailable",
-    "unavailable (code 503)",  # 2026-09-26: agy's structured UNAVAILABLE
-    # error (`error: UNAVAILABLE (code 503): Deadline expired before operation
-    # could complete.` + `AGY_ERROR {"status":"UNAVAILABLE","error_code":503,
-    # "retryable":true}`), vendor rc 3 — measured on agy 1.2.11, gate-1 r20
-    # google-state attempt 1, run-log 20260926T020525Z-78105-da2d3ccf. The
-    # phrase form differs from "service unavailable" above; distinctive
-    # vendor text, never a bare `"503"`. Promoted from the agy-wrapper-repair
-    # proposal: the in-company site and the claude-host dist never see the
-    # operator's classifier extension, and there the driver's own ladder is
-    # the ONLY retry. Retry-eligible.
-    "too many requests",
-    "aborterror",  # 2026-05-02: Gemini CLI _recoverFromLoop tool-call loop detection abort; transient — retry eligible. github.com/google-gemini/gemini-cli/issues/23509
-)
+# R-CLASSIFY (frozen review-rules.md:457-462): a failed vendor call is classified
+# by the vendor's own sentence, a sentence applies ONLY to the CLI that emits it,
+# and a plain fragment an answer, a reviewed file or a tool output can carry is
+# never a match phrase. So the SHARED lists below are empty — no sentence is
+# measured on every CLI — and each CLI's MEASURED sentences live in `CLI_PATTERNS`,
+# each with its evidence. A new vendor message ends `unknown` and the repair loop
+# proposes a classifier-extension entry from the measured run. Removed (no capture
+# shows the vendor's own sentence): "model overloaded", "service unavailable",
+# "too many requests", "aborterror" (its one real capture is a user abort), "5h
+# limit reached", "weekly limit reached", "subscription limit reached", "usage
+# limit reached", every token-limit phrase ("payload size exceeds", "token count
+# exceeds", "context window exceeded", "exceeds maximum context", "context length
+# exceeded", "400 bad request", "400 invalid"), "invalid output schema", "output
+# schema rejected", "schema validation failed", "unsupported schema", the
+# config.toml phrases, and every raw-text authentication phrase (the fan-out
+# phrases left with the codex `--task` mode, Task 29).
+SERVER_CAPACITY_PATTERNS: tuple[str, ...] = ()
+CLI_SUB_CAP_PATTERNS: tuple[str, ...] = ()
+TOKEN_LIMIT_PATTERNS: tuple[str, ...] = ()
+SCHEMA_REJECTED_PATTERNS: tuple[str, ...] = ()
+# codex's measured `Error loading configuration:` line is read by the
+# auth-carrier rung (`_auth_carrier_stop`), not here.
+CONFIG_CONFLICT_PATTERNS: tuple[str, ...] = ()
+# No raw-text authentication list (R-AUTH; Task 28 fix 2, H4 emptied it, Task 29
+# removed it with its applier entry and the extension's, which the loader ignores —
+# MEASURED false STOP): the raw-text "401 unauthorized"
+# matched over a failed run's whole output turned a real codex capacity failure
+# into oauth-env because a fetched page in its transcript said "… on 401
+# Unauthorized responses …" (_logs/codex/audit.20260827T185251Z-55035-80b19439.jsonl
+# row of 2026-07-16T09:05:59Z). The measured authentication STOPs come from the
+# carrier rung (`_auth_carrier_stop`: codex error / turn.failed, claude is_error,
+# the gemini error object and exit 41, agy's banner at a stderr line start).
 
-CLI_SUB_CAP_PATTERNS: tuple[str, ...] = (
-    "your quota will reset after",
-    "5h limit reached",
-    "weekly limit reached",
-    "subscription limit reached",
-    "usage limit reached",
-    "no longer supported for gemini code assist for individuals",
-    # L10 union (twin→SoT 2026-07-05): the raw error CLASS token — distinctive,
-    # exception-name form, FP-safe. (Twin's third token "migrate to antigravity"
-    # was DROPPED: prose form could match ordinary migration discussions.)
-    "ineligibletiererror",  # 2026-06-30: IneligibleTierError — Gemini Code Assist individuals tier discontinued 2026-06-18; user must migrate to Antigravity. github.com/google-gemini/gemini-cli/discussions/28017
-)
-
-TOKEN_LIMIT_PATTERNS: tuple[str, ...] = (
-    "payload size exceeds",
-    "token count exceeds",
-    # `"context window"`, `"maximum context"` removed 2026-05-03 (later-2):
-    # generic LLM jargon that naturally appears in answer text (e.g. user asks
-    # "explain context window in Claude" → response text matches the substring
-    # → token-limit mis-classify on otherwise OK call). Replaced with the
-    # exceeded-form which only appears in real token-limit errors.
-    "context window exceeded",
-    "exceeds maximum context",
-    "context length exceeded",
-    "400 bad request",
-    "400 invalid",
-)
-
-SCHEMA_REJECTED_PATTERNS: tuple[str, ...] = (
-    "invalid output schema",
-    "output schema rejected",
-    "schema validation failed",
-    "unsupported schema",
-    # NOTE: bare "schema" is NOT added — it appears in normal answer text.
-    # Only schema-REJECTION phrases (submit-time refusal) belong here.
-)
-
-# Fan-out: terminal spawn_agent failure (NOT the self-corrected full-history
-# fork error, which the model recovers from). Phrases are specific to a
-# terminal quota/parameter rejection.
-FANOUT_SPAWN_PATTERNS: tuple[str, ...] = (
-    "spawn_agent failed",
-    "agent quota exceeded",
-    "could not spawn subagent",
-)
-
-# Config-alive: an inherited ~/.codex config that breaks the call.
-# Phrases are anchored to "config.toml" to avoid false positives on
-# natural answer text (bare "invalid profile" / "unknown config key"
-# are too broad — same guard that removed "401"/"oauth"/"context window").
-CONFIG_CONFLICT_PATTERNS: tuple[str, ...] = (
-    "failed to parse config.toml",
-    "error loading config.toml",
-    "invalid config.toml",
-)
-
-OAUTH_ENV_PATTERNS: tuple[str, ...] = (
-    # `"401"` (bare) removed 2026-05-03 (later-2): standalone numeric matched
-    # natural occurrences (line numbers, status code arrays, etc.). Replaced
-    # with the phrase form. Same fix family as `"503"`/`"429"` in
-    # SERVER_CAPACITY_PATTERNS and `"oauth"`/`"unauthorized"` in this list.
-    "401 unauthorized",
-    "http 401",
-    # 2026-07-01 (twin, L9 port 2026-07-05): real claude `is_error=true /
-    # api_error_status=401` capture. Phrase is distinctive and FP-safe: it
-    # appears exclusively in the claude vendor envelope's `result` field on an
-    # auth-401 failure. Never add bare "401" / "oauth" (removed above for FP).
-    "invalid authentication credentials",
-    # `"unauthorized"` removed 2026-05-03: matched `[LocalAgentExecutor]
-    # Blocked call: Unauthorized tool call: ...` (1/152 false positive in
-    # 200-verify batch — misled user toward "re-login" when the actual
-    # cause was tool-block). HTTP-form 401 errors are still caught above.
-    # `"oauth"` removed 2026-05-03 (later): matched `_OAuth2Client.requestAsync`
-    # google-auth-library stack trace (always present in Gemini capacity-
-    # exhausted stderr — github.com/google-gemini/gemini-cli/issues/24159).
-    # 100% false positive on the capacity-exhausted code path because L2
-    # checked OAUTH_ENV before SERVER_CAPACITY. Replaced with the standalone
-    # `"oauth error"` form which doesn't match library identifiers.
-    "oauth error",
-    "token refresh failed",
-    "openai_api_key",
-    "auth error",
-    "please log in",
-    "please authenticate",
-)
+# Each CLI's OWN measured sentences, keyed cli -> list name; classify() reads a
+# CLI's entries only on that CLI's runs, after the shared list of the same name.
+CLI_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
+    "codex": {
+        "SERVER_CAPACITY_PATTERNS": (
+            "selected model is at capacity",  # `Selected model is at capacity. Please try a different model.` — the frozen contracts/vendor-failure-lines.json codex row (JSONL error + turn.failed, vendor rc 1)
+            "exceeded retry limit, last status: 429",  # codex's own RetryLimitReachedError (codex-rs protocol/src/error.rs, "exceeded retry limit, last status: {}{}"; openai/codex#30471)
+        ),
+        "CLI_SUB_CAP_PATTERNS": (
+            "you've hit your usage limit",  # codex's own UsageLimitReachedError Display "You've hit your usage limit…" (openai/codex main codex-rs/protocol/src/error.rs, every variant; read 2026-10-05)
+        ),
+        "SCHEMA_REJECTED_PATTERNS": (
+            "invalid schema for response_format",  # codex error event, code invalid_json_schema: "Invalid schema for response_format 'codex_output_schema': …" — 2 real rows (_logs/codex/audit.jsonl, 2026-09-20)
+        ),
+    },
+    "gemini": {
+        "SERVER_CAPACITY_PATTERNS": (
+            "model_capacity_exhausted",  # gemini 429 stderr (MODEL_CAPACITY_EXHAUSTED): 86 real rows, 10 of them failed runs, _logs/gemini/audit.20260905T202129Z-59949-295f5af7.jsonl (2026-05)
+            "resource_exhausted",        # same gemini 429 stderr (status RESOURCE_EXHAUSTED), same rows
+            "ratelimitexceeded",         # same gemini 429 stderr (reason rateLimitExceeded), same rows
+        ),
+        "CLI_SUB_CAP_PATTERNS": (
+            "your quota will reset after",  # gemini stderr "…exhausted your capacity on this model. Your quota will reset after <t>." — 158 real rows, 37 classified cli-subscription-cap (same file)
+            "no longer supported for gemini code assist for individuals",  # gemini stderr "Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals." — 43 real rows (same file, 2026-06/07)
+            "ineligibletiererror",  # the same captured line's error class
+        ),
+    },
+    "claude": {
+        "SERVER_CAPACITY_PATTERNS": (
+            "overloaded_error",  # Anthropic API error type for 529, claude `api_error_status` (the vendor's own error enum; real overload confirmed 2026-07-05, plan 2026-07-05-codex-twin-commercialization D2)
+        ),
+    },
+    "antigravity": {
+        "SERVER_CAPACITY_PATTERNS": (
+            "network issue connecting to the server",  # `There was a network issue connecting to the server, please try again.` — the frozen contracts/vendor-failure-lines.json agy row (status ERROR, empty response, vendor rc 1)
+            "unavailable (code 503)",  # agy stderr `error: UNAVAILABLE (code 503): Deadline expired …` (agy 1.2.11, run-log 20260926T020525Z-78105-da2d3ccf); never a bare "503"
+        ),
+    },
+}
 
 # SEMANTIC classification of stderr (tool-not-installed / vendor warning /
 # normal chatter) is the LEADER's job (the AI that receives the mirrored
@@ -358,14 +310,17 @@ OAUTH_ENV_PATTERNS: tuple[str, ...] = (
 
 # ─── Vendor exit code maps (EMPIRICAL ONLY) ───────────────────────────────
 # ONLY empirically observed exit codes are entered. An unobserved code =>
-# "unknown" => repair-agent dispatch (the repair agent web-searches, analyzes,
-# and patches an entry into this map).
+# "unknown" => repair dispatch: the read-only analyzer proposes ONE
+# classifier-extension `vendor_exit_map` entry from the measured run and the
+# leader applies it with apply_patch.py (nobody edits these maps from a proposal).
 # Tier 1 docs (Gemini PR #13728: 41/42/52/53/130, Codex mintlify: 2/3/4/130)
 # never triggered in this environment, so NOT entered — add after observing.
 
 GEMINI_VENDOR_EXIT_MAP: dict[int, str] = {
     0: "ok",
-    # 41/42/52/53/130 = docs-only so far (anthropics/claude-code#13728 /
+    # 41 (FATAL_AUTHENTICATION_ERROR) is decided by classify()'s auth rung,
+    # not this map (R-AUTH (ii); gemini CLI v0.60.0 exitCodes.ts).
+    # 42/52/53/130 = docs-only so far (anthropics/claude-code#13728 /
     # headless docs) — add after empirical observation.
 }
 
@@ -391,11 +346,26 @@ ANTIGRAVITY_VENDOR_EXIT_MAP: dict[int, str] = {
                             # Source: run-log 20260625T082029Z-98429-e4610255.json (vendor_exit_code=0,
                             # extraction_error=no-sentinel, full Korean answer in stdout, classification=unknown).
 }
-# populated empirically by the agy-wrapper-repair sub-agent
+# new agy codes arrive as classifier-extension entries (analyzer proposes, apply_patch.py writes)
 
-# Matched ONLY in the antigravity classify arm, only on the no-answer path;
-# NOT added to shared OAUTH_ENV_PATTERNS (FP-safe).
+# agy only, in no raw-text list (FP-safe). Matched ONLY on a
+# line BEGINNING with it (`_agy_banner_line`: lines split on LF only; the
+# classifier extension's learned variants too), in three places: the
+# auth-carrier rung (`_auth_carrier_stop`, which the agy driver runs on a failed
+# or timed-out call — agy's stderr, and inside a finish-schema validation report
+# in `result.error`); the antigravity classify arm's L2 rung over the no-answer
+# blob (whose typed stream signals carry a `[agy signal] ` prefix, so a tool's
+# error text never starts a line); and the model-catalog check
+# (`antigravity_wrapper._catalog_auth_observed`, on a catalog call that did not
+# complete with the model listed).
 AGY_AUTH_BANNER_PATTERNS = ("authentication required. please visit the url",)
+# claude's measured authentication result lines ("Not logged in · Please run
+# /login", "Invalid API key · Fix external API key"): beside a non-null
+# `structured_output` (the answer) only these and a 401 still STOP
+# (`_auth_carrier_stop`, R-AUTH; host B returns the answer there — a recorded
+# host difference).
+_CLAUDE_AUTH_BANNER_PATTERNS = ("not logged in · please run /login",
+                                "invalid api key · fix external api key")
 
 
 # ── Original-text JSON guard: duplicate members (spec C14 / R-BIND) ───────
@@ -852,6 +822,27 @@ def _agy_conversation_ids(values) -> tuple:
     return ids, over
 
 
+def _agy_runtime_models(values) -> tuple:
+    """(models, omitted) — the ORDERED, DISTINCT exposed models among
+    `values` (R-MODEL): only a non-blank string counts, each is capped like
+    every other vendor string, and the list is capped like the conversation
+    ids, the overflow counted in `omitted`. Report only: which value
+    contradicts a request is the wrapper's decision."""
+    models: list = []
+    over = 0
+    for v in values:
+        if not isinstance(v, str) or not v.strip():
+            continue
+        v = v[:_AGY_DIGEST_VALUE_CAP]
+        if v in models:
+            continue
+        if len(models) >= _AGY_DIGEST_LIST_CAP:
+            over += 1
+            continue
+        models.append(v)
+    return models, over
+
+
 def digest_agy_stream(events: list, result=None) -> dict:
     """Fold a parsed event list into a bounded, deterministic read-audit
     digest. REPORT-ONLY: no policy, no judgment — the caller (leader /
@@ -875,8 +866,14 @@ def digest_agy_stream(events: list, result=None) -> dict:
     `tool_info` / `parameters` / `error`, or a non-string `name` / `state`,
     folds to a bounded default instead of raising — a traceback here would
     cost the caller its classification, summary line, audit row and run-log.
+
+    `runtime_models` (R-MODEL, owner ruling Q10-2): the ordered DISTINCT
+    non-blank `init.model` strings the vendor exposed in this attempt
+    (`_agy_runtime_models`; `runtime_models_omitted` when the list cap
+    overflows); OMITTED when no `init` event exposes one — never inferred.
     """
     files_read: list = []
+    runtime_models: list = []
     writes: list = []
     commands: list = []
     denied: list = []
@@ -913,6 +910,10 @@ def digest_agy_stream(events: list, result=None) -> dict:
     for ev in events or []:
         if isinstance(ev, dict) and ev.get("event") == "init":
             conv_seen.append(ev.get("conversation_id"))
+            init = ev.get("init")
+            model = init.get("model") if isinstance(init, dict) else None
+            if isinstance(model, str) and model.strip():
+                runtime_models.append(model)
         su = ev.get("step_update") if isinstance(ev, dict) else None
         if not isinstance(su, dict):
             continue
@@ -996,6 +997,11 @@ def digest_agy_stream(events: list, result=None) -> dict:
     # from an older audit that has no key at all.
     digest["conversation_ids"], digest["conversation_ids_omitted"] = \
         _agy_conversation_ids(conv_seen)
+    models, over = _agy_runtime_models(runtime_models)
+    if models:
+        digest["runtime_models"] = models
+    if over:
+        digest["runtime_models_omitted"] = over
     if isinstance(result, dict):
         # r2/C3: `status` was the ONE uncapped vendor string left in the
         # digest, and it is replicated into the merged terminal fields AND
@@ -1036,7 +1042,10 @@ def merge_agy_digests(digests) -> Optional[dict]:
     keeps each attempt's own pre-dedupe totals), and takes the terminal fields
     (status / duration / usage) from the LAST attempt — the one whose
     classification the caller returns. Returns None for an empty input (no
-    completed vendor call ⇒ no digest, as before).
+    completed vendor call ⇒ no digest, as before). `runtime_models` rides each
+    `attempts[]` row (omit-when-empty); the top level carries the ordered
+    distinct union. Which attempt is judged against a request is the
+    wrapper's decision.
     """
     items = [d for d in (digests or []) if isinstance(d, dict)]
     if not items:
@@ -1082,6 +1091,17 @@ def merge_agy_digests(digests) -> Optional[dict]:
         conv_omitted += int(d.get("conversation_ids_omitted") or 0)
     merged["conversation_ids"], over = _agy_conversation_ids(conv_all)
     merged["conversation_ids_omitted"] = conv_omitted + over
+    exposed: list = []
+    models_omitted = 0
+    for d in items:
+        vals = d.get("runtime_models")
+        exposed.extend(vals if isinstance(vals, list) else [])
+        models_omitted += int(d.get("runtime_models_omitted") or 0)
+    models, over = _agy_runtime_models(exposed)
+    if models:
+        merged["runtime_models"] = models
+    if models_omitted + over:
+        merged["runtime_models_omitted"] = models_omitted + over
     last = items[-1]
     for key in ("status", "duration_seconds", "usage"):
         if key in last:
@@ -1131,6 +1151,10 @@ def merge_agy_digests(digests) -> Optional[dict]:
         # omit-when-default rule; a per-attempt fact, never at the top level.
         if d.get("steps_open"):
             entry["steps_open"] = d["steps_open"]
+        if isinstance(d.get("runtime_models"), list) and d["runtime_models"]:
+            entry["runtime_models"] = d["runtime_models"]
+        if d.get("runtime_models_omitted"):
+            entry["runtime_models_omitted"] = d["runtime_models_omitted"]
         for key in _AGY_DIGEST_LISTS:
             vals = d.get(key)
             entry[key] = (len(vals) if isinstance(vals, list) else 0) \
@@ -1205,6 +1229,27 @@ def _agy_emit_signals(buckets, cap: int = _AGY_SIGNAL_CAP) -> list:
     return out[:cap]
 
 
+def _never_raises(fallback, cli: Optional[str] = None):
+    """Classification never raises (essential 3; spec R-TERMINAL): an Exception
+    inside the wrapped classifier / extractor is ONE stderr line naming the CLI
+    and the exception CLASS (never its message — vendor bytes) and
+    `fallback(exc)` instead; SystemExit / KeyboardInterrupt (BaseException)
+    pass. `cli` labels a function without a `cli` first argument. The caller
+    then writes the summary, the audit row and the run-log as for any verdict."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def guarded(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as exc:   # noqa: BLE001 — the guard itself
+                label = cli or (args[0] if args else kwargs.get("cli"))
+                log(f"[wrapper] {label}: classification guard caught {type(exc).__name__}")
+                return fallback(exc)
+        return guarded
+    return deco
+
+
+@_never_raises(lambda exc: [], cli="antigravity")
 def agy_classify_signals(events: list, result=None) -> list:
     """STRUCTURAL failure strings from an agy stream, for classify() (r1/R2).
 
@@ -1306,7 +1351,18 @@ def agy_classify_signals(events: list, result=None) -> list:
             tool_budget = [_AGY_SIGNAL_EVENT_CAP]
             _take(info.get("error"), tools, tool_budget)
     if isinstance(result, dict):
-        _take(result.get("error"), terminal, [_AGY_SIGNAL_EVENT_CAP])
+        err = result.get("error")
+        msg = err.get("message") if isinstance(err, dict) else err
+        if isinstance(msg, str) and _AGY_SCHEMA_REPORT_RE.match(_agy_first_line(msg)):
+            # a finish-schema validation report echoes the model's answer —
+            # model text (R-CLASSIFY): only its lines beginning with agy's
+            # sign-in banner are forwarded, nothing else
+            budget = [_AGY_SIGNAL_EVENT_CAP]
+            for ln in msg.split("\n"):
+                if _agy_banner_line(ln):
+                    _take(ln, terminal, budget)
+        else:
+            _take(err, terminal, [_AGY_SIGNAL_EVENT_CAP])
 
     return _agy_emit_signals((terminal, steps, tools))
 
@@ -1317,10 +1373,12 @@ SERVER_CAP_MAX_RETRIES = len(SERVER_CAP_BACKOFF_S)
 
 
 # ─── Audit rotation policy ────────────────────────────────────────────────
-# audit.jsonl is append-only operational telemetry, so it must be bounded too.
-# Rotate the active file after append once it crosses 10 MB, then keep at most
-# five archives / 50 MB per CLI. The per-call run-log remains the detailed IPC
-# artifact; audit is durable routing telemetry, not an unbounded datastore.
+# audit.jsonl is append-only operational telemetry. After an append that takes
+# the active file past AUDIT_ROTATE_BYTES it is rotated, and at that rotation the
+# oldest archives past AUDIT_MAX_ARCHIVES / AUDIT_ARCHIVE_MAX_BYTES per CLI are
+# deleted (a failed delete is skipped).
+# The per-call run-log remains the detailed IPC artifact; audit is durable
+# routing telemetry.
 AUDIT_ROTATE_BYTES = 10 * 1024 * 1024  # 10 MB
 AUDIT_MAX_ARCHIVES = 5
 AUDIT_ARCHIVE_MAX_BYTES = AUDIT_ROTATE_BYTES * AUDIT_MAX_ARCHIVES
@@ -1329,12 +1387,14 @@ AUDIT_ARCHIVE_MAX_BYTES = AUDIT_ROTATE_BYTES * AUDIT_MAX_ARCHIVES
 # ─── Run-log policy (per-execution artifact, dispatch-SKILL input) ────────
 # Separate from audit.jsonl: one file per FAILED call (rc != 0) at
 # _logs/<cli>/runs/<UTC-ts>-<pid>-<uuid8>.json — successes never dispatch the
-# repair agent, so no file. The dispatch SKILL passes only the PATH in the
+# repair agent, so no file (a review attempt writes one for every call, under
+# its own TRIAD_REVIEW_LOG_DIR). The dispatch SKILL passes only the PATH in the
 # agent prompt and the agent fetches it with its Read tool, isolating large
 # vendor stdout / non-ASCII / special-char escaping from prompt transport.
-# 2-layer cleanup:
-#   Primary  = the dispatch SKILL rm's it right after the repair agent returns
-#   Failsafe = this function unlinks oldest-first when the dir cap is exceeded
+# Nothing outside this code deletes a run-log (R-CLEANUP); two coded layers do:
+#   the next-run sweep (`prune_stale_run_logs`, the role's age floor) and
+#   the cap prune (`_prune_run_logs`, oldest first past these caps, never a
+#   file younger than the floor).
 _RUN_LOG_MAX_FILES = 100
 _RUN_LOG_MAX_BYTES = 20 * 1024 * 1024  # 20 MB total cap
 
@@ -1411,6 +1471,23 @@ class RunResult:
     # run-log key OMITTED when None; NOT redacted — a catalog slug is not
     # prompt-bearing (the vendor_version class).
     requested_model: Optional[str] = None
+    # The reasoning / effort tier the caller REQUESTED (codex `--reasoning`,
+    # claude / agy `--effort`; spec C35 as amended), or None when none was
+    # requested. Same RECORD-ONLY, omit-when-None, unredacted shape as
+    # requested_model.
+    requested_reasoning: Optional[str] = None
+    # R-REVIEW-WEB (case C32): True on a review leg dispatched with web
+    # (`--review-web`); recorded in the audit row only when True.
+    review_web: bool = False
+    # R-INVEST (case C31): True on a claude worker dispatched with web
+    # (`--web`); recorded in the audit row only when True.
+    web: bool = False
+    # The model the vendor EXPOSED at runtime (agy stream `init.model`,
+    # R-MODEL / DL-9): the contradicting value when the run is refused, else
+    # the admitted (last) attempt's first exposed value; None when that
+    # attempt exposed none — never inferred from the request. Same
+    # omit-when-None, unredacted record shape as requested_model.
+    runtime_model: Optional[str] = None
     # False only when NO vendor process was ever created for this result (the
     # pre-spawn stdin refusal and a Popen OSError). The receipt reports
     # `binary: null` + `stdin_delivery: not-started` in that case — a path that
@@ -1444,8 +1521,34 @@ class RunResult:
 # ─── Helpers ──────────────────────────────────────────────────────────────
 
 def log(msg: str) -> None:
-    ts = time.strftime("%Y-%m-%dT%H:%M:%S")
-    print(f"[{ts}] {msg}", file=sys.stderr)
+    """One diagnostic line on stderr (A4 / R-TERMINAL): a failed write drops
+    that line (or its rest), never the answer or the exit, and a dropped line
+    is never written later — it goes straight to the descriptor, no buffered
+    stream holds it; a stderr closed at start drops every line. A full
+    non-blocking pipe drops the line at once and a blocking pipe nobody drains
+    blocks — both recorded limits. Encoded like the relaxed diagnostic stream
+    (`_relax_diagnostic_stream`). A stream with no descriptor (an in-process
+    harness's text object) gets the line through its own write."""
+    line = f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] {msg}\n"
+    stream = sys.stderr
+    try:
+        fd = stream.fileno()
+    except (AttributeError, OSError, ValueError):   # None (fd 2 closed) or no descriptor
+        try:
+            stream.write(line)
+        except (AttributeError, OSError, ValueError):
+            pass
+        return
+    try:
+        stream.flush()   # text a caller already wrote keeps its order
+    except (OSError, ValueError):
+        pass
+    data = line.encode(getattr(stream, "encoding", None) or "utf-8", "backslashreplace")
+    while data:
+        try:
+            data = data[os.write(fd, data):]   # a partial write is continued
+        except OSError:   # a full pipe, a closed reader, a full disk: the rest is dropped
+            return
 
 
 # ── payload vs diagnostic streams (gate-1 r7 rows r7-c2 / r7-k5) ─────────
@@ -1604,12 +1707,11 @@ def _load_classifier_extension() -> dict:
     loader is defensive: any wrong-typed node is dropped (never propagated into
     classify()). Missing / unreadable / corrupt / non-dict -> {}. A
     structurally-malformed-but-valid-JSON file yields only its well-typed entries,
-    so classify() can never raise on it."""
+    so classify() can never raise on it. The file is parsed on each call, and an
+    ignored entry is reported in one line per load."""
     p = _classifier_extension_path()
     try:
-        if not p.exists():
-            return {}
-        data = json.loads(p.read_text())
+        data = json.loads(p.read_bytes().decode("utf-8"))
     except (ValueError, OSError):
         return {}
     if not isinstance(data, dict):
@@ -1621,13 +1723,36 @@ def _load_classifier_extension() -> dict:
         cleaned: dict = {}
         vmap = entry.get("vendor_exit_map")
         if isinstance(vmap, dict):
-            cleaned["vendor_exit_map"] = {
-                k: v for k, v in vmap.items() if isinstance(v, str)
-            }
+            cleaned["vendor_exit_map"] = {}
+            for k, v in vmap.items():
+                if not isinstance(v, str):
+                    continue
+                # R-TOKENS / C8 (26a final fix 1, F6): only the classes the applier
+                # allows for an exit-code proposal — any other token would record a
+                # pair the summary's exit contradicts
+                if v not in VENDOR_EXIT_PROPOSAL_CLASSES:
+                    log(f"[wrapper] {cli}: classifier extension vendor_exit_map {k!r}: "
+                        f"{v!r} is no exit-code proposal class — entry ignored")
+                    continue
+                cleaned["vendor_exit_map"][k] = v
         pats = entry.get("patterns")
+        if isinstance(pats, dict) and "OAUTH_ENV_PATTERNS" in pats:
+            # R-AUTH: no raw-text authentication phrase is kept (a raw-text
+            # `401 unauthorized` produced a MEASURED false STOP); the STOPs come
+            # only from the structured carriers. The list is ignored, one line per load.
+            log(f"[wrapper] {cli}: classifier extension OAUTH_ENV_PATTERNS ignored — "
+                f"no raw-text authentication phrase is kept")
+            pats = {k: v for k, v in pats.items() if k != "OAUTH_ENV_PATTERNS"}
         if isinstance(pats, dict):
             cleaned["patterns"] = {
-                name: [s for s in lst if isinstance(s, str)]
+                # the applier's own normalization (apply_classifier_patch):
+                # lowercased FIRST, then >= _MIN_SUBSTRING_LEN chars, some
+                # alphanumeric — a hand-edited short / blank entry would match
+                # everything (a substring list) or every line (a line-start
+                # list): dropped
+                name: [low for s in lst if isinstance(s, str)
+                       if len(low := s.lower()) >= _MIN_SUBSTRING_LEN
+                       and any(ch.isalnum() for ch in low)]
                 for name, lst in pats.items()
                 if isinstance(lst, list)
             }
@@ -1679,7 +1804,11 @@ def runtime_allowed_roots() -> list[Path]:
     for item in raw.split(os.pathsep):
         if not item:
             continue
-        path = Path(item).expanduser()
+        try:
+            path = Path(item).expanduser()
+        except RuntimeError:   # `~<no-such-user>` (C28: the same reason as an argument)
+            raise ValueError("TRIAD_WRAPPER_ALLOWED_ROOTS entry cannot be resolved "
+                             "(no such home directory)") from None
         if not path.is_absolute():
             raise ValueError(
                 "TRIAD_WRAPPER_ALLOWED_ROOTS entries must be absolute paths")
@@ -1697,12 +1826,23 @@ def runtime_allowed_roots() -> list[Path]:
 
 def _ensure_within_runtime_roots(path: Path, label: str) -> Path:
     resolved = path.resolve(strict=True)
-    roots = runtime_allowed_roots()
+    try:
+        roots = runtime_allowed_roots()
+    except (ValueError, OSError, RuntimeError) as e:   # a roots-config fault (C28)
+        cause = (str(e) if isinstance(e, ValueError) else "TRIAD_WRAPPER_ALLOWED_ROOTS "
+                 f"entry cannot be resolved ({_resolve_error(e)})")
+        raise ValueError(f"{label} {_refusal_path(resolved, label)}: {cause}") from None
     if not roots:
         return resolved          # lab default: no containment
     if not any(_path_is_within(resolved, root) for root in roots):
+        # C28: name the candidate; under the redaction mode the candidate and
+        # the roots are masked like every other refusal path.
+        if _audit_redact_enabled():
+            raise ValueError(f"{label} {_refusal_path(resolved, label)} must be under "
+                             f"an allowed runtime root (roots masked)")
         allowed = ", ".join(str(root) for root in roots)
-        raise ValueError(f"{label} must be under an allowed runtime root: {allowed}")
+        raise ValueError(f"{label} {resolved} must be under an allowed runtime root: "
+                         f"{allowed}")
     return resolved
 
 
@@ -1718,6 +1858,28 @@ except OSError:  # pragma: no cover - cwd removed before the wrapper started
     _PROCESS_ENTRY_CWD = None
 
 
+# C28 refusal masking (spec: "identifying the resolved candidate through the
+# same masking policy"; "no unmasked-path expansion"): under the redaction mode
+# a refusal names the candidate by its mask, never the given text, the resolved
+# path or the process cwd. The prompt-file mask is the one the summary line and
+# the audit row already use.
+_REFUSAL_MASKS = {"--prompt-file": "<redacted:prompt-file>", "--cwd": "<redacted:cwd>"}
+
+
+def _refusal_path(path, label: str) -> str:
+    if not _audit_redact_enabled():
+        return str(path)
+    return _REFUSAL_MASKS.get(label, "<redacted:path>")
+
+
+def _resolve_error(e: BaseException) -> str:
+    """The reason a candidate could not be resolved, without its path (an
+    OSError's text and a symlink-loop RuntimeError's text both carry it)."""
+    if isinstance(e, RuntimeError):
+        return "symlink loop"
+    return getattr(e, "strerror", None) or type(e).__name__
+
+
 def _resolve_against_entry_cwd(raw: str, label: str) -> Tuple[Path, str]:
     """Expand `raw` and, when relative, rebase it on `_PROCESS_ENTRY_CWD`.
 
@@ -1725,14 +1887,21 @@ def _resolve_against_entry_cwd(raw: str, label: str) -> Tuple[Path, str]:
     so a relative input is diagnosed with BOTH the text given and the path it
     resolved to (the record the owner's mechanical-resolution directive asks
     for), while an absolute input keeps its original wording."""
-    path = Path(raw).expanduser()
+    try:
+        path = Path(raw).expanduser()
+    except RuntimeError:   # `~<no-such-user>`: no home directory (C28)
+        raise ValueError(f"{label} {_refusal_path(repr(raw), label)}: cannot be "
+                         f"resolved (no such home directory)") from None
     if path.is_absolute():
         return path, ""
     if _PROCESS_ENTRY_CWD is None:
+        given = _refusal_path(repr(raw), label)
         raise ValueError(
-            f"{label} {raw!r} is relative but the wrapper's process-entry "
+            f"{label} {given} is relative but the wrapper's process-entry "
             f"working directory is gone — pass an absolute path")
     candidate = _PROCESS_ENTRY_CWD / path
+    if _audit_redact_enabled():
+        return candidate, f"{label} (relative, resolved against the process cwd) -> "
     return candidate, (f"{label} {raw!r} resolved against process cwd "
                        f"{_PROCESS_ENTRY_CWD} -> ")
 
@@ -1744,19 +1913,33 @@ def resolve_prompt_file(prompt_file: str) -> Path:
     3-way unanimous 2026-07-11) that a relative --prompt-file must fail loud:
     the refusal fired a third time on a real dispatch, so resolution is now
     MECHANICAL — rebase on the process-entry cwd, then run EVERY pre-existing
-    validation unchanged (containment roots, existence, is_file; the wrappers'
-    own non-empty check still follows). The hazard D-2 guarded — a reverted
-    cwd naming a same-named WRONG file — is now covered by RECORDING the
-    resolved absolute path on the wrapper summary line and in the audit row
-    (`prompt_file_resolved`), so a mis-resolution is legible afterwards
-    instead of being refused up front."""
-    candidate, origin = _resolve_against_entry_cwd(prompt_file, "--prompt-file")
+    validation unchanged (containment roots, existence, is_file;
+    `load_prompt_text` then refuses an empty file with the same masked
+    name). The hazard D-2 guarded — a reverted cwd naming a same-named WRONG
+    file — is now covered by RECORDING the resolved absolute path on the
+    wrapper summary line and in the audit row (`prompt_file_resolved`), so a
+    mis-resolution is legible afterwards instead of being refused up front."""
+    return _resolve_input_file(prompt_file, "--prompt-file")
+
+
+def _resolve_input_file(raw: str, label: str) -> Path:
+    """The C28 resolution of any option naming an existing input file (spec
+    ccf168a: the schema-file options follow the --prompt-file rule): a relative
+    path rebased on the process-entry cwd, then containment, existence and
+    is_file; a refusal names the resolved candidate through the masking policy."""
+    candidate, origin = _resolve_against_entry_cwd(raw, label)
     try:
-        resolved = _ensure_within_runtime_roots(candidate, "--prompt-file")
+        resolved = _ensure_within_runtime_roots(candidate, label)
     except (FileNotFoundError, NotADirectoryError):
-        raise ValueError(f"{origin}{candidate}: not a file") from None
+        raise ValueError(
+            f"{origin}{_refusal_path(candidate, label)}: not a file") from None
+    except (OSError, RuntimeError) as e:   # permission / ELOOP / symlink loop
+        raise ValueError(
+            f"{origin}{_refusal_path(candidate, label)}: cannot be resolved "
+            f"({_resolve_error(e)})") from None
     if not resolved.is_file():
-        raise ValueError(f"{origin}{resolved}: not a file")
+        raise ValueError(
+            f"{origin}{_refusal_path(resolved, label)}: not a file")
     return resolved
 
 
@@ -1774,7 +1957,16 @@ def load_prompt_text(prompt: Optional[str], prompt_file: Optional[str]) -> str:
         return prompt
     if not prompt_file:
         raise ValueError("either --prompt or --prompt-file is required")
-    return resolve_prompt_file(prompt_file).read_text(encoding="utf-8")
+    resolved = resolve_prompt_file(prompt_file)
+    try:
+        text = resolved.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:   # name the candidate, masked (C28)
+        raise ValueError(f"--prompt-file {_refusal_path(resolved, '--prompt-file')}: "
+                         f"{getattr(e, 'strerror', None) or type(e).__name__}") from None
+    if not text.strip():   # the same refusal shape for an empty file (C28)
+        raise ValueError(f"--prompt-file {_refusal_path(resolved, '--prompt-file')}: "
+                         f"empty prompt")
+    return text
 
 
 
@@ -1791,9 +1983,15 @@ def validate_wrapper_cwd(cwd: Optional[str]) -> Optional[str]:
         resolved = _ensure_within_runtime_roots(candidate, "--cwd")
     except (FileNotFoundError, NotADirectoryError):
         raise ValueError(
-            f"{origin}{candidate}: not an existing directory") from None
+            f"{origin}{_refusal_path(candidate, '--cwd')}: not an existing "
+            f"directory") from None
+    except (OSError, RuntimeError) as e:   # permission / ELOOP / symlink loop
+        raise ValueError(
+            f"{origin}{_refusal_path(candidate, '--cwd')}: cannot be resolved "
+            f"({_resolve_error(e)})") from None
     if not resolved.is_dir():
-        raise ValueError(f"{origin}{resolved}: not an existing directory")
+        raise ValueError(
+            f"{origin}{_refusal_path(resolved, '--cwd')}: not an existing directory")
     return str(resolved)
 
 
@@ -1955,7 +2153,8 @@ def _summary_field(value: str) -> str:
 
 
 def _summary_tail(dispatch_attempt: int, prompt_file_resolved: Optional[str],
-                  requested_model: Optional[str] = None) -> str:
+                  requested_model: Optional[str] = None,
+                  requested_reasoning: Optional[str] = None) -> str:
     """Recorded-facts tail of the one-line `[wrapper] <cli> …` summary.
 
     Appended AFTER `elapsed=` so the dispatch SKILLs' prefix grep
@@ -1965,7 +2164,9 @@ def _summary_tail(dispatch_attempt: int, prompt_file_resolved: Optional[str],
     as it is. `model=` (spec C35 / DL-3) follows `prompt_file=` only when a
     model was REQUESTED; it is escaped by the same `_summary_field` and never
     redacted (a catalog slug is not prompt-bearing). Absent = the CLI's config
-    default was used."""
+    default was used. `reasoning=` (C35 as amended) follows `model=` only when
+    a reasoning / effort tier was REQUESTED, escaped and unredacted the same
+    way."""
     tail = f" attempt={dispatch_attempt}"
     if prompt_file_resolved:
         tail += (" prompt_file="
@@ -1973,6 +2174,8 @@ def _summary_tail(dispatch_attempt: int, prompt_file_resolved: Optional[str],
                     else _summary_field(prompt_file_resolved)))
     if requested_model is not None:
         tail += " model=" + _summary_field(requested_model)
+    if requested_reasoning is not None:
+        tail += " reasoning=" + _summary_field(requested_reasoning)
     return tail
 
 
@@ -2005,8 +2208,50 @@ def _emit_canonical_summary(cli: str, result) -> None:
         f"exit={result.exit_code} vendor={result.vendor_exit_code} "
         f"elapsed={result.elapsed_s:.1f}s"
         + _summary_tail(result.dispatch_attempt, result.prompt_file_resolved,
-                        result.requested_model)
+                        result.requested_model, result.requested_reasoning)
     )
+
+
+def _guarded_main(cli: str, body: Callable[[dict], int]) -> int:
+    """The ONE guard per wrapper (essential 3; 26a final fix 1, F1). `body(ctx)`
+    is the wrapper's whole `main` — pre-dispatch probes, the run, extraction,
+    payload building, classification. It fills `ctx` as it goes: `cmd`,
+    `prompt`, `attempt`, `prompt_file`, `model`, `reasoning`; `result` once a
+    run returned; `recorded` once its audit row is written. An Exception
+    escaping it is ONE stderr line (the class, never the message — vendor
+    bytes). Before the records it is a terminal record through the record
+    seam: `extraction-error` / 1 after a vendor exit 0, else `unknown` / 1, with
+    the summary, the audit row and the run-log. After the records (for example
+    a failed stdout write) it is that one line and exit 1, and the records keep
+    the run's verdict — a recorded limit (spec DL-98). SystemExit /
+    KeyboardInterrupt pass through."""
+    ctx: dict = {"cmd": [cli], "prompt": "", "attempt": 1, "prompt_file": None,
+                 "model": None, "reasoning": None, "result": None, "recorded": False}
+    try:
+        return body(ctx)
+    except Exception as exc:   # noqa: BLE001 — the guard itself
+        log(f"[wrapper] {cli}: wrapper guard caught {type(exc).__name__}")
+        if ctx["recorded"]:
+            return EXIT_CLI_FAIL   # the records already carry the verdict
+        why = f"wrapper guard: {type(exc).__name__}"
+        result = ctx["result"]
+        if not isinstance(result, RunResult):
+            result = RunResult(EXIT_CLI_FAIL, "", "", 0.0, spawned=False,
+                               dispatch_attempt=ctx["attempt"],
+                               prompt_file_resolved=ctx["prompt_file"],
+                               requested_model=ctx["model"],
+                               requested_reasoning=ctx["reasoning"])
+        result.classification = ("extraction-error" if result.vendor_exit_code == 0
+                                 else "unknown")
+        result.exit_code = EXIT_CLI_FAIL
+        result.extraction_error = why
+        result.final_answer = ""
+        _emit_canonical_summary(cli, result)
+        audit(cli, ctx["cmd"], ctx["prompt"], result)
+        run_log_path = emit_run_log(cli, sys.argv, ctx["cmd"], ctx["prompt"], result)
+        if run_log_path is not None:
+            log(f"run-log: {run_log_path}")
+        return EXIT_CLI_FAIL
 
 
 def _record_transport(result: RunResult, cli: str, cmd: list[str]) -> dict:
@@ -2030,6 +2275,244 @@ def _json_len(value: Any) -> int:
     except (TypeError, ValueError):
         return len(str(value))
 
+# ── R-AUTH (ii): the authentication STOP read from the vendor's ERROR CARRIER ──
+# An observed authentication failure (login missing or expired, an API-key-shaped
+# credential) STOPS the attempt before any other classification of the run
+# (spec R-AUTH, absolute law; R-CLASSIFY; cases C37 / C43). The shared L2 order
+# below checks server-capacity before oauth-env, so an auth sentence beside a
+# capacity sentence used to be retried. This rung reads ONLY the vendor's own
+# error carrier — never an answer, agent message or tool output — so a phrase is
+# matched where the vendor put it, not wherever a reviewed file quotes it:
+#   codex   the JSONL `error` item message and the `turn.failed` error message
+#           (transient retry noise only on a run that exited 0 with an
+#           answer and turn.completed); and a stderr line BEGINNING
+#           `Error loading configuration:`, printed before any JSONL event
+#   claude  the `is_error` envelope: `api_error_status` 401, or its `result` text;
+#           beside a non-null `structured_output` (the answer, R2) only a 401 or
+#           claude's measured auth result line (A keeps that STOP; B returns the
+#           answer before reading `is_error` — a recorded host difference)
+#   gemini  the error object (stdout as one JSON document, any indentation; the
+#           trailing stderr envelope): its message, or code 41
+#           (FatalAuthenticationError's exit code, gemini CLI 0.60.0 bundle) /
+#           401 (HTTP Unauthorized); a fatal TOOL error's message ("Error
+#           executing tool …") is tool output — only its code is read
+#   agy     the stream's `result.error`, and a stderr line BEGINNING with the
+#           auth banner, built-in or the extension's (a line prefix; a banner
+#           quoted mid-line does not count)
+# Every carrier is split into lines on LF only (spec R-CLASSIFY fact): a bare
+# CR or U+2028 inside a message is part of its line.
+#   gemini  also the CLI's own exit code 41 (FATAL_AUTHENTICATION_ERROR), whose
+#           message is plain stderr text with no error object (read first).
+# WHAT matches inside a carrier (R-CLASSIFY, spec fcddd68 / 5ccd661): the text
+# there is the vendor's, so the WHOLE authentication vocabulary is the STOP — an
+# API key, unauthorized / 401, not logged in, sign in / log in (`/login`),
+# authentication / credentials, an expired or unrefreshable token. The vendor
+# rows of `contracts/vendor-failure-lines.json` are evidence of it, not the only
+# trigger. Word-bounded, so `catalog in` / `design` never read as `log in` /
+# `sign in`; an API key needs only no LETTER before it, so a variable name
+# (`<VENDOR>_API_KEY`) counts. Outside a carrier this vocabulary is NEVER matched (the plain-
+# fragment rule; it is in no raw-blob list). AGY_AUTH_BANNER_PATTERNS also
+# counts inside a carrier.
+# An api-key helper counts inside an identifier too (`apiKeyHelper`); a token
+# needs its qualifier, so token-LIMIT outcomes ("max tokens", "context
+# length") stay out.
+_AUTH_VOCABULARY = re.compile(
+    r"(?<![a-z])api[ _-]?key"
+    r"|\b(?:unauthori[sz]ed|unauthenticated|401|not logged in"
+    r"|log ?in|sign ?in|log ?out|authenticat\w*|credentials?"
+    r"|(?:auth|access|refresh|session|bearer|oauth) token|token data"
+    r"|token (?:is |has |has been )?expired|expired (?:token|session)"
+    r"|session (?:has )?expired|could not be refreshed|credit balance)\b", re.I)
+# gemini's own log line on a stale login (gemini CLI 0.60.0 bundle,
+# `debugLogger.debug("Cached credentials are not valid:", …)`): a stderr line
+# BEGINNING with it is a carrier — the run that prints it then fails or hangs.
+_GEMINI_AUTH_LOG_PREFIXES = ("cached credentials are not valid:",)
+_CODEX_CONFIG_ERROR_PREFIX = "error loading configuration:"
+_GEMINI_AUTH_ERROR_CODES = frozenset({41, 401})
+_GEMINI_TOOL_ERROR_PREFIX = "error executing tool "
+
+
+def _json_lines(text: str):
+    """Every JSON object on its own line of `text` (undecodable lines skipped).
+    Lines are split on LF only (R-CLASSIFY fact): a bare CR / U+2028 / U+2029 /
+    U+0085 inside a JSON string is part of its line — V8 and serde_json emit
+    them raw — and `.strip()` absorbs a trailing CR."""
+    for ln in (text or "").split("\n"):
+        ln = ln.strip()
+        if not ln.startswith("{"):
+            continue
+        try:
+            obj = json.loads(ln)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(obj, dict):
+            yield obj
+
+
+def _json_document(text: str) -> Optional[dict]:
+    """`text` parsed as ONE JSON object (any indentation), or None."""
+    try:
+        obj = json.loads((text or "").strip())
+    except (ValueError, RecursionError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _gemini_trailing_envelope(stderr: str) -> Optional[dict]:
+    """The JSON object that ENDS gemini's stderr, or None. Reverse scan with
+    raw_decode: gemini nests `{"error": {...}}` (and prints it indented), so
+    the last `{` starts the INNER object (L5 twin->SoT port, 2026-07-05)."""
+    decoder = json.JSONDecoder()
+    text = stderr or ""
+    for start in reversed([i for i, ch in enumerate(text) if ch == "{"]):
+        candidate = text[start:].strip()
+        try:
+            obj, end = decoder.raw_decode(candidate)
+        except (ValueError, RecursionError):
+            continue
+        if candidate[end:].strip() or not isinstance(obj, dict):
+            continue
+        return obj
+    return None
+
+
+def _claude_envelope(stdout: str) -> Optional[dict]:
+    """claude's print-mode JSON envelope (a fence-wrapped one too), or None."""
+    s = (stdout or "").strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else ""
+        s = s[:-3] if s.endswith("```") else s
+    return _json_document(s)
+
+
+# agy's `result.error` can echo the model's text through a finish-schema
+# validation report (host A's record; spec R-CLASSIFY fact): such a report is
+# model text, so only agy's own sign-in banner (at a line start) is read there.
+_AGY_SCHEMA_REPORT_RE = re.compile(r"^(?=.*\bschema\b)(?=.*\bvalidat)", re.I)
+
+
+def _auth_phrase(cli: str, text) -> Optional[str]:
+    """The authentication phrase a carrier's `text` shows, or None: the
+    authentication vocabulary only (no raw-text phrase list is kept, R-AUTH)."""
+    if not isinstance(text, str):
+        return None
+    m = _AUTH_VOCABULARY.search(text)
+    return m.group(0) if m else None
+
+
+def _agy_banner_line(text) -> bool:
+    """True when a line of `text` (split on LF only) BEGINS with an agy sign-in
+    banner — built-in or the classifier extension's learned variants."""
+    ext = _load_classifier_extension().get("antigravity", {}).get("patterns", {})
+    banners = (tuple(AGY_AUTH_BANNER_PATTERNS)
+               + tuple(ext.get("AGY_AUTH_BANNER_PATTERNS", ())))
+    return isinstance(text, str) and any(
+        ln.strip().lower().startswith(banners) for ln in text.split("\n"))
+
+
+@_never_raises(lambda exc: False)
+def _auth_carrier_stop(cli: str, stderr: str, stdout: str,
+                       vendor_exit_code: Optional[int] = None) -> bool:
+    """True when the vendor's own error carrier reports an authentication failure.
+    Every carrier is split into lines on LF only, like `_json_lines`."""
+
+    def _said(*items) -> bool:
+        return any(_auth_phrase(cli, t) for t in items)
+
+    def _lines_starting(prefixes) -> list:
+        return [ln for ln in (stderr or "").split("\n")
+                if ln.strip().lower().startswith(prefixes)]
+
+    if cli == "codex":
+        if _said(*_lines_starting((_CODEX_CONFIG_ERROR_PREFIX,))):
+            return True
+        texts: list = []
+        completed = failed = answered = False
+        for obj in _json_lines(stdout):
+            t = obj.get("type")
+            if t == "error":
+                texts.append(obj.get("message"))
+            elif t == "turn.failed":
+                failed = True
+                err = obj.get("error")
+                texts.append(err.get("message") if isinstance(err, dict) else err)
+            elif t == "turn.completed":
+                completed = True
+            elif t == "item.completed":
+                item = obj.get("item")
+                answered = answered or (
+                    isinstance(item, dict) and item.get("type") == "agent_message"
+                    and isinstance(item.get("text"), str) and bool(item["text"].strip()))
+        # transient retry noise only on a run that COMPLETED WITH AN ANSWER:
+        # turn.completed, no turn.failed, vendor exit 0 and an agent_message
+        # (codex exec exits 1 after a non-retry Error notification — codex-rs
+        # exec/src/lib.rs `error_seen` — whatever turn.completed says)
+        if completed and not failed and vendor_exit_code == 0 and answered:
+            return False
+        return _said(*texts)
+    if cli == "claude":
+        env = _claude_envelope(stdout)
+        if env is None or env.get("is_error") is not True:
+            return False
+        if env.get("api_error_status") in (401, "401"):
+            return True
+        result = env.get("result")
+        if env.get("structured_output") is not None:
+            # R2: a non-null structured_output is the answer (B returns it before
+            # reading is_error); beside it only claude's measured auth line STOPs
+            return isinstance(result, str) and result.strip().lower().startswith(
+                _CLAUDE_AUTH_BANNER_PATTERNS)
+        return _said(result)
+    if cli == "gemini":
+        # gemini's own authentication exit code (FATAL_AUTHENTICATION_ERROR,
+        # gemini CLI v0.60.0 exitCodes.ts): the code IS the carrier — its
+        # message is plain stderr text with no error object (R-AUTH (ii)).
+        # Judged before the timeout verdict too, and on a signalled run.
+        if vendor_exit_code == 41:
+            return True
+        if _said(*_lines_starting(_GEMINI_AUTH_LOG_PREFIXES)):
+            return True
+        doc = _json_document(stdout)
+        # a gemini envelope has no top-level `type` (a codex event does)
+        objs = [o for o in ([doc] if doc is not None else list(_json_lines(stdout)))
+                + [_gemini_trailing_envelope(stderr)]
+                if isinstance(o, dict) and "error" in o and "type" not in o]
+        for o in objs:
+            err = o["error"]
+            if isinstance(err, dict):
+                code = err.get("code")
+                if (isinstance(code, int) and not isinstance(code, bool)
+                        and code in _GEMINI_AUTH_ERROR_CODES):
+                    return True
+                err = err.get("message")
+            # a fatal TOOL error rides the same object as "Error executing tool
+            # <name>: …" (gemini CLI 0.60.0 handleToolError) — that text is tool
+            # output, so only the object's code is read for it
+            if isinstance(err, str) and err.lstrip().lower().startswith(
+                    _GEMINI_TOOL_ERROR_PREFIX):
+                continue
+            if _said(err):
+                return True
+        return False
+    if cli == "antigravity":
+        # the banner (built-in + the extension's learned variants) counts on a
+        # stderr line that BEGINS with it (a quoted banner inside another line
+        # does not)
+        if _agy_banner_line(stderr):
+            return True
+        for obj in _json_lines(stdout):
+            res = obj.get("result") if obj.get("event") == "result" else None
+            err = res.get("error") if isinstance(res, dict) else None
+            err = err.get("message") if isinstance(err, dict) else err
+            if isinstance(err, str) and _AGY_SCHEMA_REPORT_RE.match(_agy_first_line(err)):
+                if _agy_banner_line(err):    # a schema report: the banner only
+                    return True
+            elif _said(err):
+                return True
+    return False
+
+
+@_never_raises(lambda exc: "unknown")
 def classify(
     cli: str,
     stderr: str,
@@ -2061,24 +2544,33 @@ def classify(
     # Vendor's own retry logic already ran inside that timeout window —
     # wrapper retry on top is redundant. Surface as "timeout" → fail-fast.
     # 2026-05-03 (later-3) framework gap fix.
+    # R-AUTH (ii) — the auth STOP read from the vendor's error carrier, FIRST
+    # (before the timeout verdict, L1 and every L2 rung): no other class
+    # outranks it, and a run that ended in a TIMEOUT is judged on what it
+    # printed before (spec R-CLASSIFY, b8d338f).
+    if _auth_carrier_stop(cli, stderr, stdout,
+                          vendor_exit_code if vendor_exit_code is not None
+                          else exit_code):
+        return "oauth-env"
     if exit_code == EXIT_TIMEOUT:
         return "timeout"
+    _ext = _load_classifier_extension().get(cli, {})
+    _ext_pat = _ext.get("patterns", {})
     # L1 — vendor exit code map (empirical only). Use vendor_exit_code when
     # available; legacy callers fall back to exit_code (dead-code path).
     raw = vendor_exit_code if vendor_exit_code is not None else exit_code
-    _ext = _load_classifier_extension().get(cli, {})
     _ext_vmap = {}
     for _k, _v in _ext.get("vendor_exit_map", {}).items():
         try:
             _ext_vmap[int(_k)] = _v
         except (TypeError, ValueError):
             pass
-    _ext_pat = _ext.get("patterns", {})
 
     def _p(name, builtin):
-        """built-in patterns + per-cli extension patterns for that list."""
-        extra = _ext_pat.get(name, ())
-        return tuple(builtin) + tuple(extra)
+        """the shared built-in list + this CLI's own measured sentences for that
+        list (`CLI_PATTERNS`, R-CLASSIFY) + the per-cli extension patterns."""
+        own = CLI_PATTERNS.get(cli, {}).get(name, ())
+        return tuple(builtin) + tuple(own) + tuple(_ext_pat.get(name, ()))
 
     if cli == "gemini":
         vmap = GEMINI_VENDOR_EXIT_MAP
@@ -2115,10 +2607,16 @@ def classify(
     # (later-2) further moves SERVER_CAPACITY before TOKEN_LIMIT for
     # transient-first routing (capacity is far more frequent than token
     # limit; mis-classifying a capacity event as terminal token-limit costs
-    # a wasted retry-give-up cycle).
-    blob = ((stderr or "") + "\n" + (stdout or "")).lower()
+    # a wasted retry-give-up cycle). No raw-text oauth-env rung (R-AUTH; a
+    # raw-text `401 unauthorized` produced a measured false STOP): the auth
+    # STOPs come from the carrier rung above; an authentication failure outside
+    # every carrier ends `unknown` (never retried).
+    # agy's raw stream never enters the blob (r1/R2): its driver passes the
+    # stream as `stdout` only so the auth rung above can read `result.error`.
+    blob = ((stderr or "") + "\n"
+            + ("" if cli == "antigravity" else (stdout or ""))).lower()
     stderr_blob = (stderr or "").lower()
-    if cli == "antigravity" and any(p in blob for p in _p("AGY_AUTH_BANNER_PATTERNS", AGY_AUTH_BANNER_PATTERNS)):
+    if cli == "antigravity" and _agy_banner_line(blob):   # the one banner reading
         return "oauth-env"
     if any(p in blob for p in _p("CLI_SUB_CAP_PATTERNS", CLI_SUB_CAP_PATTERNS)):
         return "cli-subscription-cap"
@@ -2126,15 +2624,11 @@ def classify(
         return "server-capacity"
     if any(p in blob for p in _p("TOKEN_LIMIT_PATTERNS", TOKEN_LIMIT_PATTERNS)):
         return "token-limit"
-    if any(p in blob for p in _p("OAUTH_ENV_PATTERNS", OAUTH_ENV_PATTERNS)):
-        return "oauth-env"
     # schema-rejected checked LAST in L2 — capacity/terminal classes win.
     # submit-time --output-schema refusal: surfaced to caller (terminal-like),
     # NOT routed to the repair agent.
     if any(p in blob for p in _p("SCHEMA_REJECTED_PATTERNS", SCHEMA_REJECTED_PATTERNS)):
         return "schema-rejected"
-    if any(p in stderr_blob for p in _p("FANOUT_SPAWN_PATTERNS", FANOUT_SPAWN_PATTERNS)):
-        return "fanout-spawn-error"
     if any(p in stderr_blob for p in _p("CONFIG_CONFLICT_PATTERNS", CONFIG_CONFLICT_PATTERNS)):
         return "config-conflict"
     # L3 — weak vmap fallback (extraction-error) wins over the repair-dispatch
@@ -2154,7 +2648,7 @@ def load_pydantic_class(spec: str):
         raise RuntimeError(
             f"pydantic 2.x required (found: {PYDANTIC_VERSION_FOUND or 'none'}) "
             "— install into a venv from the transferred wheel set: "
-            "python3 -m venv .venv && .venv/bin/pip install --no-index "
+            "python3 -m venv --system-site-packages .venv && .venv/bin/pip install --no-index "
             "--find-links <wheel-dir> 'pydantic>=2,<3' "
             '(see the wrappers README section "Pydantic schema enforcement", '
             'or the plugin README\'s setup section — "Required" in English, '
@@ -2330,7 +2824,8 @@ def _content_nonrepairable(cleaned: str, cls) -> bool:
 
       - a payload carrying a BLOCKING finding can fail for a merely REPAIRABLE
         reason, take the repair turn, and come back a valid CLEAN reply that
-        is accepted exit 0 — and since `emit_run_log` writes on FAILURE only,
+        is accepted exit 0 — and since `emit_run_log` writes on FAILURE only
+        (outside a review attempt),
         attempt 1's blocker is then recorded NOWHERE (retry-turn laundering);
       - pydantic v2 runs `mode="after"` model validators ONLY when every FIELD
         validated, so ANY co-occurring field error suppresses a marked arm
@@ -2430,30 +2925,37 @@ def validate_response(answer_text: str, cls) -> Tuple[bool, Any]:
 
 # ─── CLI-aware answer extraction (NEW) ────────────────────────────────────
 
+@_never_raises(lambda exc: ("", f"classification guard: {type(exc).__name__}"), cli="codex")
 def extract_codex_answer(
     stdout: str, last_msg_path: Optional[str]
 ) -> Tuple[str, Optional[str]]:
     """Codex `--json` extraction. Returns (answer_text, error_or_None).
 
     Priority:
-    1. `turn.completed` overrides `error` events (Codex emits retry-as-error
-       events like `Reconnecting... N/5 (...403...)` followed by HTTP-fallback
-       success — these are not real failures).
-    2. `turn.failed` without `turn.completed` is authoritative for failure.
-    3. Read -o file (final agent_message) → success.
-    4. Fallback: last `item.completed` of type `agent_message` in JSONL.
+    1. The `-o` last-message file is the canonical answer: read FIRST, so a bad
+       event line never discards a good answer (26a final fix 1, F2).
+    2. Absent / empty file: `turn.failed` without `turn.completed` is
+       authoritative for failure (a `turn.completed` overrides `error` events —
+       codex emits retry-as-error `Reconnecting... N/5` events before an
+       HTTP-fallback success).
+    3. Fallback: the last `item.completed` `agent_message` in the JSONL. Only
+       JSON OBJECT lines are read (`_json_lines`).
     """
-    error_msg: Optional[str] = None
-    saw_completed = False
-    saw_failed = False
-    for ln in stdout.splitlines():
-        ln = ln.strip()
-        if not ln:
-            continue
+    if last_msg_path and os.path.exists(last_msg_path):
         try:
-            obj = json.loads(ln)
-        except Exception:
-            continue
+            with open(last_msg_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            return "", f"failed to read last_message file: {e}"
+        # An empty file (rc 0 but no answer written) falls through to the
+        # JSONL fallback; nothing there either -> the explicit error below.
+        if content.strip():
+            return content, None
+
+    events = list(_json_lines(stdout))
+    error_msg: Optional[str] = None
+    saw_completed = saw_failed = False
+    for obj in events:
         t = obj.get("type")
         if t == "error":
             msg = obj.get("message")
@@ -2466,131 +2968,18 @@ def extract_codex_answer(
                 error_msg = err.get("message", str(err))
         elif t == "turn.completed":
             saw_completed = True
-    # Only return error if turn explicitly failed without completion. When
-    # turn.completed is present, prior `error` events were transient retry
-    # noise (Codex emits Reconnecting... N/5 as `type:error` even when HTTP
-    # fallback succeeds). Bailing on first error text caused ~48% silent-fail
-    # rate under sustained load (2026-05-03 stress test, 628/1307 codex).
     if saw_failed and not saw_completed:
         return "", error_msg or "turn.failed without message"
 
-    if last_msg_path and os.path.exists(last_msg_path):
-        try:
-            with open(last_msg_path, "r", encoding="utf-8") as f:
-                content = f.read()
-        except Exception as e:
-            return "", f"failed to read last_message file: {e}"
-        # Empty last_msg file = abnormal — vendor reported success (rc=0)
-        # but didn't write any answer. Fall through to JSONL agent_message
-        # fallback; if that also yields nothing, the final return at the
-        # bottom emits the explicit ext_err. (2026-05-03 later-3 fault test
-        # exposed: empty file silently returned as ok.)
-        if content.strip():
-            return content, None
-
-    for ln in reversed(stdout.splitlines()):
-        ln = ln.strip()
-        if not ln:
-            continue
-        try:
-            obj = json.loads(ln)
-        except Exception:
-            continue
-        if obj.get("type") == "item.completed":
-            item = obj.get("item", {})
-            if item.get("type") == "agent_message":
-                return item.get("text", ""), None
+    for obj in reversed(events):
+        item = obj.get("item")
+        if (obj.get("type") == "item.completed" and isinstance(item, dict)
+                and item.get("type") == "agent_message"):
+            return item.get("text", ""), None
     return "", "no final answer in JSONL or last-message file"
 
 
-def extract_codex_fanout(stdout: str) -> Tuple[list[dict], bool]:
-    """Extract per-subagent raw messages from a codex --json collab stream.
-
-    Returns (agents, complete). `agents` is a list of {thread_id, message}
-    for each subagent that reached a TERMINAL state (completed / errored /
-    interrupted / shutdown / not_found — the codex-rs exec_events wire enum),
-    de-duplicated by thread_id (last terminal state wins, since `wait` then
-    `close_agent` re-emit the same state). A failed thread's `message` may be
-    absent and is recorded as "".
-
-    `complete` is True ONLY if at least one subagent was spawned AND every
-    referenced thread reached a `completed` terminal state; False for
-    zero-agent fan-out, any failed thread, or any thread that never reached
-    a terminal state.
-    """
-    by_thread: dict[str, dict] = {}
-    seen: set[str] = set()                 # every thread the parent referenced
-    final_status: dict[str, str] = {}      # last TERMINAL status per thread
-    for ln in stdout.splitlines():
-        ln = ln.strip()
-        if not ln:
-            continue
-        try:
-            obj = json.loads(ln)
-        except Exception:
-            continue
-        if obj.get("type") != "item.completed":
-            continue
-        item = obj.get("item", {})
-        if item.get("type") != "collab_tool_call":
-            continue
-        for tid in item.get("receiver_thread_ids") or []:
-            if isinstance(tid, str):
-                seen.add(tid)
-        states = item.get("agents_states") or {}
-        for tid, st in states.items():
-            if not isinstance(st, dict):
-                continue
-            seen.add(tid)
-            status = st.get("status")
-            # Wire enum (codex-rs exec_events, verified rust-v0.135.0 and
-            # v0.142.5): pending_init | running | interrupted | completed |
-            # errored | shutdown | not_found. "running" is the in-flight
-            # value ("in_progress"/"failed" never appear on the wire — the
-            # pre-2026-07-04 skip set matched a nonexistent token, so a
-            # running snapshot was mis-recorded as terminal).
-            if status in ("pending_init", "running", None):
-                continue  # not yet terminal — a later event may supersede it
-            by_thread[tid] = {"thread_id": tid, "message": st.get("message") or ""}
-            final_status[tid] = status  # last terminal status wins (completed OR errored/…)
-    # complete iff at least one thread was referenced AND every referenced thread
-    # reached a "completed" terminal state. Zero agents (fan-out ignored) or any
-    # non-completed/never-terminated thread → False. (no-silent-partial)
-    complete = bool(seen) and all(final_status.get(tid) == "completed" for tid in seen)
-    return list(by_thread.values()), complete
-
-
-# --- Implementer-report status helper (Archetype B) ---
-# re.match semantics (anchored to start of string) — only the first non-empty
-# line is consulted. A buried/echoed "STATUS:" later in the report does NOT
-# fire. Fix C (cross-family review 2026-05-31): dropped re.MULTILINE search
-# and replaced with first-non-empty-line iteration.
-_IMPL_STATUS_RE = re.compile(
-    r"STATUS:\s*(DONE_WITH_CONCERNS|DONE|NEEDS_CONTEXT|BLOCKED)\b"
-)
-
-
-def extract_implementer_status(text: str) -> Optional[str]:
-    """Deterministic grep of the implementer report's mandated first line
-    (`STATUS: <DONE|DONE_WITH_CONCERNS|NEEDS_CONTEXT|BLOCKED>`). Returns the
-    status token or None when absent/unrecognized. NOT an AI call — a
-    structural check on a constrained output. A None result is a safe
-    fallback: leader-side verification is authoritative regardless.
-
-    Only the FIRST non-empty line is consulted (Fix C). A buried or echoed
-    `STATUS:` later in the report cannot false-match.
-    """
-    if not text:
-        return None
-    for line in text.splitlines():
-        s = line.strip()
-        if not s:
-            continue  # skip leading blank lines
-        m = _IMPL_STATUS_RE.match(s)  # reuse the compiled pattern (anchored)
-        return m.group(1) if m else None  # the first non-empty line decides
-    return None
-
-
+@_never_raises(lambda exc: ("", f"classification guard: {type(exc).__name__}"), cli="gemini")
 def extract_gemini_answer(stdout: str, stderr: str) -> Tuple[str, Optional[str]]:
     """Gemini `--output-format json` extraction.
 
@@ -2620,22 +3009,10 @@ def extract_gemini_answer(stdout: str, stderr: str) -> Tuple[str, Optional[str]]
         except Exception as e:
             return "", f"stdout is not valid JSON: {e}"
 
-    # stdout empty — look for a trailing JSON object in stderr. Do not use
-    # rfind("{"): Gemini errors are nested as {"error": {"message": ...}}, so
-    # the last brace starts the INNER object, not the envelope (L5 twin→SoT
-    # port, 2026-07-05 — reverse-scan raw_decode picks the outer envelope).
-    decoder = json.JSONDecoder()
-    starts = [idx for idx, ch in enumerate(stderr) if ch == "{"]
-    for start in reversed(starts):
-        candidate = stderr[start:].strip()
-        try:
-            obj, end = decoder.raw_decode(candidate)
-        except ValueError:
-            continue
-        if candidate[end:].strip():
-            continue
-        if not isinstance(obj, dict):
-            continue
+    # stdout empty — the trailing JSON object in stderr (reverse-scan
+    # raw_decode picks the OUTER envelope: `_gemini_trailing_envelope`).
+    obj = _gemini_trailing_envelope(stderr)
+    if obj is not None:
         err = obj.get("error", {})
         if isinstance(err, dict):
             return "", err.get("message", str(err))
@@ -2643,6 +3020,7 @@ def extract_gemini_answer(stdout: str, stderr: str) -> Tuple[str, Optional[str]]
     return "", "empty stdout and no parseable error in stderr"
 
 
+@_never_raises(lambda exc: ("", f"classification guard: {type(exc).__name__}"), cli="claude")
 def extract_claude_answer(stdout: str, stderr: str) -> Tuple[str, Optional[str]]:
     """Claude `-p ... --output-format json` extraction.
 
@@ -2786,6 +3164,15 @@ _CHILD_ENV_SCRUB_CREDENTIALS = (
     "GOOGLE_GEMINI_BASE_URL",         # -> AuthType GATEWAY (endpoint override)
     "GOOGLE_VERTEX_BASE_URL",         # Vertex endpoint override
     "GEMINI_MODEL",                   # ambient model selector
+    # (gemini CLI 0.60.0 bundle, read 2026-10-04 — R-AUTH (i), C37)
+    "GEMINI_DEFAULT_AUTH_TYPE",       # selects the auth type (an api-key / Vertex class among them)
+    "GOOGLE_CLOUD_ACCESS_TOKEN",      # pre-issued bearer access token
+    # ── agy (strings of the installed agy 1.2.16 binary, read 2026-10-04;
+    # the same four names the other host removes on its formal agy route) ──
+    "AGY_ADC_AUTH",                   # selects agy's ADC login ("unset AGY_ADC_AUTH" logs out)
+    "GOOGLE_GENAI_USE_ENTERPRISE",    # enterprise (Vertex-class) backend selector
+    "GOOGLE_CLOUD_REGION",            # billing region
+    "GOOGLE_CLOUD_QUOTA_PROJECT",     # billing quota project
     # ── OpenAI / codex (strings of the installed codex native binary,
     # @openai/codex vendor/<triple>/bin/codex) ──
     "OPENAI_API_KEY",                 # API-key auth
@@ -2801,6 +3188,33 @@ _CHILD_ENV_SCRUB_CREDENTIALS = (
     "ANTHROPIC_BASE_URL",             # endpoint override
     "ANTHROPIC_MODEL",                # ambient model selector
     "ANTHROPIC_SMALL_FAST_MODEL",     # ambient small-model selector
+    # (strings of the installed Claude Code binary 2.1.289, read 2026-10-04 —
+    # R-AUTH (i), C37: route switches, keys, tokens, federation, profile, org)
+    "CLAUDE_CODE_USE_BEDROCK",        # cloud-provider route switch
+    "CLAUDE_CODE_USE_VERTEX",         # cloud-provider route switch
+    "CLAUDE_CODE_USE_FOUNDRY",        # cloud-provider route switch
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",  # cloud-provider route switch
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",  # cloud-provider route switch
+    "CLAUDE_CODE_USE_GATEWAY",        # gateway route switch
+    "CLAUDE_CODE_USE_MANTLE",         # cloud-provider route switch
+    "CLAUDE_CODE_API_BASE_URL",       # endpoint override
+    "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",  # API key passed by descriptor
+    "CLAUDE_CODE_OAUTH_TOKEN",        # pre-issued bearer token
+    "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",  # bearer token passed by descriptor
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",  # refresh token
+    "CLAUDE_CODE_GATEWAY_TOKEN",      # gateway bearer token
+    "CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR",  # gateway token passed by descriptor
+    "ANTHROPIC_FOUNDRY_API_KEY",      # cloud-provider API key
+    "ANTHROPIC_FOUNDRY_AUTH_TOKEN",   # cloud-provider bearer token
+    "ANTHROPIC_AWS_API_KEY",          # cloud-provider API key
+    "AWS_BEARER_TOKEN_BEDROCK",       # cloud-provider bearer key
+    "ANTHROPIC_IDENTITY_TOKEN",       # federation identity token
+    "ANTHROPIC_IDENTITY_TOKEN_FILE",  # federation identity token file
+    "ANTHROPIC_FEDERATION_RULE_ID",   # federation route selector
+    "ANTHROPIC_SERVICE_ACCOUNT_ID",   # federation service account
+    "ANTHROPIC_PROFILE",              # credential profile selector
+    "ANTHROPIC_ORGANIZATION_ID",      # billing organization selector
+    "ANTHROPIC_WORKSPACE_ID",         # billing workspace selector
 )
 
 # One membership set for the spawn site; the two tuples stay separate so each
@@ -2812,15 +3226,31 @@ assert not (set(_CHILD_ENV_SCRUB) & set(_CHILD_ENV_SCRUB_CREDENTIALS)), (
 )
 
 
-def scrubbed_child_env(base=None) -> dict:
+# The ONE route-specific exception to the shared list (R-NOCOST, DL-81, the
+# other host's gemini route): the gemini CLI documents that a Workspace / Code
+# Assist sign-in with Google may need a Google Cloud project set, so the project
+# family reaches a GEMINI child and is removed on every other route. The shared
+# tuple keeps every name; only this keep-set, keyed by the route, narrows it.
+_GEMINI_ROUTE_KEEP: frozenset[str] = frozenset({
+    "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_CLOUD_REGION", "GOOGLE_CLOUD_QUOTA_PROJECT",
+})
+assert _GEMINI_ROUTE_KEEP <= frozenset(_CHILD_ENV_SCRUB_CREDENTIALS)
+
+
+def scrubbed_child_env(base=None, cli=None) -> dict:
     """The single-source vendor-child env: `base` (default `os.environ`) minus the
     `_CHILD_ENV_SCRUB` injection vars AND the `_CHILD_ENV_SCRUB_CREDENTIALS`
-    vendor credential / endpoint / model-selector vars (C11/C17). Applied at the
-    single vendor-child spawn site (`_run_once`, Popen — codex/gemini/claude/agy
-    all go through it since the 2026-07-31 pty-transport deletion), so the scrub
-    policy lives in exactly ONE place. Returns a fresh dict (safe to mutate)."""
+    vendor credential / endpoint / model-selector vars (C11/C17/C37) — except, on
+    the gemini route (`cli == "gemini"`), the `_GEMINI_ROUTE_KEEP` project
+    family. Applied at the single vendor-child spawn site (`_run_once`, Popen —
+    codex/gemini/claude/agy all go through it since the 2026-07-31
+    pty-transport deletion), so the scrub policy lives in exactly ONE place.
+    Returns a fresh dict (safe to mutate)."""
     src = base if base is not None else os.environ
-    return {k: v for k, v in src.items() if k not in _CHILD_ENV_SCRUB_ALL}
+    drop = (_CHILD_ENV_SCRUB_ALL - _GEMINI_ROUTE_KEEP if cli == "gemini"
+            else _CHILD_ENV_SCRUB_ALL)
+    return {k: v for k, v in src.items() if k not in drop}
 
 
 def _drain(stream, accum: list[str], passthrough, state: Optional[dict] = None) -> None:
@@ -2946,20 +3376,74 @@ def _kill_proc_group(proc: subprocess.Popen, pgid: Optional[int] = None) -> None
         log("zombie: SIGKILL also unresponsive")
 
 
+# The first terminal signal this process received (spec case C1). Once the
+# process has started a dispatch (`_run_once` sets `dispatch`, and it stays set
+# until the process exits, so the record writers are covered too) the handler
+# ONLY RECORDS the signal — the other host's shape (its `_run_once` handler,
+# bin/_common.py:1402-1452). The engine observes it in its wait loop, at its
+# next spawn and in its backoff sleeps, finishes the bounded group / reader
+# cleanup and returns the terminal record (`unknown` / exit 1, "wrapper
+# interrupted (<SIG>)"). A pre-dispatch vendor probe (the gemini preflight,
+# agy `--version`, the agy catalog) sets `dispatch` for its own call and
+# restores it after only when no signal arrived: a signal during it is recorded
+# and the mode stays on until its interrupted-run refusal record is written, so
+# a second signal cannot exit before that record. Outside those windows before
+# the first dispatch the handler unwinds as before (128+signum, no record — no
+# child exists).
+_SIGNAL_STATE: dict = {"signum": None, "dispatch": False, "last": None}
+
+
 def _terminal_signal_to_exit(signum, frame) -> None:  # noqa: ARG001 — signal ABI
-    """SIGTERM/SIGHUP handler: turn the signal into a normal Python unwind."""
+    """SIGTERM/SIGHUP handler: record the signal; unwind (128 + signum) only
+    outside the record-only mode — before the process's first dispatch and
+    outside a pre-dispatch vendor probe (and that probe's refusal record)."""
+    if _SIGNAL_STATE["signum"] is None:
+        _SIGNAL_STATE["signum"] = signum
+    if _SIGNAL_STATE["dispatch"]:
+        return
     raise SystemExit(128 + signum)
 
 
-def install_terminal_signal_handlers() -> None:
-    """Route SIGTERM/SIGHUP through `SystemExit(128 + signum)` (spec case C1).
+def _signal_aware_sleep(seconds: float) -> None:
+    """A backoff sleep that ends early once a terminal signal is recorded
+    (C1): the next `_run_once` then returns the terminal record at once."""
+    end = time.monotonic() + seconds
+    while _SIGNAL_STATE["signum"] is None:
+        left = end - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(left, 0.1))
 
-    A wrapper that dies from the DEFAULT disposition never runs `_run_once`'s
-    abnormal-unwind arm, so the vendor child — and everything it left in the
-    child's own process group — is orphaned. Raising `SystemExit` from the
-    handler interrupts the blocked `proc.wait()`, which kills and reaps the
-    group before the exception continues up the stack; the process still
-    exits 128+signum. SIGKILL and SIGSTOP stay uncoverable by design.
+
+def _interrupted_result(signum: int, elapsed: float, stdout: str = "",
+                        stderr: str = "") -> "RunResult":
+    why = f"wrapper interrupted ({signal.Signals(signum).name})"
+    log(f"{why}; no vendor child left running, recording the attempt as failed")
+    return RunResult(EXIT_CLI_FAIL, stdout, stderr, elapsed,
+                     classification="unknown", extraction_error=why,
+                     capture_complete=False)
+
+
+def install_terminal_signal_handlers() -> None:
+    """Install the SIGTERM/SIGHUP handler `_terminal_signal_to_exit` (spec C1).
+
+    A wrapper that dies from the DEFAULT disposition orphans the vendor child
+    and everything in its process group, and writes no record. With this
+    handler a signal received once the process has started its first dispatch
+    is only RECORDED: `_run_once` observes it (after Popen, in its short-step
+    wait, inside the timeout kill, at the next spawn after a backoff), reaps the
+    group with the SIGKILL escalation intact and returns `unknown` / exit 1
+    ("wrapper interrupted (<SIG>)") — for codex, gemini and claude the captured
+    output goes through the auth-carrier rung first (`oauth-env` / 65 on a
+    carrier STOP, gemini's exit 41 included); never retried; a signalled agy
+    run's carriers are not read (a recorded limit) — and the wrapper writes its
+    summary, audit row and run-log. A pre-dispatch vendor probe (the gemini
+    preflight, agy `--version`, the agy catalog) runs in the same record-only
+    mode: a signal during it is recorded, the mode stays on, and the wrapper
+    writes the interrupted-run refusal (`unknown` / 1) first. Outside those
+    windows before the first dispatch the handler still raises
+    `SystemExit(128 + signum)` (no child exists). SIGKILL and SIGSTOP stay
+    uncoverable by design.
 
     Call it ONCE at the top of `main()`. Not installed by `_run_once` itself:
     the signal disposition belongs to the process, and a library that mutated
@@ -2967,10 +3451,10 @@ def install_terminal_signal_handlers() -> None:
     raises outside the main thread, e.g. an in-process test harness — caught
     here so the call is always safe).
 
-    `antigravity_wrapper.py` keeps its OWN local handler rather than calling
-    this one: agy's permissive baseline unwinds through the exclusive settings
-    guard (`.agybak` restore), so its handler is bound to that transaction's
-    lifetime and is verified together with it (`agy-proc/s1-proc-lifecycle`).
+    `antigravity_wrapper.py` installs its own `_terminate_to_exit`, which
+    DELEGATES to `_terminal_signal_to_exit` (same record-only behaviour); a
+    signal outside those windows before the dispatch still unwinds through the
+    permissive baseline's settings guard (`.agybak` restore).
     """
     for name in ("SIGTERM", "SIGHUP"):
         sig = getattr(signal, name, None)
@@ -2992,6 +3476,7 @@ def _run_once(
     dispatch_attempt: int = 1,
     prompt_file_resolved: Optional[str] = None,
     requested_model: Optional[str] = None,
+    requested_reasoning: Optional[str] = None,
 ) -> RunResult:
     """One Popen invocation.
 
@@ -3014,8 +3499,19 @@ def _run_once(
     rc-0, non-timed-out run returns EXIT_TERMINAL (65) with classification
     "truncated-answer" and the captured PREFIX preserved for the run-log. A
     writer/reader thread that fails to START kills and reaps the child and
-    returns "unknown" at EXIT_CLI_FAIL. Precedence: timeout > vendor rc != 0 >
-    stdin delivery failure > reader incompleteness > ok.
+    returns "unknown" at EXIT_CLI_FAIL. A terminal signal received during the
+    call (C1) reaps the group and returns "unknown" at EXIT_CLI_FAIL with
+    extraction_error "wrapper interrupted (<SIG>)" — unless, with
+    classify_and_log (codex, gemini, claude), the captured output carries an
+    auth-carrier STOP (gemini's exit 41 included): then "oauth-env" at
+    EXIT_TERMINAL; never retried (agy's carriers are not read here — a recorded
+    limit). Precedence: timeout >
+    signal > (vendor rc 0 only) stdin delivery failure / reader incompleteness
+    > vendor rc != 0 (its own class) > ok — only a timeout verdict outranks a
+    signal; a delivery or reader failure is a verdict only on a rc-0 run. A
+    signal recorded BETWEEN attempts spawns nothing and returns the previous
+    attempt's record (the SAME object) marked with the failure, keeping its
+    captured evidence; the drivers count that attempt once.
     classify_and_log: default True keeps codex/gemini/claude byte-identical
     (classify() + the "[wrapper] <cli> ..." summary line run here as before).
     False skips BOTH — the agy stream-json driver decides classification and
@@ -3027,14 +3523,40 @@ def _run_once(
     ride the RunResult to audit()/emit_run_log() and the summary tail.
     """
     effective_cwd = cwd or os.getcwd()
-    log(f"exec cwd={effective_cwd} timeout={timeout}s argv={cmd}")
+    _SIGNAL_STATE["dispatch"] = True   # C1: from here the handler only records
     start = time.monotonic()
+    if _SIGNAL_STATE["signum"] is not None:
+        # A signal recorded between attempts (a backoff, a schema-repair turn):
+        # spawn nothing; the previous attempt's record keeps its evidence
+        # (stderr / stdout, binary, vendor rc) and carries the signal failure.
+        signum, _SIGNAL_STATE["signum"] = _SIGNAL_STATE["signum"], None
+        prev = _SIGNAL_STATE["last"]
+        result = _interrupted_result(signum, 0.0)
+        if prev is not None:
+            prev.exit_code, prev.classification = EXIT_CLI_FAIL, "unknown"
+            prev.extraction_error = result.extraction_error
+            prev.final_answer, prev.validated, prev.capture_complete = "", None, False
+            result = prev
+        else:
+            result.spawned = False
+            result.effective_cwd = effective_cwd
+            result.dispatch_attempt = dispatch_attempt
+            result.prompt_file_resolved = prompt_file_resolved
+            result.requested_model = requested_model
+            result.requested_reasoning = requested_reasoning
+        if classify_and_log:
+            log(f"[wrapper] {cli} unknown exit={EXIT_CLI_FAIL} "
+                f"vendor={result.vendor_exit_code} elapsed={result.elapsed_s:.1f}s"
+                + _summary_tail(result.dispatch_attempt, result.prompt_file_resolved,
+                                result.requested_model, result.requested_reasoning))
+        return result
+    log(f"exec cwd={effective_cwd} timeout={timeout}s argv={cmd}")
 
     # Scrub loader/interpreter injection vars so a poisoned parent env cannot
     # reach the vendor child (I-2/I-3). Explicit env= replaces the implicit
     # full-os.environ inheritance. scrubbed_child_env() is the shared
     # single-source scrub; _run_once is the single vendor-child spawn site.
-    child_env = scrubbed_child_env()
+    child_env = scrubbed_child_env(cli=cli)
 
     # Fail CLOSED on an unencodable prompt BEFORE any child exists (codex
     # maintainer handoff 2026-09-18, requirement 1). Origin: the writer thread
@@ -3057,6 +3579,7 @@ def _run_once(
                 dispatch_attempt=dispatch_attempt,
                 prompt_file_resolved=prompt_file_resolved,
                 requested_model=requested_model,
+                requested_reasoning=requested_reasoning,
                 spawned=False,
             )
             if classify_and_log:
@@ -3064,7 +3587,8 @@ def _run_once(
                     f"[wrapper] {cli} input-delivery-failed "
                     f"exit={result.exit_code} vendor={result.vendor_exit_code} "
                     f"elapsed={elapsed:.1f}s"
-                    + _summary_tail(dispatch_attempt, prompt_file_resolved, requested_model)
+                    + _summary_tail(dispatch_attempt, prompt_file_resolved, requested_model,
+                                    requested_reasoning)
                 )
             return result
 
@@ -3097,12 +3621,15 @@ def _run_once(
     except OSError as e:
         elapsed = time.monotonic() - start
         log(f"OSError on spawn: {e}")
+        # `unknown` binds to EXIT_CLI_FAIL in the contract (C8 / R-TOKENS:
+        # "maps to the SAME exit code there"); this return used exit 3.
         return RunResult(
-            EXIT_ARG_ERROR, "", f"spawn failed: {e}\n", elapsed,
+            EXIT_CLI_FAIL, "", f"spawn failed: {e}\n", elapsed,
             classification="unknown", effective_cwd=effective_cwd,
             dispatch_attempt=dispatch_attempt,
             prompt_file_resolved=prompt_file_resolved,
             requested_model=requested_model,
+            requested_reasoning=requested_reasoning,
             spawned=False,
         )
 
@@ -3186,7 +3713,11 @@ def _run_once(
                 f"{cleanup_exc!r}")
         for t in started:
             t.join(timeout=2)  # the child is dead: these see EOF and exit
-        for pipe in (proc.stdin, proc.stdout, proc.stderr):
+        # Close only unclaimed pipes: closing one a live reader blocks on (a
+        # detached helper kept the child's stdout) would wait behind it without
+        # bound (C2; the other host's rule, bin/_common.py:1623-1630).
+        for pipe in ((proc.stdin, proc.stdout, proc.stderr)
+                     if not any(t.is_alive() for t in started) else ()):
             try:
                 if pipe is not None:
                     pipe.close()
@@ -3201,6 +3732,7 @@ def _run_once(
             dispatch_attempt=dispatch_attempt,
             prompt_file_resolved=prompt_file_resolved,
             requested_model=requested_model,
+            requested_reasoning=requested_reasoning,
             # NO READER COMPLETED HERE (gate-1 r6 row r6-7). This return
             # inherited the dataclass default `True` and so reported a
             # COMPLETE capture out of the one path where a reader provably
@@ -3218,17 +3750,32 @@ def _run_once(
                 f"[wrapper] {cli} unknown "
                 f"exit={result.exit_code} vendor={result.vendor_exit_code} "
                 f"elapsed={elapsed:.1f}s"
-                + _summary_tail(dispatch_attempt, prompt_file_resolved, requested_model)
+                + _summary_tail(dispatch_attempt, prompt_file_resolved, requested_model,
+                                requested_reasoning)
             )
         return result
 
     timed_out = False
+    signalled = False   # C1: a terminal signal was observed in this wait
+    deadline = time.monotonic() + timeout
     try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        log(f"timeout after {timeout}s; sending SIGTERM")
-        _kill_proc_group(proc, pgid)
+        # A short-step wait so a RECORDED signal is observed promptly (the
+        # handler no longer interrupts this wait; spec C1).
+        while True:
+            try:
+                proc.wait(timeout=max(0.0, min(0.2, deadline - time.monotonic())))
+                break
+            except subprocess.TimeoutExpired:
+                if _SIGNAL_STATE["signum"] is not None:
+                    signalled = True
+                    log("terminal signal mid-wait; killing vendor subtree")
+                    _kill_proc_group(proc, pgid)
+                    break
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    log(f"timeout after {timeout}s; sending SIGTERM")
+                    _kill_proc_group(proc, pgid)
+                    break
     except BaseException:
         # Abnormal unwind while the vendor child is still running (e.g. a
         # signal-raised SystemExit from a caller's own SIGTERM/SIGHUP
@@ -3264,7 +3811,8 @@ def _run_once(
     # cannot confirm the group is empty (and is the other arm of the
     # pid-recycle hazard disclosed there), so it counts as "members remain".
     orphans_reaped = False
-    if not timed_out and pgid is not None and hasattr(os, "killpg"):
+    if (not timed_out and not signalled and pgid is not None
+            and hasattr(os, "killpg")):
         try:
             os.killpg(pgid, 0)
             members_remain = True
@@ -3337,7 +3885,25 @@ def _run_once(
         bool(reader_failures) and not timed_out and rc == 0
         and not delivery_failed
     )
-    if timed_out:
+    # C1: a terminal signal received at any point of this call (after Popen,
+    # mid-wait, inside the timeout kill, in the collection window) is consumed
+    # here. Only a TIMEOUT verdict outranks it: a stdin-delivery or reader
+    # failure of the same run becomes `unknown` / 1 "wrapper interrupted" (the
+    # other host marks those failures, then `if received and not timed_out:
+    # _mark_signal_failure`, bin/_common.py:1663-1679). The group is reaped
+    # either way.
+    signum = _SIGNAL_STATE["signum"]
+    _SIGNAL_STATE["signum"] = None
+    interrupted = signum is not None and not timed_out
+    if interrupted:
+        result = _interrupted_result(signum, elapsed, stdout, stderr)
+        # R-AUTH (26a final fix 1, F3): the captured output goes through the
+        # same auth-carrier rung a timed-out run's does — a carrier STOP is the
+        # re-login STOP (oauth-env / 65), never retried. Nothing else changes.
+        if classify_and_log and _auth_carrier_stop(cli, stderr, stdout, rc):
+            result.exit_code = EXIT_TERMINAL
+            result.classification = "oauth-env"
+    elif timed_out:
         log(f"timed out elapsed={elapsed:.1f}s")
         result = RunResult(EXIT_TIMEOUT, stdout, stderr, elapsed)
     elif delivery_failed:
@@ -3361,10 +3927,11 @@ def _run_once(
     result.dispatch_attempt = dispatch_attempt
     result.prompt_file_resolved = prompt_file_resolved
     result.requested_model = requested_model
+    result.requested_reasoning = requested_reasoning
     result.orphans_reaped = orphans_reaped
     # Row r5-2: the reader outcome as EVIDENCE, independent of the rung that
     # consumed it. `reader_failed` above is gated on `rc == 0`; this is not.
-    result.capture_complete = not reader_failures
+    result.capture_complete = not reader_failures and not interrupted
     if classify_and_log:
         # SEMANTIC stderr classification (tool-not-installed / vendor warning)
         # stays the leader's judgment over the mirrored raw stderr. A
@@ -3373,18 +3940,23 @@ def _run_once(
         # error-text reclassification can promote it or trigger a retry). A
         # reader failure is decided the same way, from the reader's own
         # record — and classify() must not overwrite it back to "ok".
-        if not delivery_failed and not reader_failed:
+        if not delivery_failed and not reader_failed and not interrupted:
             result.classification = classify(
                 cli, stderr, stdout, result.exit_code, vendor_exit_code=rc,
             )
         # One-line deterministic summary (immediately visible to leader/user).
+        # The exit printed is the CONTRACT's code for the token (C8 / R-TOKENS):
+        # a classifier token the driver promotes later (token-limit -> 65,
+        # server-capacity -> 64) is never emitted with the provisional 1.
         log(
             f"[wrapper] {cli} {result.classification} "
-            f"exit={result.exit_code} vendor={result.vendor_exit_code} "
+            f"exit={map_classification_to_exit(result.classification)} "
+            f"vendor={result.vendor_exit_code} "
             f"elapsed={elapsed:.1f}s"
-            + _summary_tail(dispatch_attempt, prompt_file_resolved, requested_model)
+            + _summary_tail(dispatch_attempt, prompt_file_resolved, requested_model,
+                            requested_reasoning)
         )
-    elif not delivery_failed and not reader_failed:
+    elif not delivery_failed and not reader_failed and not interrupted:
         # r1/R8: do NOT leave the field at its "ok" default — a shared struct
         # reading "ok" for a run that was never classified is a trap for any
         # future consumer of this RunResult. NOT a new classify() token
@@ -3394,6 +3966,7 @@ def _run_once(
         # sets the real classification on its own AgyResult/RunResult.
         result.classification = "unclassified"
 
+    _SIGNAL_STATE["last"] = result   # C1: the evidence a later signal keeps
     return result
 
 
@@ -3410,6 +3983,7 @@ def run_cli_with_retry(
     dispatch_attempt: int = 1,
     prompt_file_resolved: Optional[str] = None,
     requested_model: Optional[str] = None,
+    requested_reasoning: Optional[str] = None,
 ) -> RunResult:
     """Top-level driver.
 
@@ -3445,7 +4019,6 @@ def run_cli_with_retry(
         "cli-subscription-cap",
         "token-limit",
         "oauth-env",
-        "fanout-spawn-error",
         "config-conflict",
         "task-blocked",
     )
@@ -3458,6 +4031,11 @@ def run_cli_with_retry(
         return r
 
     def promote_claude_extraction(r: RunResult, ext_err: str) -> Optional[RunResult]:
+        # R-AUTH (ii): a rc-0 `is_error` envelope never reached classify()'s
+        # carrier rung (exit 0 returns `ok` first) — read the envelope here.
+        if _auth_carrier_stop(cli, "", r.stdout):
+            r.extraction_error = ext_err
+            return promote_terminal(r, "oauth-env")
         if ext_err.startswith("schema-retries-exhausted:"):
             log(f"answer extraction error: {ext_err}")
             r.extraction_error = ext_err
@@ -3487,6 +4065,10 @@ def run_cli_with_retry(
             promoted = promote_claude_extraction(r, ext_err)
             if promoted is not None:
                 return promoted
+        if _auth_carrier_stop(cli, r.stderr, r.stdout,     # R-AUTH (ii), rc-0 run
+                              r.vendor_exit_code):
+            r.extraction_error = ext_err
+            return promote_terminal(r, "oauth-env")
         cls = classify(
             cli,
             stderr=ext_err,
@@ -3513,6 +4095,7 @@ def run_cli_with_retry(
         max_retries = 0 if repair_mode else SERVER_CAP_MAX_RETRIES
         result: Optional[RunResult] = None
         for attempt in range(max_retries + 1):
+            prev = _SIGNAL_STATE["last"]   # C1: returned AGAIN when nothing spawned
             r = _run_once(
                 cli, cmd, cwd=cwd, timeout=timeout,
                 stdin_text=effective_prompt if prompt_via_stdin else None,
@@ -3521,15 +4104,17 @@ def run_cli_with_retry(
                 dispatch_attempt=dispatch_attempt,
                 prompt_file_resolved=prompt_file_resolved,
                 requested_model=requested_model,
+                requested_reasoning=requested_reasoning,
             )
-            r.repair_attempt = attempt if repair_mode else 0
-            r.schema_repair_attempt = schema_repair_attempt
-            if repair_mode:
-                r.mode = "repair"
-            elif schema_repair_attempt > 0:
-                r.mode = "schema_repair"
-            else:
-                r.mode = "normal"
+            if r is not prev:   # a turn that never ran stamps nothing (C1)
+                r.repair_attempt = attempt if repair_mode else 0
+                r.schema_repair_attempt = schema_repair_attempt
+                if repair_mode:
+                    r.mode = "repair"
+                elif schema_repair_attempt > 0:
+                    r.mode = "schema_repair"
+                else:
+                    r.mode = "normal"
             result = r
             cls = r.classification
             # AN ENGINE-DECIDED RESULT IS NEVER RE-INTERPRETED (gate-1 r8 row
@@ -3583,6 +4168,14 @@ def run_cli_with_retry(
             # on the RunResult, so the guard reads them rather than
             # re-deriving anything from the bytes.
             if (cli == "claude" and r.capture_complete and r.spawned
+                    and (cls in _ENGINE_UNDECIDED or cls == "unknown")
+                    and _auth_carrier_stop(cli, "", r.stdout)):
+                # R-AUTH (ii): an is_error auth outcome STOPS before any answer
+                # extraction; beside a non-null `structured_output` only a 401
+                # or claude's measured auth line does (R2, `_auth_carrier_stop`).
+                r.extraction_error = "is_error envelope: authentication failure"
+                return promote_terminal(r, "oauth-env")
+            if (cli == "claude" and r.capture_complete and r.spawned
                     and (cls in _ENGINE_UNDECIDED or cls == "unknown")):
                 _answer, ext_err = extract_claude_answer(r.stdout, r.stderr)
                 if ext_err:
@@ -3631,7 +4224,7 @@ def run_cli_with_retry(
                         f"server-capacity (attempt {attempt+1}/{max_retries+1}); "
                         f"sleep {wait}s"
                     )
-                    time.sleep(wait)
+                    _signal_aware_sleep(wait)
                     continue
                 r.exit_code = EXIT_RATE_GIVE_UP
                 # Re-emit — promote rc=1 → 64 in the [wrapper] line.
@@ -3742,8 +4335,9 @@ def run_cli_with_retry(
 # markdown dir is separate). Default = wrapper-adjacent _logs/. Consumers/tests point it
 # at a temp dir so an installed plugin dir is never mutated (plugin roots are
 # ephemeral per the Claude Code plugin docs).
-_LOG_DIR = Path(os.environ.get("TRIAD_DISPATCH_LOG_DIR")
-                or Path(__file__).resolve().parent / "_logs")
+_HOST_LOGS = Path(__file__).resolve().parent / "_logs"
+_LOG_DIR = Path(os.environ.get("TRIAD_DISPATCH_LOG_DIR") or _HOST_LOGS)
+_HOST_DEBUG = Path(__file__).resolve().parent / "_debug"
 
 
 def _debug_dir_from_env() -> Path:
@@ -3752,7 +4346,7 @@ def _debug_dir_from_env() -> Path:
     Absolute paths only: empty -> the wrapper-adjacent _debug/; a relative
     value -> one note + that default (a cwd-relative dump dir would scatter);
     a value resolving to the filesystem root -> one note + that default."""
-    default = Path(__file__).resolve().parent / "_debug"
+    default = _HOST_DEBUG
     raw = os.environ.get("TRIAD_DEBUG_DIR", "")
     if not raw:
         return default
@@ -3770,6 +4364,98 @@ def _debug_dir_from_env() -> Path:
 _DEBUG_DIR = _debug_dir_from_env()
 
 
+# A floor beyond any real age is clamped before any float arithmetic (an
+# integer the configuration may hold, 10**400 s included).
+_MAX_FLOOR_S = 10 ** 6 * 86400
+
+
+def _swept_link(mod, where, tops) -> Optional[str]:
+    """The deletion module's own link check (`cleanup._link_below`) for a sweep
+    of `where`: every component below the base of the first (root, base) of
+    `tops` that holds it — the declared root against its base (the project,
+    `$TMPDIR`, `~` or `$HOST_DIR`), a re-root against its parent."""
+    w = os.path.realpath(where)
+    for top, base in tops:
+        t = os.path.realpath(top)
+        if w == t or os.path.commonpath([w, t]) == t:
+            return mod._link_below(str(where), base)
+    return mod._link_below(str(where), tops[0][1])
+
+
+def _swept(role: str, proof: str, where: Optional[Path] = None,
+           rerooted: tuple = (), minimum: float = 0) -> Optional[tuple]:
+    """R-CLEANUP / C69: the declared `role` for ONE coded sweep — (root,
+    min_age_s, base, the deletion module) from the cleanup configuration
+    (`cleanup.load_roots`).
+    None, after ONE stderr line, when the configuration is missing or invalid,
+    the role is not declared, it declares a proof other than `proof` (the one
+    this sweep checks), or `where` lies outside its root and outside every
+    `rerooted` folder — a test-isolation re-root (a reassigned `_LOG_DIR` /
+    `_DEBUG_DIR`, TRIAD_REVIEW_LOG_DIR, an explicit base) standing in for the
+    root; proof and floor still come from the file. A symbolic link at the
+    root, at a re-root or on the way down to `where` skips the sweep too. The
+    floor returned is never below `minimum` (the host's own minimum for files a
+    live call may still use). The deletion module is the one beside this file,
+    never another `cleanup` on sys.path. Never raises."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cleanup", _HOST_LOGS.parent / "cleanup.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        cfg, roots = mod.load_roots()
+        entry = roots.get(role)
+        if entry is None:
+            why = f"role {role} is not declared in {cfg}"
+        elif entry[1] != proof:
+            why = f"role {role} declares the proof {entry[1]}, this sweep checks {proof}"
+        elif where is not None and not any(
+                os.path.realpath(where) == r or os.path.commonpath([os.path.realpath(where), r]) == r
+                for r in map(os.path.realpath, (entry[0], *rerooted))):
+            why = f"{where} is outside the declared root {entry[0]} of role {role}"
+        elif (link := _swept_link(mod, where if where is not None else entry[0],
+                                  ((entry[0], entry[3]),
+                                   *((r, os.path.dirname(os.path.abspath(r))) for r in rerooted)))):
+            why = f"{link} is a symbolic link (role {role})"
+        else:
+            return entry[0], min(max(entry[2], minimum), _MAX_FLOOR_S), entry[3], mod
+    except Exception as exc:  # noqa: BLE001 — missing / invalid / unreadable: nothing deleted
+        why = f"no valid cleanup configuration ({exc})"
+    try:
+        log(f"[wrapper] cleanup: {role} prune skipped — {' '.join(why.split())}; nothing deleted")
+    except Exception:  # noqa: BLE001 — a prune never fails its caller
+        pass
+    return None
+
+
+def _log_reroots() -> tuple:
+    """The re-roots of the wrapper log roles: a `_LOG_DIR` moved off the
+    wrapper-adjacent default (TRIAD_DISPATCH_LOG_DIR) and a review attempt's
+    TRIAD_REVIEW_LOG_DIR."""
+    review = os.environ.get("TRIAD_REVIEW_LOG_DIR")
+    return tuple(p for p in (None if _LOG_DIR == _HOST_LOGS else _LOG_DIR,
+                             Path(review) if review else None) if p is not None)
+
+
+def _dispatch_record(writer):
+    """The ONE seam every dispatch record write passes — `audit()`,
+    `debug_log()`, `emit_run_log()`, `emit_read_audit()`.
+
+    A4 / R-THREAT: a write that fails (an OSError — a full disk, a blocked
+    directory — or any other Exception, C8) is ONE stderr line and returns
+    None — the record is lost, never the paid answer or the exit code."""
+    @functools.wraps(writer)
+    def write(cli: str, *args, **kwargs):
+        try:
+            return writer(cli, *args, **kwargs)
+        except Exception as exc:   # noqa: BLE001 — the record seam
+            log(f"[wrapper] {cli}: record write failed ({writer.__name__}: "
+                f"{type(exc).__name__}: {exc}) — the answer is still published, "
+                f"the exit code unchanged")
+            return None
+    return write
+
+
+@_dispatch_record
 def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
     """Append one JSONL record per invocation to _logs/<cli>/audit.jsonl.
 
@@ -3866,6 +4552,20 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
         # prompt-bearing, so no redaction; key omitted when None (= the CLI's
         # config default), same shape rule as prompt_file_resolved above.
         rec["requested_model"] = result.requested_model
+    if result.requested_reasoning is not None:
+        # C35 as amended: the requested reasoning / effort tier, same shape.
+        rec["requested_reasoning"] = result.requested_reasoning
+    if result.review_web:
+        # C32: a review leg launched with web (`--review-web`). A boolean
+        # observation of the caller's request, no prompt content; key omitted
+        # when False, same shape rule as vendor_version above.
+        rec["review_web"] = True
+    if result.web:
+        # C31: a claude worker launched with web (`--web`). Same boolean,
+        # omit-when-False shape as review_web above.
+        rec["web"] = True
+    if result.runtime_model is not None:
+        rec["runtime_model"] = result.runtime_model
     if result.orphans_reaped:
         # Owned-group reap after a normal child exit (spec C1). A boolean
         # observation of our own transport — no prompt or host content, so no
@@ -3933,7 +4633,7 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
 
 
 def _rotate_audit_if_needed(log_dir: Path, path: Path, cli: str) -> None:
-    """Rotate active audit log and cap archives.
+    """Rotate the active audit log and prune the oldest archives.
 
     Called under `.audit.lock`. Best-effort: audit must never fail the wrapper
     call path.
@@ -3955,31 +4655,44 @@ def _rotate_audit_if_needed(log_dir: Path, path: Path, cli: str) -> None:
 
 
 def _prune_audit_archives(log_dir: Path) -> None:
-    """Bound audit archives by count and aggregate bytes."""
+    """Delete the oldest audit archives past the count and byte caps, never one
+    younger than the wrapper-audit-archives role's floor (`_swept`). An archive
+    that vanished meanwhile is skipped silently; any other failure to read or
+    remove one is reported in one line and the archive left in place."""
     try:
         entries = list(log_dir.glob("audit.*.jsonl"))
     except Exception:
         return
+    role = _swept("wrapper-audit-archives", "inside-owned-packet", log_dir, _log_reroots())
+    if role is None:
+        return
+    cut = time.time() - role[1]
     rows: list[tuple[Path, float, int]] = []
     for p in entries:
         try:
             st = p.stat()
             rows.append((p, st.st_mtime, st.st_size))
-        except OSError:
-            continue
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # vanished since the listing
+        except OSError as exc:
+            log(f"[wrapper] cleanup: wrapper-audit-archives could not read {p} ({exc}); left in place")
     rows.sort(key=lambda x: x[1])
     total_bytes = sum(sz for _, _, sz in rows)
     over_count = max(0, len(rows) - AUDIT_MAX_ARCHIVES)
     over_bytes = total_bytes - AUDIT_ARCHIVE_MAX_BYTES
-    for p, _, sz in rows:
+    for p, mtime, sz in rows:
         if over_count <= 0 and over_bytes <= 0:
             break
+        if mtime > cut:
+            continue
         try:
             p.unlink()
             over_count -= 1
             over_bytes -= sz
-        except OSError:
-            continue
+        except FileNotFoundError:
+            continue  # another call took it
+        except OSError as exc:
+            log(f"[wrapper] cleanup: wrapper-audit-archives could not remove {p} ({exc})")
 
 
 # ─── Deterministic classifier-patch applier (repair read-only redesign) ────
@@ -4017,7 +4730,6 @@ CLASSIFICATION_TOKENS: frozenset[str] = frozenset(
         "extraction-error",
         "schema-fail",
         "schema-rejected",
-        "fanout-spawn-error",
         "config-conflict",
         "task-blocked",
         "unknown",
@@ -4042,9 +4754,7 @@ PATTERN_LIST_NAMES: frozenset[str] = frozenset(
         "SERVER_CAPACITY_PATTERNS",
         "CLI_SUB_CAP_PATTERNS",
         "TOKEN_LIMIT_PATTERNS",
-        "OAUTH_ENV_PATTERNS",
         "SCHEMA_REJECTED_PATTERNS",
-        "FANOUT_SPAWN_PATTERNS",
         "CONFIG_CONFLICT_PATTERNS",
         "AGY_AUTH_BANNER_PATTERNS",
     )
@@ -4061,8 +4771,8 @@ REPAIR_CLASSIFICATION_TOKENS: frozenset[str] = frozenset(
 # that list matches. An EXACT mirror of classify() (see the L2 substring block):
 #   AGY_AUTH_BANNER → oauth-env, CLI_SUB_CAP → cli-subscription-cap,
 #   SERVER_CAPACITY → server-capacity, TOKEN_LIMIT → token-limit,
-#   OAUTH_ENV → oauth-env, SCHEMA_REJECTED → schema-rejected,
-#   FANOUT_SPAWN → fanout-spawn-error, CONFIG_CONFLICT → config-conflict.
+#   SCHEMA_REJECTED → schema-rejected,
+#   CONFIG_CONFLICT → config-conflict.
 # A pattern proposal's `classification` must equal PATTERN_LIST_CLASS[pattern_list]
 # (else appending the substring would make classify() return a DIFFERENT class
 # than the proposal claims). Locked in step with PATTERN_LIST_NAMES at import.
@@ -4070,9 +4780,7 @@ PATTERN_LIST_CLASS: dict[str, str] = {
     "SERVER_CAPACITY_PATTERNS": "server-capacity",
     "CLI_SUB_CAP_PATTERNS": "cli-subscription-cap",
     "TOKEN_LIMIT_PATTERNS": "token-limit",
-    "OAUTH_ENV_PATTERNS": "oauth-env",
     "SCHEMA_REJECTED_PATTERNS": "schema-rejected",
-    "FANOUT_SPAWN_PATTERNS": "fanout-spawn-error",
     "CONFIG_CONFLICT_PATTERNS": "config-conflict",
     "AGY_AUTH_BANNER_PATTERNS": "oauth-env",
 }
@@ -4133,16 +4841,16 @@ _VENDOR_EXIT_CODE_MAX = 125
 # Excluded (the wrapper/status classes the WRAPPER decides, never a raw vendor
 # exit): timeout (wrapper kills the vendor on its own timeout — exit_code==
 # EXIT_TIMEOUT in classify(), not a vmap code); schema-fail (wrapper pydantic
-# JSON validation — EXIT_SCHEMA_FAIL, not in classify()); task-blocked (codex
-# --task STATUS parse — extract_implementer_status→exit 69); fanout-spawn-error
-# (wrapper fan-out condition via FANOUT_SPAWN_PATTERNS substring); config-conflict
+# JSON validation — EXIT_SCHEMA_FAIL, not in classify()); task-blocked (claude's
+# permission_denials with an empty result — an envelope reading, not an exit);
+# config-conflict
 # (wrapper/config condition via CONFIG_CONFLICT_PATTERNS + agy settings txn).
 # Verified against classify() + the wrapper exit-code semantics (2026-07-06).
 # This applies ONLY to the vendor_exit_map path — the PATTERN path already
 # enforces classification == PATTERN_LIST_CLASS[pattern_list].
 VENDOR_EXIT_PROPOSAL_CLASSES: frozenset[str] = frozenset(
     REPAIR_CLASSIFICATION_TOKENS
-    - {"timeout", "schema-fail", "task-blocked", "fanout-spawn-error", "config-conflict"}
+    - {"timeout", "schema-fail", "task-blocked", "config-conflict"}
 )
 assert (
     VENDOR_EXIT_PROPOSAL_CLASSES <= REPAIR_CLASSIFICATION_TOKENS
@@ -4435,8 +5143,33 @@ def apply_classifier_patch(cli: str, proposal: dict) -> str:
     return "applied"
 
 
+def _review_argv_refusal(argv: Optional[list] = None) -> Optional[str]:
+    """None, or why a v2 REVIEW line must not run (C32, R-BIND): its argv does
+    not hash to `TRIAD_REVIEW_ARGV_SHA256` (set only by the review dispatch, in
+    `roster_v2._argv_digest`'s canonical form), or one of the two review env
+    values (it and `TRIAD_REVIEW_LOG_DIR`) is missing while the other marks a
+    review. Neither set = nothing checked (a recorded limit; collect catches)."""
+    want = os.environ.get("TRIAD_REVIEW_ARGV_SHA256")
+    if not want and not os.environ.get("TRIAD_REVIEW_LOG_DIR"):
+        return None
+    if not os.environ.get("TRIAD_REVIEW_LOG_DIR"):
+        want = None  # the receipt namespace was dropped: refuse as edited
+    tokens = list(sys.argv if argv is None else argv)
+    got = hashlib.sha256(json.dumps(tokens, ensure_ascii=True,
+                                    separators=(",", ":")).encode("ascii")
+                         ).hexdigest()
+    if got == want:
+        return None
+    return ("refused: this review line is not the recorded dispatch (its argv "
+            "does not hash to TRIAD_REVIEW_ARGV_SHA256, or that value or "
+            "TRIAD_REVIEW_LOG_DIR is missing) - nothing was run; this "
+            "attempt's output files now exist, so retry the entry and run the "
+            "new attempt's printed line verbatim (R-BIND, C32)")
+
+
 # ─── Per-execution run-log (dispatch SKILL input) ─────────────────────────
 
+@_dispatch_record
 def emit_run_log(
     cli: str,
     wrapper_cmd: list[str],
@@ -4444,23 +5177,31 @@ def emit_run_log(
     prompt: str,
     result: RunResult,
 ) -> Optional[Path]:
-    """Write per-execution run-log on failure only.
+    """Write per-execution run-log on failure — and, for a v2 REVIEW
+    attempt, on success too.
 
     Run-logs live at `_logs/<cli>/runs/<UTC-ts>-<pid>-<uuid8>.json`. Used by
     the dispatch SKILL to feed the failing call's full context to the repair
     sub-agent without inline-embedding (escape-safe + parallel-safe).
 
     On success (`exit_code == EXIT_OK`), returns None and writes nothing —
-    repair agent dispatch isn't needed.
+    repair agent dispatch isn't needed — UNLESS `TRIAD_REVIEW_LOG_DIR` is set.
+    That env member is the review dispatch's own (only the review skill's
+    `roster_v2.render_dispatch` writes it, as `<attempt dir>/logs`): the
+    run-log then goes to `<that dir>/<cli>/runs/` on success and failure
+    alike, and its `wrapper_cmd` is the attempt's receipt of the command that
+    actually ran, which the collector compares with the recorded dispatch
+    (R-BIND).
 
-    Self-prunes after write: if dir exceeds `_RUN_LOG_MAX_FILES` or
-    `_RUN_LOG_MAX_BYTES`, oldest files are unlinked until under threshold
-    (best-effort, race-tolerant for parallel writes).
+    Self-prunes after write: past `_RUN_LOG_MAX_FILES` or `_RUN_LOG_MAX_BYTES`
+    the oldest files are unlinked, never one younger than
+    `_STALE_IPC_AGE_FLOOR_S` (best-effort, race-tolerant for parallel writes).
     """
-    if result.exit_code == EXIT_OK:
+    review_dir = os.environ.get("TRIAD_REVIEW_LOG_DIR")
+    if result.exit_code == EXIT_OK and not review_dir:
         return None
 
-    runs_dir = _LOG_DIR / cli / "runs"
+    runs_dir = (Path(review_dir) if review_dir else _LOG_DIR) / cli / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -4512,6 +5253,10 @@ def emit_run_log(
         # requested_model (C35 / DL-3): same omit-when-None spread.
         **({"requested_model": result.requested_model}
            if result.requested_model is not None else {}),
+        **({"requested_reasoning": result.requested_reasoning}
+           if result.requested_reasoning is not None else {}),
+        **({"runtime_model": result.runtime_model}
+           if result.runtime_model is not None else {}),
         # orphans_reaped (spec C1, 2026-09-21): same omit-when-default spread.
         # The repair analyzer reads ONLY this run-log, and "the vendor left a
         # descendant behind in its own group" is a TRANSPORT observation it
@@ -4574,7 +5319,7 @@ def _prune_dir_by_caps(
     leg's run-log written SECONDS ago — the live IPC of a concurrent dispatch
     — was deleted the moment the dir crossed a cap. When the floor leaves the
     dir over its cap the overflow is TOLERATED (a retention cap is a budget,
-    not an invariant) and reported once on stderr. `None` (the default) reads
+    not an invariant). `None` (the default) reads
     the module constant `_STALE_IPC_AGE_FLOOR_S` — the same floor the
     TIME-based sweep (`prune_stale_run_logs`) uses — AT CALL TIME rather than
     binding it as a function default: the constant is defined further down
@@ -4605,9 +5350,22 @@ def _prune_dir_by_caps(
     pairs: list[tuple[Path, float]] = []
     for p in entries:
         try:
-            pairs.append((p, p.stat().st_mtime))
-        except OSError:
+            st = p.lstat()  # never followed: a link is refused, never a candidate
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # vanished since the listing
+        except OSError as exc:
+            try:
+                log(f"prune {dir_path}: could not read {p.name} ({exc}) — left in place")
+            except Exception:  # noqa: BLE001
+                pass
             continue
+        if not stat.S_ISREG(st.st_mode):
+            try:
+                log(f"prune {dir_path}: {p.name} is not a regular file (a link?) — left in place")
+            except Exception:  # noqa: BLE001
+                pass
+            continue
+        pairs.append((p, st.st_mtime))
     files = [p for p, _ in sorted(pairs, key=lambda x: x[1])]
 
     over_count = max(0, len(files) - max_files)
@@ -4618,9 +5376,14 @@ def _prune_dir_by_caps(
     total_bytes = 0
     for f in files:
         try:
-            total_bytes += f.stat().st_size
-        except OSError:
-            continue
+            total_bytes += f.lstat().st_size
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # vanished since the listing
+        except OSError as exc:
+            try:
+                log(f"prune {dir_path}: could not read the size of {f.name} ({exc}) — not counted")
+            except Exception:  # noqa: BLE001
+                pass
     over_bytes = total_bytes - max_bytes
 
     floor_s = _STALE_IPC_AGE_FLOOR_S if age_floor_s is None else age_floor_s
@@ -4632,9 +5395,15 @@ def _prune_dir_by_caps(
         if f.resolve(strict=False) in preserve_paths:
             continue
         try:
-            st = f.stat()
-        except OSError:
+            st = f.lstat()
+        except (FileNotFoundError, NotADirectoryError):
             continue  # vanished between the listing and here — never a delete
+        except OSError as exc:
+            try:
+                log(f"prune {dir_path}: could not read {f.name} ({exc}) — left in place")
+            except Exception:  # noqa: BLE001
+                pass
+            continue
         if st.st_mtime > floor_cut:
             # YOUNGER than the floor: another dispatch's live IPC. The cap is
             # left exceeded on purpose (C3) — deleting here is the failure.
@@ -4644,8 +5413,13 @@ def _prune_dir_by_caps(
             f.unlink()
             over_count -= 1
             over_bytes -= st.st_size
-        except Exception:
-            pass
+        except FileNotFoundError:
+            pass  # another call took it
+        except Exception as exc:  # noqa: BLE001 — reported, never fatal
+            try:
+                log(f"prune {dir_path}: could not remove {f.name} ({exc})")
+            except Exception:  # noqa: BLE001
+                pass
     if fresh_left and (over_count > 0 or over_bytes > 0):
         try:
             log(f"prune {dir_path}: cap exceeded by {fresh_left} fresh files "
@@ -4655,16 +5429,20 @@ def _prune_dir_by_caps(
 
 
 def _prune_run_logs(runs_dir: Path, preserve: Optional[Path] = None) -> None:
-    """Best-effort prune: enforce file count + total byte caps.
+    """Best-effort prune: delete the oldest files past the file-count and
+    total-byte caps, never one younger than the age floor.
 
     Thin wrapper over the shared `_prune_dir_by_caps` (task-1, 2026-07-31 —
     factored out so `emit_read_audit`'s digest dir can reuse the identical
     race-tolerant algorithm). Behavior unchanged from before the factor-out.
     """
-    _prune_dir_by_caps(
-        runs_dir, _RUN_LOG_MAX_FILES, _RUN_LOG_MAX_BYTES, preserve,
-        ("*.json", "*.prompt.tmp"),
-    )
+    role = _swept("wrapper-run-logs", "inside-owned-packet", runs_dir, _log_reroots(),
+                  minimum=_STALE_IPC_AGE_FLOOR_S)
+    if role is not None:
+        _prune_dir_by_caps(
+            runs_dir, _RUN_LOG_MAX_FILES, _RUN_LOG_MAX_BYTES, preserve,
+            ("*.json", "*.prompt.tmp"), age_floor_s=role[1],
+        )
 
 
 # ─── Read-audit digest — durable file artifact (Task 1, 2026-07-31) ───────
@@ -4675,7 +5453,8 @@ def _prune_run_logs(runs_dir: Path, preserve: Optional[Path] = None) -> None:
 # first-match-forgery / late-append findings this durable file retires).
 # emit_read_audit writes on EVERY outcome where `result.read_audit is not
 # None` — success AND failure — unlike emit_run_log's failure-only rule
-# (which stays exactly as it is; this is a NEW, separate artifact).
+# (a v2 review attempt's TRIAD_REVIEW_LOG_DIR aside; this is a NEW,
+# separate artifact).
 #
 # Owner ruling (do NOT re-open): this file is EVIDENCE THAT A LEG DID THE
 # READING WORK, not an authenticated control — no nonce, no dedicated fd,
@@ -4686,7 +5465,7 @@ def _prune_run_logs(runs_dir: Path, preserve: Optional[Path] = None) -> None:
 # override-set copies -- each call writes exactly ONE file in either mode),
 # so the cap doubles to grow the shared retention window; how many of the
 # 200 are primaries depends on the workload mix (a review-dominated mix
-# retains mostly copies). No consumer binds to this dir, so the caps bound
+# retains mostly copies). No consumer binds to this dir, so the caps set
 # operator-forensics depth only. The 20 MB byte cap is untouched -- digest
 # values are already capped at 200 chars (_AGY_DIGEST_VALUE_CAP), so the
 # extra writer's byte impact is small relative to the file-count pressure.
@@ -4733,6 +5512,7 @@ def _publish_json(path: Path, doc: dict, mode: int,
         raise
 
 
+@_dispatch_record
 def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
     """Write the per-call read-audit digest to a durable JSON file.
 
@@ -4842,11 +5622,15 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
         else:
             _publish_json(path, rec, 0o666)
 
+        role = _swept("wrapper-run-logs", "inside-owned-packet",
+                      path.parent if not override else _LOG_DIR / cli / "read-audit", _log_reroots(),
+                      minimum=_STALE_IPC_AGE_FLOOR_S)
         if not override:
-            _prune_dir_by_caps(
-                read_audit_dir, _READ_AUDIT_MAX_FILES, _READ_AUDIT_MAX_BYTES,
-                preserve=path, glob_patterns=("*.json",),
-            )
+            if role is not None:
+                _prune_dir_by_caps(
+                    read_audit_dir, _READ_AUDIT_MAX_FILES, _READ_AUDIT_MAX_BYTES,
+                    preserve=path, glob_patterns=("*.json",), age_floor_s=role[1],
+                )
         else:
             # Telemetry copy for post-hoc forensics (fix wave W1 item 7,
             # claude HS1, reworded 2026-08-19 to not overclaim bindability):
@@ -4897,11 +5681,12 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
                 # protect.
                 extra = (path if path.resolve(strict=False).parent
                          == copy_dir.resolve(strict=False) else None)
-                _prune_dir_by_caps(
-                    copy_dir, _READ_AUDIT_MAX_FILES, _READ_AUDIT_MAX_BYTES,
-                    preserve=copy_path, glob_patterns=("*.json",),
-                    extra_preserve=extra,
-                )
+                if role is not None:
+                    _prune_dir_by_caps(
+                        copy_dir, _READ_AUDIT_MAX_FILES, _READ_AUDIT_MAX_BYTES,
+                        preserve=copy_path, glob_patterns=("*.json",),
+                        extra_preserve=extra, age_floor_s=role[1],
+                    )
                 # percent-escaped filesystem bytes, the same formatter as
                 # the caller's `read-audit-file:` line (gate-1 r13 row
                 # r13-5): an ordinary path is byte-identical, an exotic one
@@ -4960,6 +5745,31 @@ def preclear_read_audit_file(repair_mode: bool = False) -> None:
     override = os.environ.get("TRIAD_READ_AUDIT_FILE")
     if not override:
         return
+    # R-CLEANUP (spec 71b7126): a caller-named file is removed only when its
+    # content shows this wrapper wrote it — a regular file (never a link)
+    # holding exactly the `{meta, digest}` object `emit_read_audit` writes.
+    try:
+        st = os.lstat(override)
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        log(f"preclear_read_audit_file: could not clear stale digest at {override} — {e}")
+        return
+    why = None
+    if not stat.S_ISREG(st.st_mode):
+        why = "it is not a regular file (a link, a directory or a special file)"
+    else:
+        try:
+            with open(override, "rb") as f:
+                doc = json.loads(f.read(4 * 1024 * 1024).decode("utf-8"))
+            if not (isinstance(doc, dict) and set(doc) == {"meta", "digest"}
+                    and isinstance(doc["meta"], dict)):
+                why = "its content is not the {meta, digest} digest this wrapper writes"
+        except (OSError, ValueError) as e:
+            why = f"its content could not be read as this wrapper's digest ({type(e).__name__})"
+    if why is not None:
+        log(f"preclear_read_audit_file: left {override} in place — {why}")
+        return
     try:
         os.unlink(override)
     except FileNotFoundError:
@@ -4968,21 +5778,24 @@ def preclear_read_audit_file(repair_mode: bool = False) -> None:
         log(f"preclear_read_audit_file: could not clear stale digest at {override} — {e}")
 
 
-# Default age floor for the next-run stale-prune. Must comfortably exceed the
-# longest window a run-log can be present-but-still-in-use: one failed dispatch
-# plus the repair agent's 3-attempt ceiling (each attempt re-runs the wrapper in
-# repair_mode — no server-cap retry, 600 s default --timeout — plus agent
-# reasoning), so a worst case of ~3 × 600 s + overhead ≈ 40 min. The floor is set
-# to 2 h (well above that) so a concurrent (live) sibling's freshly written
-# run-log is NEVER inside the deletion window under 4-way parallel dispatch.
-# repair_mode itself skips the prune, so an in-flight repair never races its own
-# log; the cap-based `_prune_run_logs` (100 files / 20 MB) bounds disk regardless,
-# so a generous floor costs nothing. Raised 3600→7200 after the merge-gate review
-# flagged the 60-min margin as thin (owner decision 2026-06-12).
-_STALE_IPC_AGE_FLOOR_S = 7200
+# Default age floor for the next-run stale-prune. A v2 review attempt's
+# run-log lives under its own TRIAD_REVIEW_LOG_DIR, which this sweep never
+# scans (it reads `_LOG_DIR / cli / "runs"` only). Every other run-log is
+# written when its call ends (`emit_run_log`); the one-day floor keeps a
+# run-log the repair step has not read yet out of the deletion window — e.g.
+# a failure early in a ` ; `-joined small-path line, whose repair waits for the
+# later calls, each of which sweeps at its start. repair_mode skips the prune.
+# The cap prunes — `_prune_run_logs` (`_RUN_LOG_MAX_FILES` / `_RUN_LOG_MAX_BYTES`)
+# and the read-audit default-dir prune in `emit_read_audit`
+# (`_READ_AUDIT_MAX_FILES` / `_READ_AUDIT_MAX_BYTES`) — keep this same floor
+# (C3): a file younger than it is never pruned, so either dir can stay over its
+# cap. The sweep and the caps take the floor of the wrapper-run-logs role in the
+# cleanup configuration, raised to this host minimum; this constant is also the
+# default of a direct `_prune_dir_by_caps` call.
+_STALE_IPC_AGE_FLOOR_S = 86400
 
 
-def prune_stale_run_logs(cli: str, age_floor_s: int = _STALE_IPC_AGE_FLOOR_S) -> None:
+def prune_stale_run_logs(cli: str, age_floor_s: Optional[int] = None) -> None:
     """Next-run cleanup of stale run-logs (owner contract: "clean up on the
     NEXT run", not at exit — a crashed call must leave its evidence).
 
@@ -4990,57 +5803,112 @@ def prune_stale_run_logs(cli: str, age_floor_s: int = _STALE_IPC_AGE_FLOOR_S) ->
     whose mtime is older than `age_floor_s`. Called at the START of every normal
     (non-repair-mode) dispatch, so a SUBSEQUENT run cleans up the residue a
     prior run left on failure — including failure classes (terminal / server-cap
-    / schema-rejected / fanout-partial / task-blocked) whose dispatch path never
-    reaches the SKILL's Step 5d `rm`. The cap-based `_prune_run_logs` remains the
-    over-cap failsafe; this is the time-based next-run sweep.
+    / schema-rejected / task-blocked) and the run-log a repair
+    loop read (no prompt or person deletes one). The cap-based `_prune_run_logs`
+    remains the over-cap failsafe; this is the time-based next-run sweep.
 
     The age floor is what makes this concurrency-safe under 4-way parallel
     dispatch: a live sibling's run-log is freshly written (< floor) so it is
     never deleted while still awaiting consumption. Best-effort + per-file
-    tolerant — a vanishing entry never aborts the sweep.
+    tolerant — a vanishing entry never aborts the sweep. The floor is the
+    wrapper-run-logs role's (`_swept`), never below the one-day host minimum;
+    a caller-named `age_floor_s` may only raise it. Only regular files go (a
+    link is never followed or removed); the age is the file's own.
     """
     runs_dir = _LOG_DIR / cli / "runs"
-    cutoff = time.time() - max(0, age_floor_s)
     try:
         entries = list(runs_dir.glob("*.json")) + list(runs_dir.glob("*.prompt.tmp"))
     except Exception:
         return
+    role = _swept("wrapper-run-logs", "inside-owned-packet", runs_dir, _log_reroots(),
+                  minimum=_STALE_IPC_AGE_FLOOR_S) if entries else None
+    if role is None:
+        return
+    cutoff = time.time() - max(role[1], age_floor_s or 0)
     for p in entries:
         try:
-            if p.stat().st_mtime < cutoff:
+            st = p.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # vanished since the listing
+        except OSError as exc:
+            log(f"[wrapper] cleanup: wrapper-run-logs could not read {p} ({exc}); left in place")
+            continue
+        if stat.S_ISREG(st.st_mode) and st.st_mtime < cutoff:
+            try:
                 p.unlink()
-        except OSError:
-            continue
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                log(f"[wrapper] cleanup: wrapper-run-logs could not remove {p} ({exc})")
 
 
-def prune_stale_tmp_dirs(
-    prefix: str,
-    age_floor_s: int = _STALE_IPC_AGE_FLOOR_S,
-    base: Optional[str] = None,
-) -> None:
-    """Next-run cleanup of leaked `tempfile.mkdtemp(prefix=...)` report dirs.
+def _only_empty_folders(d: str, regs: set) -> Optional[list]:
+    """`d`'s folders deepest first when its whole tree holds nothing but empty
+    folders, none of them registered; None at the first file, link or
+    registered folder (it stops there: a full checkout is never walked)."""
+    order: list[str] = []
+    stack = [d]
+    while stack:
+        cur = stack.pop()
+        if os.path.realpath(cur) in regs:
+            return None
+        with os.scandir(cur) as it:
+            for e in it:
+                if not e.is_dir(follow_symlinks=False):
+                    return None
+                stack.append(e.path)
+        order.append(cur)
+    return order[::-1]
 
-    The codex `--task` fan-out path auto-creates `<TMPDIR>/codex_report_*` dirs
-    (synthesis + per-agent raw reports) for leader inspection and never unlinks
-    them — a true per-fan-out leak. This sweeps prior ones older than
-    `age_floor_s` at the START of a dispatch, mirroring `prune_stale_run_logs`:
-    the current run's dir is freshly created (< floor) so it is preserved for
-    the leader to read. Best-effort, per-dir tolerant.
 
-    `base` defaults to the system temp dir (`tempfile.gettempdir()`).
-    """
-    base_dir = Path(base) if base else Path(tempfile.gettempdir())
-    cutoff = time.time() - max(0, age_floor_s)
-    try:
-        entries = list(base_dir.glob(prefix + "*"))
-    except Exception:
+def _prune_empty_worktrees() -> None:
+    """The code-worktrees sweep (R-CLEANUP: the empty folder a stopped
+    git-registered deletion leaves is the sweep's), run at a codex dispatch's
+    start. The root's registration list is read FIRST (one git call, only when
+    the root has a child past the floor) and a registered folder is never
+    descended into; each other direct child that holds nothing but empty
+    folders (stopping at its first file) is removed bottom-up with rmdir —
+    never a registered or a non-empty one, never a link, never under a root
+    shared with other programs. A symlinked root (any component below its
+    base) and a registration list that cannot be read delete nothing (one
+    note); an unreadable folder is skipped with one line, the sweep goes on."""
+    role = _swept("code-worktrees", "git-registered")
+    if role is None:
         return
-    for d in entries:
+    root, floor, base, _mod = role
+    try:
+        if os.path.realpath(base) in {os.path.realpath(tempfile.gettempdir()),
+                                      os.path.realpath(Path.home())}:
+            return  # a shared root ($TMPDIR, ~) gets no empty-folder removal
+        now = time.time()
+        children = [e.path for e in os.scandir(root) if e.is_dir(follow_symlinks=False)
+                    and now - e.stat(follow_symlinks=False).st_mtime >= floor]
+    except FileNotFoundError:
+        return  # no root yet: nothing to sweep
+    except OSError as exc:
+        log(f"[wrapper] cleanup: code-worktrees prune stopped — the root could not be read ({exc}); "
+            f"nothing deleted")
+        return
+    if not children:
+        return
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        r = subprocess.run(["git", "-C", root, "worktree", "list", "--porcelain", "-z"],
+                           capture_output=True, env={**env, "LC_ALL": "C"})
+        if r.returncode != 0:
+            raise OSError(" ".join(os.fsdecode(r.stderr).split()) or f"git exited {r.returncode}")
+    except Exception as exc:  # noqa: BLE001 — no registration list: nothing deleted
+        log(f"[wrapper] cleanup: code-worktrees prune stopped — {exc}; nothing deleted")
+        return
+    regs = {os.path.realpath(f[len("worktree "):]) for f in os.fsdecode(r.stdout).split("\0")
+            if f.startswith("worktree ")}
+    for child in children:
         try:
-            if d.is_dir() and d.stat().st_mtime < cutoff:
-                shutil.rmtree(d, ignore_errors=True)
-        except OSError:
-            continue
+            tree = _only_empty_folders(child, regs)
+            for d in tree or ():
+                os.rmdir(d)
+        except OSError as exc:
+            log(f"[wrapper] cleanup: code-worktrees skipped {child} ({exc})")
 
 
 # ─── Debug log (human-readable per-call markdown table) ───────────────────
@@ -5051,10 +5919,10 @@ def prune_stale_tmp_dirs(
 # Audit.jsonl remains the SoT for full data; debug.md is a sample-grade
 # human aid for live triage (cat / glow / bat).
 _DEBUG_CELL_LIMIT = 200
-# Day-dir retention: `_debug/<YYYY-MM-DD>/` dirs older than this many days are
-# removed after a write (`_prune_debug_days`). Env override
-# `TRIAD_DEBUG_MAX_AGE_DAYS` (1-3650; anything else -> note + this default).
-_DEBUG_MAX_AGE_DAYS = 30
+# Day-dir retention: `_debug/<YYYY-MM-DD>/` dirs older than the wrapper-debug
+# role's floor (the cleanup configuration) are removed after a write
+# (`_prune_debug_days`). Env override `TRIAD_DEBUG_MAX_AGE_DAYS` (1-3650;
+# anything else -> note + the declared floor).
 _DEBUG_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -5071,6 +5939,7 @@ def _debug_header(cli: str, day: str) -> str:
     return f"# {cli} debug log — {day} (UTC)"
 
 
+@_dispatch_record
 def debug_log(cli: str, prompt: str, result: RunResult) -> None:
     """Append one human-readable markdown row per call. Opt-in only.
 
@@ -5129,19 +5998,21 @@ def debug_log(cli: str, prompt: str, result: RunResult) -> None:
     _prune_debug_days(today)
 
 
-def _debug_max_age_days() -> int:
+def _debug_max_age_days(default: float) -> float:
+    """The declared floor in days, raised (never lowered) by a valid
+    TRIAD_DEBUG_MAX_AGE_DAYS."""
     raw = os.environ.get("TRIAD_DEBUG_MAX_AGE_DAYS", "")
     if not raw:
-        return _DEBUG_MAX_AGE_DAYS
+        return default
     try:
         days = int(raw)
     except ValueError:
         days = 0
     if days < 1 or days > 3650:
         log(f"[wrapper] debug: ignoring invalid TRIAD_DEBUG_MAX_AGE_DAYS "
-            f"{raw!r} (valid: 1-3650 days); using {_DEBUG_MAX_AGE_DAYS}")
-        return _DEBUG_MAX_AGE_DAYS
-    return days
+            f"{raw!r} (valid: 1-3650 days); using {default:g}")
+        return default
+    return max(days, default)
 
 
 def _debug_day_records(d: Path) -> list[str]:
@@ -5180,10 +6051,10 @@ def _debug_day_owned(d: Path) -> bool:
 def _remove_debug_day(d: Path) -> bool:
     """Remove owned day dir `d` with its allocation records LAST: every other
     entry, then the records, then the dir. A failed removal therefore leaves
-    the records in place, so the residue stays owned (the caller restores the
-    dir's mtime, so the very next sweep retries it); an interruption between
-    the records and the rmdir leaves an EMPTY dir, which the caller's
-    empty-dir rule removes. Per-entry errors are absorbed; True only when `d`
+    the records in place, so the residue stays owned and the next sweep
+    retries it (its age is the records'); an interruption between the records
+    and the rmdir leaves an EMPTY dir, which stays (a sweep-only role gets no
+    empty-folder removal; a recorded limit). Per-entry errors are absorbed; True only when `d`
     is gone. Raises OSError when `d` cannot be listed."""
     records = set(_debug_day_records(d))
     with os.scandir(d) as it:
@@ -5217,21 +6088,27 @@ def _prune_debug_days(today: str) -> None:
 
     Runs after `debug_log` has written and released its lock. Candidates are
     DIRECTORIES (never symlinks, never followed) whose name is date-shaped,
-    which are not `today`'s dir, and whose mtime is older than the floor —
-    the floor, not the name, decides the age — and which `debug_log` provably
-    wrote (`_debug_day_owned`); an old date dir without that header is skipped
-    and counted — except an EMPTY one, which `os.rmdir` removes (it can only
-    remove an empty dir, so nothing is lost). Removal takes the header
-    records LAST (`_remove_debug_day`); a failed removal restores the dir's
-    pre-attempt mtime so the next sweep retries it at once. A candidate that
-    no longer exists is skipped (neither removed nor failed).
+    which are not `today`'s dir, and which `debug_log` provably wrote
+    (`_debug_day_records`); the AGE is the newest record's own mtime (the
+    proof, never the folder) — the floor, not the name, decides. A date dir
+    without a record is skipped and counted when its own mtime is past the
+    floor — an EMPTY one too: a sweep-only role gets no empty-folder removal
+    (R-CLEANUP). A day dir holding a `.git` entry anywhere below it is skipped
+    with one line (no deletion around a repository or a worktree). Removal
+    takes the header records LAST (`_remove_debug_day`),
+    so a failed removal keeps the proof and the next sweep retries it. A
+    candidate that no longer exists is skipped (neither removed nor failed).
     Best-effort: nothing here ever raises into the caller; one stderr note
     each for removed, skipped and unremovable dirs (a candidate still present
     after the removal, or an OSError on its lstat/read while it still exists),
     and one note naming the exception class when the sweep itself fails.
     """
     try:
-        days = _debug_max_age_days()
+        role = _swept("wrapper-debug", "alloc-record", _DEBUG_DIR,
+                      () if _DEBUG_DIR == _HOST_DEBUG else (_DEBUG_DIR,))
+        if role is None:
+            return
+        days = _debug_max_age_days(role[1] / 86400)
         cutoff = time.time() - days * 86400
         removed = 0
         unowned: list[str] = []
@@ -5241,25 +6118,24 @@ def _prune_debug_days(today: str) -> None:
                 if d.name == today or not _DEBUG_DAY_RE.fullmatch(d.name):
                     continue
                 st = d.lstat()
-                if not stat.S_ISDIR(st.st_mode) or st.st_mtime >= cutoff:
+                if not stat.S_ISDIR(st.st_mode):
                     continue
                 if not _debug_day_owned(d):
-                    try:
-                        os.rmdir(d)  # EMPTY: rmdir removes only an empty dir
-                        removed += 1
-                    except OSError:
-                        if os.path.lexists(d):
-                            unowned.append(d.name)
+                    if st.st_mtime < cutoff:
+                        unowned.append(d.name)
+                    continue
+                records = _debug_day_records(d)
+                if not records or max(os.lstat(d / r).st_mtime for r in records) >= cutoff:
+                    continue
+                git = role[3]._git_entry_below(d)  # the deletion module's one walk
+                if git is not None:  # never deleted around a repository or a worktree (R-CLEANUP)
+                    log(f"[wrapper] debug: skipped day dir {d.name} — it holds a .git entry ({git}); "
+                        f"nothing deleted")
                     continue
                 if _remove_debug_day(d):
                     removed += 1
                 elif os.path.lexists(d):
                     failed.append(d.name)
-                    try:  # keep it a candidate for the very next sweep
-                        os.utime(d, ns=(st.st_atime_ns, st.st_mtime_ns),
-                                 follow_symlinks=False)
-                    except OSError:
-                        pass
             except OSError:
                 # a candidate that vanished (a concurrent sweep took it) is
                 # neither removed nor failed — skip it
@@ -5267,7 +6143,7 @@ def _prune_debug_days(today: str) -> None:
                     failed.append(d.name)
         if removed:
             log(f"[wrapper] debug: removed {removed} day dir(s) older than "
-                f"{days} days")
+                f"{days:g} days")
         if unowned:
             log(f"[wrapper] debug: skipped {len(unowned)} unowned day dir(s) "
                 f"(no debug header; e.g. {sorted(unowned)[0]})")

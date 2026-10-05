@@ -13,16 +13,11 @@ the Bash sandbox so they can reach the vendor APIs with your auth):
 
   * `permissions.allow` — one `Bash(<wrapper>:*)` BASENAME grant per shipped
     wrapper (e.g. `Bash(codex_wrapper.py:*)`), matching the BARE invocation the
-    dispatch SKILLs emit (`bin/` is on PATH) so dispatch stays PROMPTLESS. This is
-    the vendor-recommended split: the basename grant exists for the promptless UX
-    ONLY — it is deliberately NOT the security boundary. Claude Code's docs note
-    that Bash permission patterns constraining arguments are "fragile" and "can be
-    bypassed", and recommend a PreToolUse hook for reliable validation
-    (https://docs.claude.com/en/docs/claude-code/hooks). The RELIABLE security gate
-    is therefore the PreToolUse hook (installed separately), which validates the
-    invocation + args and rejects a foreign same-named script by resolving the
-    invoked path. A stranded basename grant matching a foreign same-named script on
-    PATH is a low-severity residual, closed by the hook + `--remove`.
+    dispatch SKILLs emit (`bin/` is on PATH) so dispatch stays PROMPTLESS. The
+    grant is by the script's NAME: it runs a script of that name without asking.
+    The plugin's environment assumes one operator and nothing planted on PATH;
+    the wrappers themselves contain --prompt-file / --image / --cwd in the
+    allowed roots and pin the vendor binary under the hardening env below.
   * `sandbox.excludedCommands` — the space-glob form (`codex_wrapper.py *`) that
     runs the wrappers outside the Bash sandbox if you enable it. Harmless when the
     sandbox is off; the same bare basename form as the allow grant, so both match
@@ -36,15 +31,11 @@ the Bash sandbox so they can reach the vendor APIs with your auth):
       TRIAD_<CLI>_BIN=<abs>           the resolved vendor pin (codex/gemini/agy)
       TRIAD_WRAPPER_ALLOWED_ROOTS=…   the workspace root the wrappers may touch
       TRIAD_AUDIT_REDACT_PROMPTS=1    redact prompt text from the audit log
-  * `hooks.PreToolUse` — a matcher-group ("Bash") that runs the shipped
-    `hooks/pretooluse_wrapper_guard.py` on every Bash tool call. This hook is the
-    RELIABLE security gate the basename grant defers to (Claude Code's docs flag
-    Bash arg-patterns as fragile; a PreToolUse hook is the recommended validation):
-    it resolves-and-rejects a foreign same-named wrapper on PATH and gates
-    --prompt-file/--image/--cwd against the workspace roots. We append our OWN
-    dedicated matcher-group (never mutate a user's), so `--remove` strips exactly
-    it. The hook script is pinned by absolute path (a user-authored settings entry
-    does not expand ${CLAUDE_PLUGIN_ROOT}).
+
+An `--install` writes no hook. It takes out the `hooks.PreToolUse` handlers an
+earlier version of the plugin wrote and its record lists: such a handler is
+pinned to that version's directory, and once the host deletes the directory
+every shell command of the project fails.
 
 Robustness: the settings file is read with O_NOFOLLOW (a symlinked settings path
 is refused), the whole read-merge-write runs under an advisory `flock`, and the
@@ -54,31 +45,82 @@ traceback.
 
 Usage:
     python3 setup_permissions.py [--install] [--target <path-or-dir>]
-                                 [--bin-dir <dir>] [--hooks-dir <dir>]
+                                 [--bin-dir <dir>]
                                  [--allowed-roots <a:b:c>] [--dry-run]
     python3 setup_permissions.py --remove   [--target <path-or-dir>] [--dry-run]
+    python3 setup_permissions.py --uninstall-machine [--dry-run]
 
+    --install       Write the entries (the default mode). The record is written
+                    before the settings file and completed after it, so a run
+                    that stops between the writes is repaired by running
+                    --install again; a run that changes only the record
+                    writes the record alone. It takes out the hook entry an
+                    earlier version wrote. An entry of the plugin's that is
+                    in the settings file and in no record is yours: it is not
+                    recorded, and --install and --remove both name it — the
+                    grants, sandbox patterns and env keys (by name) in one note,
+                    and a PreToolUse handler whose command contains the hook's
+                    file name in a `left <target>: hook <command>` line.
     --target        Settings file, or a directory. A directory (or the default)
                     resolves to `<dir>/.claude/settings.json`; the default target
-                    is `./.claude/settings.json`.
+                    is `./.claude/settings.json`. The record of an install names
+                    the one settings file it wrote: an --install into another
+                    settings file of the same directory is refused (exit 1).
+                    A record of an older version names no file: an --install
+                    into a file that holds none of its entries is refused
+                    (exit 1) — give the --target that install used. Such a
+                    record is never removed while none of its entries is
+                    found: entries taken out by hand cannot be told from
+                    entries in another settings file of that directory. The
+                    kept record is the operator's.
     --bin-dir       Directory holding the shipped wrapper scripts (default: the
                     plugin `bin/` sibling of this script's `scripts/` dir).
-    --hooks-dir     Directory holding the shipped PreToolUse hook (default: the
-                    plugin `hooks/` sibling of this script's `scripts/` dir).
     --allowed-roots Colon-separated absolute paths for TRIAD_WRAPPER_ALLOWED_ROOTS
                     (default: the project root derived from --target).
-    --remove        Delete exactly the entries a prior --install authored.
-    --dry-run       Print what would change without writing.
+    --remove        Delete exactly the entries a prior --install authored, this
+                    script's two sidecar files, the empty containers the
+                    install created, and the settings file the install
+                    created when nothing else is left in it — also when the
+                    entries were taken out by hand. It creates nothing. Give the
+                    same --target as the --install: a --target that is not the
+                    file the record names is refused (exit 1, the record kept).
+                    A record of an older version names no file: when none of
+                    its entries is in the target it is kept (exit 1) — give the
+                    --target the install used (entries taken out by hand cannot
+                    be told from entries in another file). A record whose entries are all
+                    gone is stale and is removed; so is a record that lists
+                    nothing, also when the settings file cannot be read (a
+                    `left <target>: <reason>` line says it was not checked).
+                    An entry of the plugin's in no record is left and named,
+                    as with --install.
+    --uninstall-machine
+                    Once per machine, after --remove in every project: delete
+                    the plugin's files outside any project (the classifier
+                    patches, the two agy agent files, the agy settings lock and
+                    transaction residue, the daily-check state); prints
+                    `removed` / `left <path>: <reason>` per item — while an agy
+                    settings transaction is recorded, every item of it is left
+                    and named. Nothing in the
+                    shared temp dir is removed: the codex temp entries there are
+                    only listed. An item, or a plugin-named
+                    directory, that is a symlink is left; a symlinked PARENT
+                    (~/.config, ~/.gemini) is the user's layout — the wrappers
+                    wrote through it, so this removes through it. A directory
+                    that cannot be listed is reported and the run goes on.
+    --dry-run       Print what would change, by name or by count, and write
+                    nothing.
 
 Exit status is 0 on success (including a no-op re-run/remove), non-zero on error.
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import fcntl
+import fnmatch
 import json
 import os
-import shlex
+import re
 import shutil
 import stat
 import sys
@@ -89,6 +131,9 @@ from pathlib import Path
 # leader here, not a worker, so it is intentionally absent. Each name is the
 # vendor binary the matching wrapper execs (antigravity_wrapper.py -> `agy`).
 VENDOR_CLIS = ("codex", "gemini", "agy")
+
+# The env key of a vendor pin: TRIAD_<CLI>_BIN.
+_PIN_NAME = "TRIAD_{}_BIN"
 
 # The shipped wrapper scripts that get a basename Bash grant.
 WRAPPER_SCRIPTS = (
@@ -106,17 +151,30 @@ WRAPPER_SCRIPTS = (
 # grant above — both target the one bare invocation, no absolute/bare split.
 SANDBOX_EXCLUDE_PATTERNS = tuple(f"{name} *" for name in WRAPPER_SCRIPTS)
 
-# The PreToolUse hook this installer registers — the RELIABLE security gate the
-# basename grant defers to. It ships in the plugin `hooks/` dir (a sibling of this
-# script's `scripts/` dir); the install writes a settings hooks.PreToolUse entry
-# that invokes it on every Bash tool call.
+# The file name of the PreToolUse hook earlier versions of the plugin wrote into
+# the settings: a handler in no record whose command contains it is named.
 HOOK_SCRIPT_NAME = "pretooluse_wrapper_guard.py"
-HOOK_MATCHER = "Bash"
-HOOK_INTERPRETER = "python3"
 
 PROVENANCE_NAME = ".triad-dispatch-managed.json"
 LOCK_NAME = ".triad-dispatch.lock"
-PROVENANCE_VERSION = 1
+PROVENANCE_VERSION = 2
+
+# --uninstall-machine: the two agy agent definitions `antigravity_wrapper.py
+# --setup-agents` writes (its AGY_REVIEW_AGENT / AGY_RESEARCH_AGENT), duplicated
+# so this script never imports the wrapper engine — a shipped test compares them.
+AGY_AGENT_NAMES = ("triad-readonly-review", "triad-readonly-research")
+# The known file set of the two daily-check scripts' state directories.
+DAILY_STATE_FILES = ("report.md", "*.snapshot", "*.now", "changelog.raw", "deep.out")
+# The exact names Python's `tempfile` gives the wrappers' calls in
+# codex_wrapper.py (`mkstemp(prefix=f"codex_last_{pid}_", suffix=".txt")`,
+# `mkstemp(prefix=f"codex_schema_{pid}_", suffix=".json")`): the prefix, 8
+# random characters of [a-z0-9_], the suffix. A shipped test compares the
+# prefixes with the wrapper.
+_RAND8 = "[a-z0-9_]{8}"
+TEMP_FILE_RE = re.compile(
+    rf"codex_last_\d+_{_RAND8}\.txt|codex_schema_\d+_{_RAND8}\.json")
+# This script's own atomic-write temp names (see write_atomic / _write_provenance).
+STRAY_RE = re.compile(rf"(\.settings\.|\.triad-prov\.){_RAND8}\.json\.tmp")
 
 
 class SettingsError(Exception):
@@ -174,48 +232,15 @@ def resolve_bin_dir(explicit: str | None) -> Path:
     return (Path(__file__).resolve().parent.parent / "bin").resolve()
 
 
-def resolve_hooks_dir(explicit: str | None) -> Path:
-    """Directory holding the shipped PreToolUse hook.
-
-    Default: the plugin `hooks/` sibling of this script's `scripts/` dir
-    (`<plugin>/scripts/setup_permissions.py` -> `<plugin>/hooks`).
-    """
-    if explicit:
-        return Path(explicit).expanduser().resolve()
-    return (Path(__file__).resolve().parent.parent / "hooks").resolve()
-
-
-def hook_command(hooks_dir: Path) -> str:
-    """The settings `hooks.PreToolUse` command string that runs the guard.
-
-    Resolves the shipped hook to an absolute path (the install target's settings
-    are consumed by a runtime that does not expand `${CLAUDE_PLUGIN_ROOT}` for a
-    user-authored entry, so pin the absolute path) and invokes it via `python3`.
-    The hook must actually be present — a registration pointing at a missing file
-    would make Claude Code error on every Bash call — so an absent hook is a clean
-    error, mirroring the bin-dir guard.
-    """
-    hook_path = (hooks_dir / HOOK_SCRIPT_NAME).resolve()
-    if not hook_path.is_file():
-        raise SettingsError(
-            f"hook script not found: {hook_path} (pass --hooks-dir to point at "
-            "the plugin's hooks/ directory)"
-        )
-    return f"{HOOK_INTERPRETER} {shlex.quote(str(hook_path))}"
-
-
 def wrapper_grant_entries(bin_dir: Path) -> list[str]:
     """One `Bash(<wrapper>:*)` BASENAME grant per shipped wrapper.
 
     The grant is the bare basename (`Bash(codex_wrapper.py:*)`), matching the bare
     invocation the dispatch SKILLs emit (`bin/` is on PATH) so dispatch stays
-    PROMPTLESS. This is the vendor-recommended split: the basename `permissions.allow`
-    grant provides the promptless UX; the RELIABLE security gate is the PreToolUse
-    hook (installed separately), which validates the invocation and rejects a foreign
-    same-named script by resolving the invoked path — Claude Code's docs flag Bash
-    argument patterns as fragile/bypassable and recommend a PreToolUse hook instead.
-    `bin_dir` must still exist so the grant is only written when the wrappers are
-    actually shipped (a sanity guard, not the source of the grant string).
+    PROMPTLESS. It runs a script of that name without asking; the wrappers
+    contain their inputs under the hardening env. `bin_dir` must still exist so
+    the grant is only written when the wrappers are actually shipped (a sanity
+    guard, not the source of the grant string).
     """
     if not bin_dir.is_dir():
         raise SettingsError(
@@ -238,7 +263,7 @@ def resolve_vendor_pins() -> tuple[dict[str, str], list[str]]:
     for cli in VENDOR_CLIS:
         found = shutil.which(cli)
         if found:
-            pins[f"TRIAD_{cli.upper()}_BIN"] = str(Path(found).resolve())
+            pins[_PIN_NAME.format(cli.upper())] = str(Path(found).resolve())
         else:
             missing.append(cli)
     return pins, missing
@@ -292,22 +317,48 @@ def read_settings_nofollow(target: Path) -> dict:
     return data
 
 
-def _open_lock(target: Path) -> int:
-    """Open (creating) an advisory lock file next to the settings and flock it.
+def _open_lock(target: Path, create: bool = True) -> int | None:
+    """Open an advisory lock file next to the settings and flock it.
 
     The lock is a sidecar so it never disturbs the settings file's own
     O_NOFOLLOW read / atomic replace. Opened O_NOFOLLOW so a planted symlink at
-    the lock path is refused rather than followed.
+    the lock path is refused rather than followed. With `create=False` (a
+    `--remove --dry-run` or an `--install --dry-run`, which create nothing) an
+    absent lock file is not created and None is returned. A run that waited on
+    a lock file another run then unlinked opens the path again, so every holder
+    locks the file the path names now.
     """
-    target.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_NOFOLLOW
+    if create:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        flags |= os.O_CREAT
     lock_path = target.parent / LOCK_NAME
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    return fd
+    while True:
+        try:
+            fd = os.open(lock_path, flags, 0o600)
+        except FileNotFoundError:
+            if create:
+                raise
+            return None
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        held = os.fstat(fd)
+        try:
+            now = os.stat(lock_path, follow_symlinks=False)
+        except FileNotFoundError:
+            now = None
+        if now and (now.st_dev, now.st_ino) == (held.st_dev, held.st_ino):
+            return fd
+        os.close(fd)
 
 
-def _release_lock(fd: int) -> None:
+def _release_lock(fd: int | None, unlink: Path | None = None) -> None:
+    """Release the lock; with `unlink`, remove the lock file FIRST, while the
+    descriptor is still held (unlink-then-close), so no sidecar is left."""
+    if fd is None:
+        return
     try:
+        if unlink is not None:
+            unlink.unlink(missing_ok=True)
         fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
@@ -364,6 +415,7 @@ def _empty_provenance() -> dict:
         "hooks_pretooluse": [],
         "created_containers": [],
         "created_settings_file": False,
+        "settings_file": None,
     }
 
 
@@ -375,7 +427,15 @@ def _normalize_provenance(data: dict) -> dict:
         if isinstance(val, list):
             base[key] = [x for x in val if isinstance(x, str)]
     base["created_settings_file"] = bool(data.get("created_settings_file", False))
+    if isinstance(data.get("settings_file"), str):
+        base["settings_file"] = data["settings_file"]
     return base
+
+
+def _has_entries(record: dict) -> bool:
+    """A record that lists no entry at all is stale, whatever it names."""
+    return bool(record["allow"] or record["excludedCommands"]
+                or record["env"] or record["hooks_pretooluse"])
 
 
 # ── merge helpers (small, single-responsibility) ─────────────────────────────
@@ -444,46 +504,14 @@ def merge_env(container: dict, desired: dict, prior_env_keys: set,
     return added, updated, foreign
 
 
-def merge_hook_entry(settings: dict, matcher: str, command: str,
-                     created_containers: list) -> bool:
-    """Ensure a `hooks.PreToolUse` matcher-group runs `command`; return True if added.
-
-    Appends a DEDICATED matcher-group `{matcher, hooks:[{type:command, command}]}`
-    (we own the whole group, so removal is exact and never mutates a user's group).
-    A no-op when a handler with the same command already exists anywhere in
-    PreToolUse (idempotent). The user's own hook groups are left untouched.
-    """
-    if "hooks" not in settings:
-        settings["hooks"] = {}
-        created_containers.append("hooks")
-    hooks = _require_dict(settings["hooks"], "settings['hooks']")
-    if "PreToolUse" not in hooks:
-        hooks["PreToolUse"] = []
-        created_containers.append("hooks.PreToolUse")
-    pretool = hooks["PreToolUse"]
-    if not isinstance(pretool, list):
-        raise SettingsError(
-            "settings['hooks']['PreToolUse'] is not a list; refusing to modify")
-    for group in pretool:
-        if not isinstance(group, dict):
-            continue
-        for handler in group.get("hooks") or []:
-            if isinstance(handler, dict) and handler.get("command") == command:
-                return False  # already present -> idempotent no-op
-    pretool.append({
-        "matcher": matcher,
-        "hooks": [{"type": "command", "command": command}],
-    })
-    return True
-
-
 # ── remove (provenance-scoped) ───────────────────────────────────────────────
 def remove_authored_hooks(settings: dict, authored_commands: set) -> int:
     """Remove exactly the PreToolUse handlers whose command we authored.
 
-    A matcher-group left with no handlers (and no other meaningful keys) is
-    dropped; a user's other handlers and groups are untouched. Returns the count
-    of handlers removed.
+    A matcher-group this call took a handler out of and left with none (and
+    with no other meaningful keys) is dropped; a group it took nothing out of is
+    kept as it is, empty or not, and a user's other handlers are untouched.
+    Returns the count of handlers removed.
     """
     removed = 0
     hooks = settings.get("hooks")
@@ -503,7 +531,7 @@ def remove_authored_hooks(settings: dict, authored_commands: set) -> int:
                 removed += 1
             else:
                 kept_handlers.append(handler)
-        if kept_handlers:
+        if kept_handlers or not group["hooks"]:   # not emptied by this call
             group["hooks"] = kept_handlers
             kept_groups.append(group)
         elif set(group.keys()) - {"matcher", "hooks"}:
@@ -513,6 +541,48 @@ def remove_authored_hooks(settings: dict, authored_commands: set) -> int:
         # else: a group that was only our authored handler(s) -> drop it entirely
     hooks["PreToolUse"] = kept_groups
     return removed
+
+
+def _report_unrecorded(target: Path, settings: dict, record: dict) -> None:
+    """Name on stderr what of the plugin's is in `settings` and not in `record`
+    (an earlier install whose record is gone, an earlier plugin version): ONE
+    note for the grants, the sandbox patterns and the env keys (by name, never
+    the value), then one line per PreToolUse handler whose command contains the
+    hook's file name. Prints only; nothing is changed."""
+    def member(key: str, sub: str | None = None):
+        box = settings.get(key)
+        return (box.get(sub) if isinstance(box, dict) else None) if sub else box
+
+    env_names = list(hardening_env(
+        "", {_PIN_NAME.format(cli.upper()): "" for cli in VENDOR_CLIS}))
+    yours = [entry for present, kind, names, recorded in (
+        (member("permissions", "allow"), list,
+         [f"Bash({n}:*)" for n in WRAPPER_SCRIPTS], record["allow"]),
+        (member("sandbox", "excludedCommands"), list, SANDBOX_EXCLUDE_PATTERNS,
+         record["excludedCommands"]),
+        (member("env"), dict, env_names, record["env"]))
+        if isinstance(present, kind)
+        for entry in names if entry in present and entry not in recorded]
+    if yours:
+        noun, verb, they, it = (("entry", "is", "it is", "it") if len(yours) == 1
+                                else ("entries", "are", "they are", "them"))
+        print(f"note: {len(yours)} {noun} of the plugin's {verb} in {target} "
+              "and in no install record "
+              f"({', '.join(yours)}); {they} treated as yours and --remove leaves "
+              f"{it}. Edit {it} out of the settings file yourself if an earlier "
+              f"install wrote {it}.",
+              file=sys.stderr)
+    pretool = member("hooks", "PreToolUse")
+    for group in pretool if isinstance(pretool, list) else ():
+        handlers = group.get("hooks") if isinstance(group, dict) else None
+        for handler in handlers if isinstance(handlers, list) else ():
+            command = handler.get("command") if isinstance(handler, dict) else None
+            if (isinstance(command, str) and HOOK_SCRIPT_NAME in command
+                    and command not in record["hooks_pretooluse"]):
+                print(f"left {target}: hook {command} — in no install record, not "
+                      "removed; edit it out of the settings file yourself if an "
+                      "earlier install wrote it",
+                      file=sys.stderr)
 
 
 def _prune_if_created(settings: dict, created: set) -> None:
@@ -579,18 +649,35 @@ def remove_authored(settings: dict, record: dict) -> int:
 
 
 # ── install / remove drivers ─────────────────────────────────────────────────
-def do_install(target: Path, bin_dir: Path, hooks_dir: Path, allowed_roots: str,
+def do_install(target: Path, bin_dir: Path, allowed_roots: str,
                dry_run: bool) -> int:
     grants = wrapper_grant_entries(bin_dir)
-    hook_cmd = hook_command(hooks_dir)
     pins, missing = resolve_vendor_pins()
     desired_env = hardening_env(allowed_roots, pins)
 
-    lock_fd = _open_lock(target)
+    lock_fd = _open_lock(target, create=not dry_run)
     try:
         prior = read_provenance(target)
+        named = prior["settings_file"]
+        if named and named != target.name:
+            wrote = target.parent / named
+            print(f"this directory's install record names {wrote}: run --install "
+                  f"--target {wrote}, or --remove --target {wrote} first",
+                  file=sys.stderr)
+            return 1
         settings_existed = target.exists()
         settings = read_settings_nofollow(target)
+        # A record of an older version names no file: adopt this target only
+        # when it holds an entry of the record (checked on a copy).
+        if (not named and _has_entries(prior)
+                and not remove_authored(copy.deepcopy(settings), prior)):
+            print("the install record of an earlier version lists entries that "
+                  f"are not in {target}: if that install wrote another settings "
+                  "file of this directory, run --install --target <that file>; "
+                  f"the record {provenance_path(target)} names no settings file, "
+                  "so it is kept: entries taken out by hand cannot be told from "
+                  "entries in another file; the kept record is yours", file=sys.stderr)
+            return 1
 
         created_containers = list(prior.get("created_containers", []))
         if "permissions" not in settings:
@@ -615,30 +702,40 @@ def do_install(target: Path, bin_dir: Path, hooks_dir: Path, allowed_roots: str,
         added_env, updated_env, foreign_env = merge_env(
             settings, desired_env, prior_env_keys, created_containers)
 
-        added_hook = merge_hook_entry(
-            settings, HOOK_MATCHER, hook_cmd, created_containers)
+        # The hook commands an earlier version wrote are pinned inside its
+        # versioned cache dir, which the host deletes later: take them out.
+        replaced_hooks = remove_authored_hooks(
+            settings, set(prior["hooks_pretooluse"]))
 
-        # provenance = the union of everything we author-and-keep. A foreign env
-        # key (the user's own, left untouched) is NOT claimed as authored, so
-        # --remove never deletes it.
+        # provenance = what the prior record lists plus what THIS run added.
+        # An entry that was already in the file and is not in the prior record
+        # is the user's (a foreign env key likewise), so --remove never
+        # deletes it.
         our_env_keys = set(desired_env) - set(foreign_env)
         authored = {
             "version": PROVENANCE_VERSION,
-            "allow": sorted(set(prior.get("allow", [])) | set(grants)),
+            "allow": sorted(set(prior["allow"]) | set(added_allow)),
             "excludedCommands": sorted(
-                set(prior.get("excludedCommands", [])) | set(SANDBOX_EXCLUDE_PATTERNS)),
-            "env": sorted(set(prior.get("env", [])) | our_env_keys),
-            "hooks_pretooluse": sorted(
-                set(prior.get("hooks_pretooluse", [])) | {hook_cmd}),
+                set(prior["excludedCommands"]) | set(added_sandbox)),
+            "env": sorted(set(prior["env"]) | our_env_keys),
+            "hooks_pretooluse": [],
             "created_containers": sorted(set(created_containers)),
             "created_settings_file": bool(
-                prior.get("created_settings_file", False) or not settings_existed),
+                prior["created_settings_file"] or not settings_existed),
+            "settings_file": target.name,
         }
 
+        # Every change made to `settings` above is counted here — the entries
+        # added or updated and the earlier hook commands taken out (a container
+        # is created only together with an entry, since the grants and the env
+        # block are never empty) — so the settings file is written only when
+        # `changed` is true.
         changed = bool(added_allow or added_sandbox or added_env or updated_env
-                       or added_hook)
+                       or replaced_hooks)
         # also (re)write if the provenance record drifted from the desired set
         prov_drift = _normalize_provenance(authored) != prior
+
+        _report_unrecorded(target, settings, authored)
 
         if not changed and not prov_drift:
             print(f"already up to date: all wrapper entries present in {target}")
@@ -646,51 +743,114 @@ def do_install(target: Path, bin_dir: Path, hooks_dir: Path, allowed_roots: str,
 
         if dry_run:
             _report_install(target, added_allow, added_sandbox,
-                            added_env, updated_env, added_hook, foreign_env, missing,
+                            added_env, updated_env, foreign_env, missing,
                             verb="would add")
+            if replaced_hooks:
+                print(f"would remove {replaced_hooks} hook path(s) of a previous version")
+            if not changed:
+                print(f"would update the install record of {target}")
             return 0
 
-        write_atomic(target, settings)
-        _write_provenance(target, authored)
+        # The record is written first, so an interrupted run leaves a record
+        # of everything that may be in the settings file: the interim record
+        # still lists the earlier hook commands this write takes out.
+        interim = dict(authored, hooks_pretooluse=list(prior["hooks_pretooluse"]))
+        _write_provenance(target, interim)
+        if changed:     # a run that changes the record alone leaves the file as it is
+            write_atomic(target, settings)
+        if interim != authored:
+            _write_provenance(target, authored)
         _report_install(target, added_allow, added_sandbox,
-                        added_env, updated_env, added_hook, foreign_env, missing,
+                        added_env, updated_env, foreign_env, missing,
                         verb="added")
+        if replaced_hooks:
+            print(f"removed {replaced_hooks} hook path(s) of a previous version")
+        if not changed:
+            print(f"updated the install record of {target}")
         return 0
     finally:
         _release_lock(lock_fd)
 
 
 def do_remove(target: Path, dry_run: bool) -> int:
-    if not target.exists() and not provenance_path(target).exists():
+    """Remove what --install authored. Never creates anything: an absent
+    parent directory is a no-op, and on success the lock sidecar, the record
+    and this script's stray temp files are gone too."""
+    if not target.parent.is_dir():
         print(f"nothing to remove: no managed entries at {target}")
         return 0
-    lock_fd = _open_lock(target)
+    lock_path = target.parent / LOCK_NAME
+    lock_existed = os.path.lexists(lock_path)
+    lock_fd = _open_lock(target, create=not dry_run)
+    done = False
     try:
+        if not dry_run:
+            for stray in _listing(target.parent) or ():
+                if STRAY_RE.fullmatch(stray.name):
+                    stray.unlink(missing_ok=True)
         record = read_provenance(target)
-        if not (record.get("allow") or record.get("excludedCommands")
-                or record.get("env") or record.get("hooks_pretooluse")):
-            print(f"nothing to remove: no provenance record at {target}")
-            return 0
-        settings = read_settings_nofollow(target)
-        removed = remove_authored(settings, record)
-        if dry_run:
-            print(f"would remove {removed} authored entr"
-                  f"{'y' if removed == 1 else 'ies'} from {target}")
-            return 0
-        if record.get("created_settings_file") and not settings:
-            # we created the file and nothing of the user's remains -> delete it.
+        named = record["settings_file"]
+        if named and named != target.name:
+            wrote = target.parent / named
+            print(f"the install wrote {wrote}: run --remove --target {wrote}",
+                  file=sys.stderr)
+            return 1
+        if not _has_entries(record):
+            # the read is for the report alone: a file that cannot be read
+            # is named and the stale record goes all the same
             try:
-                target.unlink()
-            except FileNotFoundError:
-                pass
-        else:
-            write_atomic(target, settings)
-        _remove_provenance(target)
-        print(f"removed {removed} authored entr"
+                _report_unrecorded(target, read_settings_nofollow(target), record)
+            except (SettingsError, OSError, ValueError) as exc:
+                print(f"left {target}: {exc} — not checked for entries of the "
+                      "plugin's", file=sys.stderr)
+            print(f"nothing to remove: no managed entries at {target}")
+            _drop_stale_record(target, dry_run)
+            done = True
+            return 0
+        settings_existed = os.path.lexists(target)
+        settings = read_settings_nofollow(target)
+        read = copy.deepcopy(settings)
+        removed = remove_authored(settings, record)
+        _report_unrecorded(target, settings, record)
+        verb = "would remove" if dry_run else "removed"
+        if not removed:
+            # The record names this file and none of its entries is left in
+            # it: the record is stale. A record of an older version names no
+            # file, so the entries may be in another one: keep it.
+            if not named:
+                print(f"nothing recorded was found in {target}; the record does "
+                      "not name its settings file — run --remove with the "
+                      "--target the install used; the record "
+                      f"{provenance_path(target)} is kept (entries taken out by "
+                      "hand cannot be told from entries in another file); the "
+                      "kept record is yours", file=sys.stderr)
+                return 1
+            # the empty containers the install created go (the file too,
+            # when the install created it and nothing else is in it — also
+            # when the user emptied it by hand)
+            if settings != read or (settings_existed and not settings and
+                                    record.get("created_settings_file")):
+                gone = _write_back(target, settings, record, settings_existed,
+                                   dry_run)
+                print(f"{verb} {target}" if gone else f"{verb} the empty "
+                      f"containers the install created from {target}")
+                print(f"no managed entries were left in {target}")
+            else:
+                print(f"nothing to remove: no managed entries at {target}")
+            _drop_stale_record(target, dry_run)
+            done = True
+            return 0
+        gone = _write_back(target, settings, record, settings_existed, dry_run)
+        print(f"{verb} {removed} authored entr"
               f"{'y' if removed == 1 else 'ies'} from {target}")
+        if gone:
+            print(f"{verb} {target}")
+        _drop_stale_record(target, dry_run)
+        done = True
         return 0
     finally:
-        _release_lock(lock_fd)
+        _release_lock(lock_fd, lock_path
+                      if (done or not lock_existed) and not dry_run else None)
 
 
 def _write_provenance(target: Path, record: dict) -> None:
@@ -717,8 +877,174 @@ def _remove_provenance(target: Path) -> None:
         pass
 
 
+def _write_back(target: Path, settings: dict, record: dict, settings_existed: bool,
+                dry_run: bool) -> bool:
+    """Write the settings the removal left, or delete the file when the install
+    created it and nothing is left in it (True then); a preview writes nothing."""
+    gone = bool(record.get("created_settings_file") and not settings)
+    if not dry_run:
+        if gone:
+            target.unlink(missing_ok=True)
+        elif settings_existed:
+            write_atomic(target, settings)
+    return gone
+
+
+def _drop_stale_record(target: Path, dry_run: bool) -> None:
+    """Remove a record that has nothing left to remove, and say so."""
+    if os.path.lexists(provenance_path(target)):
+        if not dry_run:
+            _remove_provenance(target)
+        print(f"{'would remove' if dry_run else 'removed'} the install "
+              f"record of {target}")
+
+
+# ── uninstall (machine scope) ────────────────────────────────────────────────
+def _drop(path: Path, dry_run: bool, remove=os.unlink) -> None:
+    if dry_run:
+        print(f"would remove {path}")
+        return
+    try:
+        remove(path)
+    except OSError as exc:  # one item never stops the run
+        print(f"left {path}: {exc.strerror or exc}")
+    else:
+        print(f"removed {path}")
+
+
+def _listing(d: Path) -> list[Path] | None:
+    """The entries of `d`, sorted; a directory that cannot be listed is
+    reported (`left <d>: <error>`) and None is returned, so the run goes on."""
+    try:
+        return sorted(d.iterdir())
+    except OSError as exc:
+        print(f"left {d}: {exc.strerror or exc}")
+        return None
+
+
+def _sweep(d: Path, patterns, dry_run: bool, rmdir: bool, keep=()) -> None:
+    """Remove the regular files in `d` whose names match `patterns` (a symlink
+    is never followed, a path in `keep` is never touched), then — with `rmdir` —
+    `d` itself when nothing else is inside."""
+    try:
+        mode = os.lstat(d).st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return
+    except OSError as exc:  # a path that cannot be examined is not absent
+        print(f"left {d}: {exc.strerror or exc}")
+        return
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+        print(f"left {d}: {'symlink' if stat.S_ISLNK(mode) else 'not a directory'}")
+        return
+    entries = _listing(d)
+    if entries is None:
+        return
+    others = False
+    for entry in entries:
+        if (str(entry) in keep
+                or not any(fnmatch.fnmatchcase(entry.name, p) for p in patterns)):
+            others = True
+        elif entry.is_symlink() or not entry.is_file():
+            print(f"left {entry}: "
+                  f"{'symlink' if entry.is_symlink() else 'not a regular file'}")
+            others = True
+        else:
+            _drop(entry, dry_run)
+    if rmdir and others:
+        print(f"left {d}: not empty")
+    elif rmdir:
+        _drop(d, dry_run, os.rmdir)
+
+
+def do_uninstall_machine(dry_run: bool) -> int:
+    """Remove what the plugin wrote OUTSIDE any project, by fixed plugin-named
+    paths only. Creates nothing, leaves an item or a plugin-named directory
+    that is a symlink (a symlinked parent such as ~/.gemini is the user's
+    layout and is removed through), and leaves every location an environment
+    variable moved (those are the user's). One item that cannot be removed is
+    reported and the run goes on; nothing in the shared temp dir is removed."""
+    home = Path.home()
+    # The engine's rule: XDG_CONFIG_HOME when set, else ~/.config. Both are
+    # swept (a value set later leaves patches under the default); a RELATIVE
+    # value was resolved against the directory each wrapper command ran from,
+    # so its location cannot be known here and is reported instead.
+    configs = [home / ".config"]
+    xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    if os.path.isabs(xdg) and Path(xdg) != configs[0]:
+        configs.append(Path(xdg))
+    elif xdg and not os.path.isabs(xdg):
+        print(f"left {xdg}/triad-dispatch: XDG_CONFIG_HOME is relative — the "
+              "wrappers resolved it against the directory each wrapper command "
+              "ran from, so this cannot find it")
+    gemini = home / ".gemini"
+    keep = set()
+    ext = os.environ.get("TRIAD_CLASSIFIER_EXTENSION")
+    if ext:
+        print(f"left {ext}: set by TRIAD_CLASSIFIER_EXTENSION (yours)")
+        keep.add(os.path.abspath(ext))
+    for config in configs:
+        _sweep(config / "triad-dispatch", ("classifier-patches.json",
+               "classifier-patches.json.lock", "classifier-patches.json.*.tmp"),
+               dry_run, rmdir=True, keep=keep)
+    _sweep(gemini / "config" / "agents",
+           [f"{n}.md" for n in AGY_AGENT_NAMES] + ["triad-readonly-*.md.*.tmp"],
+           dry_run, rmdir=False)
+    cli = gemini / "antigravity-cli"
+    agy_settings = os.environ.get("AGY_SETTINGS_PATH")
+    if agy_settings:
+        print(f"left {Path(agy_settings).parent}: set by AGY_SETTINGS_PATH (yours)")
+    # A recorded agy settings transaction (_agy_settings.py) is `.agybak` or
+    # the shared state; without them the lock, the two crash temp files and
+    # the holders directory go. `settings.json.tmp` is never touched (not the
+    # plugin's alone).
+    if any(os.path.lexists(cli / n)
+           for n in (".agybak", ".agy_settings.shared.json")):
+        wrapper = resolve_bin_dir(None) / "antigravity_wrapper.py"
+        print(f"left {cli / '.agy_settings.lock'}: an agy settings transaction is "
+              f"recorded — run {wrapper} --setup-agents once (it restores the agy "
+              "settings the transaction recorded), then run --uninstall-machine "
+              "again")
+        for name in (".agybak", ".agy_settings.shared.json", ".agybak.tmp",
+                     ".agy_settings.shared.json.tmp", ".agy_settings.holders"):
+            if os.path.lexists(cli / name):
+                print(f"left {cli / name}: part of the recorded agy settings "
+                      "transaction")
+    else:
+        _sweep(cli, (".agy_settings.lock", ".agybak.tmp",
+                     ".agy_settings.shared.json.tmp"), dry_run, rmdir=False)
+        _sweep(cli / ".agy_settings.holders", ("*",), dry_run, rmdir=True)
+    for var, default in (("AGY_DAILY_STATE", cli / "triad-daily"),
+                         ("GEMINI_DAILY_STATE", gemini / "triad-daily")):
+        moved = os.environ.get(var)
+        if moved:
+            print(f"left {moved}: set by {var} (yours)")
+        if not moved or os.path.abspath(moved) != str(default):
+            _sweep(default, DAILY_STATE_FILES, dry_run, rmdir=True)
+    # The shared temp dir holds no record of what is the plugin's: nothing is
+    # removed there, the user's entries of the wrappers' name shapes are listed.
+    try:
+        tmp = Path(tempfile.gettempdir())
+    except OSError as exc:  # no usable temp dir (a full disk): report, go on
+        print(f"left {os.environ.get('TMPDIR') or 'the temporary directory'}: "
+              f"{exc.strerror or exc}")
+        tmp = None
+    for entry in (_listing(tmp) or ()) if tmp and tmp.is_dir() else ():
+        if not TEMP_FILE_RE.fullmatch(entry.name):
+            continue
+        try:
+            st = entry.lstat()
+        except OSError as exc:
+            print(f"left {entry}: {exc.strerror or exc}")
+            continue
+        if st.st_uid == os.getuid():
+            print(f"left {entry}: in the shared temporary directory, which "
+                  "holds no record of what is the plugin's")
+    print(f"machine-scope clean-up finished{' (dry run)' if dry_run else ''}")
+    return 0
+
+
 def _report_install(target, added_allow, added_sandbox, added_env, updated_env,
-                    added_hook, foreign_env, missing, verb: str) -> None:
+                    foreign_env, missing, verb: str) -> None:
     if added_allow:
         print(f"{verb} {len(added_allow)} permissions.allow grant"
               f"{'' if len(added_allow) == 1 else 's'} to {target}:")
@@ -730,8 +1056,6 @@ def _report_install(target, added_allow, added_sandbox, added_env, updated_env,
     if added_env or updated_env:
         print(f"{verb} hardening env: "
               f"{len(added_env)} new, {len(updated_env)} updated")
-    if added_hook:
-        print(f"{verb} the PreToolUse wrapper-validation hook (the security gate)")
     if foreign_env:
         print(f"note: left your own env var(s) untouched ({', '.join(foreign_env)}); "
               "not overwriting a value you set. Remove them if you want the "
@@ -752,16 +1076,22 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--install", action="store_true",
                       help="install the hardening + allowlist (default)")
     mode.add_argument("--remove", action="store_true",
-                      help="remove exactly the entries a prior --install authored")
+                      help="remove exactly the entries a prior --install authored "
+                      "and the two sidecar files, the empty containers the "
+                      "install created, and the settings file the install "
+                      "created when nothing else is left in it — also when the "
+                      "entries were taken out by hand, for a record that names "
+                      "its settings file (give the same --target as the "
+                      "--install)")
+    mode.add_argument("--uninstall-machine", action="store_true",
+                      help="remove the plugin's files outside any project (once per "
+                      "machine, after --remove in every project)")
     parser.add_argument(
         "--target", default=".",
         help="settings.json path, or a directory (default: ./.claude/settings.json)")
     parser.add_argument(
         "--bin-dir", default=None,
         help="dir holding the wrapper scripts (default: the plugin bin/ sibling)")
-    parser.add_argument(
-        "--hooks-dir", default=None,
-        help="dir holding the PreToolUse hook (default: the plugin hooks/ sibling)")
     parser.add_argument(
         "--allowed-roots", default=None,
         help="colon-separated absolute paths for TRIAD_WRAPPER_ALLOWED_ROOTS")
@@ -771,12 +1101,13 @@ def main(argv: list[str] | None = None) -> int:
 
     target = resolve_target(args.target)
     try:
+        if args.uninstall_machine:
+            return do_uninstall_machine(args.dry_run)
         if args.remove:
             return do_remove(target, args.dry_run)
         allowed_roots = resolve_allowed_roots(target, args.allowed_roots)
         bin_dir = resolve_bin_dir(args.bin_dir)
-        hooks_dir = resolve_hooks_dir(args.hooks_dir)
-        return do_install(target, bin_dir, hooks_dir, allowed_roots, args.dry_run)
+        return do_install(target, bin_dir, allowed_roots, args.dry_run)
     except SettingsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

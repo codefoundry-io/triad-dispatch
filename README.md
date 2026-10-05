@@ -63,24 +63,28 @@ Four steps get you a working install. Everything past this section is optional.
    You also need **`python3 >= 3.12`** on PATH (the wrappers run via
    `#!/usr/bin/env python3`), **pydantic 2.x** (`'pydantic>=2,<3'`) importable by that same
    `python3` (the cross-family-review legs dispatch `--pydantic
-   verdict_schema:LegVerdict`, and the schema uses v2-only APIs), and a
+   verdict_schema:LegVerdict`, and the schema uses v2-only APIs), the
+   cross-family review's **jsonschema** (Draft 2020-12;
+   Mac `pip3 install jsonschema`, Ubuntu 24.04 `apt install python3-jsonschema`) — without
+   it the review helper stops with exit 64 and that install hint — and a
    **recent Claude Code** — new enough for plugin marketplaces and namespaced
    plugin skills. The claude review leg is an in-session `Agent`, so it needs
    no separate login.
 
    > **Ubuntu 24.04 note.** `apt install python3-pydantic` gives **1.10**, which
    > does NOT work, and PEP 668 marks the system interpreter externally-managed
-   > so `pip3 install --user` aborts. Use a venv — `python3 -m venv ~/.venvs/triad
-   > && ~/.venvs/triad/bin/pip install 'pydantic>=2,<3'` — and activate it in the
+   > so `pip3 install --user` aborts. Use a venv that still sees apt's
+   > `python3-jsonschema` — `python3 -m venv --system-site-packages ~/.venvs/triad
+   > && ~/.venvs/triad/bin/pip install 'pydantic>=2,<3'` (the venv's pydantic 2
+   > comes first on `sys.path`) — and activate it in the
    > shell that launches Claude Code, so `#!/usr/bin/env python3` resolves to the
-   > venv interpreter. On a closed network, add `--no-index --find-links
-   > <wheel-dir>` to that same command and install from the transferred wheel set
-   > instead of an index. **That set is FIVE wheels, not three** — pydantic 2.x's
+   > venv interpreter. To install from a local wheel set instead of an index,
+   > add `--no-index --find-links <wheel-dir>` to that same command. **That set is FIVE wheels, not three** — pydantic 2.x's
    > full runtime closure: `pydantic-2.x-py3-none-any.whl` +
    > `pydantic_core-*-cp312-*manylinux*.whl` (pinned `==` by the pydantic release)
    > + `typing_extensions-*.whl` + `annotated_types-*.whl` (>= 0.6) +
-   > `typing_inspection-*.whl` (>= 0.4.2, required from pydantic 2.10 on). On an
-   > internet-side machine, `pip download 'pydantic>=2,<3' --only-binary=:all:
+   > `typing_inspection-*.whl` (>= 0.4.2, required from pydantic 2.10 on).
+   > `pip download 'pydantic>=2,<3' --only-binary=:all:
    > --platform manylinux_2_17_x86_64 --python-version 312 -d <dir>` produces
    > exactly that set.
 
@@ -137,6 +141,36 @@ as step 1: `codex login`; `agy` OAuth sign-in; or `gemini` org sign-in
 its Google-family leg at runtime (`TRIAD_GOOGLE_REVIEW_CLI`, else agy, else gemini)
 and runs claude (`Agent`) + codex + that leg.
 
+### Choose the claude review leg's model and effort
+
+*Do this ONLY if you want the claude leg of `triad-cross-family-review` at another
+effort or on an older model than the default.* That leg runs as a native Claude
+Code subagent, and its model and effort are fixed in its agent file. Claude Code
+has no per-call effort setting, so another effort or model is another preset. The
+plugin ships these (each with a `-web` twin of the same model and effort, which a
+review round with web spawns):
+
+| `claude.agent` | role | effort |
+|---|---|---|
+| `cross-family-review-reviewer` (default) | current | `xhigh` |
+| `cross-family-review-reviewer-high` | current | `high` |
+| `cross-family-review-reviewer-max` | current | `max` |
+| `cross-family-review-reviewer-older` | older | `xhigh` |
+
+The exact model is the `model:` line of the plugin's `agents/<name>.md` (role:
+current = the default's model, older = an older supported one).
+
+Name one in the claude entry of your project roster
+`<repo>/.claude/triad-review-legs.json`, for example
+`{"schema": "triad-review-legs.v2", "legs": [{"name": "claude", "claude": {"agent": "cross-family-review-reviewer-high"}}]}`.
+Write the bare name: the helper adds the plugin prefix itself, and a name with
+`:` or a name outside the eight shipped presets (these four and their `-web`
+twins) is refused before the round starts. Any other model or effort needs
+another shipped preset, that is, a new plugin release. Your own Claude Code
+settings — a setting that forces the subagent model, an effort environment
+variable, an organization effort cap — outrank the preset's pins. Claude Code
+keeps each subagent's own transcript; the plugin adds no logging for it.
+
 ### If you enable the Bash sandbox
 
 The sandbox is **OFF by default**, so the permission allowlist from step 3 is
@@ -152,8 +186,11 @@ your vendor auth. To also pre-approve the vendor APIs and set a fallback, add
 detectors — they check for CLI / model-list / skill-set drift (for example, a
 Superpowers release for agy, or a gemini extension/skill change). Run them
 occasionally, or wire one up to a daily cron/launchd job; each splits its exit
-code into 0 (no change), 1 (actionable), and 2 (informational). Neither is
-required for normal use — read the scripts' own header comments for exact
+code into 0 (no change), 1 (actionable), and 2 (informational).
+`agy-daily-check.sh` runs `agy update` only when passed `--update` (the default
+run never updates) and sends no prompt; when the agy model list changed, its
+report names the removed and added models — check the model pinned in your
+roster entry. Neither is required for normal use — read the scripts' own header comments for exact
 behavior.
 
 ### Recommended companion — Superpowers
@@ -165,8 +202,7 @@ via its own marketplace
 `/plugin install superpowers`), or follow its README:
 https://github.com/obra/superpowers .
 
-- **codex**: recommended — the codex `--task code` mode mirrors a Superpowers
-  implementer subagent, and `triad-cross-family-review` is the capstone of
+- **codex**: recommended — `triad-cross-family-review` is the capstone of
   `superpowers:subagent-driven-development`.
 - **gemini**: supported — gemini has native skills (`gemini skills`), so
   Superpowers installs as a companion. The bundled `gemini-daily-check.sh` tracks
@@ -193,7 +229,10 @@ each layer.*
 
 *Do this ONLY if you prefer editing the file by hand instead of running
 `scripts/setup_permissions.py`.* Add these entries to `.claude/settings.json`
-(or `.claude/settings.local.json`) — this is exactly what the script merges in:
+(or `.claude/settings.local.json`) — these are the `permissions.allow` entries
+the script merges in; the script also writes `sandbox.excludedCommands`, the
+hardening `env` block and two sidecar files (see
+[Files this plugin writes](#files-this-plugin-writes)):
 
 ```json
 { "permissions": { "allow": [
@@ -272,7 +311,6 @@ appear as the word on the `[wrapper] <cli> <class> …` stderr line):
 | `64` | Server capacity exhausted after retries | Transient vendor overload; wait and retry. |
 | `65` | Auth / config / quota (e.g. `oauth-env`, `cli-subscription-cap`) | Re-login or wait for the quota reset — see the classification word. |
 | `66` | Structured-output (`--pydantic`) schema validation failed | The model's JSON did not match the schema after one repair retry. |
-| `69` | A code task was blocked / needs more context (codex `--task code`) | Provide the missing context and re-dispatch. |
 
 ## Scope & limits — what this does NOT do
 
@@ -327,13 +365,15 @@ How the leader and the owner actually use the toolkit:
   is always allowed. Include agy on any web-grounded lookup.
 - Before merging review-worthy or correctness-critical work, the leader runs
   **`triad-cross-family-review`** (the cross-family review rule): three INDEPENDENT reviewers
-  from different model families — a claude fresh-eye `Agent` subagent + codex +
-  the Google-family CLI (agy or gemini, runtime-selected) — each frames the
+  from different model families — a claude fresh-eye subagent (a shipped reviewer
+  preset chosen by name; see [Choose the claude review leg's model and effort](#choose-the-claude-review-legs-model-and-effort))
+  + codex + the Google-family CLI (agy or gemini, runtime-selected) — each frames the
   suspect decisions as questions; the leader consolidates
   verdicts and fixes → re-confirms until the verdict is unanimous SAFE.
-- The classifier **self-improves**: an unrecognized error routes to a
-  wrapper-repair agent that appends a pattern to the persistent extension JSON,
-  so future identical errors auto-route.
+- The classifier **self-improves**: an unrecognized error routes to the
+  read-only wrapper-repair analyzer, which proposes one entry from the
+  run-log's measured sentence; the leader applies it with `bin/apply_patch.py`
+  to the persistent extension JSON, so future identical errors auto-route.
 
 ## Usage scenarios
 
@@ -373,29 +413,149 @@ per-product enforcement: [SECURITY.md](SECURITY.md).
 
 ## Runtime Artifacts And Cleanup
 
-Wrapper telemetry is local and bounded. Runtime files live under
-`bin/_logs/<cli>/` for each wrapper family (`codex`, `gemini`, `antigravity`):
+Wrapper telemetry stays local and only the wrappers' own code prunes it, inside the
+folders the cleanup configuration declares (`bin/cleanup-roots.default.json`, or the
+project's `.claude/triad-cleanup.json`), each with its role's age floor. Runtime files
+live under `bin/_logs/<cli>/` for each wrapper family (`codex`, `gemini`, `antigravity`):
 
-- `audit.jsonl` rotates when the active file exceeds 10 MB and keeps at most
-  five archives / 50 MB per CLI.
-- Failure IPC run logs live under `bin/_logs/<cli>/runs/*.json`. File names
+- `audit.jsonl` rotates when the active file passes a size cap; at each rotation
+  the oldest archives past a count / byte cap are deleted.
+- Run logs live under `bin/_logs/<cli>/runs/*.json`: one per failed call (a review
+  attempt writes one for every call, inside its own attempt folder). File names
   include UTC timestamp, process id, and an 8-character random UUID suffix, so
   parallel dispatches do not collide.
-- Normal dispatch cleanup deletes the run log and matching `.repair.json` after
-  the repair agent returns.
-- Wrapper failsafes cap run logs at 100 files / 20 MB per CLI and sweep stale
-  run logs plus `.repair.json` files older than 7200 seconds on the next normal
-  dispatch.
+- Nothing deletes a run log after the repair loop: the next normal dispatch sweeps
+  run logs and `.repair.json` files past the role's floor, and a cap prune deletes
+  the oldest past a count / byte cap. A file younger than the floor is never pruned,
+  so the run-log directory (and the read-audit directory) can stay over its cap —
+  the caps do not keep the disk from filling.
 
 Classifier patches live in `~/.config/triad-dispatch/classifier-patches.json`.
 Repair agents use the adjacent lock file before editing it so concurrent repairs
 do not silently overwrite each other.
 
+### Files this plugin writes
+
+`~/.config` below means `$XDG_CONFIG_HOME` when that is set to an absolute path
+(the config home). A relative `XDG_CONFIG_HOME` is resolved by the wrappers
+against the directory the wrapper command ran from; the uninstall reports it
+and removes nothing there.
+
+| scope | path | written when | removed by |
+|---|---|---|---|
+| project | `.claude/settings.json` — `permissions.allow`, `sandbox.excludedCommands`, `env` (and the file itself when it was absent; `--install` and `--remove` also take out the `hooks.PreToolUse` entry an earlier version wrote and its record lists; `--remove` also takes out the containers the install created once they are empty, also when you removed the entries by hand (when the install record names its settings file; for a record that names none, see [Uninstall](#uninstall) step 2), and the file it created when nothing else is left in it; a hook group you emptied by hand is left) | `scripts/setup_permissions.py` | `setup_permissions.py --remove` with the same `--target` as the install |
+| project | `.claude/.triad-dispatch-managed.json` (the record of what the setup wrote, naming the one settings file it wrote; written before the settings file and completed after it, so a run that stops between the two is repaired by running the setup again; a run that changes only the record writes the record alone) | `scripts/setup_permissions.py` | `setup_permissions.py --remove` with the same `--target` as the install |
+| project | `.claude/.triad-dispatch.lock` | each `setup_permissions.py --install` (a `--dry-run` preview creates none); a `--remove` holds it while it runs | `setup_permissions.py --remove` with the same `--target` as the install |
+| project | `_runs/review/<date>-<slug>/` review packets and their per-round git worktrees; `_runs/review/<round name>/` rounds of the small review path, each with its git worktree | each `triad-cross-family-review` gate; for a round, `review_small.py prepare` | `review_scratch.py close <packet-dir>`; a stale packet is pruned by the next `open`; a round: `review_small.py close <round directory>`, and a round older than the review-small floor (the cleanup configuration; `TRIAD_REVIEW_SCRATCH_MAX_AGE_DAYS` may raise it) is removed by the next `prepare`; the empty `_runs/review/` directory stays |
+| project | `_runs/worktrees/<name>/` git worktrees for codex write calls (`triad-codex-dispatch` § Write calls; keep `_runs/worktrees/` in the project's `.gitignore`, so a commit never stages a tree as an embedded repository) | the leader, per that paragraph; the codex wrapper removes an empty leftover folder there at the start of a call | `python3 <plugin-dir>/bin/cleanup.py remove code-worktrees _runs/worktrees/<name>` from the project's top level, after everything in the tree is committed to its branch (a tree with uncommitted or untracked changes is refused) |
+| machine | `~/.config/triad-dispatch/classifier-patches.json` and `classifier-patches.json.lock` | when a repair proposal is applied | `setup_permissions.py --uninstall-machine` |
+| machine | `~/.gemini/config/agents/triad-readonly-review.md` and `triad-readonly-research.md` | `bin/antigravity_wrapper.py --setup-agents` | `setup_permissions.py --uninstall-machine` |
+| machine | `~/.gemini/antigravity-cli/.agy_settings.lock` | `--setup-agents`, and an agy dispatch without `--sandbox read-only` | `setup_permissions.py --uninstall-machine` |
+| machine | the agy settings transaction state in `~/.gemini/antigravity-cli/`: `.agybak`, `.agy_settings.shared.json`, `.agy_settings.holders/`, and the temporary `.agybak.tmp` and `.agy_settings.shared.json.tmp` | an agy settings transaction (`--setup-agents`, an agy dispatch without `--sandbox read-only`), while it runs; a run that stops early leaves them | the transaction when it ends; when `.agybak` or `.agy_settings.shared.json` is left, run `bin/antigravity_wrapper.py --setup-agents` once (it restores the agy settings); `setup_permissions.py --uninstall-machine` removes the rest, and while `.agybak` or `.agy_settings.shared.json` is there it removes none of these and names each one that exists |
+| machine | `~/.gemini/antigravity-cli/triad-daily/` and `~/.gemini/triad-daily/` | `bin/agy-daily-check.sh`, `bin/gemini-daily-check.sh` | `setup_permissions.py --uninstall-machine` |
+| temporary | `$TMPDIR/codex_last_*.txt`, `$TMPDIR/codex_schema_*.json` | each codex dispatch | the wrapper after each call; what is left stays (`setup_permissions.py --uninstall-machine` lists it and removes nothing there) |
+| plugin directory | `bin/_logs/<cli>/` (audit log, run logs, read-audit digests) | every dispatch | the wrappers' rotation, sweep and cap prunes above (a file younger than its role's floor stays); the plugin directory's removal |
+| plugin directory | `bin/_debug/<UTC-date>/` | only with `--debug` | day directories past the `wrapper-debug` floor, by the next `--debug` call; the plugin directory's removal |
+
+- A repair proposal is applied AUTOMATICALLY into the classifier file; nothing
+  asks you first.
+- `bin/agy-daily-check.sh` runs `agy update` (it changes your agy install) only
+  when you pass `--update`; a plain run updates nothing and sends no prompt.
+- The plugin may create these directories when they are absent and never
+  removes them: `<project>/.claude/`, `<project>/_runs/`, the config home,
+  `~/.gemini/`, `~/.gemini/config/`, `~/.gemini/config/agents/`,
+  `~/.gemini/antigravity-cli/`.
+- A location you moved with an environment variable (`TRIAD_DISPATCH_LOG_DIR`,
+  `TRIAD_DEBUG_DIR`, `TRIAD_CLASSIFIER_EXTENSION`, `AGY_DAILY_STATE`,
+  `GEMINI_DAILY_STATE`, `AGY_SETTINGS_PATH`, `AGY_AGENTS_DIR`,
+  `TRIAD_READ_AUDIT_FILE`) is yours:
+  nothing removes it. `TRIAD_READ_AUDIT_FILE` names a read-audit file the caller
+  chose; the review helper puts it inside the review packet, which `close`
+  removes.
+- While a file is being written, a temporary file of a similar name sits beside
+  it for a moment; a run that ends normally leaves none.
+- The machine-scope paths are shared by every triad-dispatch build on the
+  machine (a second checkout, the source tree): after uninstalling one build,
+  run `bin/antigravity_wrapper.py --setup-agents` in the other.
+- The uninstall leaves an item that is a symlink, and a plugin-named directory
+  (`triad-dispatch/`, `triad-daily/`) that is a symlink. A symlinked parent
+  (`~/.config`, `~/.gemini`) is your layout: the wrappers wrote through it, so
+  the uninstall removes through it. The uninstall removes nothing in the shared
+  temporary directory.
+- The vendor CLIs' own session and history stores are not the plugin's; the
+  uninstall does not touch them.
+
+### Uninstall
+
+Run these steps in this order. When the host's plugin uninstall ran first and
+`scripts/setup_permissions.py` is gone, no code of the plugin is left to remove
+the paths in [Files this plugin writes](#files-this-plugin-writes): they stay, and
+they are yours.
+
+1. **Close any open review packet and any open round of the small review path**:
+   `python3 <plugin-dir>/skills/triad-cross-family-review/lib/review_scratch.py close <packet-dir>`;
+   `python3 <plugin-dir>/skills/triad-cross-family-review/lib/review_small.py close <round directory>`.
+2. **In EACH project where you ran the setup**:
+   `python3 <plugin-dir>/scripts/setup_permissions.py --remove` with the SAME
+   `--target` you gave `--install` (none, when you ran the setup from the project
+   root). The record of what the setup wrote names the one settings file the
+   install wrote: `--remove` with another `--target` changes nothing and names
+   that file. A record written by an older version names no file: when none of
+   its entries is in the target, `--remove` and `--install` change nothing and
+   say so — give the `--target` that install used. Neither command removes such
+   a record while none of its entries is found: entries taken out by hand cannot
+   be told from entries in another settings file of that directory; the kept record is
+   yours. An entry of the plugin's that is in the
+   settings file and in no record (the record was deleted, or an earlier version
+   wrote it) is treated as yours, and neither command removes it: `--install`
+   and `--remove` both name it — the grants, sandbox patterns and env keys (by
+   name) in one note, and a PreToolUse handler whose command contains the hook's
+   file name in a `left <target>: hook <command>` line — edit it out of the settings file yourself. A
+   record that lists nothing is removed by `--remove` also when the settings
+   file cannot be read; a `left <target>: <reason>` line says the file was not
+   checked. Do this BEFORE
+   the host uninstall, which deletes this script. A project an EARLIER version
+   set up holds a `hooks.PreToolUse` entry pinned to that version's directory;
+   once the host deletes that directory, every shell command of the project
+   fails. After updating the plugin, run `setup_permissions.py` once, with the
+   same `--target` as the install, in each project an earlier version set up: it
+   takes out that hook entry.
+3. **Remove the scheduled daily check** — the cron or launchd entry that runs
+   `agy-daily-check.sh` or `gemini-daily-check.sh`, if you made one. Do this
+   BEFORE the next step: a scheduled run writes the daily-check state again.
+4. **ONCE per machine, after the last project**:
+   `python3 <plugin-dir>/scripts/setup_permissions.py --uninstall-machine`. It
+   prints `removed <path>` or `left <path>: <reason>` per item (a recorded agy
+   settings transaction is left whole, each of its items named); `--dry-run`
+   previews it. It removes nothing in the shared temporary directory, which holds
+   no record of what is the plugin's: it lists the codex temporary entries there;
+   they are yours to remove.
+5. **The host steps.** From a shell:
+
+   ```
+   claude plugin uninstall triad-dispatch@triad-dispatch
+   claude plugin marketplace remove triad-dispatch
+   ```
+
+   In a session: `/plugin uninstall triad-dispatch@triad-dispatch`, then
+   `/plugin marketplace remove triad-dispatch`. The uninstall removes the plugin's
+   entry from your settings and its data directory. The cached plugin directory —
+   which holds `bin/_logs` and `bin/_debug` — is marked and removed by a background
+   clean-up 14 days later, and that clean-up runs only while at least one plugin
+   is still installed: when this was your last plugin,
+   `~/.claude/plugins/cache/triad-dispatch/` stays. Removing the marketplace
+   also uninstalls every plugin installed from it.
+6. **What stays — yours**: the `_runs/review/` and `_runs/worktrees/` lines in `.gitignore`; roster files
+   (`.claude/triad-review-legs.json`, `~/.config/triad/review-legs.json`); review
+   ledgers under `docs/reviews/`; anything you added to `~/.claude/CLAUDE.md` from
+   `migration/CLAUDE.recommended.md`.
+
 ## What's inside
 
 - **skills** (4): `triad-codex-dispatch`, `triad-gemini-dispatch`,
   `triad-antigravity-dispatch`, `triad-cross-family-review`.
-- **agents** (3): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`.
+- **agents** (11): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`,
+  and the eight claude review presets (see [Choose the claude review leg's model and effort](#choose-the-claude-review-legs-model-and-effort)).
 - **bin**: the Python wrappers (codex / gemini / agy) + `agy-daily-check.sh` +
   `gemini-daily-check.sh` + `policies/gemini-readonly.toml` (the per-call
   read-only Policy Engine file the gemini `--sandbox read-only` mode attaches).

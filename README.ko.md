@@ -62,22 +62,26 @@ Claude 가 `triad-codex-dispatch` skill 을 실행하고, codex wrapper 를 호�
    또한 PATH 에 **`python3 >= 3.12`** (wrapper 는 `#!/usr/bin/env python3` 로
    실행)와, 그 `python3` 로 import 가능한 **pydantic 2.x** (`'pydantic>=2,<3'`) (cross-family-review
    leg 이 `--pydantic verdict_schema:LegVerdict` 로 디스패치하고, 스키마가 v2 전용
-   API 를 씁니다), 그리고 플러그인 마켓플레이스 + 네임스페이스 플러그인 skill 을
+   API 를 씁니다), cross-family review 의 **jsonschema** (Draft 2020-12;
+   Mac `pip3 install jsonschema`, Ubuntu 24.04 `apt install python3-jsonschema`) — 없으면
+   review helper 가 exit 64 와 그 설치 안내로 멈춥니다 — 그리고 플러그인 마켓플레이스 + 네임스페이스 플러그인 skill 을
    지원할 만큼 **최신 Claude Code** 가 필요합니다. claude 리뷰 leg 는 세션 내
    `Agent` 이므로 별도 로그인이 필요 없습니다.
 
    > **Ubuntu 24.04 주의.** `apt install python3-pydantic` 은 **1.10** 이라 동작하지
    > 않고, PEP 668 로 시스템 인터프리터가 externally-managed 이므로 `pip3 install
-   > --user` 도 실패합니다. venv 를 쓰세요 — `python3 -m venv ~/.venvs/triad &&
-   > ~/.venvs/triad/bin/pip install 'pydantic>=2,<3'` — 그리고 Claude Code 를 띄우는
+   > --user` 도 실패합니다. apt 의 `python3-jsonschema` 가 그대로 보이는
+   > venv 를 쓰세요 — `python3 -m venv --system-site-packages ~/.venvs/triad &&
+   > ~/.venvs/triad/bin/pip install 'pydantic>=2,<3'` (venv 의 pydantic 2 가 `sys.path`
+   > 에서 먼저 옵니다) — 그리고 Claude Code 를 띄우는
    > 셸에서 그 venv 를 activate 해야 `#!/usr/bin/env python3` 가 venv 인터프리터로
-   > 해석됩니다. 폐쇄망에서는 같은 명령에 `--no-index --find-links <wheel-dir>` 를
-   > 붙여 인덱스 대신 반입한 wheel 세트로 설치하세요. **그 세트는 3개가 아니라 5개**
+   > 해석됩니다. 인덱스 대신 로컬 wheel 세트로 설치하려면 같은 명령에
+   > `--no-index --find-links <wheel-dir>` 를 붙이세요. **그 세트는 3개가 아니라 5개**
    > 입니다 — pydantic 2.x 런타임 의존 closure 전부:
    > `pydantic-2.x-py3-none-any.whl` + `pydantic_core-*-cp312-*manylinux*.whl`
    > (pydantic 릴리스마다 `==` 고정) + `typing_extensions-*.whl` +
    > `annotated_types-*.whl` (>= 0.6) + `typing_inspection-*.whl` (>= 0.4.2,
-   > pydantic 2.10 부터 필수). 인터넷 쪽 머신에서
+   > pydantic 2.10 부터 필수).
    > `pip download 'pydantic>=2,<3' --only-binary=:all: --platform
    > manylinux_2_17_x86_64 --python-version 312 -d <dir>` 가 정확히 그 세트를
    > 떨굽니다.
@@ -134,6 +138,34 @@ OAuth 로그인; 또는 `gemini` 조직 로그인(엔터프라이즈 / 조직 �
 (`TRIAD_GOOGLE_REVIEW_CLI`, 없으면 agy, 없으면 gemini)하고 claude(`Agent`) +
 codex + 그 leg 를 실행합니다.
 
+### claude 리뷰 leg 의 모델과 effort 고르기
+
+*`triad-cross-family-review` 의 claude leg 를 기본값과 다른 effort 나 이전 모델로
+돌리고 싶을 때만.* 이 leg 는 Claude Code 의 native subagent 로 돌고, 모델과 effort 는
+그 agent 파일에 고정되어 있습니다. Claude Code 에는 호출마다 effort 를 정하는 설정이
+없으므로, 다른 effort 나 모델은 다른 preset 입니다. 플러그인이 제공하는 preset
+(각각 같은 모델·effort 의 `-web` 쌍이 있고, 웹을 쓰는 리뷰 라운드는 그 쌍을 띄웁니다):
+
+| `claude.agent` | 역할 | effort |
+|---|---|---|
+| `cross-family-review-reviewer` (기본값) | 현재 | `xhigh` |
+| `cross-family-review-reviewer-high` | 현재 | `high` |
+| `cross-family-review-reviewer-max` | 현재 | `max` |
+| `cross-family-review-reviewer-older` | 이전 | `xhigh` |
+
+정확한 모델은 플러그인의 `agents/<name>.md` 의 `model:` 줄입니다 (역할: 현재 =
+기본값의 모델, 이전 = 지원되는 이전 모델).
+
+프로젝트 roster `<repo>/.claude/triad-review-legs.json` 의 claude 항목에 하나를
+적으세요. 예:
+`{"schema": "triad-review-legs.v2", "legs": [{"name": "claude", "claude": {"agent": "cross-family-review-reviewer-high"}}]}`.
+이름은 접두어 없이 적습니다: 플러그인 접두어는 helper 가 붙이고, `:` 가 든 이름이나
+제공 preset 8개 (위 4개와 각각의 `-web` 쌍) 에 없는 이름은 라운드가 시작되기 전에
+거부됩니다. 그 밖의 모델이나 effort 는 새 preset, 곧 새 플러그인 릴리스가 필요합니다.
+사용자 자신의 Claude Code 설정 — subagent 모델을 강제하는 설정, effort 환경변수, 조직의
+effort 상한 — 은 preset 의 고정값보다 우선합니다. 각 subagent 의 대화 기록은 Claude Code 가
+따로 남기므로 플러그인은 그에 대한 로그를 더하지 않습니다.
+
 ### Bash 샌드박스를 켤 경우
 
 샌드박스는 **기본 OFF** 이므로 대부분의 설치는 step 3 의 권한 allowlist 만으로
@@ -149,7 +181,10 @@ codex + 그 leg 를 실행합니다.
 detector 입니다 — CLI / 모델 목록 / skill 세트 drift(예: agy 용 Superpowers
 출시나 gemini extension/skill 변경)를 확인합니다. 가끔 실행하거나 daily
 cron/launchd job 으로 연결하세요; 각각 exit code 를 0(변화 없음),
-1(조치 필요), 2(정보성)로 나눕니다. 일반 사용에는 필요 없습니다 — 정확한
+1(조치 필요), 2(정보성)로 나눕니다. `agy-daily-check.sh` 는 `--update` 를
+줄 때만 `agy update` 를 실행하고(기본 실행은 업데이트하지 않음) 프롬프트를
+보내지 않습니다; agy 모델 목록이 바뀌면 보고서에 제거·추가된 모델을
+적으니, roster 항목에 고정한 모델을 확인하세요. 일반 사용에는 필요 없습니다 — 정확한
 동작은 스크립트 자체의 헤더 주석을 참고하세요.
 
 ### 권장 동반 도구 — Superpowers
@@ -160,8 +195,7 @@ cron/launchd job 으로 연결하세요; 각각 exit code 를 0(변화 없음),
 `/plugin install superpowers`)하거나 해당 README 를 따르세요:
 https://github.com/obra/superpowers .
 
-- **codex**: 권장 — codex `--task code` 모드는 Superpowers 의 implementer
-  서브에이전트를 본떴고, `triad-cross-family-review` 는
+- **codex**: 권장 — `triad-cross-family-review` 는
   `superpowers:subagent-driven-development` 의 마무리(capstone)입니다.
 - **gemini**: 지원 — gemini 는 네이티브 skills (`gemini skills`)를 갖추어
   Superpowers 를 동반 설치합니다. 동봉된 `gemini-daily-check.sh` 가 설치된 skill
@@ -188,7 +222,10 @@ https://github.com/obra/superpowers .
 
 *`scripts/setup_permissions.py` 대신 파일을 직접 편집하고 싶을 때만.* 아래
 엔트리를 `.claude/settings.json`(또는 `.claude/settings.local.json`)에
-추가하세요 — 스크립트가 병합하는 것이 바로 이것입니다:
+추가하세요 — 스크립트가 병합하는 `permissions.allow` 엔트리가 이것입니다. 스크립트는
+이 밖에도 `sandbox.excludedCommands`, hardening `env` 블록, sidecar 파일 두 개를
+씁니다
+([이 플러그인이 쓰는 파일](#이-플러그인이-쓰는-파일) 참고):
 
 ```json
 { "permissions": { "allow": [
@@ -267,7 +304,6 @@ privilege separation 입니다(아래 [보안](#보안-security) 에 요약).
 | `64` | 재시도 후에도 server capacity 소진 | 일시적 vendor 과부하; 기다렸다 재시도. |
 | `65` | 인증 / config / quota(예: `oauth-env`, `cli-subscription-cap`) | 재로그인하거나 quota reset 대기 — 분류 단어 참고. |
 | `66` | 구조화 출력(`--pydantic`) 스키마 검증 실패 | 1회 repair 재시도 후에도 모델 JSON 이 스키마 불일치. |
-| `69` | code task 가 blocked / 컨텍스트 부족(codex `--task code`) | 부족한 컨텍스트를 채워 재디스패치. |
 
 ## 범위와 한계 — 이 도구가 하지 않는 것
 
@@ -320,13 +356,15 @@ leader 와 오너가 실제로 사용하는 방식:
   허용됩니다. 웹 기반 조회에는 반드시 agy 를 포함하세요.
 - 리뷰 가치가 있거나 정확성이 중요한 작업을 머지하기 전, leader 는
   **`triad-cross-family-review`** 를 실행합니다 (the cross-family review rule): 서로 다른
-  모델 패밀리의 독립 리뷰어 셋 — claude fresh-eye `Agent` 서브에이전트 + codex
+  모델 패밀리의 독립 리뷰어 셋 — claude fresh-eye 서브에이전트 (이름으로 고르는
+  제공 reviewer preset; 위 "claude 리뷰 leg 의 모델과 effort 고르기" 참고) + codex
   + Google-family CLI (agy 또는 gemini, 런타임 선택) — 가 각각 의심 결정을
   질문 형태로 제기하고, leader 가 판정을 종합해
   수정 → 재확인을 만장일치 SAFE 가 될 때까지 반복합니다.
-- 분류기는 **자기개선**합니다: 인식되지 않은 에러는 wrapper-repair 에이전트로
-  라우팅되어 영속 확장 JSON 에 패턴을 추가하고, 이후 동일한 에러는 자동으로
-  라우팅됩니다.
+- 분류기는 **자기개선**합니다: 인식되지 않은 에러는 읽기 전용 wrapper-repair
+  분석 에이전트로 라우팅되어 run-log 의 측정된 문장으로 엔트리 하나를 제안하고,
+  leader 가 `bin/apply_patch.py` 로 영속 확장 JSON 에 적용하면 이후 동일한
+  에러는 자동으로 라우팅됩니다.
 
 ## 사용 시나리오 (Usage scenarios)
 
@@ -366,28 +404,138 @@ write 권한이 0 입니다: 세션 내 repair 에이전트는 READ-ONLY analyze
 
 ## 런타임 산출물과 정리
 
-Wrapper telemetry는 로컬에 남지만 크기가 제한됩니다. 파일은 wrapper family별로
-`bin/_logs/<cli>/` 아래에 생깁니다(`codex`, `gemini`, `antigravity`).
+Wrapper telemetry는 로컬에 남고, 정리 설정(`bin/cleanup-roots.default.json`, 또는 프로젝트의
+`.claude/triad-cleanup.json`)이 선언한 폴더 안에서 role별 floor에 따라 wrapper 자신의 코드만
+지웁니다. 파일은 wrapper family별로 `bin/_logs/<cli>/` 아래에 생깁니다(`codex`, `gemini`,
+`antigravity`).
 
-- `audit.jsonl`은 active file이 10 MB를 넘으면 rotate하고, CLI당 archive는
-  최대 5개 / 50 MB까지만 유지합니다.
-- 실패 IPC run log는 `bin/_logs/<cli>/runs/*.json`에 생깁니다. 파일명에는 UTC
+- `audit.jsonl`은 active file이 크기 상한을 넘으면 rotate하고, rotate할 때 개수 / byte
+  상한을 넘는 archive를 가장 오래된 것부터 지웁니다.
+- run log는 `bin/_logs/<cli>/runs/*.json`에 실패한 호출마다 하나 생깁니다(리뷰 attempt는
+  모든 호출마다 자기 attempt 폴더 안에 씁니다). 파일명에는 UTC
   timestamp, process id, 8자 random UUID suffix가 들어가므로 병렬 dispatch끼리
   충돌하지 않습니다.
-- 정상 dispatch cleanup은 repair agent가 끝난 뒤 run log와 대응되는
-  `.repair.json`을 지웁니다.
-- wrapper failsafe는 run log를 CLI당 100개 / 20 MB로 제한하고, 다음 normal
-  dispatch 시작 시 7200초보다 오래된 run log와 `.repair.json`을 sweep합니다.
+- repair loop 뒤에 run log를 지우는 단계는 없습니다: 다음 normal dispatch가 role의 floor를
+  넘은 run log와 `.repair.json`을 sweep하고, cap prune이 개수 / byte 상한을 넘는 것을 가장
+  오래된 것부터 지웁니다. floor보다 새 파일은 지우지 않으므로 run log 디렉터리(그리고
+  read-audit 디렉터리)는 cap을 넘은 채로 남을 수 있습니다 — cap이 디스크가 차는 것을 막지는
+  않습니다.
 
 Classifier patch는 `~/.config/triad-dispatch/classifier-patches.json`에 남습니다.
 repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 병렬 repair 간
 덮어쓰기가 일어나지 않습니다.
 
+### 이 플러그인이 쓰는 파일
+
+아래의 `~/.config` 는 `$XDG_CONFIG_HOME` 이 절대 경로로 설정되어 있으면 그
+경로입니다 (config home). 상대 경로인 `XDG_CONFIG_HOME` 은 wrapper 가 wrapper 명령을
+실행한 디렉터리를 기준으로 해석합니다. 제거 단계는 이를 알리기만 하고 그곳에서는
+아무것도 지우지 않습니다.
+
+| 범위 | 경로 | 쓰는 시점 | 지우는 방법 |
+|---|---|---|---|
+| 프로젝트 | `.claude/settings.json` — `permissions.allow`, `sandbox.excludedCommands`, `env` (파일이 없었다면 파일 자체도; `--install` 과 `--remove` 는 이전 버전이 쓰고 그 기록에 담긴 `hooks.PreToolUse` 항목도 지움; `--remove` 는 설치가 만든 컨테이너가 비면 항목을 직접 지운 경우에도 함께 지우고(설치 기록이 설정 파일을 명시할 때; 명시하지 않는 기록은 [제거](#제거-uninstall) 2단계 참고), 설치가 만든 파일에 남은 것이 없으면 그 파일도 지움; 직접 비운 hook 그룹은 남음) | `scripts/setup_permissions.py` | 설치 때와 같은 `--target` 으로 `setup_permissions.py --remove` |
+| 프로젝트 | `.claude/.triad-dispatch-managed.json` (설정 스크립트가 쓴 내용의 기록; 설치가 쓴 설정 파일 하나의 이름을 담음; 설정 파일보다 먼저 쓰고 설정 파일을 쓴 뒤 마무리하므로, 두 쓰기 사이에서 멈춘 실행은 설정 스크립트를 다시 실행하면 복구됨; 기록만 바꾸는 실행은 기록만 씀) | `scripts/setup_permissions.py` | 설치 때와 같은 `--target` 으로 `setup_permissions.py --remove` |
+| 프로젝트 | `.claude/.triad-dispatch.lock` | `setup_permissions.py --install` 을 실행할 때마다 (`--dry-run` 미리 보기는 만들지 않음); `--remove` 는 실행되는 동안 이 파일을 잡고 있음 | 설치 때와 같은 `--target` 으로 `setup_permissions.py --remove` |
+| 프로젝트 | `_runs/review/<date>-<slug>/` 리뷰 packet 과 라운드별 git worktree; 작은 리뷰 경로(small review path)의 `_runs/review/<round name>/` 라운드와 그 git worktree | `triad-cross-family-review` gate 마다; 라운드는 `review_small.py prepare` 가 만듦 | `review_scratch.py close <packet-dir>`; 오래된 packet 은 다음 `open` 이 정리; 라운드는 `review_small.py close <round directory>` 로 지우며, review-small floor(정리 설정; `TRIAD_REVIEW_SCRATCH_MAX_AGE_DAYS` 로 올릴 수만 있음)보다 오래된 라운드는 다음 `prepare` 가 지움; 비어 있는 `_runs/review/` 디렉터리는 남음 |
+| 프로젝트 | codex write 호출용 `_runs/worktrees/<name>/` git worktree (`triad-codex-dispatch` § Write calls; `_runs/worktrees/` 를 프로젝트 `.gitignore` 에 두어 커밋이 트리를 embedded repository 로 담지 않게 함) | 그 문단대로 leader 가 만듦; 비어 있는 남은 폴더는 codex wrapper 가 호출을 시작할 때 지움 | 트리의 모든 작업을 그 브랜치에 커밋한 뒤 프로젝트 최상위에서 `python3 <plugin-dir>/bin/cleanup.py remove code-worktrees _runs/worktrees/<name>` (커밋되지 않았거나 추적되지 않는 변경이 있는 트리는 거부됨) |
+| 머신 | `~/.config/triad-dispatch/classifier-patches.json` 과 `classifier-patches.json.lock` | repair 제안이 적용될 때 | `setup_permissions.py --uninstall-machine` |
+| 머신 | `~/.gemini/config/agents/triad-readonly-review.md` 와 `triad-readonly-research.md` | `bin/antigravity_wrapper.py --setup-agents` | `setup_permissions.py --uninstall-machine` |
+| 머신 | `~/.gemini/antigravity-cli/.agy_settings.lock` | `--setup-agents`, 그리고 `--sandbox read-only` 가 아닌 agy 디스패치 | `setup_permissions.py --uninstall-machine` |
+| 머신 | `~/.gemini/antigravity-cli/` 의 agy 설정 트랜잭션 상태: `.agybak`, `.agy_settings.shared.json`, `.agy_settings.holders/`, 그리고 임시 파일 `.agybak.tmp`, `.agy_settings.shared.json.tmp` | agy 설정 트랜잭션(`--setup-agents`, `--sandbox read-only` 가 아닌 agy 디스패치)이 실행되는 동안; 도중에 멈춘 실행은 이를 남김 | 트랜잭션이 끝날 때; `.agybak` 이나 `.agy_settings.shared.json` 이 남아 있으면 `bin/antigravity_wrapper.py --setup-agents` 를 한 번 실행 (agy 설정을 되돌림); 나머지는 `setup_permissions.py --uninstall-machine` 이 지우며, `.agybak` 이나 `.agy_settings.shared.json` 이 있는 동안에는 이 중 아무것도 지우지 않고 있는 항목마다 이름을 알림 |
+| 머신 | `~/.gemini/antigravity-cli/triad-daily/` 와 `~/.gemini/triad-daily/` | `bin/agy-daily-check.sh`, `bin/gemini-daily-check.sh` | `setup_permissions.py --uninstall-machine` |
+| 임시 | `$TMPDIR/codex_last_*.txt`, `$TMPDIR/codex_schema_*.json` | codex 디스패치마다 | 호출이 끝날 때 wrapper 가 지움; 남은 것은 남음 (`setup_permissions.py --uninstall-machine` 은 목록만 출력하고 그곳에서는 아무것도 지우지 않음) |
+| 플러그인 디렉터리 | `bin/_logs/<cli>/` (audit log, run log, read-audit digest) | 디스패치마다 | 위의 rotation, sweep, cap prune (role 의 floor 보다 새 파일은 남음); 플러그인 디렉터리 삭제 |
+| 플러그인 디렉터리 | `bin/_debug/<UTC-date>/` | `--debug` 를 줄 때만 | `wrapper-debug` floor 를 지난 날짜 디렉터리는 다음 `--debug` 호출이 지움; 플러그인 디렉터리 삭제 |
+
+- repair 제안은 classifier 파일에 **자동으로** 적용됩니다. 먼저 묻지 않습니다.
+- `bin/agy-daily-check.sh` 는 `--update` 를 줄 때만 `agy update` 를 실행합니다
+  (agy 설치가 바뀝니다). 옵션 없이 실행하면 업데이트하지 않고 프롬프트도 보내지 않습니다.
+- 플러그인은 다음 디렉터리가 없으면 만들 수 있고, 지우지는 않습니다:
+  `<project>/.claude/`, `<project>/_runs/`, config home, `~/.gemini/`,
+  `~/.gemini/config/`, `~/.gemini/config/agents/`, `~/.gemini/antigravity-cli/`.
+- 환경 변수로 옮긴 위치(`TRIAD_DISPATCH_LOG_DIR`, `TRIAD_DEBUG_DIR`,
+  `TRIAD_CLASSIFIER_EXTENSION`, `AGY_DAILY_STATE`, `GEMINI_DAILY_STATE`,
+  `AGY_SETTINGS_PATH`, `AGY_AGENTS_DIR`, `TRIAD_READ_AUDIT_FILE`)는 사용자의 것이며, 어떤 단계도
+  지우지 않습니다. `TRIAD_READ_AUDIT_FILE` 은 호출한 쪽이 정한 read-audit 파일이며,
+  리뷰 도우미는 이를 리뷰 packet 안에 두므로 `close` 가 지웁니다.
+- 파일을 쓰는 동안에는 비슷한 이름의 임시 파일이 잠깐 옆에 생깁니다. 정상적으로
+  끝난 실행은 아무것도 남기지 않습니다.
+- 머신 범위의 경로는 이 머신의 모든 triad-dispatch 빌드(두 번째 checkout, 소스
+  트리)가 함께 씁니다. 한 빌드를 제거한 뒤에는 다른 빌드에서
+  `bin/antigravity_wrapper.py --setup-agents` 를 실행하세요.
+- 제거 단계는 심볼릭 링크인 항목과, 심볼릭 링크인 플러그인 이름의 디렉터리
+  (`triad-dispatch/`, `triad-daily/`)를 남깁니다. 심볼릭 링크인 상위 디렉터리
+  (`~/.config`, `~/.gemini`)는 사용자의 구성입니다: wrapper 가 그 경로를 거쳐
+  썼으므로 제거 단계도 그 경로를 거쳐 지웁니다. 제거 단계는 공유 임시 디렉터리에서
+  아무것도 지우지 않습니다.
+- vendor CLI 자체의 세션·기록 저장소는 플러그인의 것이 아니며, 제거 단계가
+  건드리지 않습니다.
+
+### 제거 (Uninstall)
+
+아래 순서대로 실행하세요. 호스트의 플러그인 제거를 먼저 실행해서
+`scripts/setup_permissions.py` 가 없어졌다면, 위 '이 플러그인이 쓰는 파일' 표의
+경로를 지울 플러그인 코드가 남아 있지 않습니다: 그 경로들은 남고, 사용자의 것입니다.
+
+1. **열린 리뷰 packet 과 작은 리뷰 경로의 열린 라운드 닫기**:
+   `python3 <plugin-dir>/skills/triad-cross-family-review/lib/review_scratch.py close <packet-dir>`;
+   `python3 <plugin-dir>/skills/triad-cross-family-review/lib/review_small.py close <round directory>`.
+2. **설정 스크립트를 실행했던 프로젝트마다**:
+   `--install` 때 준 것과 **같은** `--target` 으로
+   `python3 <plugin-dir>/scripts/setup_permissions.py --remove` (프로젝트 루트에서
+   설정했다면 `--target` 없이). 설정 스크립트가 쓴 내용의 기록은 설치가 쓴 설정
+   파일 하나의 이름을 담고 있어서, 다른 `--target` 을 주면 `--remove` 는 아무것도
+   바꾸지 않고 그 파일을 알려 줍니다. 이전 버전이 쓴 기록에는 파일 이름이 없습니다:
+   그 내용이 대상 파일에 하나도 없으면 `--remove` 와 `--install` 은 아무것도 바꾸지
+   않고 그렇다고 알립니다 — 그 설치가 쓴 `--target` 을 주세요. 내용이 하나도
+   보이지 않는 동안 두 명령 모두 그 기록을 지우지 않습니다: 손으로 지운 항목과 같은
+   디렉터리의 다른 설정 파일에 있는 항목을 구별할 수 없기 때문입니다. 남은 기록은 사용자의
+   것입니다. 설정 파일에 있지만 어떤 기록에도 없는 플러그인의 항목(기록이
+   지워졌거나 이전 버전이 쓴 것)은 사용자의 것으로 보며, 두 명령 모두 이를 지우지
+   않습니다: `--install` 과 `--remove` 가 모두 알려 줍니다 — 권한 항목, sandbox
+   패턴, env 키(이름만)는 note 하나로, 명령에 hook 파일 이름이 들어 있는 PreToolUse
+   handler 는 `left <target>: hook <command>` 줄로 알려 주니 설정 파일에서 직접 고치세요. 아무
+   항목도 없는 기록은 설정 파일을 읽을 수 없을 때도 `--remove` 가 지우며,
+   `left <target>: <reason>` 줄로 그 파일을 확인하지 못했다고 알립니다. 호스트 제거보다 **먼저** 하세요: 호스트 제거가 이 스크립트를 지웁니다. **이전** 버전이 설정한
+   프로젝트에는 그 버전의 디렉터리에 고정된 `hooks.PreToolUse` 항목이 있어서, 호스트가
+   그 디렉터리를 지우면 그 프로젝트의 모든 셸 명령이 실패합니다. 플러그인을 업데이트한
+   뒤에는 이전 버전이 설정한 프로젝트마다 설치 때와 같은 `--target` 으로
+   `setup_permissions.py` 를 한 번 실행하세요: 그 hook 항목을 지워 줍니다.
+3. **예약된 daily check 지우기** — `agy-daily-check.sh` 나 `gemini-daily-check.sh`
+   를 실행하는 cron 또는 launchd 항목을 만들었다면 지우세요. 다음 단계보다 **먼저**
+   하세요: 예약된 실행이 daily check 상태를 다시 씁니다.
+4. **마지막 프로젝트 다음에, 머신당 한 번**:
+   `python3 <plugin-dir>/scripts/setup_permissions.py --uninstall-machine`. 항목마다
+   `removed <path>` 또는 `left <path>: <reason>` 을 출력하며 (기록된 agy 설정
+   트랜잭션은 통째로 남기고 그 항목마다 이름을 알림), `--dry-run` 으로 미리
+   볼 수 있습니다. 공유 임시 디렉터리에는 무엇이 플러그인의 것인지 기록이 없어서
+   아무것도 지우지 않고, 그곳의 codex 임시 항목을 목록으로만 알려 줍니다; 그
+   항목은 사용자가 지웁니다.
+5. **호스트 단계.** 셸에서:
+
+   ```
+   claude plugin uninstall triad-dispatch@triad-dispatch
+   claude plugin marketplace remove triad-dispatch
+   ```
+
+   세션 안에서는 `/plugin uninstall triad-dispatch@triad-dispatch` 다음에
+   `/plugin marketplace remove triad-dispatch`. uninstall 은 설정에서 플러그인
+   항목과 플러그인 데이터 디렉터리를 지웁니다. `bin/_logs` 와 `bin/_debug` 가 들어
+   있는 캐시된 플러그인 디렉터리는 표시만 해 두었다가 14일 뒤 백그라운드 정리가
+   지우는데, 이 정리는 설치된 플러그인이 하나 이상 남아 있을 때만 돕니다. 이것이
+   마지막 플러그인이었다면 `~/.claude/plugins/cache/triad-dispatch/` 는
+   남습니다. marketplace 를 제거하면 거기서 설치한 플러그인도 모두 제거됩니다.
+6. **남는 것 — 사용자의 것**: `.gitignore` 의 `_runs/review/` 와 `_runs/worktrees/` 줄; roster 파일 (`.claude/triad-review-legs.json`,
+   `~/.config/triad/review-legs.json`); `docs/reviews/` 아래 리뷰 ledger;
+   `migration/CLAUDE.recommended.md` 에서 `~/.claude/CLAUDE.md` 로 옮겨 적은 내용.
+
 ## 구성 (What's inside)
 
 - **skills** (4): `triad-codex-dispatch`, `triad-gemini-dispatch`,
   `triad-antigravity-dispatch`, `triad-cross-family-review`.
-- **agents** (3): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`.
+- **agents** (11): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`,
+  그리고 claude 리뷰 preset 8개 (위 "claude 리뷰 leg 의 모델과 effort 고르기" 참고).
 - **bin**: Python wrapper 들 (codex / gemini / agy) + `agy-daily-check.sh` +
   `gemini-daily-check.sh` + `policies/gemini-readonly.toml` (gemini `--sandbox
   read-only` 모드가 per-call 로 부착하는 read-only Policy Engine 파일).

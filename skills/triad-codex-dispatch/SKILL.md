@@ -1,8 +1,13 @@
 ---
 name: triad-codex-dispatch
-description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Codex CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 codex_wrapper.py` raw; the user asks to call codex once, have codex handle a task, or run a one-shot codex analysis; a higher-level orchestration SKILL needs the Codex leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Gemini (`triad-gemini-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.9.5
+description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Codex CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 codex_wrapper.py` raw; the user asks to call codex once, have codex handle a task, or run a one-shot codex analysis; a higher-level orchestration SKILL needs the Codex leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Gemini (`triad-gemini-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
+version: 0.10.0
 # changelog:
+#   0.10.0 (2026-10-05): the `--task` mode is removed (the fan-out worker
+#     layer and `--task code`; exits 68 / 69 and the tokens
+#     `fanout-spawn-error` / `fanout-partial` / `task-blocked` leave codex).
+#     A write call is a plain `--sandbox workspace-write` dispatch (it requires
+#     `--cwd`). The no-op `--format` option is removed.
 #   0.9.5 (2026-09-21): Step 1 gains two engine flags (host A v2 slices
 #     S6/S7/S11). `--attempt <int>` (>= 1, default 1; below 1 = exit 3
 #     pre-spawn) is RECORDED on the transport receipt and the summary tail
@@ -81,10 +86,10 @@ makes the `unknown`-classification path correctly route to the repair sub-agent.
 
 1. **Bash invocation only.** No `Agent()` around the wrapper itself. The stderr `[wrapper]` summary line and `run-log:` path emission only surface via Bash.
 2. **Path-based agent input.** Pass the run-log file *path* to the repair agent, not its content. Inline-embedding corrupts on JSON-in-JSON / utf-8 / ANSI / large vendor stdout. The leader itself does NOT read the run-log content — it only passes the PATH to the read-only analyzer, and reads back (a) the wrapper's deterministic classification token and (b) the analyzer's inline JSON proposal. The run-log is untrusted vendor output; keeping the leader out of it preserves the privilege separation.
-3. **Cleanup after dispatch.** `rm -f <run-log-path>` once the repair analyzer returns (propose *or* escalate) and you have applied/surfaced. The wrapper failsafe is for orphans, not normal cleanup.
+3. **Leave the run-log in place.** Never delete the run-log or anything else under `_logs/`: the wrapper's own sweep collects it later. Passing its path to the analyzer (rule 2) is the leader's only act on it.
 4. **Repair agent ONLY on `unknown` / `extraction-error` / `timeout`.** Every other classification carries actionable meaning at the wrapper layer — dispatching the agent on them wastes the call.
 5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. Reasoning: any test framing leaks into the vendor model's behavior and corrupts both the sample and the repair agent's accumulated memory.
-6. **Always spawn the repair agent in parallel — surfacing a failure is not repairing it.** When Step 4 routes a failure (`unknown` / `extraction-error` / `timeout`), spawn the `codex-wrapper-repair` sub-agent with the `Agent` tool's `run_in_background: true`, so it runs alongside your foreground work; parse its inline proposal (Step 5c), apply it, and clean up (Step 5d) when it completes. The payoff is future routing, not this call — the analyzer grows the classifier so the same vendor error auto-routes next time, so a skipped spawn is a silent regression that keeps the error failing un-routed. Reporting the failure to the user is a separate obligation and does not discharge this one. Mechanism: the agent is a read-only analyzer that returns a JSON patch proposal; the leader applies it via the deterministic `apply_patch.py` (no LLM on the write path) and re-runs `--repair-mode` to verify routing. Rule 4 scopes *which* classes route here; this rule says always follow through when they do.
+6. **Always spawn the repair agent in parallel — surfacing a failure is not repairing it.** When Step 4 routes a failure (`unknown` / `extraction-error` / `timeout`), spawn the `codex-wrapper-repair` sub-agent with the `Agent` tool's `run_in_background: true`, so it runs alongside your foreground work; parse its inline proposal (Step 5c), and apply it (Step 5d) when it completes. The payoff is future routing, not this call — the analyzer grows the classifier so the same vendor error auto-routes next time, so a skipped spawn is a silent regression that keeps the error failing un-routed. Reporting the failure to the user is a separate obligation and does not discharge this one. Mechanism: the agent is a read-only analyzer that returns a JSON patch proposal; the leader applies it via the deterministic `apply_patch.py` (no LLM on the write path) and re-runs `--repair-mode` to verify routing. Rule 4 scopes *which* classes route here; this rule says always follow through when they do.
 
 ## Flow
 
@@ -118,24 +123,22 @@ TRIAD_CODEX_PROMPT_EOF
   [--pydantic module:Class] \
   [--output-schema-file /absolute/path/schema.json] \
   [--attempt <int>] \
-  [--image /absolute/path.png ...] \
-  [--format text|markdown|json] \
-  [--task review|analyze|brainstorm|code] \
-  [--fanout N|auto] \
-  [--report-dir /absolute/path]
+  [--image /absolute/path.png ...]
 ```
 
 `--prompt-file` REPLACES the `--prompt` heredoc — argparse rejects both
 together, so delete the heredoc when switching to a file body.
 
-**`--output-schema-file <absolute-path>`** hands a CALLER-OWNED JSON schema
+**`--output-schema-file <path>`** hands a CALLER-OWNED JSON schema
 file straight to codex `--output-schema`. It is TRANSPORT ONLY: the wrapper
 validates nothing, repairs nothing and retries nothing — the caller admits
 the answer with its own validator (this is the path
 `triad-cross-family-review`'s v2 rounds use for their per-attempt producer
 schema projection). Mutually exclusive with `--pydantic`, which owns the
-massage-and-validate path instead. The path must be absolute and an existing
-file; both checks run BEFORE any vendor work, so a bad path costs no dispatch.
+massage-and-validate path instead. The path must name an existing file (a
+relative path is rebased on the wrapper's process-entry cwd, as
+`--prompt-file`); the check runs BEFORE any vendor work, so a bad path costs
+no dispatch.
 
 **`--attempt <int>`** (>= 1, default 1) is the dispatch attempt number. It is
 RECORDED on the transport receipt in the audit row / run-log and on the
@@ -153,24 +156,33 @@ mis-resolution legible afterwards, it does not prevent one.
 
 Defaults: `--sandbox read-only`. Triad policy disallows `danger-full-access` — argparse rejects it at parse time.
 
+**Write calls.** `--sandbox workspace-write` requires `--cwd` (without it the
+wrapper refuses with exit 3) and lets codex edit files inside it. Point `--cwd`
+at an isolated git worktree, never the live working tree. Create it under
+`_runs/worktrees/<name>` (the declared `code-worktrees` root, kept git-ignored).
+codex never commits; verify its changes yourself, then commit. When done, commit
+everything in the tree to its branch, then remove it only with
+`cleanup.py remove code-worktrees _runs/worktrees/<name>`
+from the repository top level. Network and MCP stay reachable under this sandbox.
+
 **`--search`** enables codex's live web search (codex's top-level `--search`, inserted
 before `exec`; default OFF). Opt in for **research / consult / review** dispatches where
-current web grounding matters; leave OFF for routine calls (API-billed + slower).
+current web grounding matters; leave OFF for routine calls (slower). It goes through the codex CLI login like every dispatch — never an API key (R-NOCOST).
 When OFF, the wrapper pins `web_search="disabled"` in config, so no search tool is
 exposed to the run — the no-search contract is enforced, not just advertised.
 
-**Reasoning-effort guideline.** `--reasoning` overrides `model_reasoning_effort` for this dispatch; omit it to inherit the config-alive value (the user's `~/.codex/config.toml`). Set it by intent, not by default: `high` for **review / planning / non-trivial `code` or `analyze` tasks** (bug-hunting, design/spec review, multi-file reasoning); `xhigh` for **deep architecture review or long refactors**; `max` (the top pure-depth tier the wrapper exposes) only for **the hardest multi-step problems**; `low` for trivial/mechanical work where speed matters. Leave it unset for routine dispatches — config-alive already supplies a sensible default, and over-setting `xhigh`/`max` burns latency/quota. **`ultra` is NOT exposed and MUST NOT be used** for a codex worker dispatch: it is `max` reasoning **plus automatic subagent delegation**, which makes a single-shot dispatch runaway and over-long (observed), and not every model variant supports it (an auto-routed dispatch could hit an ultra-less model). The wrapper's enum stops at `max`; do not add `-c model_reasoning_effort="ultra"` by hand. (`minimal` is likewise not exposed — no leader/user use case.)
+**Reasoning-effort guideline.** `--reasoning` overrides `model_reasoning_effort` for this dispatch; omit it to inherit the config-alive value (the user's `~/.codex/config.toml`). Set it by intent, not by default: `high` for **review / planning / non-trivial analysis or coding** (bug-hunting, design/spec review, multi-file reasoning); `xhigh` for **deep architecture review or long refactors**; `max` (the top pure-depth tier the wrapper exposes) only for **the hardest multi-step problems**; `low` for trivial/mechanical work where speed matters. Leave it unset for routine dispatches — config-alive already supplies a sensible default, and over-setting `xhigh`/`max` burns latency/quota. **`ultra` is NOT exposed and MUST NOT be used** for a codex worker dispatch: it is `max` reasoning **plus automatic subagent delegation**, which makes a single-shot dispatch runaway and over-long (observed), and not every model variant supports it (an auto-routed dispatch could hit an ultra-less model). The wrapper's enum stops at `max`; do not add `-c model_reasoning_effort="ultra"` by hand. (`minimal` is likewise not exposed — no leader/user use case.)
 
 **`--model` (dispatch-time model pin, 2026-08-08).** Omit for routine dispatches — the config-alive model (`~/.codex/config.toml`) applies. Pass a CATALOG slug (from `codex debug models`, Tier-2 lookup at dispatch time) when a house policy pins a review/worker tier — e.g. a review-policy leg that must run a specific variant regardless of the owner's interactive config default. The wrapper carries NO slug anywhere (free-form passthrough, `-c model="<slug>"`); slugs rot, so never copy one from memory or docs — read the catalog first. Origin: a config-alive default silently moved review legs off the recorded review policy; dispatch-time pinning restores "model/effort are set at dispatch time" without touching the owner's config.
 
-The prompt is delivered to codex via **stdin** internally (caller still passes `--prompt`). `--pydantic` drives codex's native `--output-schema` (the class is massaged to codex-strict shape); a submit-time refusal surfaces as `schema-rejected` (rc 67). `--image` (repeatable) passes vision inputs as codex `-i` (bad path → `EXIT_ARG_ERROR` pre-spawn). `--format` is output intent — explicit `markdown`/`text` is mutually exclusive with `--pydantic`. `--task` activates the read-only multi-agent fan-out worker layer: it augments the prompt with a deterministic framing + fan-out tier (`--fanout N` 1-12 default 3, or `auto` to let codex decide via the dispatching-parallel-agents skill), pins `--sandbox read-only`, and writes a report — `codex-<task>-synthesis.md` (codex's consolidated answer) + per-agent `codex-<task>-agentN-raw.md` — to `--report-dir` (optional; defaults to a temp dir whose path is logged to stderr). A partial fan-out (a subagent that never completes) carries an `INCOMPLETE` banner in the synthesis. Exception: `--task code` is a write-enabled single TDD implementer (sandbox `workspace-write`, `default_fanout=1`, STATUS-line output) — see § Code task.
+The prompt is delivered to codex via **stdin** internally (caller still passes `--prompt`). `--pydantic` drives codex's native `--output-schema` (the class is massaged to codex-strict shape); a submit-time refusal surfaces as `schema-rejected` (rc 67). `--image` (repeatable) passes vision inputs as codex `-i` (bad path → `EXIT_ARG_ERROR` pre-spawn).
 
 ### Step 2 — Run via Bash; capture rc, stdout, stderr
 
 Wrapper stderr contains:
 - Timestamped wrapper log lines
 - Mirrored vendor stderr (Codex `--json` keeps this small)
-- 1-line summary: `[<timestamp>] [wrapper] codex <classification> exit=<int> vendor=<int> elapsed=<s>` (every wrapper log line, this one included, carries the leading timestamp bracket — the Step 3 grep anchors on it)
+- 1-line summary: `[<timestamp>] [wrapper] codex <classification> exit=<int> vendor=<int> elapsed=<s>` followed by the recorded-facts tail ` attempt=<n>`, ` prompt_file=<abs>` when a `--prompt-file` was given, ` model=<slug>` when `--model` was requested and ` reasoning=<tier>` when `--reasoning` was requested (absent = the CLI's config default) (every wrapper log line, this one included, carries the leading timestamp bracket — the Step 3 grep anchors on it)
 - On failure: `run-log: <absolute-path>`
 
 ### Step 3 — Read the classification
@@ -200,24 +212,23 @@ CONSTRUCTION: `run-log: <abs>` and `exec cwd=… argv=…` never carry the
 its colon (`[wrapper] codex: unemittable-payload — …`).
 
 Token set:
-`ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | schema-rejected | fanout-spawn-error | config-conflict | input-delivery-failed | timeout | extraction-error | unknown | fanout-partial`
+`ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | schema-rejected | config-conflict | input-delivery-failed | timeout | extraction-error | unknown`
 
-Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg; also an unencodable stdin prompt — `input-delivery-failed` refused pre-spawn) / `4` (binary missing) / `64` (server-cap exhausted) / `65` (terminal — SHARED by the five terminal causes and `input-delivery-failed`, so at 65 read the TOKEN from the summary line before picking a Step 4 row) / `66` (schema fail) / `67` (schema-rejected — `--output-schema` refused at submit) / `68` (fanout-partial — `--task` fan-out incomplete) / `69` (`--task code` implementer BLOCKED/NEEDS_CONTEXT — a status signal with no classification token in the summary line; branch on the exit code).
+Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg; also an unencodable stdin prompt — `input-delivery-failed` refused pre-spawn) / `4` (binary missing) / `64` (server-cap exhausted) / `65` (terminal — SHARED by the four terminal causes and `input-delivery-failed`, so at 65 read the TOKEN from the summary line before picking a Step 4 row) / `66` (schema fail) / `67` (schema-rejected — `--output-schema` refused at submit).
 
 ### Step 4 — Branch on classification
 
 | classification (rc) | Leader action |
 |---|---|
 | `ok` (0) | Return wrapper stdout. With `--pydantic`, stdout is the validated JSON object. |
-| terminal (65) — cli-subscription-cap / token-limit / oauth-env / fanout-spawn-error / config-conflict | Surface to user with cause (re-login / quota / prompt size / `--task` subagent spawn rejected / inherited `~/.codex/config.toml` parse error). **NOT** repair-agent territory (already matched — repair routing is only `unknown` / `extraction-error` / `timeout`). |
+| `oauth-env` (65) | STOP. The login is missing or expired, or the CLI presented an API-key-shaped credential. Do not retry, do not try another route or credential, and never read or change the credential store; tell the owner to re-log in through the CLI's own browser flow (`codex login`). A same-basis re-dispatch runs only after the owner reports the re-login. **NOT** repair-agent territory. |
+| terminal (65) — cli-subscription-cap / token-limit / config-conflict | Surface to user with cause (quota / prompt size / inherited `~/.codex/config.toml` parse error). **NOT** repair-agent territory (already matched — repair routing is only `unknown` / `extraction-error` / `timeout`). |
 | `input-delivery-failed` (65; 3 when refused pre-spawn) | The wrapper's OWN stdin transport did not confirm delivery of the prompt (write/flush failed — typically the child closed its stdin early —, the writer had not finished within the bounded join, or the prompt was not UTF-8-encodable and nothing was sent) while codex exited 0 and answered like a success. The answer is BLANKED (stdout empty) and the raw vendor rc is kept. The cause is on the wrapper's OWN stderr, the deterministic line right before the summary — `exit=0 … but stdin delivery failed:<ExceptionClass>; failing closed` (or `unconfirmed`) — which the leader may read; the audit record and the failure run-log ALSO carry it as `stdin_delivery`, for the analyzer and for forensics only (Hard rule 2: the leader does not read the run-log). Surface to user with that cause; a re-dispatch is reasonable. Leave the failure run-log alone — no Step 5 arm ran, and the NEXT dispatch's own IPC cleanup prunes it (the wrapper clears prior residue on start). **NOT** repair-agent territory (a wrapper transport defect, not a classifier gap — the token is never a repair proposal). A genuine vendor error (rc != 0) after an early close keeps ITS classification; the delivery failure is an annotation there. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff. |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 6). Spawn it even when you are busy or also surfacing the failure — never skip.** |
 | `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 6).** Vendor returned rc=0 but extractor found no answer (empty JSON envelope, missing last-message file) — **or the answer is an UNEMITTABLE PAYLOAD**: a lone surrogate this host cannot encode on the payload channel, demoted before the audit row (the stderr line is `[wrapper] codex: unemittable-payload — …` — note the COLON, which keeps it out of the summary grep above; after the demotion the wrapper RE-EMITS the canonical summary with the final classification, so the LAST `[wrapper] codex ` line reads `extraction-error exit=1`). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
 | `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since hang is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
 | `schema-rejected` (67) | Surface to user: the pydantic class / massaged schema is invalid for codex strict mode, or codex strict-rule drift. Fix the class / massage and re-dispatch. **NOT** repair-agent territory (deterministic, not transient). Distinct from `schema fail (66)` = post-hoc pydantic validation failing after a well-formed answer. |
-| `fanout-partial` (68) | The `--task` fan-out did not fully complete (partial / zero / fewer-than-requested subagents). stdout carries an INCOMPLETE banner. Treat the synthesis as partial; inspect the per-agent raw + report. **NOT** repair territory. |
-| exit 69 / `EXIT_TASK_BLOCKED` | `--task code` implementer self-reported BLOCKED or NEEDS_CONTEXT. Read the STATUS-line report in stdout, re-dispatch with the missing context, or escalate to the user. **NOT** a repair-agent dispatch — this is a status signal, not a classification failure. No edit was committed. |
 | arg (3) / binary missing (4) / schema fail (66) | Surface to user with cause. |
 
 ### Step 5 — Repair branch: read-only analyzer proposes, leader applies
@@ -266,7 +277,7 @@ Input:
 }
 
 Example response (return this inline JSON as your entire chat reply):
-{"outcome": "propose", "reason": "transient backend rate throttle, an existing class catches it", "proposal": {"classification": "server-capacity", "reason": "rate limit = transient backend throttle", "pattern_list": "SERVER_CAPACITY_PATTERNS", "substring": "rate limit"}}
+{"outcome": "propose", "reason": "a new capacity sentence this run-log shows, an existing class catches it", "proposal": {"classification": "server-capacity", "reason": "<why this vendor sentence means transient capacity>", "pattern_list": "SERVER_CAPACITY_PATTERNS", "substring": "<the distinctive part of codex's own error line, lowercased>"}}
 
 Now do the analysis and return the inline JSON.
 ```
@@ -289,16 +300,15 @@ Schema top-level keys: `outcome` (`propose` | `escalate`), `reason`, `proposal` 
 
 #### 5d. Branch: escalate → surface; propose → leader applies + verifies
 
-Run 5a's path extraction, 5c's parse, and this case block in the SAME Bash
-invocation — shell state (`RUN_LOG_PATH`, `AGENT_JSON`) does not persist across
-separate Bash calls, so a split run silently no-ops the cleanup.
+Run 5c's parse and this case block in the SAME Bash invocation — shell state
+(`AGENT_JSON`, `OUTCOME`, `PROPOSAL`) does not persist across separate Bash
+calls, so a split run reads an empty `OUTCOME` and skips the apply.
 
 ```bash
 case "$OUTCOME" in
   escalate)
     # Analyzer could not classify — surface REASON, no apply.
     echo "repair escalated: $REASON"
-    rm -f "$RUN_LOG_PATH"
     ;;
   propose)
     # Leader applies the proposal via the deterministic, zero-LLM applier.
@@ -312,7 +322,6 @@ case "$OUTCOME" in
       # applier exit 3 → the proposal was invalid (analyzer error) — treat as escalate.
       echo "proposal rejected by applier: $REASON"
     fi
-    rm -f "$RUN_LOG_PATH"
     ;;
   *)
     # Unparseable analyzer output: the agent returned conversational text (or
@@ -320,13 +329,12 @@ case "$OUTCOME" in
     # proceed — SURFACE it. No patch is applied; the original failure
     # classification stands.
     echo "repair skipped — unparseable analyzer output (OUTCOME='$OUTCOME'); the original failure classification stands"
-    # Keep the run-log: it is the diagnostic input for the manual follow-up.
-    # The wrapper's age-floor sweep reclaims it if abandoned.
+    # The run-log is the diagnostic input for the manual follow-up.
     ;;
 esac
 ```
 
-The applier re-validates the proposal independently (enum + pattern-name + literal bounds), so it is the security backstop even if the analyzer misbehaves: on exit 3 the extension file is left untouched and the leader surfaces it as an escalate. Cleanup is the `rm -f "$RUN_LOG_PATH"` inside the propose/escalate arms (no output file exists); on unparseable analyzer output the run-log stays for manual diagnosis. Wrapper's `_prune_run_logs()` (`glob("*.json")`) is the failsafe for orphans (dispatch SKILL bypassed / leader crash).
+The applier re-validates the proposal independently (enum + pattern-name + literal bounds), so it is the security backstop even if the analyzer misbehaves: on exit 3 the extension file is left untouched and the leader surfaces it as an escalate. The run-log stays in every arm (on unparseable analyzer output it is the input for manual diagnosis); the wrapper's own sweep collects it later.
 
 Branch summary:
 
@@ -342,77 +350,15 @@ Branch summary:
 - terminal: `{ class, reason, action_required }`.
 - server-cap-exhausted: "transient overload, leader-policy retry or surface".
 - repair-cycle: analyzer proposes → leader applies via `apply_patch.py` → `--repair-mode` re-run verifies routing; OR escalate (surface REASON, no apply).
-- task-blocked (exit 69): leader reads the STATUS report; re-dispatch with context or escalate. No commit.
 
 ## Path scope
 
 - **Passes the PATH of** `_logs/codex/runs/<id>.json` (run-log) to the analyzer. The leader does NOT read the run-log content (Hard rule 2) — the analyzer does, via `Read`.
-- **Removes** the run-log post-dispatch (propose + escalate).
+- **Leaves** the run-log in place; the wrapper's own sweep collects it.
 - **Invokes** `bin/codex_wrapper.py` (dispatch + `--repair-mode` verify) and `bin/apply_patch.py` (deterministic proposal applier) via Bash.
 - **Dispatches** sub-agent `codex-wrapper-repair` (read-only analyzer).
 
-The leader (not the analyzer) is the only writer to the classifier extension — via the deterministic `apply_patch.py`. Does NOT edit `bin/_common.py` source or read `_logs/codex/audit.jsonl` (maintenance SKILL's territory).
-
-## Code task (Archetype B) — autonomous coding worker
-
-`--task code` dispatches codex as a single TDD implementer that edits inside an
-isolated git worktree (`workspace-write`) and returns a STATUS-line report.
-**codex never commits** (`.git` is read-only under the sandbox by design); the
-leader verifies and commits. This mirrors a superpowers implementer subagent,
-but the worker is a codex process.
-
-The wrapper is **transport-only**: worktree lifecycle, verification, and the
-commit all live here in the leader's deterministic steps. The wrapper only
-takes `--cwd`.
-
-**Residual risk (config-alive, `workspace-write`):** A `--task code` worker
-runs under `workspace-write` with **network and MCP reachable** (config-alive;
-`approval_policy=never` closes auto-approve escalation but does NOT disable
-network). A write-enabled worker with a reachable network is a
-data-exfiltration residual risk. This is an accepted research-lab posture
-(owner decision) and is **NOT** a production isolation guarantee. The leader
-should be aware when dispatching code tasks on sensitive repositories.
-
-### Leader procedure
-
-1. **Scope.** Have a well-specified single task, the base ref, and the
-   project's verify command (`verify-cmd`, e.g. `bash tests/run.sh ...` for the
-   triad repo). The verify-cmd is leader input — the wrapper does not know it.
-2. **Isolate.** `git worktree add <path> <base>` (a fresh branch).
-   The `--cwd` passed to the wrapper MUST be this freshly-created isolated git
-   worktree, NOT the live repo working tree. The wrapper enforces `--cwd`
-   presence (rejects `--task code` without it — `EXIT_ARG_ERROR`), but
-   worktree-ness is the leader's responsibility. codex edits are write-enabled
-   inside `--cwd`; using the live working tree would corrupt it.
-3. **Dispatch.** `codex_wrapper.py --task code --cwd <path> --prompt "<task spec>"` for a simple task. For a complex task add `--fanout auto` (codex self-decomposes via its dispatching-parallel-agents skill, parallelizing only independent work and serializing edits). Explicit `--fanout N>1` is rejected.
-4. **Branch on the exit code.**
-   - `0` (STATUS DONE / DONE_WITH_CONCERNS) → proceed to verify.
-     **Note:** if the wrapper returns exit 0 but the report has NO `STATUS:` first
-     line (the wrapper's safe fallback for a missing STATUS), treat the result with
-     SUSPICION. The leader-side verify-cmd (step 5) is the authoritative gate; do
-     not trust a status-less "success".
-   - `69` (EXIT_TASK_BLOCKED — codex self-reported BLOCKED / NEEDS_CONTEXT) → read the report, re-dispatch with the missing context, or escalate. Do NOT verify/commit.
-   - any other non-zero → a real wrapper/vendor failure (see the Step 4 table); handle per that table.
-5. **Verify (leader-side, authoritative).** Run the verify-cmd INSIDE the worktree, outside the sandbox: `( cd <path> && <verify-cmd> )`. codex's in-sandbox TDD is best-effort self-correction; this run is the commit gate.
-6. **Review.** `git -C <path> diff`, scoped to intended paths (ignore `__pycache__/` and other build artifacts pytest may create). Read codex's report. For merge-worthy or correctness-critical changes, run `triad-cross-family-review` (the cross-family review rule) BEFORE committing.
-7. **Commit (leader/user judgment).** If verify passed and the review is clean: commit/merge into the main repo, noting "implemented by codex worker (Archetype B)" in the message body (author-disclosure). If verify failed or the change is doubtful: reject, re-dispatch with the failure as context, or escalate.
-8. **Cleanup.** `git worktree remove <path>`.
-
-### Escalation tiers
-
-| Task | Invocation |
-|---|---|
-| simple, well-scoped | `--task code` (single implementer, no fan-out) |
-| complex | `--task code --fanout auto` (codex self-decomposes; the safety of this path is scrutinized under the cross-family review rule) |
-
-**`--fanout auto` assumption (owner decision):** `--task code --fanout auto`
-relies on codex's `dispatching-parallel-agents` skill to parallelize only
-independent work and serialize conflicting edits. This is an accepted
-assumption (owner decision), empirically validated only at `fanout=1` so far.
-The leader's out-of-sandbox verify-cmd (step 5) plus diff review (step 6) is
-the safety net if codex's decomposition produces unexpected interactions across
-edits. The `auto` tier is retained per owner decision — this note documents
-the assumption, not a prohibition.
+The leader (not the analyzer) is the only writer to the classifier extension — via the deterministic `apply_patch.py`. Does NOT edit `bin/_common.py` source or read `_logs/codex/audit.jsonl`.
 
 ## Direct `codex exec` knowledge
 

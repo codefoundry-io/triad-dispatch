@@ -25,8 +25,8 @@ do.
 |---|---|
 | `cli-subscription-cap` | quota — daily reset, or re-dispatch later |
 | `token-limit` | prompt size too large — shrink the prompt |
-| `oauth-env` | re-login required; auth stays user-managed |
-| `config-conflict` | either the settings deny transaction failed (lock-lease timeout, or a corrupt `~/.gemini/antigravity-cli/settings.json`), or `agy --version` probed below `_STREAM_JSON_FLOOR`, where the wrapper fails CLOSED before any vendor dispatch. Remediation for the latter: `agy update`, then re-dispatch |
+| `oauth-env` | STOP — re-login required through the CLI's own browser flow; no retry, no other route, the credential store is never read; auth stays user-managed |
+| `config-conflict` | either the settings deny transaction failed (lock-lease timeout, or a corrupt `~/.gemini/antigravity-cli/settings.json`), or `agy --version` probed below `_STREAM_JSON_FLOOR`, where the wrapper fails CLOSED before any vendor dispatch (remediation: `agy update`, then re-dispatch), or the run's exposed runtime model (`init.model`) contradicts the pinned `--model` — the answer is withheld and the stderr line names both; the user changes the roster entry (or `--model`), the leader never substitutes a model |
 | `admission-refused` | the v2 admission census found a tool OUTSIDE the agent's allowlist in the stream (the allowlist class only; other refusals stay `vendor-error`); the complete answer is quarantined in the run-log. Driver-emitted, never a classifier patch — surface, one retry at most. |
 | `vendor-timeout` | the stream's terminal `result` is `status: ERROR` with the typed `error` "timeout waiting for response" and an empty response — agy's own turn budget ran out. Driver-emitted (`_is_vendor_turn_timeout`), never a classifier patch; surface, one narrower re-dispatch at most. |
 | `vendor-error` | the stream's terminal `result` event carried a non-empty answer WITH rc≠0 or a non-`SUCCESS` status. The answer is deliberately NOT on stdout: it survives only in the run-log's quarantined `extraction_error` copy and the raw NDJSON stream, which the leader does not open (Hard rule 2). Surface the classification token + exit codes and name the run-log path; a human can read it out of band to decide re-dispatch vs accept |
@@ -58,8 +58,8 @@ esac
 [ -f "$RUN_LOG_PATH" ] || { echo "run-log path missing"; exit 1; }
 ```
 
-The value reaches `rm -f` and the 5b analyzer prompt, so it passes all three
-gates BEFORE either use: no `..` segment, no quote / backtick / `$` / whitespace
+The value reaches the 5b analyzer prompt, so it passes all three gates BEFORE
+that use: no `..` segment, no quote / backtick / `$` / whitespace
 character, the wrapper's own directory shape, and a `.json` basename. A value
 that fails any gate is refused rather than passed through.
 
@@ -67,8 +67,8 @@ Anchor on the wrapper's OWN timestamped log line (`^\[[^]]*\] run-log: `,
 mirroring the Step 3 summary grep's anchor): a plain `.*run-log: ` substring
 match can be tricked by vendor-influenced stderr text that merely CONTAINS that
 phrase, and the stream is untrusted vendor output. Validate the extracted path
-against the expected `_logs/antigravity/runs/…json` shape BEFORE using it in
-`rm -f` or interpolating it into the analyzer prompt — a value that fails
+against the expected `_logs/antigravity/runs/…json` shape BEFORE
+interpolating it into the analyzer prompt — a value that fails
 validation is refused rather than passed through. Take everything after the
 anchor to the end of that line (last occurrence), since the path may contain
 spaces and a whitespace-delimited grab would truncate it. Keep every later use
@@ -85,30 +85,30 @@ substituted into 5b's prompt. Step 5b then spawns the analyzer in the BACKGROUND
 (`run_in_background: true`, Hard rule 8) and the leader WAITS for its completion
 notification — a separate, non-Bash step; never poll. Only once the analyzer's
 inline JSON reply has arrived do 5c's parse and this case block run, and they run
-TOGETHER in ONE Bash invocation, re-supplying `RUN_LOG_PATH` there too (re-run
-5a's extraction against the same stderr text, or inline the already-known path
-literally). Shell state (`RUN_LOG_PATH`, `AGENT_JSON`) does not persist across
-separate Bash calls, and a split run silently no-ops the cleanup.
+TOGETHER in ONE Bash invocation. Shell state (`AGENT_JSON`, `OUTCOME`, `PROPOSAL`,
+and Step 1's `AGY_CMD` array — re-declare Step 1's exact `AGY_CMD=( … )` array
+in this same invocation, since the propose branch replays it; never flatten it
+into one string) does not persist across separate Bash calls, and a
+split run reads an empty `OUTCOME` and skips the apply. The run-log stays in every branch: never delete
+it, or anything else under `_logs/` — the wrapper's own sweep collects it later.
 
 ```bash
 case "$OUTCOME" in
   escalate)
     echo "repair escalated: $REASON"
-    rm -f "$RUN_LOG_PATH"
     ;;
   propose)
     if printf '%s' "$PROPOSAL" \
          | apply_patch.py --cli antigravity; then
       # applier exit 0 → patch landed; re-run in --repair-mode to verify routing.
-      # Replay the SAME quoted argv array Step 1 built, with --repair-mode
-      # appended as its own DISTINCT element — never reconstruct the
-      # invocation as a pasted/retyped string (an optional bracketed value
-      # is not quoting-safe once flattened).
+      # Replay Step 1's exact AGY_CMD=( … ) array, re-declared in this
+      # invocation, with --repair-mode appended as its own DISTINCT element —
+      # never flatten it into one string (an optional bracketed value is not
+      # quoting-safe once flattened).
       "${AGY_CMD[@]}" --repair-mode
     else
       echo "proposal rejected by applier: $REASON"   # applier exit 3 → treat as escalate
     fi
-    rm -f "$RUN_LOG_PATH"
     ;;
   *)
     # Unparseable analyzer output: the agent returned conversational text (or
@@ -116,8 +116,7 @@ case "$OUTCOME" in
     # proceed — SURFACE it. No patch is applied; the original failure
     # classification stands.
     echo "repair skipped — unparseable analyzer output (OUTCOME='$OUTCOME'); the original failure classification stands"
-    # Keep the run-log: it is the diagnostic input for the manual follow-up.
-    # The wrapper's age-floor sweep reclaims it if abandoned.
+    # The run-log is the diagnostic input for the manual follow-up.
     ;;
 esac
 ```
@@ -125,10 +124,8 @@ esac
 The applier re-validates the proposal independently (enum + pattern-name +
 literal bounds), so it is the security backstop even if the analyzer misbehaves:
 on exit 3 the extension file is left untouched and the leader surfaces it as an
-escalate. Cleanup is the `rm -f "$RUN_LOG_PATH"` inside the propose/escalate arms
-(no output file exists); on unparseable analyzer output the run-log stays for
-manual diagnosis. The wrapper's `_prune_run_logs()` (`glob("*.json")`) is the
-failsafe for orphans.
+escalate. No output file exists; on unparseable analyzer output the run-log is
+the input for manual diagnosis.
 
 ## Branch summary
 

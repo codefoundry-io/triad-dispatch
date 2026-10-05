@@ -49,9 +49,10 @@ setup-once agent definitions under `~/.gemini/config/agents/` (written by
 workspace `.agents/` is NOT loaded in print mode — ladder round 2 K1):
 
 - `triad-readonly-review` — `view_file`, `grep_search`, `list_dir`,
-  `find_by_name`, `finish`; no web tool (a review has no egress).
-- `triad-readonly-research` (`--web`) — the same plus `read_url_content`,
-  `search_web`.
+  `find_by_name`, `finish`; no web tool.
+- `triad-readonly-research` (`--web`, or `--review-web` for a review round
+  that binds `review_web_authorized` true — R-REVIEW-WEB) — the same plus
+  `read_url_content`, `search_web`.
 
 The dispatch = `agy -p <prompt> --agent <name> --add-dir <cwd>
 --output-format stream-json [--json-schema …]`. `--add-dir` makes repository
@@ -164,7 +165,7 @@ through a holder registry (per-holder flock liveness files); the permissive (no
 `--sandbox`) baseline stays exclusive. Lease and lock
 waits are bounded by `AGY_SETTINGS_LOCK_TIMEOUT` (env, seconds, default 30). A
 settings transaction failure surfaces as `config-conflict` (exit 65). Engine
-detail: the plugin `README.md` § Deny-transaction isolation.
+detail: the plugin `README.md` § Settings transaction.
 
 agy `--sandbox` alone is a shell/network OS-ring only — it does not block
 `write_file`. The deny transaction is what enforces fs isolation.
@@ -196,9 +197,9 @@ exclusive lock path is retained: it still brackets the permissive baseline.
 Upstream lock issues google-antigravity/antigravity-cli #573/#627 remain open.
 
 Reasoning tier = `--model` passthrough (no-pin default when omitted) — pass a
-CATALOG selector from `agy models` (e.g. `gemini-3.1-pro-high`); the old display
-label form ("Gemini 3.1 Pro (High)") is no longer listed by current agy builds.
-Owl subagents (a `--task` equivalent) are not currently used by the wrapper.
+CATALOG selector read from `agy models` at dispatch time (the roster or config
+supplies it); never a display label.
+Owl subagents are not currently used by the wrapper.
 
 ## Tool to permission-action map
 
@@ -212,7 +213,7 @@ Re-confirm against your installed agy with
 | `run_command` | `command` OR `unsandboxed` | both denied in read-only (`unsandboxed(*)` = OS-ring escape) |
 | `execute_url` (code-exec-from-URL) | `execute_url` | denied in read-only |
 | `mcp` (MCP server reach) | `mcp` | denied in read-only |
-| `read_url_content` / `search_web` | `read_url` | never denied by the wrapper; since v2 present ONLY in the research agent (`--web`) — the review agent has no web tool — agy's search/research advantage; the only web access left even under read-only |
+| `read_url_content` / `search_web` | `read_url` | never denied by the wrapper; since v2 present ONLY in the research agent (`--web`, or a web review round's `--review-web`) — the review agent has no web tool — agy's search/research advantage; the only web access left even under read-only |
 | `invoke_subagent` / `ask_question` / `schedule` | (no resource permission) | not gated by `permissions.deny` |
 | `open_browser_url` / `read_browser_page` / `execute_browser_javascript` / `browser_*` (~20 tools in the 1.1.17 `init.tools` inventory, probe F4) | (no MEASURED action) | never probed against any deny rule; absent from the `triad-readonly-review` allowlist, so under agent mode = detection-only via the census (gate r8) |
 | `notebook_edit` / `notebook_execution` / `send_message` / `generate_image` | (no resource permission reported) | detection-only under the agent-mode census (disclosed residual) |

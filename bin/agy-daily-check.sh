@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# agy-daily-check.sh — daily agy update + spec drift detector (self-healing
-# "detect" arm). Snapshot model list / changelog / plugin list (and an optional
-# heavy JSON-adherence probe) vs the stored baseline, probe superpowers-for-agy,
-# write a dated drift report. Split exit semantics so benign vendor churn does
-# not train operators to ignore the alarm:
+# agy-daily-check.sh — manual agy drift detector (self-healing "detect" arm).
+# Snapshot model list / changelog / plugin list vs the stored baseline, probe
+# superpowers-for-agy, write a dated report. It sends no prompt (no inference
+# call) and runs `agy update` only when asked (--update). Split exit semantics
+# so benign vendor churn does not train operators to ignore the alarm:
 #   0 = no change
-#   1 = ACTIONABLE drift (model list changed, deep JSON-adherence broke, or a
+#   1 = ACTIONABLE (model list changed — the report names the removed / added
+#       selectors so the user checks the model pinned in the roster entry — or a
 #       stale deny-transaction sentinel — leaked settings — was detected)
 #   2 = INFORMATIONAL change (changelog version / plugin list / superpowers-available)
 #
@@ -13,14 +14,15 @@
 # empty result) so a transient CLI failure cannot manufacture false drift next run.
 #
 # Wire to launchd (Mac) or cron (Ubuntu) — see the plugin README.md.
+# Usage: agy-daily-check.sh [--update | --no-update]
+#      --update runs `agy update` first; the default run does not update.
+#      --no-update is accepted as a no-op (existing callers keep working).
 # Env: AGY_DAILY_STATE (state dir, default ~/.gemini/antigravity-cli/triad-daily).
-#      --no-update skips `agy update` (tests / offline).
-#      AGY_DAILY_DEEP=1 runs the heavy pty JSON-adherence probe (portable `script`).
 set -uo pipefail
 
 STATE="${AGY_DAILY_STATE:-$HOME/.gemini/antigravity-cli/triad-daily}"
 mkdir -p "$STATE"
-NO_UPDATE=0; [ "${1:-}" = "--no-update" ] && NO_UPDATE=1
+DO_UPDATE=0; [ "${1:-}" = "--update" ] && DO_UPDATE=1
 REPORT="$STATE/report.md"
 actionable=0      # -> exit 1
 informational=0   # -> exit 2
@@ -52,17 +54,19 @@ command -v agy >/dev/null || { echo "agy not installed" >&2; exit 4; }
   printf 'version: %s\n' "$(agy --version 2>/dev/null | head -n 1)"
 } > "$REPORT"
 
-# 1. update (unless suppressed)
-if [ "$NO_UPDATE" -eq 0 ]; then
+# 1. update (only when asked)
+if [ "$DO_UPDATE" -eq 1 ]; then
   bounded 120 agy update >/dev/null 2>&1 || note "- WARN: agy update failed/timed out"
 fi
 
-# 2. model-list drift (ACTIONABLE). Preserve prior snapshot on failure/empty.
+# 2. model-list change (ACTIONABLE, information for the user — a pinned model
+#    may have disappeared). Preserve prior snapshot on failure/empty.
 if bounded 120 agy models 2>/dev/null | sort > "$STATE/models.now" && [ -s "$STATE/models.now" ]; then
   if [ -f "$STATE/models.snapshot" ] && ! diff -q "$STATE/models.snapshot" "$STATE/models.now" >/dev/null; then
     {
-      printf -- '- DRIFT (actionable): model list changed:\n'
-      diff "$STATE/models.snapshot" "$STATE/models.now" | sed 's/^/    /'
+      printf -- '- model list changed; check the model pinned in your roster entry:\n'
+      sort "$STATE/models.snapshot" | comm -23 - "$STATE/models.now" | sed 's/^/    removed: /'
+      sort "$STATE/models.snapshot" | comm -13 - "$STATE/models.now" | sed 's/^/    added: /'
     } >> "$REPORT"
     actionable=1
   fi
@@ -106,18 +110,9 @@ else
   rm -f "$STATE/plugins.now"
 fi
 
-# 5. spec-assumption smoke (ACTIONABLE; heavy pty, gated by env). Portable script(1):
-#    GNU/util-linux needs `-c "<cmd>"`; BSD/macOS takes the command as trailing args.
-if [ "${AGY_DAILY_DEEP:-0}" = "1" ]; then
-  if script --version 2>&1 | grep -qi util-linux; then
-    jout=$(script -q -c 'agy -p '\''Output JSON only, no backticks: {"k":1}'\'' --print-timeout 60s' /dev/null </dev/null 2>/dev/null | tr -d '\004')
-  else
-    jout=$(script -q /dev/null agy -p 'Output JSON only, no backticks: {"k":1}' --print-timeout 60s </dev/null 2>/dev/null | tr -d '\004')
-  fi
-  if printf '%s' "$jout" | grep -q '`'; then
-    note "- DRIFT (actionable): JSON-only adherence broke (backticks present)"
-    actionable=1
-  fi
+# 5. the AGY_DAILY_DEEP inference probe was removed (it sent a paid prompt).
+if [ -n "${AGY_DAILY_DEEP:-}" ]; then
+  echo "agy-daily-check: AGY_DAILY_DEEP is ignored — the deep probe was removed (it sent a prompt)" >&2
 fi
 
 # 6. leaked deny-transaction probe (ACTIONABLE). A wrapper call that died
@@ -131,7 +126,7 @@ AGY_SETTINGS="${AGY_SETTINGS_PATH:-$HOME/.gemini/antigravity-cli/settings.json}"
 AGY_CFG_DIR="$(dirname "$AGY_SETTINGS")"
 for leak in "$AGY_CFG_DIR/.agybak" "$AGY_CFG_DIR/.agy_settings.shared.json"; do
   if [ -f "$leak" ] && [ -n "$(find "$leak" -mmin +120 2>/dev/null)" ]; then
-    note "- DRIFT (actionable): stale $(basename "$leak") (>2h) — a crashed wrapper call likely left deny rules merged in $AGY_SETTINGS; run any wrapper dispatch (it heals on entry) or verify/remove manually"
+    note "- DRIFT (actionable): stale $(basename "$leak") (>2h) — a crashed wrapper call likely left deny rules merged in $AGY_SETTINGS; run any wrapper dispatch (it heals on entry) or check its deny rules by hand"
     actionable=1
   fi
 done
@@ -144,7 +139,7 @@ else status=0; fi
   printf '\n'
   case "$status" in
     0) printf 'exit 0 (no action)\n' ;;
-    1) printf 'exit 1 (ACTIONABLE — review + update spec)\n' ;;
+    1) printf 'exit 1 (ACTIONABLE — check the roster entry / leaked settings above)\n' ;;
     2) printf 'exit 2 (informational — review changelog/plugins)\n' ;;
   esac
 } >> "$REPORT"

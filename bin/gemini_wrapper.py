@@ -28,6 +28,7 @@ import json
 import os
 import platform
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -35,17 +36,20 @@ from typing import Optional, Tuple
 
 from _common import (
     _emit_payload,
+    _guarded_main,
     _emit_canonical_summary,
+    _SIGNAL_STATE,
+    map_classification_to_exit,
     _payload_or_demote,
     _relax_diagnostic_stream,
     _summary_tail,
+    _review_argv_refusal,
     _wrapper_hardened,
     validate_wrapper_cwd,
     load_prompt_text,
     resolve_prompt_file,
     scrubbed_child_env,
     EXIT_ARG_ERROR,
-    EXIT_TERMINAL,
     audit,
     debug_log,
     emit_run_log,
@@ -54,6 +58,7 @@ from _common import (
     log,
     require_binary,
     run_cli_with_retry,
+    RunResult,
 )
 
 
@@ -87,12 +92,18 @@ _READONLY_POLICY = Path(__file__).resolve().parent / "policies" / "gemini-readon
 # default) — both spec sentences scope these to the formal review route, and
 # `--policy` (what the floor is about) is attached only there. An investigation
 # or write dispatch keeps its single spawn and is not probed.
-# NOT RUN LIVE: gemini is not in service off-site; every check here is
+# NOT RUN LIVE on this host; every check here is
 # deterministic and provider-free (t57). The runtime effect of the policy and
 # the real principal stay owner-briefing items (R-GOOGLE).
 _GEMINI_VERSION_FLOOR = (0, 34, 0)
+_VERSION_RE = re.compile(
+    r"(?<![0-9.])(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?(?![0-9])")
 _PREFLIGHT_TIMEOUT_S = 10
 _REQUIRED_HELP_FLAGS = ("--policy", "--approval-mode", "--output-format")
+# C18 / R-NOCOST: the gemini CLI exposes no model listing, so the review route
+# checks an explicit --model against this versioned list of the CLI's own model
+# table (its source and CLI version are recorded in the file).
+_MODEL_LIST = Path(__file__).resolve().parent / "gemini-models.json"
 
 # Tier-2 (installed gemini CLI 0.60.0 bundle, packages/core/dist/src/core/
 # contentGenerator.js `AuthType`): the non-OAuth selections. `oauth-personal`
@@ -118,6 +129,11 @@ _AUTH_SETTING_PATH = ("security", "auth", "selectedType")
 # loosened review one. The two never mix: `--web` is refused on the review
 # posture (below).
 _RESEARCH_POLICY = Path(__file__).resolve().parent / "policies" / "gemini-research.toml"
+# The REVIEW route's complete web profile (R-REVIEW-WEB, case C32): byte-equal
+# to the shared contract `contracts/gemini-readonly-web.toml` — the no-web
+# profile with ONLY google_web_search / web_fetch moved to allow. Attached
+# instead of `_READONLY_POLICY` under `--review-web`, never as an overlay.
+_READONLY_WEB_POLICY = Path(__file__).resolve().parent / "policies" / "gemini-readonly-web.toml"
 
 # The shared clause `web-evidence` (`spec/prompts/investigation.md`), whose seed
 # is `antigravity_wrapper.AGY_WEB_EVIDENCE_CLAUSE`. § order of that file: "On a
@@ -152,7 +168,7 @@ def _probe(gemini_bin: str, probe_args: list[str]) -> Tuple[int, str]:
     try:
         proc = subprocess.run(
             [gemini_bin, *probe_args], capture_output=True, text=True,
-            timeout=_PREFLIGHT_TIMEOUT_S, env=scrubbed_child_env())
+            timeout=_PREFLIGHT_TIMEOUT_S, env=scrubbed_child_env(cli="gemini"))
     except (OSError, subprocess.SubprocessError) as e:
         return -1, f"{type(e).__name__}: {e}"
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
@@ -163,9 +179,21 @@ def _parse_version(text: str) -> Optional[tuple]:
 
     Deliberately NOT a lenient "find any number" read: an unparsable version is
     refused by the caller, never assumed current (R-NOCOST — an unrun check is
-    unverified, never green)."""
-    m = re.search(r"(?<![0-9.])(\d+)\.(\d+)\.(\d+)(?![0-9])", text or "")
-    return tuple(int(g) for g in m.groups()) if m else None
+    unverified, never green). A pre-release (`0.34.0-rc.1`) sorts BELOW its
+    release, so a pre-release of a floor version is below that floor (spec
+    R-NOCOST; the other host's rule, bin/google_preflight_v2.py:22-23): its
+    patch reads as patch - 0.5. `_version_text` gives the printed form."""
+    m = _VERSION_RE.search(text or "")
+    if not m:
+        return None
+    major, minor, patch = (int(g) for g in m.groups()[:3])
+    return (major, minor, patch - 0.5 if m.group(4) else patch)
+
+
+def _version_text(text: str) -> str:
+    """The version exactly as the CLI printed it (C65: recorded as observed)."""
+    m = _VERSION_RE.search(text or "")
+    return m.group(0) if m else ""
 
 
 def _system_settings_path() -> Path:
@@ -218,9 +246,62 @@ def _selected_auth_class(cwd: Optional[str]) -> Tuple[Optional[str], Optional[st
     return found
 
 
+def _auth_refusal(cwd: Optional[str]) -> Optional[str]:
+    """The R-AUTH gate (spec C37), on EVERY posture: a refusal reason when the
+    settings select an API-key-shaped auth class, else None (an unexposed class
+    is reported, never inferred). Reads settings files only — no vendor call.
+    The remedy is the owner's browser re-login; it names no flag change, since
+    every posture is gated."""
+    auth_class, auth_src = _selected_auth_class(cwd)
+    if auth_class is None:
+        # NOT an inference: say so and continue (the authenticated check is the
+        # owner's, run where gemini is in service — R-GOOGLE).
+        log("NOTE: auth class unexposed — no gemini settings file declares "
+            "security.auth.selectedType; the billing route is NOT verified here")
+        return None
+    if auth_class in _REFUSED_AUTH_CLASSES:
+        return (f"gemini auth class {auth_class!r} ({_REFUSED_AUTH_CLASSES[auth_class]}) "
+                f"selected in {auth_src} — every gemini dispatch runs on the CLI's "
+                f"own subscription login only (no API key, no paid API route). "
+                f"Remedy: the owner re-logins through the CLI's browser flow (run "
+                f"`gemini` and choose Login with Google); the wrapper does not "
+                f"retry, read or change the credential store")
+    log(f"NOTE: gemini auth class {auth_class!r} (from {auth_src})")
+    return None
+
+
+def _model_list_refusal(model: str, version: tuple,
+                        version_str: str) -> Optional[str]:
+    """None when the versioned gemini model list supports `model` on the
+    probed CLI `version`, else the refusal reason (C18; an unreadable list
+    refuses — an unchecked model is never admitted as checked)."""
+    try:
+        data = json.loads(_MODEL_LIST.read_text(encoding="utf-8"))
+        minimum = _parse_version(data["minimum_version"])
+        models = data["models"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        return (f"gemini model list {_MODEL_LIST} unreadable "
+                f"({type(e).__name__}) — the requested model {model!r} cannot "
+                f"be checked against the route's catalog")
+    if minimum is None or version < minimum:
+        return (f"gemini {version_str} is older than the model "
+                f"list's version {data['minimum_version']} — no support evidence "
+                f"for the requested model {model!r}; update the gemini CLI")
+    if model not in models:
+        return (f"the gemini model list ({_MODEL_LIST.name}, CLI "
+                f"{data.get('cli_version')}) does not list the requested model "
+                f"{model!r} — change the model in the roster entry (or the "
+                f"--model value) to a listed one")
+    return None
+
+
 def _review_preflight(gemini_bin: str,
-                      cwd: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """(refusal reason or None, observed CLI version or None) for the review route."""
+                      cwd: Optional[str],
+                      model: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """(refusal reason or None, observed CLI version or None) for the review route.
+
+    The observed version rides EVERY return made after it was observed — a
+    refusal included (spec C65: "Record the version actually observed")."""
     rc, out = _probe(gemini_bin, ["--version"])
     if rc != 0:
         return (f"`gemini --version` probe failed (rc={rc}): {out.strip()[:200]}"), None
@@ -229,45 +310,45 @@ def _review_preflight(gemini_bin: str,
         return (f"`gemini --version` output is not a version: {out.strip()[:200]!r} — "
                 f"the review route needs a proven CLI >= "
                 f"{'.'.join(map(str, _GEMINI_VERSION_FLOOR))}"), None
-    version_str = ".".join(str(p) for p in version)
+    version_str = _version_text(out)
     if version < _GEMINI_VERSION_FLOOR:
         return (f"gemini {version_str} < 0.34.0 — the formal review route needs "
                 f"CLI >= 0.34.0 (the headless policy-allow fix, PR #20639); below "
                 f"it the --policy read-only rows do not take effect headlessly. "
                 f"Update the gemini CLI or run this dispatch without "
-                f"--sandbox read-only"), None
+                f"--sandbox read-only"), version_str
     rc, help_text = _probe(gemini_bin, ["--help"])
     if rc != 0:
-        return (f"`gemini --help` probe failed (rc={rc}): {help_text.strip()[:200]}"), None
+        return (f"`gemini --help` probe failed (rc={rc}): "
+                f"{help_text.strip()[:200]}"), version_str
     missing = [f for f in _REQUIRED_HELP_FLAGS if f not in help_text]
     if missing:
         return (f"gemini {version_str} does not advertise {', '.join(missing)} in "
                 f"--help — the read-only review argv depends on every one of "
-                f"{', '.join(_REQUIRED_HELP_FLAGS)}"), None
-    auth_class, auth_src = _selected_auth_class(cwd)
-    if auth_class is None:
-        # NOT an inference: say so and continue (the authenticated check is the
-        # owner's, run where gemini is in service — R-GOOGLE).
-        log("NOTE: auth class unexposed — no gemini settings file declares "
-            "security.auth.selectedType; the billing route is NOT verified here")
-    elif auth_class in _REFUSED_AUTH_CLASSES:
-        return (f"gemini auth class {auth_class!r} ({_REFUSED_AUTH_CLASSES[auth_class]}) "
-                f"selected in {auth_src} — the review leg runs on the CLI's own "
-                f"subscription login only (no API key, no paid API route). "
-                f"Re-run `gemini` and select the Google login, or dispatch "
-                f"without --sandbox read-only"), None
-    else:
-        log(f"NOTE: gemini auth class {auth_class!r} (from {auth_src})")
+                f"{', '.join(_REQUIRED_HELP_FLAGS)}"), version_str
+    if model:
+        return _model_list_refusal(model, version, version_str), version_str
     return None, version_str
 
 
 def main() -> int:
+    return _guarded_main("gemini", _main)
+
+
+def _main(ctx: dict) -> int:
     # The DIAGNOSTIC stream survives any locale; the PAYLOAD stream is never
     # re-encoded (gate-1 r7 row r7-c2 — `_common` § payload vs diagnostic).
     _relax_diagnostic_stream()
-    # SIGTERM/SIGHUP -> SystemExit(128+signum) so a signalled wrapper unwinds
-    # through _run_once's abnormal-unwind arm and reaps the vendor group
-    # instead of orphaning it (spec case C1 / R-TERMINAL).
+    # SIGTERM/SIGHUP: during the review preflight probe (a plain
+    # subprocess.run, no process group) the handler only records the signal and
+    # the run ends as the interrupted-run refusal (`unknown` / 1), written while
+    # the mode is still on. From the first dispatch on it only records too:
+    # during a dispatch _run_once reaps the vendor group and the run ends as
+    # the interrupted-run record (`unknown` / 1), `oauth-env` / 65 on a carrier
+    # STOP, or `timeout` / 2 when the run had already timed out (the timeout
+    # verdict outranks it); a signal after the last _run_once is not
+    # consumed (the completed answer is published). Outside those windows it
+    # exits 128+signum (spec case C1 / R-TERMINAL).
     install_terminal_signal_handlers()
     p = argparse.ArgumentParser(description="Gemini CLI single-shot wrapper",
                                 allow_abbrev=False)
@@ -309,6 +390,15 @@ def main() -> int:
              "a review-verdict schema.",
     )
     p.add_argument(
+        "--review-web",
+        action="store_true",
+        help="REVIEW route with web (spec C32/R-REVIEW-WEB): with --sandbox "
+             "read-only, attach the complete web profile "
+             "policies/gemini-readonly-web.toml instead of "
+             "gemini-readonly.toml; never appends the investigation clause; "
+             "recorded in the audit row. Not with --web.",
+    )
+    p.add_argument(
         "--model",
         default=None,
         help="Pin a specific model (free-form). Default = CLI Auto router.",
@@ -345,9 +435,14 @@ def main() -> int:
     # read this one value.
     if args.model is not None and not args.model.strip():
         args.model = None
+    ctx.update(attempt=args.attempt, model=args.model, reasoning=None)
 
     if args.attempt < 1:
         log(f"--attempt must be >= 1 (got {args.attempt})")
+        return EXIT_ARG_ERROR
+    _refused = _review_argv_refusal()
+    if _refused is not None:  # C32: an edited review line, before any vendor work
+        log(_refused)
         return EXIT_ARG_ERROR
 
     # C28: resolve the (possibly relative) --prompt-file once so the absolute
@@ -362,6 +457,7 @@ def main() -> int:
         log(f"prompt load failed: {e}")
         return EXIT_ARG_ERROR
     args.prompt = _prompt_text  # downstream code keeps using args.prompt
+    ctx.update(prompt=args.prompt, prompt_file=_prompt_file_resolved)
 
     try:
         args.cwd = validate_wrapper_cwd(args.cwd)
@@ -373,6 +469,14 @@ def main() -> int:
         # Checked BEFORE the --web clause append, so the clause can never
         # rescue an empty dispatch (t49's agy precedent, C29).
         log("empty prompt")
+        return EXIT_ARG_ERROR
+
+    if args.web and args.review_web:
+        # An investigation (`--web`: research profile + clause) and a review
+        # leg with web (`--review-web`: the review web profile, no clause)
+        # are two different dispatches — refused, never guessed.
+        log("--web (an investigation) and --review-web (a review leg with "
+            "web) are mutually exclusive — pass one")
         return EXIT_ARG_ERROR
 
     if args.web:
@@ -428,12 +532,21 @@ def main() -> int:
         # --web call into the refusal above).
         args.sandbox = "read-only"
 
+    if args.review_web and args.sandbox != "read-only":
+        # The review web profile replaces the read-only REVIEW profile; there
+        # is nothing for it to replace on any other posture.
+        log(f"--review-web is the read-only review route's web condition and "
+            f"needs --sandbox read-only (got {args.sandbox or 'no --sandbox'})")
+        return EXIT_ARG_ERROR
+
     if args.sandbox == "read-only" and args.approval_mode == "auto_edit":
         log(f"--sandbox read-only conflicts with --approval-mode {args.approval_mode} "
             "(a write-auto-approving mode). Use --approval-mode default with read-only.")
         return EXIT_ARG_ERROR
-    if args.sandbox == "read-only" and not _READONLY_POLICY.is_file():
-        log(f"read-only policy file missing: {_READONLY_POLICY}")
+    # ONE complete review profile per call: the web one under --review-web.
+    review_policy = _READONLY_WEB_POLICY if args.review_web else _READONLY_POLICY
+    if args.sandbox == "read-only" and not review_policy.is_file():
+        log(f"read-only policy file missing: {review_policy}")
         return EXIT_ARG_ERROR
 
     if (args.sandbox == "workspace-write" or args.approval_mode == "auto_edit") \
@@ -441,9 +554,9 @@ def main() -> int:
         # Write-posture directory precondition (owner ruling 2026-08-26,
         # closing the codex/claude symmetry gap): a write-enabled dispatch's
         # blast radius must be an isolated directory, never the wrapper's
-        # inherited cwd — codex_wrapper (--task code) and claude_wrapper
-        # (workspace-write) already carry the same guard; gemini was the one
-        # write-capable wrapper without it. The read-only/auto_edit CONFLICT
+        # inherited cwd — claude_wrapper (workspace-write) already carries the
+        # same guard, and so does codex_wrapper (workspace-write); gemini was
+        # the one write-capable wrapper without it. The read-only/auto_edit CONFLICT
         # above still fires first (more specific diagnosis).
         log("--sandbox workspace-write / --approval-mode auto_edit requires --cwd "
             "(write-enabled dispatch: the blast radius must be an isolated "
@@ -451,11 +564,61 @@ def main() -> int:
         return EXIT_ARG_ERROR
 
     gemini_bin = require_binary("gemini")
+    ctx["cmd"] = [gemini_bin]
+
+    def _refuse(token: str, reason: str, version: Optional[str]) -> int:
+        # A pre-spawn refusal is a TERMINAL RECORD like any failed run: the
+        # summary line below, an audit row and the failure run-log, carrying
+        # the version observed before the refusal (C65) and a not-started
+        # receipt (nothing ran).
+        code = map_classification_to_exit(token)   # unknown -> 1, the refusals -> 65
+        result = RunResult(code, "", reason + "\n", 0.0,
+                           classification=token, extraction_error=reason,
+                           spawned=False, dispatch_attempt=args.attempt,
+                           prompt_file_resolved=_prompt_file_resolved,
+                           requested_model=args.model)
+        result.vendor_version = version
+        result.review_web = args.review_web
+        log(f"[wrapper] gemini {token} exit={code} "
+            f"vendor=-1 elapsed=0.0s"
+            + _summary_tail(args.attempt, _prompt_file_resolved, args.model))
+        audit("gemini", [gemini_bin], args.prompt, result)
+        run_log_path = emit_run_log("gemini", sys.argv, [gemini_bin], args.prompt, result)
+        if run_log_path is not None:
+            log(f"run-log: {run_log_path}")
+        return code
+
+    # R-AUTH gate (spec C37) — EVERY posture, before any vendor process: an
+    # observed API-key-shaped auth class is `oauth-env` (65), remedy = the
+    # owner's browser re-login; never a flag change that skips the gate.
+    auth_refusal = _auth_refusal(args.cwd)
+    if auth_refusal is not None:
+        log(auth_refusal)
+        return _refuse("oauth-env", auth_refusal, None)
 
     # Review-route preflight — refuses BEFORE any vendor dispatch (C16).
     probed_version = None
     if args.sandbox == "read-only":
-        refusal, probed_version = _review_preflight(gemini_bin, args.cwd)
+        # The pre-dispatch vendor probes run in the record-only signal mode a
+        # dispatch uses (C1 / R-TERMINAL): a SIGTERM / SIGHUP during them ends
+        # through the interrupted-run record, never a bare 128 + signum exit.
+        prev_dispatch = _SIGNAL_STATE["dispatch"]
+        _SIGNAL_STATE["dispatch"] = True
+        try:
+            refusal, probed_version = _review_preflight(gemini_bin, args.cwd,
+                                                        args.model)
+        finally:
+            # a signal recorded during the probe keeps the record-only mode on
+            # until its refusal is written (C1: a second signal never loses it)
+            if _SIGNAL_STATE["signum"] is None:
+                _SIGNAL_STATE["dispatch"] = prev_dispatch
+        probe_signum = None if prev_dispatch else _SIGNAL_STATE["signum"]
+        if probe_signum is not None:
+            _SIGNAL_STATE["signum"] = None
+            why = (f"wrapper interrupted ({signal.Signals(probe_signum).name}) during "
+                   f"the review preflight probe — nothing was dispatched")
+            log(why)
+            return _refuse("unknown", why, probed_version)
         if refusal is not None:
             log(refusal)
             # The canonical one-line summary the dispatch SKILLs grep, with the
@@ -467,17 +630,14 @@ def main() -> int:
             # r10-11). This line was hand-built and carried `attempt=` only,
             # so it dropped the C28 `prompt_file=` field although the
             # resolved absolute path was already in hand — and this refusal
-            # is PRE-SPAWN, so the line is the ONLY record the dispatch ever
-            # writes (no audit row, no run-log). The one question C28 exists
-            # to answer went unrecorded exactly where nothing else can
-            # answer it. `_summary_tail` also owns the redaction rule and
-            # the free-text escaping (row r9-3), so building the tail by
-            # hand here silently opted out of both.
-            log(f"[wrapper] gemini config-conflict exit={EXIT_TERMINAL} "
-                f"vendor=-1 elapsed=0.0s"
-                + _summary_tail(args.attempt, _prompt_file_resolved,
-                                args.model))
-            return EXIT_TERMINAL
+            # is PRE-SPAWN, so its own records are the only ones the dispatch
+            # writes (`_refuse` writes this line, an audit row and the failure
+            # run-log), and this line is the one the dispatch SKILLs read. The
+            # one question C28 exists to answer went unrecorded on the line
+            # where the caller looks. `_summary_tail` also owns the redaction
+            # rule and the free-text escaping (row r9-3), so building the tail
+            # by hand here silently opted out of both.
+            return _refuse("config-conflict", refusal, probed_version)
 
     if args.web:
         # C29: the web-evidence rule rides the END of the prompt on every
@@ -487,6 +647,11 @@ def main() -> int:
         # likely dropped. `args.prompt` is what audit/run-log record, so the
         # record shows the prompt AS SENT.
         args.prompt = args.prompt + "\n\n" + GEMINI_WEB_EVIDENCE_CLAUSE
+    # The engine gets the caller's text alone; build_cmd appends the clause
+    # LAST after whatever the engine adds (schema instruction, repair notice),
+    # so no caller text is ever moved or stripped (C29).
+    engine_prompt = (args.prompt[:-len("\n\n" + GEMINI_WEB_EVIDENCE_CLAUSE)]
+                     if args.web else args.prompt)
 
     pydantic_cls = None
     if args.pydantic:
@@ -497,6 +662,9 @@ def main() -> int:
             return EXIT_ARG_ERROR
 
     def build_cmd(effective_prompt: str) -> list[str]:
+        if args.web:
+            # C29: the host-appended clause is LAST, after every instruction.
+            effective_prompt = effective_prompt + "\n\n" + GEMINI_WEB_EVIDENCE_CLAUSE
         cmd = [
             gemini_bin,   # resolved/pinned path (finding #3) — never a bare name
             "-p", effective_prompt,
@@ -508,7 +676,7 @@ def main() -> int:
         if args.skip_trust:
             cmd.append("--skip-trust")
         if args.sandbox == "read-only":
-            cmd += ["--policy", str(_READONLY_POLICY)]
+            cmd += ["--policy", str(review_policy)]
         elif args.web:
             # Investigation profile (C29). Mutually exclusive with the review
             # policy by the refusal above, so exactly one --policy is attached.
@@ -518,7 +686,7 @@ def main() -> int:
     result = run_cli_with_retry(
         "gemini",
         build_cmd,
-        args.prompt,
+        engine_prompt,
         cwd=args.cwd,
         timeout=args.timeout,
         pydantic_cls=pydantic_cls,
@@ -528,6 +696,7 @@ def main() -> int:
         prompt_file_resolved=_prompt_file_resolved,
         requested_model=args.model,
     )
+    ctx["result"] = result
 
     # The OBSERVED CLI version for the transport receipt (C9/C16): probed from
     # the SAME resolved binary the dispatch then executed, moments earlier — an
@@ -536,7 +705,8 @@ def main() -> int:
     if probed_version:
         result.vendor_version = probed_version
 
-    audit_cmd = build_cmd(args.prompt)
+    audit_cmd = build_cmd(engine_prompt)
+    ctx["cmd"] = audit_cmd
     # THE PAYLOAD IS DECIDED BEFORE THE AUDIT ROW (gate-1 r7 rows r7-c2 /
     # r7-k5): an answer this host cannot carry on the payload channel is not
     # an `ok` run, and the record must say so instead of being written first
@@ -560,12 +730,16 @@ def main() -> int:
     if result.classification != _pre_payload_classification:
         _emit_canonical_summary("gemini", result)
 
+    # R-REVIEW-WEB (case C32): a review leg dispatched with web is recorded.
+    result.review_web = args.review_web
     audit("gemini", audit_cmd, args.prompt, result)
+    ctx["recorded"] = True
 
     if args.debug:
         debug_log("gemini", args.prompt, result)
 
-    # Per-execution run-log (failure only) — dispatch SKILL input artifact.
+    # Per-execution run-log (failure only; a v2 review attempt with
+    # TRIAD_REVIEW_LOG_DIR: every outcome) — dispatch SKILL input artifact.
     run_log_path = emit_run_log("gemini", sys.argv, audit_cmd, args.prompt, result)
     if run_log_path is not None:
         log(f"run-log: {run_log_path}")

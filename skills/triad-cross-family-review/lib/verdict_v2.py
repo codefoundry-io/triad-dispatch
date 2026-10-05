@@ -44,8 +44,9 @@ Exit codes:
   1   shape / schema / binding failure (also: unreadable reply)
   2   unparseable, a duplicate JSON member, a reply that does not begin
       with `{`, or nesting past the interpreter's recursion limit (leader:
-      ONE targeted re-ask that names the syntactic defect, then terminal
-      INVALID)
+      the entry is invalid; a new answer comes only from `retry` on the
+      unchanged basis or a new round - a re-ask with a changed prompt is a
+      new basis, R-RETRY / R-BIND)
   3   `--end-marker` absent from the raw reply - possible TAIL LOSS
   64  usage error, `jsonschema` not importable, an unusable canonical
       schema file, or a REFUSED `--admitted-out` target - the HOST-fault
@@ -89,13 +90,22 @@ machine-written file:
     schema or the duplicate check is FINAL: unescaping a whole reply can
     restructure the object - a `&quot;` inside a string becomes a real
     quote - and a second verdict must never be conjured that way.
+  * the six expected values come from the attempt's own `binding.json`
+    beside the reply (R-BIND), so the printed line types none; a typed
+    `--expected-*` set that disagrees with that record is refused as an
+    argument error (exit 64) before the reply is read, so nothing is sealed.
+    With no record beside the reply the six flags are required, as above.
 `--admitted-out` writes the ORIGINAL admitted bytes (never a
 re-serialization) through a same-directory pid-unique temp file plus
 `os.link`, so an interrupted write can never leave a truncated canonical
 file; an existing target is inspected through the SAME hardened read the
 reply gets (lstat first, `O_NONBLOCK`, never a blocking `read_bytes()`),
 holding exactly those bytes is an idempotent success, and any other state
-is refused as a host fault (exit 64).
+is refused as a host fault (exit 64). A target whose attempt directory
+carries a seal (`seal.json`, case C66) is refused first, the same way: a
+recorded attempt takes no second admission. A successful `--admitted-out`
+IS the record step of the native route: it seals the attempt beside the
+target with the digests of the admitted object and the raw reply.
 
 Test seam: `TRIAD_VERDICT_V2_SCHEMA` overrides the canonical schema path,
 honored ONLY with `TRIAD_TEST_SEAMS=1` beside it (announced on stderr).
@@ -137,6 +147,12 @@ EXIT_USAGE = 64
 # corrupt, refused on the descriptor's fstat BEFORE a byte is read.
 _EVIDENCE_MAX_BYTES = 64 * 1024 * 1024
 _EVIDENCE_CAP_TEXT = "64 MiB"
+
+# THE SEAL OF A RECORDED ATTEMPT (R-BIND, case C66) — the same name as
+# `collect_v2._SEAL_NAME`, spelled here because this module imports no
+# sibling (t15 axis 81 pins the two equal). `--admitted-out` writes it (the
+# native route's record step) and refuses a target whose directory has one.
+_SEAL_NAME = "seal.json"
 
 _JSONSCHEMA_MISSING_MSG = (
     "jsonschema is not importable - v2 verdict admission needs it "
@@ -188,7 +204,9 @@ _USAGE = (
     "--expected-leg-name NAME --expected-attempt K "
     "--expected-route agy|gemini|null\n"
     "       verdict_v2.py --admit <raw-reply.txt> --end-marker TOKEN "
-    "[--admitted-out FILE] <the same six --expected-* flags>\n"
+    "[--admitted-out FILE] [<the same six --expected-* flags>]\n"
+    "  --admit takes the six from the binding.json beside the reply when one "
+    "is there (typed flags must then agree with it, else exit 64).\n"
     "  binding is all-or-nothing: all six --expected-* flags are REQUIRED; "
     "v2 admission never runs shape-only. --expected-packet derives the "
     "digest from the packet bytes and is mutually exclusive with "
@@ -572,8 +590,8 @@ def _extract_object_text(text: str, end_marker: str) -> tuple[str | None, str | 
     if last is None or lines[last].strip() != end_marker:
         return None, (
             f"end marker {end_marker!r} absent as the final non-empty line - "
-            "possible tail loss; treat as unparseable (ONE targeted re-ask, "
-            "then terminal INVALID)"
+            "possible tail loss; treat as unparseable (the entry is invalid; "
+            "a new answer needs `retry` on the unchanged basis or a new round)"
         ), True
     # everything before the marker LINE, original bytes included
     head = text[: sum(len(line) + 1 for line in lines[:last])]
@@ -706,6 +724,15 @@ def _write_admitted_out(target: Path, payload: str) -> str | None:
     are materialized in a same-directory pid-unique temp file and hard-linked
     into place, so an interrupted write never leaves a truncated canonical
     file and a concurrent writer cannot be clobbered."""
+    # A RECORDED ATTEMPT IS SEALED (R-BIND, case C66): a re-admission into
+    # it is refused BEFORE its target is inspected, so neither identical
+    # bytes nor a target removed by hand can put an answer into it again.
+    if os.path.lexists(target.parent / _SEAL_NAME):
+        return ("--admitted-out: the attempt directory is sealed - its "
+                "result was recorded, and a re-admission into a "
+                "recorded attempt is refused (R-BIND, case C66); a new answer "
+                "needs a new attempt (retry after a failure to run) or a new "
+                "round")
     if target.is_symlink():
         return "--admitted-out: refuses a symlink target"
     data = payload.encode("utf-8")
@@ -750,6 +777,65 @@ def _write_admitted_out(target: Path, payload: str) -> str | None:
     return None
 
 
+def _write_admission_seal(target: Path, receipt: Path, receipt_sha: str,
+                          payload: str | None, expected: dict) -> str | None:
+    """None on success, else a one-line reason. THE NATIVE ADMISSION IS A
+    RECORD STEP (R-BIND, case C66): right after `--admitted-out` is linked
+    into place, the attempt is sealed beside it with the digests of the
+    bytes this admission JUDGED - the admitted object (result) and the raw
+    reply it was cut from (receipt; no read evidence on this route) - in the
+    shape `collect_v2` re-checks. A reply that FAILS admission (`payload`
+    None) is sealed too, `invalid` with no result, so a second reply saved
+    over it is never admitted into the same attempt (C66 limit 5; a retry
+    stays open for it, R-RETRY). `receipt_sha` is the sha256 of the raw
+    reply as read. Exclusive: an existing seal is never replaced."""
+    doc = {"schema_version": 1, "leg_name": expected["leg_name"],
+           "attempt": expected["attempt"],
+           "state": "invalid" if payload is None else "valid",
+           "files": {"result": [target.name, None if payload is None
+                                else hashlib.sha256(
+                                    payload.encode("utf-8")).hexdigest()],
+                     "receipt": [receipt.name, receipt_sha],
+                     "read_evidence": None}}
+    seal = target.parent / _SEAL_NAME
+    if payload is None:
+        # FAIL CLOSED (M2): a refused reply's seal is created at its final
+        # name, so a write cut short (a full disk, a stop) still closes the
+        # attempt to a second reply; `collect` reports it, `retry` is open.
+        try:
+            fd = os.open(seal, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                         | getattr(os, "O_NOFOLLOW", 0), 0o644)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+        except OSError as e:
+            return (f"--admitted-out: the reply was refused but its seal "
+                    f"could not be written in full ({e}) - if {seal} exists "
+                    f"the attempt is closed to any other reply (collect "
+                    f"reports it INVALID, retry stays open); if not, free "
+                    f"the cause and run this same admit line again; save no other "
+                    f"reply there")
+        return None
+    tmp = target.with_name(f".tmp-seal-{os.getpid()}-{_SEAL_NAME}")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                     | getattr(os, "O_NOFOLLOW", 0), 0o644)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.link(tmp, seal)
+        finally:
+            tmp.unlink(missing_ok=True)
+    except OSError as e:
+        return (f"--admitted-out: the reply was admitted but the attempt "
+                f"could not be sealed ({e}) - re-run this same admission once "
+                f"the cause is fixed")
+    return None
+
+
 def _parse_argv(argv: list[str]) -> tuple[dict, str | None]:
     """(parsed, reason). Pure SHAPE parse plus the value-domain checks the
     six binding flags carry; the all-or-nothing rule is applied by the
@@ -789,6 +875,14 @@ def _parse_argv(argv: list[str]) -> tuple[dict, str | None]:
     if packet is not None and "--expected-content-digest" in values:
         return {}, ("--expected-packet and --expected-content-digest are "
                     "mutually exclusive: name ONE digest source")
+
+    # --admit with NO --expected-* flag: the attempt's own `binding.json`
+    # beside the reply decides (`main`), so the printed line types no value.
+    if admit is not None and not any(f in values for f in _EXPECTED_FLAGS) \
+            and packet is None:
+        return {"expected": None, "file": None, "admit": admit,
+                "end_marker": values.get("--end-marker"),
+                "admitted_out": values.get("--admitted-out")}, None
 
     # The packet file IS the digest source, so it satisfies the digest slot
     # of the all-or-nothing binding set.
@@ -847,6 +941,35 @@ def _parse_argv(argv: list[str]) -> tuple[dict, str | None]:
     }, None
 
 
+def _attempt_binding(raw_path: Path, typed: dict | None) -> tuple:
+    """`(expected, None)` or `(None, reason)` for `--admit` (R-BIND).
+
+    The attempt's own `binding.json` beside the raw reply holds the six
+    values this admission binds, as the codex host takes them from its
+    allocation: the printed line types none. Typed flags that disagree with
+    the record are refused; with no record beside the reply the six typed
+    flags are required, as before."""
+    path = raw_path.parent / "binding.json"
+    if not os.path.lexists(path):
+        if typed is None:
+            return None, (f"no {path} beside the reply and no --expected-* "
+                          f"flags: binding is all-or-nothing")
+        return typed, None
+    data, err = _read_regular_file_no_symlink(path)
+    try:
+        doc = json.loads(data.decode("utf-8")) if err is None else None
+        record = {f: doc[f] for f in _BINDING_FIELDS}
+    except (ValueError, RecursionError, TypeError, KeyError) as exc:
+        return None, f"{path} is not a usable binding record ({err or exc})"
+    if typed is not None and typed != record:
+        drift = sorted(f for f in _BINDING_FIELDS if typed[f] != record[f])
+        return None, (f"--expected-{drift[0].replace('_', '-')} disagrees "
+                      f"with {path} ({', '.join(drift)}) - run the printed "
+                      f"admit line unedited; it takes these values from the "
+                      f"record and types none")
+    return record, None
+
+
 def _relax_std_stream_errors() -> None:
     """NEVER DIE ON AN ENCODER (gate-1 r6 row r6-16). Entry-point only.
 
@@ -863,6 +986,18 @@ def _relax_std_stream_errors() -> None:
             stream.reconfigure(errors="backslashreplace")
         except (AttributeError, ValueError):
             pass
+
+
+def _heartbeat(admitted_out: Path) -> None:
+    """Refresh the round packet's `.active` mtime (M3: an admission is
+    activity). The packet is three levels above the attempt
+    (`results-r<N>/<name>/attempt-K/`). Refresh-only, best-effort."""
+    marker = admitted_out.parent.parent.parent.parent / ".active"
+    try:
+        if stat.S_ISREG(os.lstat(marker).st_mode):
+            os.utime(marker, follow_symlinks=False)
+    except OSError:
+        pass
 
 
 def main(argv: list[str]) -> int:
@@ -888,23 +1023,69 @@ def main(argv: list[str]) -> int:
             print(admission.reason, file=sys.stderr)
             return admission.exit_code
         print(_ok_line(admission))
+        if (Path(parsed["file"]).parent / "dispatch.json").exists():
+            # A v2 wrapper attempt: this module imports no sibling, so the
+            # executed-command receipt (R-BIND) is left to `collect`.
+            print("NOTICE: the answer alone is admitted; this attempt's "
+                  "executed-command receipt (its run-log against "
+                  "dispatch.json) is checked by collect (R-BIND)",
+                  file=sys.stderr)
         return EXIT_OK
 
-    data, err = _read_regular_file_no_symlink(Path(parsed["admit"]))
+    raw_path = Path(parsed["admit"])
+    expected, why = _attempt_binding(raw_path, expected)
+    if why is not None:
+        # An ARGUMENT error, before the reply is read: nothing is sealed.
+        print(_flatten(why), file=sys.stderr)
+        return EXIT_USAGE
+    data, err = _read_regular_file_no_symlink(raw_path)
+    receipt_sha = None
     if err is not None:
-        print(err, file=sys.stderr)
-        return EXIT_INVALID
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError as e:
-        print(f"{parsed['admit']} is not valid UTF-8: {e}", file=sys.stderr)
-        return EXIT_UNPARSEABLE
-    admission, obj_text = _admit_raw_with_text(text, expected, parsed["end_marker"])
+        admission = _fail(EXIT_INVALID, err)
+        try:
+            # A REGULAR reply refused for its size was still judged: digest
+            # it streaming (a link, a directory or an unreadable path is not).
+            if stat.S_ISREG(raw_path.lstat().st_mode):
+                fd = os.open(raw_path, os.O_RDONLY | os.O_NOFOLLOW
+                             | os.O_NONBLOCK)
+                with os.fdopen(fd, "rb") as fh:
+                    receipt_sha = hashlib.file_digest(fh, "sha256").hexdigest()
+        except OSError:
+            receipt_sha = None
+    else:
+        receipt_sha = hashlib.sha256(data).hexdigest()
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as e:
+            admission = _fail(EXIT_UNPARSEABLE,
+                              f"{parsed['admit']} is not valid UTF-8: {e}")
+        else:
+            admission, obj_text = _admit_raw_with_text(text, expected,
+                                                       parsed["end_marker"])
     if not admission.ok:
         print(admission.reason, file=sys.stderr)
+        out = parsed["admitted_out"]
+        # The reply was JUDGED and refused: record it (C66 limit 5) - unless
+        # the attempt is sealed, or already holds an admitted result whose
+        # seal is missing (the next collection judges and seals that one).
+        if (out is not None and admission.exit_code != EXIT_USAGE
+                and receipt_sha is not None
+                and not os.path.lexists(Path(out).parent / _SEAL_NAME)
+                and not os.path.lexists(Path(out))):
+            seal_err = _write_admission_seal(
+                Path(out), raw_path, receipt_sha, None, expected)
+            if seal_err is not None:
+                # HOST fault: an unsealed refusal would let a second reply in.
+                print(seal_err, file=sys.stderr)
+                return EXIT_USAGE
+            _heartbeat(Path(out))
         return admission.exit_code
     if parsed["admitted_out"] is not None:
         write_err = _write_admitted_out(Path(parsed["admitted_out"]), obj_text or "")
+        if write_err is None:
+            write_err = _write_admission_seal(
+                Path(parsed["admitted_out"]), raw_path, receipt_sha,
+                obj_text or "", expected)
         if write_err is not None:
             # HOST fault (exit 64), never exit 1: the reply itself was
             # ADMITTED two lines up, and the target - a symlink, a FIFO, a
@@ -913,6 +1094,7 @@ def main(argv: list[str]) -> int:
             # leader re-ask a leg that had already answered correctly.
             print(write_err, file=sys.stderr)
             return EXIT_USAGE
+        _heartbeat(Path(parsed["admitted_out"]))
     print(_ok_line(admission))
     return EXIT_OK
 

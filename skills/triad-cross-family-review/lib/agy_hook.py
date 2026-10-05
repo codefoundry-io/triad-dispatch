@@ -5,7 +5,10 @@
 
 Two modes, one file, python3 stdlib only, no AI:
 
-  hook mode    agy_hook.py --log <abs-jsonl>
+  hook mode    agy_hook.py --log <abs-jsonl> [--web]
+      (--web: a round with review web — a small-path round the owner asked
+      web for, or a v2 round whose bound review_web_authorized is true;
+      WEB_TOOLS join the allow set, everything else below is unchanged)
       agy runs this on EVERY tool call of a review leg (the round worktree's
       `.agents/hooks.json`, written by `review_scratch.py prepare`, matcher
       "*"). stdin: the vendor's PreToolUse payload (`toolCall.name`,
@@ -114,6 +117,10 @@ from pathlib import Path
 # (antigravity.google/docs/hooks, accessed 2026-09-18), so a config-level
 # allow-list could not fail closed; the policy lives here behind `*`.
 ALLOW_TOOLS = frozenset({"view_file", "grep_search", "list_dir", "find_by_name", "finish"})
+# A round with review web (`--log <file> --web`: the small review path, or a v2
+# round binding review_web_authorized true) also allows these two; t9 pins them
+# equal to the wrapper's AGY_WEB_TOOLS_ADMIT.
+WEB_TOOLS = frozenset({"read_url_content", "search_web"})
 
 _POLICY = "blocked by triad cross-family review policy"
 _REPORT_CAP = 40   # denied rows printed by `check` — the digest's list cap
@@ -175,24 +182,24 @@ _WHY_UNREADABLE = "is not a readable regular UTF-8 file: it could not be read"
 # the one CONTENT reason (the file was read): no JSON object with a count
 _WHY_NO_TOOL_STEPS = ("carries no readable digest.tool_steps (not a JSON "
                       "document whose digest.tool_steps is a count)")
-_USAGE = ("usage: agy_hook.py --log <abs-jsonl>   (hook mode, stdin = PreToolUse payload)\n"
+_USAGE = ("usage: agy_hook.py --log <abs-jsonl> [--web]   (hook mode, stdin = PreToolUse payload)\n"
           "       agy_hook.py check <abs-read-audit.json> <abs-hook-log.jsonl>"
           " [<abs-sibling-read-audit.json> ...]")
 
 
-def decide(name) -> tuple:
+def decide(name, web=False) -> tuple:
     """(decision, reason) for one tool name — the ENTIRE hook policy.
     Non-string / empty names deny (fail-closed): a payload this handler
     cannot read must never let a mutating call through."""
     if not isinstance(name, str) or not name:
         return ("deny", f"{_POLICY}: the tool call carries no readable name")
-    if name in ALLOW_TOOLS:
+    if name in ALLOW_TOOLS or (web and name in WEB_TOOLS):
         return ("allow", None)
     return ("deny", f"{_POLICY}: {name[:64]} is outside this leg's allow set "
                     f"— a read-only review leg may not call it")
 
 
-def _hook_main(log_path: Path) -> int:
+def _hook_main(log_path: Path, web: bool = False) -> int:
     # BYTES, decoded as UTF-8 with replacement (S2 gate r1, agy A4 — REPRODUCED):
     # a text-mode read under an ASCII stdio encoding (a legacy locale) raised
     # UnicodeDecodeError on a payload carrying a non-ASCII path, and a crashed
@@ -215,7 +222,7 @@ def _hook_main(log_path: Path) -> int:
             name = call.get("name")
         conversation = payload.get("conversationId")
         step = payload.get("stepIdx")
-    decision, reason = decide(name)
+    decision, reason = decide(name, web)
     row = {
         "ts": time.time(),
         "conversation_id": conversation if isinstance(conversation, str) else None,
@@ -976,8 +983,8 @@ def main(argv: list) -> int:
         return _check_main(_abs(argv[1], "the read audit"),
                            _abs(argv[2], "the hook log"),
                            [_abs(a, "a sibling read audit") for a in argv[3:]])
-    if len(argv) == 2 and argv[0] == "--log":
-        return _hook_main(_abs(argv[1], "--log"))
+    if len(argv) in (2, 3) and argv[0] == "--log" and argv[2:] in ([], ["--web"]):
+        return _hook_main(_abs(argv[1], "--log"), web=len(argv) == 3)
     print(_USAGE, file=sys.stderr)
     return 64
 

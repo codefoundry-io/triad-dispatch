@@ -2,8 +2,8 @@
 
 > Seed = host A's `antigravity_wrapper.py` constant `AGY_WEB_EVIDENCE_CLAUSE` (2026-09-19), byte-identical below.
 > Scope: any Google-family dispatch that may read the web — A's `--web` research agent (agy `read_url_content` /
-> `search_web`); B's explicitly web-authorized raw investigation (gemini `web_fetch` / `google_web_search`).
-> Not a review clause: review legs read only the reviewed tree (`R-CONTAIN`; D-9 decides the gemini policy rows).
+> `search_web`); B's web-enabled raw investigation (gemini `web_fetch` / `google_web_search`).
+> Not a review clause: REVIEW web follows `R-REVIEW-WEB` and never appends this clause (`R-CONTAIN` names the gemini profiles).
 > Placeholders: none. Vendoring rule: `README.md` § How a host uses a revision.
 
 ## web-evidence (R-INVEST)

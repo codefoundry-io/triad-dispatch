@@ -5,7 +5,7 @@
 ## codex-intro (R-VERIFY)
 
 ```text
-You are the codex leg of a cross-family pre-merge review.
+You are the codex leg of this independent <review-kind> review.
 ```
 
 ## codex-tree-entry (R-PREPARE)
@@ -17,7 +17,7 @@ The reviewed basis is at <worktree>. Read <brief-file> FIRST for the deployment 
 ## codex-read-grant (R-CONTAIN)
 
 ```text
-You MAY read authorized files under the working directory with read-only commands (cat, sed -n, rg, ls, git diff, git show, git log) to verify claims beyond the brief and patches — cite file:line for anything you assert from them. Do NOT read files outside the working directory — no home-directory or credentials, no system paths: nothing outside the repository is review material unless explicitly authorized and bound as an input. Inspect a symlink's path and link text without following its target automatically. Do NOT modify any file, change external state, run tests, scripts, builds, the code under review, or vendor CLIs. Do NOT access the network or search the web. Do not consult prior conversations or dispatch subagents.
+You MAY read authorized files under the working directory with read-only commands (cat, sed -n, rg, ls, git diff, git show, git log) to verify claims beyond the brief and patches — cite file:line for anything you assert from them. Do NOT read files outside the working directory — no home-directory or credentials, no system paths: nothing else outside the repository is review material unless explicitly authorized and bound as an input, apart from web pages fetched as the web policy below allows. Inspect a symlink's path and link text without following its target automatically. Do NOT modify any file, change external state, run tests, scripts, builds, the code under review, or vendor CLIs. <review-web-policy> Do not consult prior conversations or dispatch subagents.
 ```
 
 ## codex-binding-line (R-BIND)
@@ -36,11 +36,14 @@ Return exactly ONE LegVerdict JSON object matching your enforced output schema �
 
 1. codex-intro
 2. common:adversarial-framing
-3. codex-tree-entry
-4. codex-read-grant
-5. common:repo-relative-pin
-6. common:severity-instruction
-7. common:verdict-selection-rule
-8. common:smell-criterion
-9. codex-binding-line
-10. codex-closing
+3. common:<review-purpose> (plan-purpose or code-purpose, selected by review_kind)
+4. common:current-basis
+5. common:current-date
+6. codex-tree-entry
+7. codex-read-grant
+8. common:repo-relative-pin
+9. common:deployment-context
+10. common:severity-instruction
+11. common:verdict-selection-rule
+12. codex-binding-line
+13. codex-closing

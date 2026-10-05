@@ -17,16 +17,17 @@ runtime; the rules that consume it live in the SKILL body.
 | Known-harmless codex artifact | codex reports it cannot persist its scratch file |
 | Vendor-leg no-exec origin | someone proposes letting a leg run the code |
 | Budget note | weighing the cost of a deep tier |
-| Max-thinking directive — provenance | asking what evidence backs the ultrathink directive |
+| Max-thinking directive — provenance | asking why the v2 claude prompt carries no intensity request |
 | Why the cross-family gate exists | explaining the whole practice to someone new |
 
 ## Latency as a rubber-stamp signal
 
 Measured on a 134KB packet across 8 runs: both 20s-class runs found zero
 mid-packet real defects, while every run of 79s or more found at least one.
-Threshold in force: under 60s on a packet of 100KB or more reads as a shallow
-pass → re-dispatch that leg with the adversarial framing. The older sub-30s guide
-was too lenient.
+Threshold: under 60s on a packet of 100KB or more reads as a possibly shallow
+pass — a signal the leader records. On a v2 round the result stays valid and is
+never re-dispatched (R-RETRY); another round over it needs new evidence (SKILL
+rules 5 and 11). The older sub-30s guide was too lenient.
 
 For the agy leg this is a SECONDARY signal, behind its two mechanical evidence
 checks — the read-audit gate and the hook load check
@@ -115,15 +116,19 @@ Two consequences the admission rule is built on:
 ## Measured timeouts
 
 - A ~65K-char inline packet at codex `--reasoning max` exhausted 900s with NO
-  verdict and completed at ~950-1050s → budget `--timeout 1500` for a LARGE
-  packet at max.
+  verdict and completed at ~950-1050s (the 1500 s large-packet budget of
+  that time; every roster entry now carries 3600, below).
 - A FOCUSED sub-500-line packet at max completes in a few hundred seconds.
 - A workspace-sandboxed leg told to SELF-ASSEMBLE a large packet timed out around
   13 minutes; the same content, pre-assembled, finished in a few minutes.
 - An agy Pro-high / high entry hit a 600 s wrapper timeout on a 59 KB gated
   diff + 26 KB brief (89 tool steps, the vendor turn still in progress); the
-  same-basis retry completed in 434 s. A's four-leg example therefore sets
-  the Google entries' `timeout_s` to 900. `timeout_s` is per attempt: the agy
+  same-basis retry completed in 434 s. A's four-leg example therefore set
+  the Google entries' `timeout_s` to 900 (2026-09-26).
+- Owner 2026-10-04: a claude leg or a deep-reasoning codex leg can take
+  30 minutes depending on reasoning. Every entry of the shipped default, the
+  four-leg example and the project roster now sets `timeout_s` 3600 (twice
+  that). `timeout_s` is per attempt: the agy
   capacity ladder (2 retries, 15 s / 45 s backoff) gives every attempt the
   full `--timeout`.
 
@@ -146,23 +151,32 @@ carried the no-exec directive. That is the origin of Hard rule 7, and of the
 pairing rule: the no-exec directive AND a generous timeout, not either alone.
 
 A live-run finding can still be valid — it surfaces real robustness gaps — so
+capture the gap and verify it like any finding (SKILL rule 4). On v2 a valid
+answer is never re-dispatched (R-RETRY): only an entry that failed to run gets
+`retry`, and another answer comes from a new round. On a LEGACY v1 round,
 capture the gap, then re-dispatch read-only.
 
 ## Budget note
 
-The Gemini thinking tier is API-billed rather than subscription-covered; the
-codex/claude deep tiers draw down their subscription budgets faster. Acceptable
-for the high-stakes pre-merge gate — keep cheap single-shot dispatches on the
-defaults per the no-model-pin rule.
+Every leg must run on the user's own CLI subscription login, never an API key
+or another paid API route (R-AUTH, R-NOCOST) — an obligation on every review
+and dispatch. The one mechanical check before a vendor call is the gemini
+wrapper's auth-class gate, on every gemini posture, which refuses an API-key,
+Vertex or ADC authentication class as `oauth-env`
+(`references/failure-modes.md`); no other CLI checks the authentication
+class (the wrappers' child-environment scrub of key-shaped variables is hygiene,
+not such a check). Deep tiers draw a subscription budget down faster, which is
+accepted for the pre-merge gate; cost is never a reason to skip a leg.
 
 ## Max-thinking directive — provenance
 
-The unconditional "think as hard as you can / ultrathink" directive on the claude
-leg (rule 10) is a STANDING LAB OBSERVATION, not a measured threshold: legs
-dispatched without it were repeatedly seen to under-reason and return bare SAFE
-verdicts, and adding it recovered depth. It is the one lever in this skill with
-no number behind it — treat it as cheap insurance rather than as evidence, and
-measure it if it is ever the thing in dispute.
+The v2 claude leg carries no max-thinking (intensity) request — neither in its
+prompt (the shared spec's clauses give every leg the same prompt, R-PROMPT) nor
+in any reviewer agent body, the four base presets and the four `-web` twins
+alike; its depth lever is the preset's frontmatter effort (SKILL rules 10 and
+15). The earlier directive rested on a lab observation with no measurement
+behind it; only the LEGACY v1 claude prompt (`_render_claude_prompt` in
+`lib/review_scratch.py`) still carries it.
 
 ## Why the cross-family gate exists
 

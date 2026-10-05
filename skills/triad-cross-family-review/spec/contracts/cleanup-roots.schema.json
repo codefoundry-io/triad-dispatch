@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/codefoundry-io/triad-dispatch-spec/contracts/cleanup-roots.schema.json",
+  "title": "TRIAD declared deletion roots",
+  "description": "The one configuration file that declares every folder a host's code may delete (R-CLEANUP). The declaration adds to the ownership proof and never replaces it; deletion code refuses a target outside a declared root. A missing or invalid file deletes nothing: the deletion command refuses (host fault) and automatic prunes skip with a one-line note; a host ships a default file (owner, D-DELETION-BY-CODE-20261004).",
+  "type": "object",
+  "required": [
+    "version",
+    "roots"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "roots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/root"
+      }
+    }
+  },
+  "$defs": {
+    "root": {
+      "type": "object",
+      "required": [
+        "role",
+        "root",
+        "proof",
+        "min_age_s"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "description": "The name an AI may choose; unique within the file.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "root": {
+          "description": "The one folder under which this role's deletions happen; it covers its whole subtree and is never a glob: repository-relative (resolved against the git top-level of the working directory), or beginning with $TMPDIR, ~ or $HOST_DIR (the directory that holds the host's own deletion command).",
+          "type": "string",
+          "minLength": 1
+        },
+        "proof": {
+          "description": "The ownership proof R-CLEANUP already requires, never a name shape: a marker file the host writes, an allocation record, membership in a packet the host owns, or a git-registered worktree inside the declared root. A marker is a regular file of that name directly in the folder to delete; alloc-record and inside-owned-packet are proved only inside the host's own sweep, so the deletion command refuses them.",
+          "type": "string",
+          "pattern": "^(marker:[^/\\s]+|alloc-record|inside-owned-packet|git-registered)$"
+        },
+        "min_age_s": {
+          "description": "The host's age floor for this role, in seconds; nothing younger is deleted, by the sweep or by the deletion command.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

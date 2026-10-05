@@ -1,0 +1,92 @@
+# Gemini CLI Policy Engine — per-call READ-ONLY policy for the gemini leg.
+# SHARED CONTRACT (triad-dispatch-spec rev-1 draft). A host vendors this FILE byte-for-byte at the revision it
+# adopts (README § How a host uses a revision, step 2: payload bytes unchanged, digest in an adjacent manifest); host
+# notes live outside this file. Host A checks byte identity in its test t50; the digest is in gemini-readonly.verify.toml.
+# Attached via `--policy <this file>` when the wrapper is run with
+# `--sandbox read-only`. Allows read tools, denies mutation + shell tools.
+# Used INSTEAD of `--approval-mode plan` (plan mode crashes the Node/V8 heap on
+# heavy files — gemini-cli issues #11321 / #18331 / #26588). It is per-call, so
+# the same leg still does code work under `--sandbox workspace-write`.
+#
+# Schema DOC-VERIFIED 2026-07-04 against geminicli.com/docs/reference/policy-engine
+# (rule table: toolName / decision allow|deny / priority; highest priority wins,
+# so the deny rules (200) override the allow rules (100)). `--policy` REPLACES
+# the USER-tier policy directory (~/.gemini/policies) for this call; system/admin,
+# workspace and built-in default policies still load, so an Admin-tier policy can
+# outrank these denies. VERIFIED 2026-09-19 against version-pinned source:
+# packages/core/src/policy/config.ts at v0.46.0 and v0.60.0 (identical ternary;
+# the CLI help string "Additional policy files" is misleading for the user tier).
+# Approved route = CLI login without API keys (reference/review-rules.md#R-NOCOST); the
+# older Vertex/API-key enforcement-test wording is HISTORICAL. Live enforcement of the denies
+# is PENDING confirmation where gemini is in service (owner briefing, R-GOOGLE) — no run evidence yet.
+# ROUND r2 FINDING (claude, verified against v0.60.0 default read-only.toml): before 2026-09-19 this file had no web
+# rows and no catch-all, and `--policy` replaces only the USER tier, so the DEFAULT tier's allow for google_web_search
+# (priority 50) was INHERITED on A's review posture; web_fetch was denied only by the default headless rule.
+# D-9 RULED 2026-09-19 (owner): review legs have no web tools — the explicit deny rows at the end of this file. Applied
+# without a live run (gemini is not in service where the author runs); the runtime effect is verified where gemini is
+# in service by the checks in `contracts/gemini-readonly.verify.toml`, reported through the owner briefing (R-GOOGLE).
+
+# --- allow read tools ---
+[[rule]]
+toolName = "read_file"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "read_many_files"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "glob"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "search_file_content"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "list_directory"
+decision = "allow"
+priority = 100
+
+# --- deny mutation + shell tools (higher priority) ---
+[[rule]]
+toolName = "write_file"
+decision = "deny"
+priority = 200
+
+[[rule]]
+toolName = "replace"
+decision = "deny"
+priority = 200
+
+[[rule]]
+toolName = "run_shell_command"
+decision = "deny"
+priority = 200
+
+# --- defense-in-depth: deny MCP-server tools (read-only must not depend on
+# headless ask_user->deny defaults for unlisted tools). Wildcard is DOCUMENTED:
+# policy-engine reference — "mcp_*: Matches any tool from any MCP server"
+# (geminicli.com/docs/reference/policy-engine, verified 2026-07-05). ---
+[[rule]]
+toolName = "mcp_*"
+decision = "deny"
+priority = 200
+
+# --- D-9 (owner ruling 2026-09-19): review legs have no web tools. EXPLICIT rows,
+# because `--policy` replaces only the USER tier and the built-in default tier
+# still loads: v0.60.0 `read-only.toml` allows google_web_search at priority 50
+# and `write.toml:96-108` denies web_fetch only in headless runs, so a tool this
+# file did not name kept the default decision (round r2 finding). Web evidence
+# belongs to an investigation dispatch (shared spec R-INVEST, clause web-evidence).
+# Runtime effect verified where gemini is in service — checklist
+# `contracts/gemini-readonly.verify.toml` in the shared spec (owner briefing route). ---
+[[rule]]
+toolName = ["google_web_search", "web_fetch"]
+decision = "deny"
+priority = 200
+denyMessage = "Review legs read the reviewed tree only; web evidence belongs to an investigation dispatch (D-9)."

@@ -8,7 +8,8 @@ terminator, `--prompt-file` rule, argv-array retention) stays in Step 1 itself.
 
 - `--sandbox read-only` selects the read-only path v2 (agy >= 1.1.18): the
   setup-once tools-allowlisted agent (`--agent triad-readonly-review`, or
-  `triad-readonly-research` under `--web`) + `--add-dir <cwd>`; no danger
+  `triad-readonly-research` under `--web` / `--review-web`) + `--add-dir
+  <cwd>`; no danger
   flag, no settings transaction, no agy `--sandbox`; admission by the stream
   (§ Read-only path v2 in isolation.md). Below 1.1.18 → `config-conflict`.
   `--setup-agents` writes the two agent files once per host (no prompt
@@ -34,7 +35,8 @@ terminator, `--prompt-file` rule, argv-array retention) stays in Step 1 itself.
 - `--cwd` sets agy's working directory. On the read-only path
   (`--sandbox read-only`) it is ALSO the source of `--add-dir` — the leg's
   only repository read grant — and is MANDATORY there: a review dispatch
-  (no `--web`) without it is refused `EXIT_ARG_ERROR` before any vendor work
+  (no `--web`; a `--review-web` leg included) without it is refused
+  `EXIT_ARG_ERROR` before any vendor work
   (owner ruling 2026-08-26; the `--web` research agent is exempt — SKILL.md
   § Read-only path v2, caller obligation). Note agy resolves RELATIVE paths
   against its own scratch project rather than `--cwd` (isolation.md § Tool

@@ -1,8 +1,18 @@
 ---
 name: triad-antigravity-dispatch
-description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg; `triad-gemini-dispatch` exists for legacy compatibility with the older gemini CLI); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, run-log files accumulate uncleaned, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.16.6
+description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg; `triad-gemini-dispatch` exists for legacy compatibility with the older gemini CLI); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
+version: 0.16.9
 # changelog:
+#   0.16.9 (2026-10-03): doc — Step 4 `timeout` row names agy's own stderr
+#     line `[agy] print timeout after … returning partial output` (any vendor
+#     rc, partial answer withheld; R-CLASSIFY / C43) as a cause; routing unchanged.
+#   0.16.8 (2026-10-03): doc — `--review-web` (a review round's leg with web,
+#     R-REVIEW-WEB / C32: research agent, no investigation clause, needs
+#     `--cwd`) beside `--web`; the summary tail names ` model=` / ` reasoning=`.
+#   0.16.7 (2026-09-28): admission ADDS one admitted case (C40): a degraded
+#     run whose errored steps are allowed reads or an answer submission
+#     (`finish`) a LATER successful `finish` follows is admitted; the
+#     disclosure line carries the admission reason. Every refusal stands.
 #   0.16.6 (2026-09-26): doc resync. Step 4 `server-capacity` row states the
 #     per-attempt ladder: up to 2 re-runs after a 15 s / 45 s backoff, every
 #     attempt with the caller's full `--timeout` (timeout_s is per attempt).
@@ -208,10 +218,16 @@ agy's `read_url` action (`read_url_content` / `search_web`) is the toolkit's
 external-documentation research reach, which makes agy the research leg. Since
 the read-only path v2 the web tools live ONLY in the research agent: a
 research dispatch MUST pass `--web` (on a hardened install every dispatch is
-read-only, so without `--web` the REVIEW agent runs — it has no web tool at
-all and the model answers from memory, SUCCESS, admitted: a silently
-ungrounded research answer). `--web` outside `--sandbox read-only` is an
-invocation error. Two reasons the routing matters: **grounding** (agy pulls
+read-only, so without `--web` or `--review-web` the REVIEW agent runs — it has
+no web tool at all and the model answers from memory, SUCCESS, admitted: a
+silently ungrounded research answer). `--web` outside `--sandbox read-only` is
+an invocation error. **`--review-web` is not a research flag**: it is the
+review leg of a review round that binds `review_web_authorized` true
+(`triad-cross-family-review` prints it — every v2 round under the owner's
+standing authorization, R-REVIEW-WEB). It selects the same research agent and
+web-tool admission as `--web` but NEVER appends the investigation clause
+below; it needs `--sandbox read-only` and `--cwd` like a review dispatch, and
+`--web` with `--review-web` is refused. Two reasons the routing matters: **grounding** (agy pulls
 the current vendor source instead of the leader answering from memory) and
 **context hygiene** (the raw page stays in the agy worker; the leader gets
 back the grounded answer). Research hosts need `read_url(*)` allowed in
@@ -228,9 +244,9 @@ to cite it.
 
 A read-only dispatch runs agy as a **setup-once** tools-allowlisted custom
 agent: `triad-readonly-review` (`view_file`, `grep_search`, `list_dir`,
-`find_by_name`, `finish`; `commandExecutionPolicy: off`; NO web tool — a
-review has no egress) or, under `--web`, `triad-readonly-research` (the same
-plus `read_url_content`, `search_web`). Forbidden tools are ABSENT rather than
+`find_by_name`, `finish`; `commandExecutionPolicy: off`; NO web tool) or,
+under `--web` or `--review-web`, `triad-readonly-research` (the same plus
+`read_url_content`, `search_web`). Forbidden tools are ABSENT rather than
 denied, so an admitted run never produces the errored step that flips agy's
 terminal status (#826 / #839). The call passes `--add-dir <cwd>` (repository
 reads are auto-allowed in print mode — measured 1.1.18, ladder round 2 K2;
@@ -240,8 +256,9 @@ writes stay denied without the danger flag, K5), and NOTHING else: no
 
 **Caller obligation — `--cwd` is MANDATORY on this path, and the wrapper
 ENFORCES it (owner ruling 2026-08-26).** `--add-dir` is derived from `--cwd`
-and from nothing else; a review dispatch (no `--web`) without `--cwd` is
-refused `EXIT_ARG_ERROR` BEFORE any vendor work, with the remedy on stderr.
+and from nothing else; a review dispatch (no `--web`; `--review-web`
+included) without `--cwd` is refused `EXIT_ARG_ERROR` BEFORE any vendor work,
+with the remedy on stderr.
 The `--web` research agent stays exempt (web-only research may legitimately
 run grant-less). Why the guard exists: a grant-less dispatch runs read-blind
 — every read soft-denies, and the admission-side read-blind guard catches
@@ -265,8 +282,10 @@ one `result`, every tool name in any attempt ∈ the agent's allowlist (a
 fallback to agy's full-tool default agent, or a model slip, is rejected as
 **`admission-refused`** with the name on stderr — since 0.16.3; the other
 refusals stay `vendor-error`), and a `status != SUCCESS` run is
-admitted ONLY when every errored step named an allowed read tool — logged as
-`[wrapper] antigravity admitted-with-errored-steps n=<k> tools=[...]`. The
+admitted ONLY when every errored step named an allowed read tool or is an
+answer submission (`finish`) that a LATER successful `finish` follows (the
+model corrected its first submission — C40, 0.16.7) — logged as
+`[wrapper] antigravity admitted-with-errored-steps n=<k> tools=[...] … — <reason>`. The
 `init.agent` echo is a diagnostic only (agy echoes the REQUESTED name even on
 fallback). Below 1.1.18 the dispatch is `config-conflict` ("run `agy update`");
 there is no legacy path (`TRIAD_AGY_READONLY_MODE` is gone). Evidence:
@@ -336,7 +355,7 @@ the notes a consuming gate needs:
 
 1. **Bash invocation only.** No `Agent()` around the wrapper itself. The stderr `[wrapper]` summary line and `run-log:` path emission only surface via Bash.
 2. **Path-based agent input.** Pass the run-log file *path* to the repair agent, not its content. Inline-embedding corrupts on JSON-in-JSON / utf-8 / ANSI / large vendor stdout. The leader itself does NOT read the run-log content — it only passes the PATH to the read-only analyzer, and reads back (a) the wrapper's deterministic classification token and (b) the analyzer's inline JSON proposal. The run-log is untrusted vendor output; keeping the leader out of it preserves the privilege separation.
-3. **Cleanup after dispatch.** `rm -f <run-log-path>` once the repair analyzer returns (propose *or* escalate) and you have applied/surfaced. The wrapper failsafe is for orphans, not normal cleanup.
+3. **Leave the run-log in place.** Never delete the run-log or anything else under `_logs/`: the wrapper's own sweep collects it later. Passing its path to the analyzer (rule 2) is the leader's only act on it.
 4. **Repair agent ONLY on `unknown` / `extraction-error` / `timeout`.** Every other classification carries actionable meaning at the wrapper layer — dispatching the agent on them wastes the call.
 5. **Test isolation — dispatch prompt = production-shape only.** Use the Step 5b template VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. Reasoning: any test framing leaks into the vendor model's behavior and corrupts both the sample and the repair agent's accumulated memory.
 6. **No model name pinning.** agy model names rot every few weeks. Use the vendor default by default; `--model <name>` only when the user explicitly named the model. Date-anchor any pinned model usage.
@@ -345,7 +364,7 @@ the notes a consuming gate needs:
    When Step 4 routes a failure (`unknown` / `extraction-error` / `timeout`),
    spawn the `agy-wrapper-repair` sub-agent with the `Agent` tool's
    `run_in_background: true` so it runs alongside your foreground work; parse its
-   inline proposal (Step 5c), apply it, and clean up (Step 5d) when it completes.
+   inline proposal (Step 5c), and apply it (Step 5d) when it completes.
    Never skip it, and never treat reporting the failure to the user as
    discharging it — that is a separate obligation. The payoff is future routing
    rather than this call: the analyzer grows the classifier so the same vendor
@@ -388,7 +407,7 @@ TRIAD_AGY_PROMPT_EOF
   [--prompt-file /absolute/path/to/prompt.txt] \
   [--cwd /absolute/path] \
   [--sandbox read-only] \
-  [--web] \
+  [--web | --review-web] \
   [--model <pinned-model-name>] \
   [--effort low|medium|high] \
   [--pydantic module:Class] \
@@ -399,7 +418,7 @@ TRIAD_AGY_PROMPT_EOF
 "${AGY_CMD[@]}"
 ```
 
-**`--json-schema-file <absolute-path>`** hands a CALLER-OWNED JSON schema file
+**`--json-schema-file <path>`** hands a CALLER-OWNED JSON schema file
 straight to agy `--json-schema` (which accepts a schema string OR a path, so
 the value is passed as-is — no read, no re-serialization). TRANSPORT ONLY: no
 local validation and no repair re-run, the caller admits the answer with its
@@ -410,8 +429,8 @@ PRESENT but unusable channel (null / non-object) is `schema-fail` 66,
 non-repairable, on this arm exactly as on `--pydantic` (gate-1 r4-13); only an
 ABSENT key falls back to the response text (logged). It belongs to the READ-ONLY
 route only (`--sandbox read-only`) and is mutually exclusive with `--pydantic`. The
-path must be absolute and an existing file; both checks run BEFORE any vendor
-work.
+path must name an existing file (a relative path is rebased on the wrapper's
+process-entry cwd, as `--prompt-file`); the check runs BEFORE any vendor work.
 
 **`--attempt <int>`** (>= 1, default 1) is the dispatch attempt number,
 RECORDED on the transport receipt and the summary tail and never interpreted
@@ -420,15 +439,17 @@ RECORDED on the transport receipt and the summary tail and never interpreted
 `--prompt-file` REPLACES the `--prompt` heredoc — argparse rejects both
 together, so delete the heredoc when switching to a file body.
 
-**Retain the invocation as a quoted argv array** (`AGY_CMD` above): Step 5d
-replays that SAME array with `--repair-mode` appended as a DISTINCT element, and
+**Keep the invocation as a quoted argv array** (`AGY_CMD` above): Step 5d
+re-declares Step 1's exact `AGY_CMD=( … )` array in its own invocation and
+replays it with `--repair-mode` appended as a DISTINCT element — never flatten it
+into one string —, and
 an optional bracketed value like `[--cwd /absolute/path]` stops being
 quoting-safe once flattened to a string.
 
 Host setup, once: `antigravity_wrapper.py --setup-agents`
 (writes the two read-only agent definitions; § Read-only path v2).
 
-Flags at a glance: `--sandbox read-only` (v2 read-only path, § Read-only path v2) · `--web` (research agent with web tools; default = review agent without)
+Flags at a glance: `--sandbox read-only` (v2 read-only path, § Read-only path v2) · `--web` (research agent with web tools + the investigation clause; default = review agent without) · `--review-web` (a review round's leg with web: the research agent, no clause)
 · `--prompt-file <abs>` (replaces the heredoc: non-leader-authored bodies,
 or a body quoting a template — Step 1) · `--pydantic
 module:Class` (native `--json-schema`) · `--timeout <s>` (default 600) · `--cwd
@@ -443,7 +464,7 @@ rule 7). What each flag actually does, and the wrapper-internal transport note:
 
 Wrapper stderr contains:
 - Timestamped wrapper log lines
-- 1-line summary: `[<timestamp>] [wrapper] antigravity <classification> exit=<int> vendor=<int> elapsed=<s>` (every wrapper log line, this one included, carries the leading timestamp bracket — the Step 3 grep anchors on it)
+- 1-line summary: `[<timestamp>] [wrapper] antigravity <classification> exit=<int> vendor=<int> elapsed=<s>` followed by the recorded-facts tail ` attempt=<n>`, ` prompt_file=<abs>` when a `--prompt-file` was given, ` model=<slug>` when `--model` was requested and ` reasoning=<tier>` when `--effort` was requested (absent = the CLI's config default) (every wrapper log line, this one included, carries the leading timestamp bracket — the Step 3 grep anchors on it)
 - On every completed call: `[wrapper] antigravity read-audit {…}` (informational digest, § Isolation above), then `read-audit-file: <absolute-path>` (the durable file `emit_read_audit` just wrote — `$TRIAD_READ_AUDIT_FILE` if set, else the wrapper's own default location) — under the override, a `read-audit-copy: <absolute-path>` line sits between the two (§ Isolation above)
 - On failure: `run-log: <absolute-path>`
 
@@ -513,25 +534,25 @@ call, and never spawn the repair agent for it.
 | classification (rc) | Leader action |
 |---|---|
 | `ok` (0) | Return wrapper stdout (agy's final answer text). |
-| terminal (65) — cli-subscription-cap / token-limit / oauth-env / config-conflict / vendor-error | Surface to the user with the cause, and name the run-log path when there is one. Per-class causes and what the leader may say about each — including why `vendor-error` keeps the answer OUT of stdout and why none of these route to repair — [references/repair-loop.md](references/repair-loop.md) § Terminal (65) causes. |
-| `admission-refused` (65) | The v2 admission census found a tool OUTSIDE the agent's allowlist in the stream (`manage_task` / `run_command` / `send_message` …) — the allowlist class only; framing / unexplained-degraded / read-blind refusals stay `vendor-error`. The COMPLETE answer is quarantined (run-log copy only, `quarantined answer (N chars)`). Surface, never repair. Review-leg callers: one retry, then terminally missing. If it recurs after 0.16.3, check the host re-ran `--setup-agents` (agent body carries the allowlist rule) — the model is TOLD the five permitted tools; agy still advertises 57. |
+| `oauth-env` (65) | STOP. The login is missing or expired, or agy reported an authentication failure (its auth banner, or `result.error`) — this outranks agy's own print timeout on the same run. Do not retry, do not try another route or credential, and never read or change the credential store; tell the owner to re-log in through the CLI's own browser flow (the sign-in URL agy's auth banner names). A same-basis re-dispatch runs only after the owner reports the re-login. **NOT** repair-agent territory. |
+| terminal (65) — cli-subscription-cap / token-limit / config-conflict / vendor-error | Surface to the user with the cause, and name the run-log path when there is one. Per-class causes and what the leader may say about each — including why `vendor-error` keeps the answer OUT of stdout and why none of these route to repair — [references/repair-loop.md](references/repair-loop.md) § Terminal (65) causes. |
+| `admission-refused` (65) | The v2 admission census found a tool OUTSIDE the agent's allowlist in the stream (`manage_task` / `run_command` / `send_message` …) — the allowlist class only; framing / unexplained-degraded / read-blind refusals stay `vendor-error` (an errored `finish` that a later successful `finish` — a `step_type: finish` DONE update without `tool_info.error` — follows EXPLAINS a degraded status and is admitted; one with no later success still refuses as `vendor-error`). The COMPLETE answer is quarantined (run-log copy only, `quarantined answer (N chars)`). Surface, never repair. Review-leg callers: one retry, then terminally missing. If it recurs after 0.16.3, check the host re-ran `--setup-agents` (agent body carries the allowlist rule) — the model is TOLD the five permitted tools; agy still advertises 57. |
 | `vendor-timeout` (65) | agy's OWN turn timeout fired before the wrapper deadline (`result.status` ERROR, `result.error` "timeout waiting for response", empty response, vendor rc 1; live 2026-09-04 at 857 s of a 900 s budget with 33 allowlisted reads). Surface, never repair (the analyzer escalated: no existing class fits). Review-leg callers: re-dispatch ONCE with a narrower read scope (smaller packet / fewer cited sites), then terminally missing. |
 | `truncated-answer` (65) | agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB) and keeps NO full copy anywhere, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader remediation: re-dispatch under the output-file contract** (`references/long-answer.md` — agy's `write_file` is not subject to the fold), which needs the write-capable permissive baseline and is therefore unavailable on a hardened install and forbidden on the cross-family-review agy leg (re-dispatch once read-only for a COMPACT verdict there instead). **NOT** repair-agent territory (deterministic vendor behavior on the answer-present path; a classifier patch cannot express it). Retrying the same stdout-shaped dispatch folds again — do not plain-retry. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already ran the capacity ladder: up to 2 stream-json call re-runs after a 15 s / 45 s backoff, EVERY attempt with the caller's full `--timeout` (the timeout is per attempt, so the leg can take up to 3 × `--timeout` + 60 s wall-clock) — EXCEPT on a read-only run that also called a tool outside the allowlist: that run returns after ONE dispatch (stderr + `extraction_error` name the forbidden tool), the caller's fresh dispatch being the contract's one retry (2026-09-05). |
 | `unknown` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** Includes the engine-decided transport failures the driver FORWARDS at the conformed exit 1 — a vendor-spawn `OSError` (nothing ran) and a reader/writer thread that failed to START (the child was killed and reaped, its stdout kept). Those two are transport defects, not classifier gaps, so expect the analyzer to ESCALATE rather than propose a pattern. |
 | `extraction-error` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** agy ran but the driver found no usable answer — a `SUCCESS` status with an EMPTY `response` (`extraction_error = "empty-answer-body"`, agy self-reports success on a task it did not actually do), a fully empty capture, or garbage/no-result stream text with no matching pattern — **or an UNEMITTABLE PAYLOAD**: the answer (typically a `structured_output` string carrying an escaped LONE SURROGATE) cannot be encoded on the payload channel and has no JSON-equivalent ASCII re-serialization, so `_payload_or_demote` demotes the run BEFORE the audit row and logs `[wrapper] antigravity: unemittable-payload — …` (note the COLON, which keeps the note out of the summary grep above). On THIS route the payload is decided above the result rebuild, so the canonical summary line, the audit row, the run-log and the exit code all agree — no re-emission is needed here, unlike the codex / gemini / claude routes. The repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
-| `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since a hang (the wrapper's own SIGTERM→SIGKILL process-group kill fired against agy's `--print-timeout`-bounded run) is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
+| `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since a hang (the wrapper's own SIGTERM→SIGKILL process-group kill fired against agy's `--print-timeout`-bounded run, or agy's own stderr line `[agy] print timeout after … with turn in progress; returning partial output` at any vendor rc — its partial answer is withheld) is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
 | arg (3) / binary missing (4) / `schema-fail` (66) | Surface to user with cause (empty prompt / `agy` not on PATH / `--pydantic` output still failed local validation after the one schema-repair re-run — fix the schema or prompt and re-dispatch). |
 
 **NOT produced by agy** (do not branch on these — they belong to other CLIs):
-`schema-rejected` / `fanout-spawn-error` / `fanout-partial` / `task-blocked`.
+`schema-rejected` / `task-blocked`.
 `schema-rejected` is a **codex-side submit-time rejection class** (codex's
 `--output-schema` is rejected before the run even starts); agy's native
 `--json-schema` failures instead surface as `schema-fail` (66) after the
-wrapper's own local validation. agy also has **no `--task` layer** (so no fan-out
-/ code-task signals). agy's `config-conflict` (unlike codex's config.toml case)
-means the `_agy_settings` deny transaction failed — see the terminal (65) row
-above.
+wrapper's own local validation; `task-blocked` is claude's envelope class.
+agy's `config-conflict` causes are listed in references/repair-loop.md
+§ Terminal (65) causes.
 
 ### Step 5 — Repair branch: read-only analyzer proposes, leader applies (`unknown` / `extraction-error` / `timeout` only)
 
@@ -574,7 +595,7 @@ Input:
 }
 
 Example responses (return ONE of these shapes as your entire chat reply):
-{"outcome": "propose", "reason": "agy emitted a new re-login banner the seed list missed — improves oauth-env routing only", "proposal": {"classification": "oauth-env", "reason": "re-login banner on the no-answer path; auth stays user-managed", "pattern_list": "AGY_AUTH_BANNER_PATTERNS", "substring": "please re-authenticate to continue"}}
+{"outcome": "propose", "reason": "agy emitted a new re-login banner the seed list missed — improves oauth-env routing only", "proposal": {"classification": "oauth-env", "reason": "re-login banner at the start of an agy stderr line; auth stays user-managed", "pattern_list": "AGY_AUTH_BANNER_PATTERNS", "substring": "<opening words of the new re-login banner line a capture shows, lowercased>"}}
 {"outcome": "escalate", "reason": "novel error with no existing classification to extend, or a true extraction bug rather than a classifier gap — recommend manual triage", "proposal": null}
 
 Now do the analysis and return the inline JSON.
@@ -600,12 +621,16 @@ Schema top-level keys: `outcome` (`propose` | `escalate`), `reason`, `proposal` 
 
 5c's parse and the branch run TOGETHER in ONE Bash invocation, after the
 background analyzer's completion notification arrives — shell state does not
-persist across separate Bash calls, and a split run silently no-ops the cleanup.
+persist across separate Bash calls, and a split run reads an empty `OUTCOME` and
+skips the apply. The same invocation also re-declares Step 1's exact
+`AGY_CMD=( … )` array (never flattened into one string), which the propose
+branch replays with `--repair-mode`.
 On `propose`, `apply_patch.py` re-validates independently (it is the security
 backstop even if the analyzer misbehaves) and a successful apply is verified by
-replaying the Step 1 argv array with `--repair-mode`. Cleanup removes the run-log
-on both propose and escalate; unparseable analyzer output is SURFACED, keeps the
-run-log for manual diagnosis, and applies no patch. Control-flow narrative, the
+replaying the Step 1 argv array with `--repair-mode`. The run-log stays in every
+branch (the wrapper's own sweep collects it later); unparseable analyzer output is
+SURFACED, leaves the run-log as the input for manual diagnosis, and applies no
+patch. Control-flow narrative, the
 case block, and the branch-summary table:
 [references/repair-loop.md](references/repair-loop.md) § 5d.
 
@@ -627,9 +652,9 @@ Three layers keep the agy leg healthy; the leader drives only the first.
 2. **`.agybak` crash-recovery (reactive, per call)** — every call heals a stale
    settings backup before mutating settings, so none runs against deny-polluted
    global settings.
-3. **`agy-daily-check.sh` (proactive, scheduled)** — a drift detector with split
-   exit semantics (`0` no change / `1` actionable / `2` informational), surfaced
-   as a dated report for owner review.
+3. **`agy-daily-check.sh` (a manual run; the user may schedule it)** — a drift
+   detector with split exit semantics (`0` no change / `1` actionable / `2`
+   informational), surfaced as a dated report for owner review.
 
 Coverage of layers 2-3, including the leaked-transaction probe:
 [references/isolation.md](references/isolation.md) § Self-healing coverage.
@@ -638,11 +663,11 @@ Daily-check mechanics and flags: the plugin `README.md` § agy daily-check.
 ## Path scope
 
 - **Passes the PATH of** `_logs/antigravity/runs/<id>.json` (run-log) to the analyzer. The leader does NOT read the run-log content (Hard rule 2) — the analyzer does, via `Read`.
-- **Removes** the run-log post-dispatch (propose + escalate).
+- **Leaves** the run-log in place; the wrapper's own sweep collects it.
 - **Invokes** `bin/antigravity_wrapper.py` (dispatch + `--repair-mode` verify) and `bin/apply_patch.py` (deterministic proposal applier) via Bash.
 - **Dispatches** sub-agent `agy-wrapper-repair` (read-only analyzer).
 
-The leader (not the analyzer) is the only writer to the classifier extension — via the deterministic `apply_patch.py`. Does NOT edit `bin/_common.py` source or read `_logs/antigravity/audit.jsonl` (maintenance SKILL's territory).
+The leader (not the analyzer) is the only writer to the classifier extension — via the deterministic `apply_patch.py`. Does NOT edit `bin/_common.py` source or read `_logs/antigravity/audit.jsonl`.
 
 ## See also
 

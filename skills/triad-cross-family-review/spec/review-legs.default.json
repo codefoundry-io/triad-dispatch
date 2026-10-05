@@ -11,8 +11,8 @@
         "model": null,
         "effort": null
       },
-      "timeout_s": 900,
-      "note": "Host A native leg: an in-session Agent, never a CLI child. model/effort null = the named agent's frontmatter pins (the tier table lives in the owner's model-tier policy)."
+      "timeout_s": 3600,
+      "note": "Host A native leg: an in-session Agent, never a CLI child. model/effort null = the named shipped preset's frontmatter pins; agent names one preset of the closed shipped list (the skill's SKILL.md rule 15, the plugin README)."
     },
     {
       "name": "codex",
@@ -20,11 +20,11 @@
       "enabled": true,
       "acceptance": "required",
       "codex": {
-        "model": "gpt-5.6-terra",
-        "reasoning": "xhigh"
+        "model": "gpt-6-astra",
+        "reasoning": "high"
       },
-      "timeout_s": 900,
-      "note": "Host A codex leg: codex_wrapper.py with --sandbox read-only, stdin prompt transport; model = the recommended explicit codex ID (spec R-ROSTER, owner 2026-09-25) so the baseline does not depend on the operator's ~/.codex/config.toml; an explicit null override = the CLI's config default, frozen as null; REVIEW never passes --search (D-9)."
+      "timeout_s": 3600,
+      "note": "Host A codex leg: codex_wrapper.py with --sandbox read-only, stdin prompt transport; model = the recommended explicit codex ID (spec R-ROSTER; ONE codex leg) so the baseline does not depend on the operator's ~/.codex/config.toml; an explicit null override = the CLI's config default, frozen as null; every v2 round binds review web true under the owner's standing authorization, so this leg runs with --search (R-REVIEW-WEB); the legacy small path keeps its own --web."
     },
     {
       "name": "google",
@@ -42,8 +42,8 @@
         "model": "gemini-3.1-pro-preview",
         "effort": null
       },
-      "timeout_s": 600,
-      "note": "route null = the host chain (explicit pin, else agy if installed, else gemini, else skip and log — R-GOOGLE). Data values, not code constants (owner Q-W: Pro family + verifiable HIGH). gemini model = the v0.60.0 defaultModelConfigs.ts entry bound to ThinkingLevel.HIGH; untested off-site (gemini not in service here). gemini takes no effort flag."
+      "timeout_s": 3600,
+      "note": "route null = the host chain (explicit pin, else agy if installed, else gemini, else skip and log — R-GOOGLE). Data values, not code constants (owner Q-W: Pro family + verifiable HIGH). gemini model = the v0.60.0 defaultModelConfigs.ts entry bound to ThinkingLevel.HIGH; not run live on this host. gemini takes no effort flag."
     }
   ],
   "_comment": "Host A shipped default roster (data). A project override at <worktree>/.claude/triad-review-legs.json merges by name (lib/roster_v2.py). Fields and rules: spec reference/review-rules.md#R-ROSTER; schema: spec/contracts/review-legs.schema.json (vendored)."

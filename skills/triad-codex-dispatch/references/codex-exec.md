@@ -8,7 +8,7 @@ exposes no `--add-dir` / arbitrary `-c` passthrough). Loaded on demand from
 (Verified against the official codex skills doc — developers.openai.com/codex/skills
 — and the installed `codex` CLI help.)
 
-The wrapper covers single-shot Q&A / `--task` dispatches. Some invocations
+The wrapper covers single-shot dispatches (read-only or workspace-write). Some invocations
 are NOT expressible through the wrapper — it pins `--ephemeral` (ephemeral
 threads do not support `/goal`) and exposes no `--add-dir` / arbitrary `-c`
 passthrough. For those, the leader (or a project-side skill, e.g.

@@ -8,11 +8,11 @@
       "acceptance": "required",
       "claude": {
         "agent": "cross-family-review-reviewer",
-        "model": null,
+        "model": "claude-opus-5-5",
         "effort": "xhigh"
       },
       "timeout_s": 900,
-      "note": "model null = the host's default (A: the agent's frontmatter; B: its claude CLI default); agent applies on A only"
+      "note": "Recommended Claude model/effort: R-ROSTER. Explicit model overrides and null retain host selection semantics; agent names the native reviewer preset on A (required) and is passed as --agent on B when set. B's runnable default timeout is 1200 s."
     },
     {
       "name": "codex",
@@ -20,11 +20,11 @@
       "enabled": true,
       "acceptance": "required",
       "codex": {
-        "model": null,
-        "reasoning": "xhigh"
+        "model": "gpt-6-astra",
+        "reasoning": "high"
       },
       "timeout_s": 900,
-      "note": "model null = the host's default codex model"
+      "note": "Recommended codex model/reasoning: R-ROSTER (shipped defaults carry the explicit ID). An explicit null override retains host-default semantics and is frozen as null."
     },
     {
       "name": "google",
@@ -52,7 +52,7 @@
         "effort": "high",
         "model": null
       },
-      "note": "opt-in example of a second claude arm (enable to run it); acceptance is data only — a verified blocking finding from this leg blocks the round (R-AGREE)",
+      "note": "opt-in example of a second claude arm (enable to run it); acceptance is data only — this entry must explicitly approve like every selected entry (R-AGREE)",
       "timeout_s": 900
     },
     {

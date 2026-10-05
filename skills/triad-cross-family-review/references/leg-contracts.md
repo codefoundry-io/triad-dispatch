@@ -16,7 +16,7 @@ its verdict may be weighed only after the read-audit gate below passes.
 | agy read-audit gate | an agy leg returned and you are about to weigh it |
 | agy standing residuals | deciding whether this deployment can run the agy leg at all |
 | gemini leg | a google entry resolved to the gemini route (legacy compatibility) |
-| codex leg | dispatching codex — tier, the D-9 no-web rule, worktree delivery |
+| codex leg | dispatching codex — tier, review web (`--search`), worktree delivery |
 | claude fresh-eye leg | dispatching the claude `Agent` leg |
 | Fourth leg (LEGACY v1) | reading a v1 packet or residual row, or running `prepare` WITHOUT `--v2` — the retired `--x-leg` / `--no-x-leg` / `$TRIAD_REVIEW_X_LEGS` arms |
 
@@ -31,32 +31,84 @@ in the rendered argv (the renderer refuses a relative one), and every wrapper
 argv ends with the same tail: `--prompt-file <attempt>/prompt.txt --cwd
 <worktree> --timeout <entry timeout_s> --attempt <K>`.
 
-- **codex** — `python3 <wrappers>/codex_wrapper.py --sandbox read-only
-  [--reasoning <tier>] [--model <slug>] --output-schema-file
+**Every wrapper line runs with `env TRIAD_REVIEW_ARGV_SHA256=<digest>
+TRIAD_REVIEW_LOG_DIR=<attempt>/logs`, and the wrapper's run-log is the
+attempt's receipt (R-BIND).** The digest is the sha256 of the recorded argv
+(compact ASCII JSON of every token after `python3`). A line that keeps EITHER
+env member is checked by the wrapper before any vendor work: an argv that does
+not hash to the digest, or a missing digest or log dir, is refused with exit 3
+(C32: refused before inference). The line's own redirections have already
+created that attempt's output files, so the same line cannot run again:
+`retry` the entry and run the new attempt's printed line verbatim. A line with
+BOTH env members removed runs as an ordinary call — a recorded known limit
+(owner, 2026-10-03): it writes no receipt and `collect` makes the entry
+INVALID, never agreement. With the log-dir member
+the wrapper writes its run-log on success too, into `<attempt>/logs/<cli>/runs/`
+(`<cli>` = `codex` / `antigravity` / `gemini`), and its `wrapper_cmd` is the
+argv the wrapper actually ran with. `collect` compares every run-log there with
+`dispatch.json`'s argv before it admits the answer: a missing run-log (the line
+ran without its env) or any differing element — a removed `--search` /
+`--review-web`, a changed `--model` — makes the entry INVALID ("the leg ran
+with a command other than the recorded one"), sealed so; `retry` it and run its
+printed line verbatim; the entry's line shows the answer the leg gave beside
+that reason. The run-log directory joins the attempt's seal (role `run_log`,
+digested over its `*.json` run-logs only — exactly the files the receipt reader
+reads, so an OS side file there changes nothing), so a later change, removal or
+unreadable run-log of a SEALED attempt is an integrity failure whose remedy is a
+new round (`retry` refuses an attempt whose sealed files changed); an unsealed
+attempt's unreadable run-log names `retry`. An attempt sealed with a valid
+answer is never re-judged by the argv comparison (C66). A seal written before
+this binding (no `run_log` role) names a new round. The wrapper entry's early `admit:` line
+admits the answer alone and says so on stderr; the receipt is `collect`'s.
+The native claude spawn has no wrapper and so no receipt (DL-18).
+
+- **codex** — `env TRIAD_REVIEW_ARGV_SHA256=<digest> env
+  TRIAD_REVIEW_LOG_DIR=<attempt>/logs python3
+  <wrappers>/codex_wrapper.py --sandbox read-only
+  [--search] [--reasoning <tier>] [--model <slug>] --output-schema-file
   <attempt>/schema.projected.json` + the common tail, redirected to
-  `<attempt>/verdict.json` and `<attempt>/stderr.log`. No `--search`
-  (D-9 — the DEFAULT posture; see § Review web below, and note that the
-  owner-authorized path is NOT implemented on this host) and never
+  `<attempt>/verdict.json` and `<attempt>/stderr.log`. `--search` follows
+  the round's bound `review_web_authorized` (R-REVIEW-WEB; true under the
+  owner's standing authorization, so present on every round today; absent on
+  a false round, where the wrapper pins `web_search="disabled"`). Never
   `--pydantic`: v2 admission runs on the output FILE, in `verdict_v2.py`.
-- **agy** — `env TRIAD_READ_AUDIT_FILE=<attempt>/read-audit.json python3
-  <wrappers>/antigravity_wrapper.py --sandbox read-only [--model <slug>]
-  [--effort <tier>] --json-schema-file <attempt>/schema.projected.json` + the
-  common tail, same redirections. No `--web` (D-9 — the DEFAULT posture; see
-  § Review web below). The per-attempt read audit is part of this entry's
-  contract, gated below.
-- **gemini** — `python3 <wrappers>/gemini_wrapper.py --sandbox read-only
-  --approval-mode default [--model <slug>]` + the common tail. NO schema
+- **agy** — `env TRIAD_READ_AUDIT_FILE=<attempt>/read-audit.json env
+  TRIAD_REVIEW_ARGV_SHA256=<digest> env TRIAD_REVIEW_LOG_DIR=<attempt>/logs python3
+  <wrappers>/antigravity_wrapper.py --sandbox read-only [--review-web]
+  [--model <slug>] [--effort <tier>] --json-schema-file <attempt>/schema.projected.json` + the
+  common tail, same redirections. A true `review_web_authorized` adds
+  `--review-web` — the read-only research agent (the review tools plus
+  `read_url_content` / `search_web`) WITHOUT the investigation web-evidence
+  clause — and `prepare` writes the round's hook in its web mode; never the
+  investigation `--web` (R-INVEST). The per-attempt read audit is part of
+  this entry's contract, gated below.
+- **gemini** — `env TRIAD_REVIEW_ARGV_SHA256=<digest> env
+  TRIAD_REVIEW_LOG_DIR=<attempt>/logs python3
+  <wrappers>/gemini_wrapper.py --sandbox read-only
+  --approval-mode default [--review-web] [--model <slug>]` + the common tail
+  (`--review-web` on a true `review_web_authorized`: the complete review web
+  profile `policies/gemini-readonly-web.toml` instead of
+  `gemini-readonly.toml`, never an overlay, no investigation clause). NO schema
   slot: the gemini route has no native producer-schema argument on host A, so
   the verdict SHAPE is pinned by the prompt text alone and admission is the
   only mechanical check. Never an `--effort` flag (the wrapper has none; the
   resolver refuses a `gemini.effort` value). The gemini route is
   compatibility with the older gemini CLI (legacy compatibility), not a
   standing review leg; this shape is a textual pin, not a measured one.
-- **claude** — no wrapper. Spawn `Agent` with the entry's
-  `claude.agent` subagent type on the CONTENT of `<attempt>/prompt.txt`, save
+- **claude** — no wrapper. Spawn `Agent` with EXACTLY the `subagent_type`
+  the dispatch line prints (from `dispatch.json`) and no `model` parameter
+  (the Agent tool's per-call `model` outranks the preset's `model`
+  frontmatter, so passing one replaces the pinned model) on the CONTENT of
+  `<attempt>/prompt.txt` — the renderer derives it from the entry's
+  `claude.agent`: under a true `review_web_authorized` the preset's web twin
+  (`-web` / `-high-web` / `-max-web` / `-older-web`), under a false one the
+  no-web base preset (`roster_v2.render_dispatch`, `CLAUDE_WEB_TWINS`) — save
   the final message VERBATIM to `<attempt>/raw.json`, then admit with
   `verdict_v2.py --admit … --end-marker '<END-VERDICT>' --admitted-out
-  <attempt>/admitted.json`.
+  <attempt>/admitted.json`. The admit line types no `--expected-*` value: it
+  takes the six from `<attempt>/binding.json` beside the reply; a typed flag
+  that disagrees with that record is an argument error (exit 64) that seals
+  nothing.
   **The printed agent id is LAYOUT-QUALIFIED, exactly as on the v1 route**
   (`review_scratch._qualify_claude_agent_id`). In a DIST
   (plugin) install a BARE id is scoped to `<plugin>:<agent>`, with the plugin
@@ -65,21 +117,14 @@ argv ends with the same tail: `--prompt-file <attempt>/prompt.txt --cwd
   fall-through to the bare name, because a consumer's same-named PROJECT
   agent resolves over a plugin agent and would silently shadow the read-only
   reviewer. In the DEV tree there is no manifest and the bare name is the
-  correct id. An id that ALREADY carries a scope renders VERBATIM (the
-  operator named an identity explicitly). The ROSTER DATA stays BARE — the
-  qualification happens at render time, in `_v2_dispatch_json`, and
-  `v2_print_dispatch` reads the id back OUT of `dispatch.json`, so the printed
-  line and the round record cannot disagree. `roster_v2.CLAUDE_AGENT_RE`
-  accordingly accepts EXACTLY ONE `<scope>:<agent>` (two scopes, and a bare /
-  leading / trailing colon, stay refused); its component class is this file's
-  own narrower `[a-z0-9][a-z0-9-]*`, not v1's wider `[A-Za-z0-9._-]`
-  (disclosed). The id is matched with **`fullmatch`, never `match`**
-  (`roster_v2._check_capabilities`): `$` matches BEFORE a trailing newline,
-  so `match()` would admit `"cross-family-review-reviewer\n"` — a byte the
-  JSON string type carries happily, and the NATIVE claude dispatch never
-  passes through `_token`, so it would ride straight into the spawn
-  instruction. A trailing newline in `claude.agent` is REFUSED like any other
-  malformed id.
+  correct id. The ROSTER DATA is always BARE: `claude.agent` names one of the
+  eight presets this host ships (`roster_v2.CLAUDE_WEB_TWINS`, the closed list —
+  SKILL rule 15), and any other value — a `:`-scoped id, an unlisted name, a
+  name with a trailing newline or any other byte — is refused at resolve
+  (`roster_v2._check_capabilities`), so nothing but a listed name ever reaches
+  the spawn instruction. The qualification happens at render time, in
+  `_v2_dispatch_json`, and `v2_print_dispatch` reads the id back OUT of
+  `dispatch.json`, so the printed line and the round record cannot disagree.
   **A missing `subagent_type` in the RECORD is a refusal, never a default**
   (`review_scratch.v2_print_dispatch`). The print reads the id back out of
   `dispatch.json`, and falling back to the layout default when the record
@@ -92,10 +137,13 @@ argv ends with the same tail: `--prompt-file <attempt>/prompt.txt --cwd
   a missing one. Prepare a new round`).
   A non-null `claude.effort` or `claude.model` is REFUSED by the resolver
   (`roster_v2._check_capabilities`, mirroring the `gemini.effort`
-  refusal beside them): the native `Agent` dispatch can only name a
-  `subagent_type`, so BOTH the effort tier and the model are pinned INSIDE
-  the named agent preset's frontmatter and a different tier is a DIFFERENT
-  agent id (owner model-tier policy — effort has no per-invocation override).
+  refusal beside them): the native `Agent` dispatch names a `subagent_type`
+  and passes no effort (the tool has no effort parameter) and no `model`
+  (a per-call model outranks the frontmatter), so BOTH the effort tier and
+  the model are pinned INSIDE the named agent preset's frontmatter and a
+  different tier or model is a DIFFERENT SHIPPED preset, named by its bare
+  name (effort has no per-invocation override; the closed list and the guide:
+  SKILL rule 15).
   A roster that records an effort or a model
   the dispatch cannot apply is a lie frozen into the round record, so both
   fields must be null on host A.
@@ -233,7 +281,10 @@ redirected by a stray environment variable.
 `family` (`claude` | `google` | `codex`), `content_digest` (64-hex,
 lowercase) — so a verdict is admissible only for the exact round and
 leg it was produced for (no cross-round reuse, no leg mixups). The
-leader's obligations, every round, every leg:
+obligations below are the LEGACY v1 shapes (`validate_verdict.py`, three
+binding fields); a v2 round binds six fields through `verdict_v2.py` and the
+printed `admit:` lines (SKILL rule 4, Flow 3). The leader's v1 obligations,
+every round, every leg:
 
 1. The PACKET FILE's head carries ONE canonical `Review metadata:`
    JSON line with the LEG-INDEPENDENT facts only — `review_id` (e.g.
@@ -263,7 +314,8 @@ leader's obligations, every round, every leg:
    are all-or-nothing — any one present requires all three, and a
    flagless run is loudly labeled shape-only (NOT a gate admission). A
    mismatch is the existing INVALID-leg
-   handling (one re-ask, then INVALID) — never a hand-waved pass.
+   handling (v1: one re-ask, then INVALID; v2: the entry is invalid and a new
+   answer needs `retry` or a new round) — never a hand-waved pass.
 3. The schema also rejects a "SAFE TO MERGE" verdict carrying a
    Critical/must-fix finding (bidirectional validator, engine commit
    `397fade`); Minor / HARDENING-SUGGESTION findings MAY accompany
@@ -365,8 +417,9 @@ switches route. The model/effort values come from that entry's `agy` /
 `gemini` block (§ v2 dispatch shapes).
 
 **Legacy v1 rounds** select it with the snippet below (`$TRIAD_GOOGLE_REVIEW_CLI`
-/ `$TRIAD_GOOGLE_REVIEW_MODEL`), which is also the reference for the model-tier
-and identity facts the v2 roster DATA encodes:
+/ `$TRIAD_GOOGLE_REVIEW_MODEL`; `<skill>` is this skill's folder). Its agy
+model comes from the shipped roster data (`spec/review-legs.default.json`, the
+`google` entry's `agy.model`), so the snippet names no model itself:
 
 ```bash
 GOOGLE_CLI="${TRIAD_GOOGLE_REVIEW_CLI:-}"          # explicit pin wins
@@ -385,49 +438,37 @@ if [ -z "$GOOGLE_CLI" ]; then
   elif command -v gemini >/dev/null 2>&1; then GOOGLE_CLI=gemini # fallback
   else GOOGLE_CLI=""; fi                                         # neither
 fi
-# REASONING TIER (a review-only override of the no-model-pin rule): the agy/gemini
-# default is a fast shallow model (Gemini Flash class), empirically useless for
-# adversarial review — it finds nothing the deeper tier catches. agy's catalog
-# encodes reasoning in the MODEL VARIANT slug, so force the Pro/High variant via
-# --model. (agy >= 1.1.10 also has a working --effort low|medium|high — the
-# wrapper passes it through — but the catalog lists effort-suffixed selectors,
-# so the slug stays this leg's pinned mechanism.)
-# Env-overridable; verify it still exists (Google renames tiers) and fall back
-# to the default + log if absent.
-# PIN-FLOOR NOTE: agy < 1.1.10 silently IGNORES --model in -p runs
-# (default-model fallback), so a "pinned" leg there is served by the shallow
-# default. The wrapper fail-closes a --model/--effort dispatch on agy < 1.1.10
-# (config-conflict 65) instead of dispatching a voided pin.
+# REASONING TIER: the agy/gemini default is a fast shallow model (Gemini Flash
+# class), empirically useless for adversarial review, so the agy leg pins the
+# Pro/High catalog selector via --model (agy's catalog encodes reasoning in the
+# selector; the wrapper also passes --effort through on agy >= 1.1.10).
+# PIN-FLOOR NOTE: agy < 1.1.10 silently IGNORES --model in -p runs, so the
+# wrapper fail-closes a --model/--effort dispatch there (config-conflict 65).
 GOOGLE_REVIEW_MODEL="${TRIAD_GOOGLE_REVIEW_MODEL:-}"
 if [ "$GOOGLE_CLI" = agy ] && [ -z "$GOOGLE_REVIEW_MODEL" ]; then
-  GOOGLE_REVIEW_MODEL="gemini-3.1-pro-high"   # agy-leg default = the catalog's stable
-fi                                            # selector ('agy models' lists selectors, not
-                                              # display labels; dispatch acceptance was
-                                              # probe-verified at adoption). gemini path stays unpinned
-# IDENTITY CAVEAT: catalog membership + dispatch acceptance prove the SELECTOR is
-# valid, not which runtime tier actually served the call — agy exposes no runtime
-# model identity, so record the leg as identity-unexposed. (The stream-json
-# init.model event echoes the requested slug — still the REQUEST, not a serving
-# proof.) The primary shallow/void detector is the read-audit gate below; rule
-# 11's latency signal is secondary for this leg.
-if [ "$GOOGLE_CLI" = agy ] && ! agy models 2>/dev/null | grep -qF -- "$GOOGLE_REVIEW_MODEL"; then
-  # substring match (not -x/whole-line): tolerates a leading bullet/marker or a
-  # trailing note in agy's listing — a whole-line exact match is brittle to any
-  # such decoration and would false-negative a listed model.
-  echo "[review] '$GOOGLE_REVIEW_MODEL' not in 'agy models' — falling back to agy default; Google leg is ADVISORY this round" >&2
-  GOOGLE_REVIEW_MODEL=""
-fi
+  GOOGLE_REVIEW_MODEL="$(jq -r '.legs[] | select(.name == "google") | .agy.model // empty' \
+    "<skill>/spec/review-legs.default.json")"   # the shipped roster's agy selector
+fi                                              # gemini path stays unpinned
 ```
 
 `agy` → `triad-antigravity-dispatch`; `gemini` → `triad-gemini-dispatch`; empty
 → skip the Google leg and log "Google-family reviewer unavailable; review
 proceeds with claude(Agent)+codex (2-family)".
 
-A Google leg that fell back to the shallow default tier (the model-verify above)
-is advisory for gating exactly like the agy leg — SKILL rule 1 states both. Log
-the shallow-tier fact for the round record.
+**Model rule (R-MODEL).** The model is the roster entry's value (v1: the
+variable above), passed to the wrapper as given: the host runs no catalog probe
+(`agy models` / `gemini models`) and never substitutes or falls back to another
+model. A model the CLI refuses ends the attempt as a terminal failed-to-run
+record; the user changes the roster entry. The agy stream's `init.model` is
+recorded as `runtime_model`, and a value that is not byte-equal to the requested
+`--model` is refused (`config-conflict` 65, answer withheld).
 
 ## agy leg
+
+Every bullet below marked "template-rendered" describes the LEGACY v1
+renderer's `agy-prompt-r<N>.txt` (pinned by `t4-prepare.sh`). A v2 round's
+`prompt.txt` is rendered from the vendored clauses (`spec/prompts/leg-google.md`
+— its `google-read-grant` and shape clauses), not from these pins.
 
 - **Findings-shape pin (template-rendered).** The rendered
   `agy-prompt-r<N>.txt` carries a FINDINGS SHAPE PIN block naming the exact
@@ -477,7 +518,9 @@ the shallow-tier fact for the round record.
   the mechanical read-audit gate below runs UNCHANGED over such a run.
   Evidence: `docs/spikes/2026-08-22-agy-permission-ladder/` rounds 1-3; spec
   `docs/superpowers/specs/2026-08-22-agy-readonly-v2-spec.md`. Expected
-  read-audit: `commands=0 writes=0 web=0`; `denied` may
+  read-audit: `commands=0 writes=0 web=0` (a web round's `--review-web` leg
+  runs the research agent instead, so `web` may be above 0 and errored steps
+  of its two web tools are admitted); `denied` may
   list hook-BLOCKED calls — logged, not voiding (bullet below).
 - **Tool-allowlist instruction + `admission-refused`.**
   The agent's `tools:` list is NOT a model-visible restriction on agy
@@ -540,10 +583,12 @@ the shallow-tier fact for the round record.
   of a 900 s budget with 33 allowlisted reads over 23
   repo files: the leg read too widely for the vendor's internal turn budget.
   Never `unknown` (the repair analyzer escalated: no existing class fits).
-  Handling: re-dispatch the leg ONCE with a NARROWER read scope (tighten the
-  reviewed surface with `--diff-path` / `--tests-path`, fewer "cite each
-  site" demands, `--excerpt` the hot functions into the brief), then
-  terminally missing; consolidate the other legs regardless.
+  Handling on v2: `retry` re-dispatches the SAME frozen prompt and scope
+  once; a narrower read scope (tighter `--diff-path` / `--tests-path`, fewer
+  "cite each site" demands, `--excerpt` the hot functions into the brief) is
+  a changed basis — a NEW round (R-RETRY). LEGACY v1: re-dispatch ONCE (attempt K's files renamed first: `references/packet-lifecycle.md` § Round integrity) with
+  that narrower scope, then terminally missing. Consolidate the other legs
+  regardless; a missing entry keeps the round `INCOMPLETE`.
 - **PreToolUse hook + EFFECT-based admission + the hook LOAD CHECK
   (plan `docs/superpowers/plans/2026-09-16-cfr-delivery-and-enforcement-redesign.md`
   § Enforcement).** Containment is a MECHANICAL layer the round carries
@@ -698,14 +743,16 @@ the shallow-tier fact for the round record.
     EVERY other name — the permission-prompt tools, the waits, a tool agy
     ships tomorrow — is DENIED before it runs (blocked, non-voiding: an
     unknown tool that mutates must be blocked before it executes, not voided
-    after). An owner-authorized
-    review-web round (R-REVIEW-WEB, the shared transient
-    `review_web_authorized` condition) would keep these read-only controls
-    while omitting the review-only `read_url(*)` deny — NOT IMPLEMENTED on
-    this host (case C32): A's review dispatch activates no web. The load
+    after). A round binding `review_web_authorized` true (R-REVIEW-WEB —
+    every round under the owner's standing authorization) writes the hook in
+    its web mode (`agy_hook.py --log <file> --web`), which also allows
+    `read_url_content` / `search_web`; every other control stays. The
+    operator's user-level agy settings allow `read_url(*)` once at
+    installation (the `--setup-agents` hint names it). The load
     check counts only hook-shaped rows (`decision` allow|deny + `tool`) and
     attributes them by conversation id (the bullet above).
-  - **The prompt states the same rule** (the READ-GRANT block quoted below and
+  - **The prompt states the same rule** (v2: the vendored `google-read-grant`
+    clause; v1: the READ-GRANT block quoted below; and
     the agent body written by `--setup-agents`): any tool outside the
     allow set is BLOCKED before it runs (the agent body says "mutating
     and network" — true, narrower, disclosed: changing it
@@ -782,39 +829,34 @@ the shallow-tier fact for the round record.
   is still on disk when round N captures — a CENSUSED file the round-N
   dispatch then overwrites, which verify reports as "round evidence
   changed" on an unmutated tree. Therefore BEFORE round N's capture it is
-  preserve-and-cleared to `agy-read-audit-r<N-1>.json` (suffixed with the
-  round it BELONGED to). MECHANIZED:
+  preserve-and-cleared to `agy-read-audit-r<M>.json`, M = the latest captured
+  round (the one that produced it). MECHANIZED:
   `review_scratch.py prepare` and `capture` both perform this rename
-  automatically for an `r<N>` label (fail-loud on an unparseable label, a
-  round-1 leftover, or a rename-target collision); the manual
-  `mv "$PACKET_DIR/agy-read-audit.json" "$PACKET_DIR/agy-read-audit-r<N-1>.json"`
-  remains only for hand-built rounds. The literal path is then
+  automatically, whatever the label (fail-loud on a leftover with no captured
+  round to attribute it to, a rename-target collision with a different file, or
+  an output that is a symbolic link — in each case the round then goes to a new
+  packet dir, `open` with a new slug; a move stopped between its link and
+  its unlink is finished by the next `prepare` / `capture`); a hand-built
+  round runs `capture` too, so no round renames it by hand between rounds. The literal path is then
   ABSENT at capture; the file the round-N dispatch writes arrives
   post-capture and rides verify's `*-read-audit.json` leg-output
   allowlist, while the preserved copy is censused and frozen as
-  history. Additionally, immediately before EACH dispatch,
-  `rm -f "$PACKET_DIR/agy-read-audit.json"` — byte-match the SAME path this
-  bullet's OWN dispatch binds unconditionally (first sentence above), never a
-  bare `$AGY_READ_AUDIT_FILE` (a GATE-local name first assigned inside the
-  read-audit gate block, unset at DISPATCH time — a bare
-  `rm -f "$AGY_READ_AUDIT_FILE"` silently expands to `rm -f ""`, a no-op that
-  clears nothing) and never an
-  `${TRIAD_READ_AUDIT_FILE:-...}` fallback either (since the dispatch ALWAYS
-  binds the packet-relative path, not
-  conditionally, a fallback form risks clearing an unrelated LEFTOVER
-  `TRIAD_READ_AUDIT_FILE` some other ambient shell context left set, instead
-  of the path THIS dispatch is actually about to write — the plain literal
-  removes that ambiguity entirely). The wrapper's
-  own `preclear_read_audit_file` closes a stale-file-survives path INSIDE the
-  wrapper, but not a MISBOUND env (the dispatch names the wrong path, or the
-  caller's shell never exported the var the wrapper reads); this leader-side
-  `rm -f` — using the SAME plain literal all THREE sites share (this bullet's
-  dispatch binding, this clear, and the gate's own binding below) — closes
-  that remaining case so a misbound or otherwise unwritten dispatch still
-  yields ABSENT, never a stale prior round's file read as this round's
-  evidence. One shared literal, no env-var indirection anywhere, is what
-  makes that guarantee hold regardless of what an ambient shell happens to
-  have exported.
+  history. The leader never removes that file. A v1 re-dispatch of the leg
+  inside the round first renames attempt K's file to
+  `agy-r<N>-attempt<K>-read-audit.json` — the one hand move of the read-audit
+  file a v1 round makes, beside the same rename of attempt K's `.err` and
+  `-verdict.json`
+  (`references/packet-lifecycle.md` § Round integrity, the re-dispatch rename) —
+  so the literal path is ABSENT before every dispatch. A misbound dispatch (one
+  that names another path, or a shell that never exported the variable)
+  therefore leaves the path ABSENT, never an earlier attempt's or round's file
+  read as this one's evidence. One shared plain literal at all THREE sites
+  (this bullet's dispatch binding, the gate's own binding below, and the
+  renames that clear it) — never a bare `$AGY_READ_AUDIT_FILE` (a
+  GATE-local name, unset at dispatch time) and never a
+  `${TRIAD_READ_AUDIT_FILE:-...}` fallback (it could name a leftover some
+  other shell left set) — is what makes that guarantee hold regardless of what
+  an ambient shell happens to have exported.
 - **Structured verdict (`--pydantic verdict_schema:LegVerdict`).** Pass the
   same flag `triad-antigravity-dispatch` accepts for any `--pydantic` call:
   native `--json-schema` (`bin/verdict_schema.py`'s
@@ -830,7 +872,11 @@ the shallow-tier fact for the round record.
   NON-CASE on this path. Keep that guard text for the non-schema fallback (a
   leg dispatched WITHOUT `--pydantic`, per the stated fallback in
   `references/triage.md`).
-- **READ-GRANT block (mandatory, in the leg prompt; owner directive — same
+- **LEGACY v1 READ-GRANT block.** A v2 round's agy prompt carries the vendored
+  `google-read-grant` clause (`spec/prompts/leg-google.md`) instead, with
+  `<review-web-policy>` filled by the round's `review-web-permission` or
+  `review-no-web` clause; the block below is the v1 renderer's only.
+  (Mandatory in the v1 leg prompt; owner directive — same
   method as the codex leg; the entry file is the worktree `brief.md`, not an
   assembled packet — the CODE
   (`review_scratch.py` `_agy_read_grant`) is the SoT, this quote mirrors it —
@@ -936,11 +982,13 @@ the shallow-tier fact for the round record.
 - **Prompt body.** On a v2 round it is `<attempt>/prompt.txt` (rendered from
   the vendored clause bytes by `lib/prompts_v2.py`); on a legacy v1 round the
   rendered `agy-prompt-r<N>.txt`. Either way it carries the round worktree
-  path and its `brief.md` entry point, the READ-GRANT block, the severity
+  path and its `brief.md` entry point, a read grant (v2: the vendored
+  `google-read-grant` clause; v1: the READ-GRANT block above), the severity
   instruction, the verdict-selection rule and the binding line, and is passed
   with `--prompt-file <abs>`; a hand-built prompt owes the same blocks.
 - **Verdict weight.** Like every other entry: its `acceptance` label is DATA,
-  and a VERIFIED blocking finding from it blocks (SKILL rule 1). What is
+  and any verdict from it other than SAFE TO MERGE keeps the round
+  non-agreed (SKILL rule 1, R-AGREE). What is
   special about this route is the EVIDENCE bar below — an ungated answer is
   UNVERIFIED and counts as invalid, not as agreement.
 - **Cites.** Verify any surviving agy finding's file:line against the round
@@ -967,10 +1015,13 @@ the shallow-tier fact for the round record.
   (6-probe spike); the CLI's own bundled `agy-customizations` skill
   mis-describes both the rule-file names and their paths, so do not author a
   rule file from it.
-- **Folded verdict.** If a read-only verdict folds (`truncated-answer`, exit 65),
-  re-dispatch ONCE asking for a COMPACT chat-returnable verdict (verdict + top
-  findings with evidence, under the ~4KB fold), still `--sandbox read-only`. A
-  second fold logs the leg terminally missing → degraded mode (SKILL rule 1).
+- **Folded verdict.** If a read-only verdict folds (`truncated-answer`, exit 65):
+  on a v2 round `retry` re-dispatches the SAME frozen prompt once (asking for a
+  more compact verdict is a changed prompt — a NEW round, R-RETRY); a second
+  fold leaves the entry missing and the round `INCOMPLETE` (SKILL rule 1).
+  LEGACY v1: re-dispatch ONCE asking for a COMPACT chat-returnable verdict
+  (verdict + top findings with evidence, under the ~4KB fold), still
+  `--sandbox read-only`; a second fold logs the leg terminally missing.
   Widening the sandbox to let the leg write a long verdict forfeits rule 7's
   mechanical containment on the leg that ingests untrusted input, so it is out.
 
@@ -1077,16 +1128,16 @@ Then apply:
    hook load check attributes by. The run-log's
    `stdout` holds the raw NDJSON of the FINAL attempt only — an earlier
    attempt's raw stream is retained nowhere, so never plan to read it. If the
-   census does not settle it, re-dispatch with a narrower packet rather than
-   guessing. Only a failed match WITH `files_read_omitted == 0` is a confirmed
-   VOID: treat it as leg-not-run, re-dispatch ONCE with the containment block
-   above (on a v2 round a `retry` clears it when the read-blind attempt wrote
-   a readable census with its conversation ids; if that census is missing or
-   incomplete the hook check refuses and a NEW round is needed), and keep a
-   VOID leg out of the gate count. A leg still VOID after that
-   one re-dispatch is terminally missing this round (rule 13) — apply the same
-   degraded 2-family (claude+codex) + owner-decision mode as any other
-   terminal-failure leg (rule 1), with no second re-dispatch;
+   census does not settle it, do not guess: on v1 re-dispatch with a narrower
+   packet; on v2 a narrower packet is a NEW round. Only a failed match WITH
+   `files_read_omitted == 0` is a confirmed VOID: treat it as leg-not-run. On
+   a v2 round a `retry` (the same frozen prompt) clears it when the read-blind
+   attempt wrote a readable census with its conversation ids; if that census
+   is missing or incomplete the hook check refuses and a NEW round is needed.
+   On a LEGACY v1 round re-dispatch ONCE (attempt K's files renamed first: `references/packet-lifecycle.md` § Round integrity) with the containment block above. A
+   leg still VOID after that one re-dispatch is terminally missing this round
+   (rule 13): on v2 the entry is missing and the round is `INCOMPLETE`, never
+   agreed (SKILL rule 1); no second re-dispatch;
 2. surface `read_audit.digest.denied` / `read_audit.digest.writes` /
    `read_audit.digest.read_attempts` entries in the round notes — e.g. a write
    rerouted to agy's scratch dir shows up as a `writes` entry whose `TargetFile`
@@ -1117,7 +1168,8 @@ stays the SPEC the helper implements. What each outcome means:
 
 - **Digest path is DERIVED**, never accepted: the shared literal
   `$PACKET_DIR/agy-read-audit.json` — the same ONE literal the § agy leg
-  dispatch binding and the leader-side pre-clear use (anti-drift: no env-var
+  dispatch binding and the renames that clear it (`prepare` / `capture`, and the
+  v1 in-round re-dispatch rename) use (anti-drift: no env-var
   fallback anywhere, so an ambient
   `TRIAD_READ_AUDIT_FILE` some OTHER shell context left exported can never
   make the gate open a file nobody bound or cleared for THIS round). The
@@ -1156,7 +1208,7 @@ stays the SPEC the helper implements. What each outcome means:
   `TRIAD_READ_AUDIT_FILE` unset/misbound at dispatch time is empty in
   exactly the same way as a call that never completed. Check the dispatch
   env FIRST; only once it is sound, treat as VOID (leg-not-run). v1:
-  re-dispatch once. v2 (per-attempt audit): the attempt stays a SIBLING of
+  re-dispatch once (attempt K's files renamed first: `references/packet-lifecycle.md` § Round integrity). v2 (per-attempt audit): the attempt stays a SIBLING of
   every later attempt of the round (the hook load check reads a dispatched
   attempt with no audit as INCONCLUSIVE), so prepare a NEW round — unless the
   attempt never spawned agy (no `exec` line in its `stderr.log`): the hook
@@ -1175,9 +1227,9 @@ stays the SPEC the helper implements. What each outcome means:
   partial, and that is exactly the leg-not-proven state VOID already means.
   This cause is decided BEFORE any packet file is evaluated: `checked=0` and
   the summary line carries `refused_attempt=1`.
-  Either cause on v1: re-dispatch ONCE with the containment block; still
-  VOID after that re-dispatch is terminally missing this round (rule 13 →
-  rule 1 degraded 2-family + owner-decision mode, no second re-dispatch).
+  Either cause on v1: re-dispatch ONCE (attempt K's files renamed first: `references/packet-lifecycle.md` § Round integrity) with the containment block; still
+  VOID after that re-dispatch is terminally missing this round (rule 13, no
+  second re-dispatch).
   On v2: cause (a) is cleared by a `retry` when the read-blind attempt wrote
   a readable census with its conversation ids (if that census is missing or
   incomplete the hook check refuses and a NEW round is needed); cause (b)
@@ -1186,7 +1238,8 @@ stays the SPEC the helper implements. What each outcome means:
   causes, each named on stderr: an OVERSIZED audit (over the 64 MiB evidence
   cap, measured with `wc -c` BEFORE jq reads it), a CAPPED digest (`files_read_omitted > 0` —
   weigh `digest.attempts[]` per-attempt totals + `digest.read_attempts[]`,
-  and re-dispatch with a narrower packet if the census does not settle it;
+  and, if the census does not settle it, use a narrower packet — on v2 a
+  NEW round (a retry re-renders the frozen prompt), on v1 a re-dispatch;
   there is no fuller digest, and only the FINAL attempt's raw stream is
   retained anywhere), BROKEN evidence (jq could not produce a usable
   answer — read, parse, program, or runtime error: inspect the file
@@ -1276,10 +1329,13 @@ Two live claims govern whether a deployment can run this leg at all:
 - **Reads are open BY DESIGN on every build** — `read_file` is never denied,
   so the leg can read ANY file the user can read OUTSIDE `--cwd`
   (probe-CONFIRMED under `--sandbox read-only --cwd <packet dir>`). Network:
-  the v2 REVIEW agent (`triad-readonly-review`) carries NO web tool, so this
-  leg's own tools cannot ship data out; only the research agent (`--web`)
-  keeps `read_url_content` / `search_web`. A deployment that cannot accept
-  the read residual runs the leg inside an EXTERNAL fs-scoped OS sandbox.
+  the REVIEW agent (`triad-readonly-review`) carries NO web tool; a review
+  leg of a web round (`--review-web`) and an investigation (`--web`) run the
+  research agent, which keeps `read_url_content` / `search_web`, so on a web
+  round the leg's own tools can send queries and fetch pages (the shared
+  `review-web-permission` clause forbids sending the reviewed material, a
+  local path or a person's name). A deployment that cannot accept the read
+  residual runs the leg inside an EXTERNAL fs-scoped OS sandbox.
 - **Host hooks (owner-accepted residual):** a PreToolUse hook the
   operator installed in `~/.gemini/config/hooks.json` runs its command on every
   matching tool call in print mode, outside agy's permission model and outside
@@ -1303,7 +1359,12 @@ tier into an unsupported argument. It also takes no producer schema: the
 verdict shape is pinned by the prompt text, and `verdict_v2.py` admission is
 the only mechanical check.
 
-**Review preflight (C16) — three provider-free checks BEFORE any vendor
+**Auth-class gate (R-AUTH / C37) — every posture, before any vendor
+process:** `security.auth.selectedType` `gemini-api-key` / `vertex-ai` /
+`compute-default-credentials` is refused as `oauth-env` (65), remedy = the
+owner's browser re-login (no flag change, no retry).
+
+**Review preflight (C16) — provider-free checks BEFORE any vendor
 call**, on the `--sandbox read-only` review route only (an investigation or
 write dispatch keeps its single spawn). In order: the effective posture is
 computed FIRST, then (1) a VERSION FLOOR — `gemini >= 0.34.0`, the release
@@ -1311,14 +1372,13 @@ carrying the headless policy-allow fix (PR #20639); below it the `--policy`
 read-only rows do not take effect headlessly, so the posture would be a claim
 rather than a control; (2) a CAPABILITY probe — `--help` must advertise
 `--policy`, `--approval-mode` and `--output-format`, the three flags the
-read-only argv depends on; (3) an AUTH CLASS check — `security.auth.selectedType`
-read from the CLI's own settings chain; `gemini-api-key`, `vertex-ai` and
-`compute-default-credentials` are REFUSED (they move the dispatch onto a
-billed route), `oauth-personal` is the approved subscription login, and an
+read-only argv depends on. The AUTH CLASS gate above runs first, on every
+posture: `oauth-personal` is the approved subscription login, and an
 UNEXPOSED or unknown class is reported on stderr and allowed to run — a
 refusal list is a claim about billing, and guessing one would block a
-legitimately configured in-service host. Each refusal is a pre-spawn arg
-error naming the cause and what to change.
+legitimately configured in-service host. Each refusal is pre-spawn
+(`config-conflict` / `oauth-env`, 65), names the cause, and writes its audit
+row and run-log carrying the version observed before it.
 
 **NOT RUN live.** Every gemini statement here is a deterministic,
 provider-free implementation fact (t57 / t58) — not a measured runtime
@@ -1327,37 +1387,30 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
 
 ## codex leg
 
-- **Tier.** `--reasoning xhigh` is the default review tier (deep, one below the
-  family top). Escalate to `--reasoning max` — the deepest non-delegating tier —
-  only on a round the leader designates very-important AND algorithmically
-  complex; at max a LARGE packet has exhausted 900s with no verdict, so max also
-  demands the rule-7 large-packet timeout. `ultra` stays out: it self-delegates
-  subagents (runaway/over-long) and not every model variant supports it. If the
-  CLI rejects the chosen tier, fall back one step (`max` → `xhigh` → `high`) and
-  log.
-- **NO `--search` on a review dispatch BY DEFAULT (D-9), and that default is
-  the only posture this host implements.** The rendered codex review argv does
-  not carry `--search` and the wrapper's own default is off, so the wrapper
-  pins `web_search="disabled"` in config and no search tool is exposed to the
-  run. The reviewed content therefore never becomes web-search query context —
-  no web egress residual remains on review.
-  `--search` remains the codex INVESTIGATION path through
-  `triad-codex-dispatch`; its answer enters a round as leader-verified brief
-  material, never as a leg verdict.
-  **The shared rule is conditional (R-REVIEW-WEB, spec `main`):** on the
-  owner's DIRECT request for one named round, web is enabled for EVERY
-  participating leg through the transient `review_web_authorized` condition and
-  the short shared `review-web-permission` clause; the operation stays a REVIEW
-  with its normal verdict, read-only containment and entry accounting, changing
-  the authorization changes the basis (R-REREVIEW), and a route that cannot
-  support the condition is a PREFLIGHT REFUSAL. Merely omitting `--search`
-  would leave codex's CACHED default available, so an authorized round must
-  select the posture explicitly rather than by omission.
-  **NOT IMPLEMENTED HERE (case C32).** The vendored payload is pinned at spec
-  `140dda4`, before the amendment — no `review-web-permission` clause, no
-  `<review-web-policy>` placeholder, no `review_web_authorized`. An owner
-  request for review web cannot be honoured on this host today; say so instead
-  of running a silent no-web round.
+- **Tier.** On a v2 round the tier is the entry's `codex.reasoning` (the
+  shipped default: ONE codex entry, the model the shipped default names, at
+  `high`, roster data);
+  the hand-built v1 example below keeps `xhigh`. A deeper tier (`xhigh`, or
+  `max` — the deepest non-delegating tier) for a round the leader designates
+  very-important AND algorithmically complex is a roster change, so a new
+  basis; at max a LARGE packet has exhausted 900s with no verdict, which the
+  roster's `timeout_s` 3600 on every entry (rule 7) covers. `ultra` stays out: it self-delegates
+  subagents (runaway/over-long) and not every model variant supports it. A tier the
+  CLI rejects ends the attempt as a failed-to-run record; the user changes the
+  entry's value — the host never steps down to another tier (R-MODEL).
+- **Review web = `--search`, bound per round (R-REVIEW-WEB).** The rendered
+  v2 codex argv carries `--search` exactly when the round binds
+  `review_web_authorized` true — every round under the owner's standing
+  authorization; only the owner revokes it, for rounds prepared after the
+  revocation. Without `--search` the wrapper pins `web_search="disabled"` in
+  config, so no search tool is exposed (omission alone would leave codex's
+  cached default available). The read-only sandbox, `approval_policy=never`
+  and `--ignore-rules` stay either way, and the operation stays a REVIEW with
+  its normal verdict, containment and entry accounting; every prompt carries
+  the shared `review-web-permission` (or `review-no-web`) clause. `--search`
+  through `triad-codex-dispatch` is also the codex INVESTIGATION path
+  (R-INVEST); its answer enters a round as leader-verified brief material,
+  never as a leg verdict.
 - **`--ignore-rules` rides every codex dispatch (read-only and write
   posture).** Tier 1 (`openai/codex` `codex-rs/exec/src/cli.rs`, global exec
   flag): "Do not load user or project execpolicy `.rules` files"; the rules
@@ -1366,7 +1419,7 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   commit`, `gh …`, even `rm -rf _runs` — so without the flag `--sandbox
   read-only` would be one operator rule away from a real write. `codex_wrapper.py` appends
   `--ignore-rules` itself on every posture — the raw default, this leg, and
-  `--task code` (a wrapper dispatch pins `approval_policy=never` and never
+  `--sandbox workspace-write` (a wrapper dispatch pins `approval_policy=never` and never
   wants an escalation outside the sandbox on the write posture either; inside
   workspace-write the same commands still run when the sandbox permits them).
   Nothing to add at the call site; `tests/unit/wrappers/t24-codex-search.sh`
@@ -1391,7 +1444,8 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   sandbox mechanically confines what the leg can READ — so the trailer's
   outside-repo prohibition below is a directive the integrity gate cannot
   verify, the same residual class § agy standing residuals discloses for the
-  agy leg. The outbound half is closed on review: no `--search` (D-9 above).
+  agy leg. The outbound half follows the round's web condition (`--search`
+  above).
   READ-GRANT trailer (verbatim; it REPLACES the old blanket no-exec
   line for THIS leg only): "You MAY read files under the working
   directory with read-only commands (cat, sed -n, rg, ls, git diff,
@@ -1404,10 +1458,9 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   do NOT change external state, do NOT run tests, scripts, builds, or
   the code under review, and do NOT invoke vendor CLIs; network only
   through your search tool." Fast-SAFE heuristic RESCOPED with this
-  contract: a fast terse SAFE is a re-dispatch signal when the leg HAD
-  code access and substantive questions; a narrow text-only re-confirm
-  may legitimately return fast — criteria-enumeration quality stays the
-  primary rubber-stamp check (rule 11). Mechanically: `prepare` renders this
+  contract: a fast terse SAFE is a signal worth recording when the leg HAD
+  code access and substantive questions — on a v2 round it is still a valid
+  result, never re-dispatched (R-RETRY, SKILL rule 11). Mechanically: `prepare` renders this
   entry's entire body — `<attempt>/prompt.txt` on a v2 round,
   `codex-body-r<N>.txt` on a legacy v1 one — POINTING AT the round worktree
   plus the READ-GRANT trailer, severity instruction, verdict-selection rule
@@ -1416,7 +1469,7 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
 
   ```bash
   # body rendered by `review_scratch.py prepare` (it names the worktree);
-  # --timeout 900 fits a focused diff, LARGE diff → 1500 (rule 7).
+  # --timeout 3600 = the roster value for every leg (rule 7).
   # PATHS (C28): a RELATIVE --prompt-file / --cwd
   # is not refused — the wrapper resolves it MECHANICALLY against its
   # own process-entry cwd (never the child --cwd), runs every pre-existing
@@ -1428,14 +1481,14 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   # § Pitfalls 5 names the session-cwd hazard the rule mitigates.
   codex_wrapper.py --sandbox read-only \
     --cwd "$PACKET_DIR/wt-r<N>" \
-    --reasoning xhigh --timeout 900 \
+    --reasoning xhigh --timeout 3600 \
     --pydantic verdict_schema:LegVerdict \
     --prompt-file "$PACKET_DIR/codex-body-r<N>.txt"
   # --cwd = the repo the READ-GRANT trailer opens for verification reads
   # (the READ-GRANT contract above); writes stay sandbox-blocked.
   # (--reasoning max only on a designated escalation round)
   # (the wrapper itself appends --ignore-rules on every posture)
-  # (NO --search: the D-9 default; this host activates no review web — the bullet above)
+  # (v1 hand-built shape: no --search; a v2 round adds it from its bound web condition)
   # (v2 replaces --pydantic with --output-schema-file <attempt>/schema.projected.json
   #  and adds --attempt <K> — § v2 dispatch shapes)
   ```
@@ -1486,7 +1539,14 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
 
 ## claude fresh-eye leg
 
-- **Identity.** `subagent_type: triad-dispatch:cross-family-review-reviewer` — the dedicated
+- **Identity (v2).** The leader spawns EXACTLY the printed `subagent_type`
+  (§ v2 dispatch shapes). Under a true web condition — every v2 round under
+  the owner's standing authorization — that is the named preset's `-web` twin
+  (`cross-family-review-reviewer-web`, `-high-web`, `-max-web`, `-older-web`; frontmatter
+  `tools: Read, Grep, Glob, WebSearch, WebFetch`, the preset's model and
+  effort); under a false condition it is the base preset itself.
+- **Identity (LEGACY v1, and the base preset of a false-condition v2
+  round).** `subagent_type: triad-dispatch:cross-family-review-reviewer` — the dedicated
   read-only reviewer agent (`agents/cross-family-review-reviewer.md`,
   frontmatter `tools: Read, Grep, Glob`), so rule 7's no-execute contract rides
   the agent's tool allowlist rather than the prompt directive alone. The `Agent`
@@ -1496,20 +1556,23 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   plugin rewrites this to the plugin-scoped
   `subagent_type: triad-dispatch:cross-family-review-reviewer`, so a consumer's
   same-named project agent cannot shadow the read-only plugin reviewer.)
-- **Tier.** That agent's frontmatter pins `model: claude-opus-5-5` + `effort: xhigh`. Leave
+- **Tier.** On v2 the tier is that of the preset the entry's `claude.agent`
+  names; its `-web` twin carries the same model and effort. The base preset's
+  frontmatter pins the current model (its `model:` line) and `effort: xhigh`. Leave
   the model out of session inheritance: an unpinned agent inherits the leader's
   SESSION model and can silently run a heavier tier such as fable, which is out
   of the review rotation. Escalation for a very-important AND algorithmically
   complex round = `subagent_type: triad-dispatch:cross-family-review-reviewer-max` (identical
-  body, `effort: max`). Effort is frontmatter-fixed with no per-invocation
+  body, `effort: max`; on v2 the entry's `claude.agent` names it and a true web
+  condition spawns `-max-web`). Effort is frontmatter-fixed with no per-invocation
   override, so the sibling definition IS the escalation mechanism. A THIRD
   sibling, `cross-family-review-reviewer-high` (identical body, `effort:
   high`), is the second claude arm (evidence:
   `docs/reviews/2026-09-06-claude-effort-high-vs-xhigh-campaign.md`). On a v2
-  round it is an ORDINARY roster entry — `x-claude-high`, whose nested
+  round the `-high` sibling is an ORDINARY roster entry — `x-claude-high`, whose nested
   `claude.agent` block names this `-high` sibling, carried by the project
   override `.claude/triad-review-legs.json`; its `acceptance` is DATA
-  and a verified blocking finding from it blocks like any entry's (SKILL
+  and any verdict from it other than SAFE TO MERGE keeps the round non-agreed like any entry's (SKILL
   rule 1), and `--x-leg` is refused on `--v2`. On a legacy v1 round it is
   dispatched as a fourth leg — the RECOMMENDED default entry of the
   fourth-leg config file (`{"name": "x-claude-high",
@@ -1520,13 +1583,24 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   wanted must be typed) — never as the standing claude leg. Both claude arms
   read the same packet bytes and the same family template; only the binding
   `review_id` differs (§ Fourth leg), so a verdict difference is an EFFORT
-  difference, never a framing one.
-- **Prompt.** Add the explicit max-thinking directive at every tier ("Think as
-  hard as you can / ultrathink before answering") — the depth levers are
-  frontmatter effort and the PROMPT (rule 10). Without the directive the claude
-  leg under-reasons and rubber-stamps. Frame it adversarially and forbid
-  severity-deflation per rule 10.
-- **Output contract (structured verdict, no wrapper).** This leg has no
+  difference, never a framing one. A FOURTH sibling,
+  `cross-family-review-reviewer-older` (identical body, the older supported
+  model its `model:` line pins, `effort: xhigh`; twin `-older-web`), is the
+  shipped older-model preset a roster entry selects by naming it (C12). These
+  four and their `-web` twins are the CLOSED list a v2 entry may name;
+  `prepare` binds the spawned file's sha256 (with the model and effort it
+  pins), and `collect` / `retry` refuse a changed or missing file — a new
+  round (C19).
+- **Prompt.** On a v2 round the leg receives the printed `prompt.txt`
+  unchanged — the vendored shared clauses (evidence-centred independent
+  review, no severity deflation or inflation, the verdict-selection rule); the
+  leader adds no persona, intensity request or predicted-defect list (SKILL
+  rules 10-11, R-PROMPT). Its depth lever is the preset's frontmatter effort.
+  The LEGACY v1 claude prompt (`_render_claude_prompt`) keeps its own text.
+- **Output contract (structured verdict, no wrapper) — LEGACY v1.** On a v2
+  round the printed `prompt.txt` already carries the v2 verdict shape (the
+  vendored `claude-verdict-shape` clause) and the leader appends nothing (SKILL
+  rule 10). On v1 this leg has no
   `--pydantic` plumbing to enforce a schema, so the LEADER'S dispatch prompt
   carries the contract instead: append the `LegVerdict` shape
   (`bin/verdict_schema.py` — the REQUIRED binding fields
@@ -1540,8 +1614,9 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   mirroring how the wrapper-repair analyzers carry a static
   `output_schema (JSON, inline)` contract in their own agent body. The
   prompt also carries this leg's binding values (review_id, family,
-  content_digest) to echo verbatim. The leader
-  validates the reply with the BOUND admission — `lib/validate_verdict.py
+  content_digest) to echo verbatim. **LEGACY v1 (a v2 round admits through
+  the printed `verdict_v2.py --admit` line instead — SKILL Flow 3, rule 4).**
+  The leader validates the reply with the BOUND admission — `lib/validate_verdict.py
   <reply-as-a-file> --expected-review-id <id> --expected-family claude
   --expected-packet <abs-packet-path>` (§ Verdict binding obligation 2;
   a flagless call is shape-only and is NOT an admission) — before
@@ -1555,15 +1630,17 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   TOOL-normalized canonical object (success only; never overwrites —
   byte-identical re-run = idempotent rc 0, different content refused) that
   the consolidation jq loop reads. A reply that fails
-  to validate is the INVALID-leg chain STATED in `references/triage.md`
-  § Verdict release (its definitional home): **one TARGETED re-ask that
+  to validate is the v1 INVALID-leg chain STATED in `references/triage.md`
+  § A non-SAFE verdict at the merge gate (its definitional home): **one TARGETED re-ask that
   NAMES the defect and quotes the no-change clause — never a verbatim
   "re-emit unchanged" request (it anchors the model to its own defective
   output; measured) — then terminal INVALID.** A
   leader-completed, leader-repaired, or leader-reconstructed reply is
   NEVER admissible.
-- **Rendered prompt + reply transcription.** `prepare` renders this leg's
-  full prompt as `claude-prompt-r<N>.txt` — adversarial preamble, packet
+- **Rendered prompt + reply transcription.** On a LEGACY v1 round `prepare`
+  renders this leg's full prompt as `claude-prompt-r<N>.txt` (on v2 it is
+  `<attempt>/prompt.txt` from the vendored clauses, no adversarial preamble) —
+  adversarial preamble, packet
   path, severity instruction, verdict-selection rule, binding line, and
   the inline LegVerdict contract above — so the leader dispatches the
   `Agent` with that content (it is small: paste it, or have the agent
@@ -1772,8 +1849,8 @@ never delays the round.
   `low|medium|high|xhigh|max` (default `xhigh`); for the claude vendor the
   MODEL field is an AGENT TYPE and effort is not accepted — effort is
   frontmatter-fixed on the agent, so a different tier IS a different agent id
-  (the shipped reviewer tiers: `cross-family-review-reviewer` xhigh, `-max`,
-  `-high` — § claude fresh-eye leg).
+  (the shipped reviewer presets: `cross-family-review-reviewer` xhigh, `-max`,
+  `-high`, `-older` — § claude fresh-eye leg, SKILL rule 15).
   A claude agent id may carry a plugin scope, so for that vendor EVERY field
   after the vendor rejoins as one id (`x-c:claude:<plugin>:<agent>`); for the
   other vendors a fifth field is a loud "too many fields" refusal. Because
@@ -1792,7 +1869,7 @@ never delays the round.
 - **Dispatch shapes** (printed in full by `prepare`, values elided here):
   - agy — `env TRIAD_READ_AUDIT_FILE=<dir>/<name>-r<N>-read-audit.json
     python3 <…>/antigravity_wrapper.py --sandbox read-only --cwd <worktree>
-    [--model …] [--effort …] --timeout 1500 --pydantic
+    [--model …] [--effort …] --timeout 3600 --pydantic
     verdict_schema:LegVerdict --prompt-file <input> > <verdict> 2> <err>`;
     gate it with `lib/read_audit_gate.sh --audit-file <its own read audit>
     <packet-dir> <packet-dir>/wt-r<N>/brief.md <packet-dir>/wt-r<N>/diff.prod.patch`.
@@ -1801,7 +1878,7 @@ never delays the round.
     flag; `prepare` prints a NOTE when one was recorded).
   - codex — `python3 <…>/codex_wrapper.py --sandbox read-only --cwd
     <worktree> [--model …] --reasoning <effort or xhigh> --timeout
-    1500 --pydantic verdict_schema:LegVerdict --prompt-file <body> > <verdict>
+    3600 --pydantic verdict_schema:LegVerdict --prompt-file <body> > <verdict>
     2> <err>`.
   - claude — no wrapper: spawn `Agent` with the agent id above (the model
     field, else the layout-derived default) on the rendered prompt, save the final

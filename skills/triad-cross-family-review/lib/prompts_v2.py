@@ -20,7 +20,35 @@ under one header, a header with no block, a duplicate clause name, an unknown
 ``order`` reference, a non-blank ``## order`` line that is not an order item,
 non-blank prose outside a clause's fenced block) is a hard error naming
 ``file:line`` -- a partially rendered prompt would silently weaken a review
-leg's contract.
+leg's contract. One exception: in a clause LIBRARY (``common-clauses.md``,
+``investigation.md``) prose AFTER a clause's fenced body is the spec's
+renderer note (the note after ``review-no-web`` says how to fill
+``<review-web-policy>``); it is never leg text, so it is skipped.
+
+Review stage (R-PROMPT, case C60)
+---------------------------------
+``RenderCtx.review_kind`` is the resolved stage of the round
+(``contracts/review-kind.schema.json``): ``formal-plan`` selects the shared
+``plan-purpose`` clause, ``pre-merge`` and ``implementation-review`` select
+``code-purpose``. The leg files' ``common:<review-purpose>`` order item is
+replaced by exactly that one clause, the manifest names the selected clause,
+and ``<review-kind>`` is filled with the stage. Omission resolves to
+``DEFAULT_REVIEW_KIND`` at an INVOCATION boundary only (this module's CLI,
+``review_scratch.py prepare --v2``); the library refuses a ``None``, empty or
+unknown stage instead of defaulting it.
+
+Review web (R-REVIEW-WEB, case C32)
+-----------------------------------
+``RenderCtx.review_web_authorized`` is the round's BOUND strict boolean and
+``RenderCtx.review_date`` its bound UTC date (``YYYY-MM-DD``). Every
+``<review-web-policy>`` is filled with the fenced ``review-web-permission``
+clause for true and the fenced ``review-no-web`` clause for false -- the text
+is taken from ``common-clauses.md``, never from a code constant -- and the
+selected clause joins the manifest right after the clause that carries the
+placeholder, so a re-vendored policy text is a changed basis. ``<review-date>``
+is filled with the bound date. A ``None`` or non-boolean condition and a date
+that is not ``YYYY-MM-DD`` are refused, never defaulted. The investigation
+``web-evidence`` clause (R-INVEST) is never part of a review render.
 
 Line discipline
 ---------------
@@ -29,9 +57,11 @@ also breaks on CR, U+2028, U+2029, U+0085 and the C0 separators, which would
 silently REWRITE a clause body and break byte identity with the vendored file;
 any of those characters in a spec file is therefore a hard error naming it.
 
-A-only clauses
---------------
-A clause (or an ``## order`` item) is host-A-only when its parenthetical note
+A-only and B-only clauses
+-------------------------
+A clause (or an ``## order`` item) whose note says ``B-only`` renders on host B
+only, so this host skips it. A clause (or an ``## order`` item) is host-A-only
+when its parenthetical note
 carries one of the EXPLICIT marker phrases in ``A_ONLY_MARKERS`` -- ``A-only``,
 ``(A)``, ``A raw-reply admission only``, ``A live-hook route only``,
 ``A active-hook route only``, ``Host-A only``, ``host A only``. Prose that
@@ -49,9 +79,10 @@ dimension.
 
 Angle tokens
 ------------
-Nine placeholders are SUBSTITUTED: ``<worktree>``, ``<brief-file>``,
+Twelve placeholders are SUBSTITUTED: ``<worktree>``, ``<brief-file>``,
 ``<packet-files>``, ``<gated-patch-file>``, ``<review-id>``,
-``<content-digest>``, ``<leg-name>``, ``<attempt>``, ``<google-route>``.
+``<content-digest>``, ``<leg-name>``, ``<attempt>``, ``<google-route>``,
+``<review-kind>``, ``<review-date>``, ``<review-web-policy>``.
 Four further angle tokens are LITERAL clause text, not placeholders, and are
 allowed to survive: ``<END-VERDICT>`` (the end marker the claude leg must emit
 for raw-reply admission) and ``<echo>`` / ``<non-empty>`` / ``<repo-relative>``,
@@ -68,6 +99,7 @@ from somewhere other than the vendored directory.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -107,6 +139,25 @@ GEMINI_TOOL_SUBSTITUTIONS = (
 )
 INVESTIGATION_ROUTES = ("agy", "gemini")
 
+# R-PROMPT (case C60): review stage -> the ONE shared purpose clause it selects.
+# The keys are the vocabulary of the vendored `contracts/review-kind.schema.json`
+# and DEFAULT_REVIEW_KIND is that schema's annotated default.
+REVIEW_PURPOSE = {
+    "formal-plan": "plan-purpose",
+    "pre-merge": "code-purpose",
+    "implementation-review": "code-purpose",
+}
+DEFAULT_REVIEW_KIND = "pre-merge"
+PURPOSE_REF = "common:<review-purpose>"
+# R-REVIEW-WEB (case C32): the bound condition -> the ONE shared clause that
+# fills `<review-web-policy>`. The clause TEXT lives in the vendored fence.
+REVIEW_WEB_POLICY = {True: "review-web-permission", False: "review-no-web"}
+WEB_POLICY_PLACEHOLDER = "<review-web-policy>"
+# The bound round date (R-PROMPT): a UTC calendar date YYYY-MM-DD in ASCII
+# digits (`\d` also matches other scripts' digits). `_valid_date` is the ONE
+# validator; `collect_v2` reads a bound date with it too.
+_REVIEW_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
 LITERAL_ANGLE_TOKENS = frozenset(
     {"<END-VERDICT>", "<echo>", "<non-empty>", "<repo-relative>"}
 )
@@ -127,10 +178,14 @@ A_ONLY_MARKERS = (
     "Host-A only",
     "host A only",
 )
+# The other host's marker: its clauses are skipped here (prompts/README.md
+# § Clause-file format).
+B_ONLY_MARKER = "B-only"
 _ANGLE_RE = re.compile(r"<[A-Za-z][A-Za-z0-9_-]*>")
 _PLACEHOLDER_RE = re.compile(
     r"<(worktree|brief-file|packet-files|gated-patch-file|review-id"
-    r"|content-digest|leg-name|attempt|google-route)>"
+    r"|content-digest|leg-name|attempt|google-route|review-kind"
+    r"|review-date|review-web-policy)>"
 )
 # Characters `str.splitlines()` treats as line breaks but `split("\n")` does
 # not: any of them inside a vendored clause file would make the parsed body
@@ -155,6 +210,11 @@ def _is_a_only(note: str) -> bool:
     return any(marker in note for marker in A_ONLY_MARKERS)
 
 
+def _is_b_only(note: str) -> bool:
+    """True when a header note / order parenthetical marks a host-B-only clause."""
+    return B_ONLY_MARKER in note
+
+
 class PromptSpecError(Exception):
     """A vendored clause file is malformed, or a render is unresolvable."""
 
@@ -177,6 +237,7 @@ class Clause:
 class OrderItem:
     ref: str
     a_only: bool
+    b_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -206,6 +267,13 @@ class RenderCtx:
     packet_files: tuple[str, ...] = field(
         default=("brief.md", "diff.prod.patch", "diff.tests.patch", "history.txt")
     )
+    # No default stage here: omission is resolved at an invocation boundary,
+    # and a None / unknown stage is refused by the render (R-PROMPT).
+    review_kind: str | None = None
+    # The round's BOUND review-web condition and date (R-REVIEW-WEB,
+    # R-PROMPT; case C32). No default either: the render refuses None.
+    review_web_authorized: bool | None = None
+    review_date: str | None = None
 
     def substitutions(self, family: str) -> dict[str, str]:
         route = self.google_route if family == "google" else None
@@ -219,6 +287,8 @@ class RenderCtx:
             "<leg-name>": self.leg_name,
             "<attempt>": str(self.attempt),
             "<google-route>": route if route else "null",
+            "<review-kind>": str(self.review_kind),
+            "<review-date>": str(self.review_date),
         }
 
 
@@ -382,6 +452,7 @@ def _parse_file(
                     OrderItem(
                         ref=item.group(2),
                         a_only=_is_a_only(item.group(3) or ""),
+                        b_only=_is_b_only(item.group(3) or ""),
                     )
                 )
                 continue
@@ -394,6 +465,10 @@ def _parse_file(
             continue
 
         if cur is not None and line.strip():
+            if not order_list and body is not None:
+                # A LIBRARY clause's renderer note after its fenced body
+                # (after `review-no-web`): documentation, never leg text.
+                continue
             raise PromptSpecError(
                 f"{filename}:{lineno}: non-blank text outside a fenced block "
                 f"under clause '{cur[0]}': {line.strip()[:60]!r} (only the fenced "
@@ -484,23 +559,46 @@ def render_with_manifest(
             f"got {ctx.google_route!r}"
         )
 
+    if ctx.review_kind not in REVIEW_PURPOSE:
+        raise PromptSpecError(
+            f"review_kind {ctx.review_kind!r} is not a review stage "
+            f"(expected one of {list(REVIEW_PURPOSE)}); a null or unknown "
+            f"stage is refused, never defaulted"
+        )
+    if type(ctx.review_web_authorized) is not bool:
+        raise PromptSpecError(
+            f"review_web_authorized {ctx.review_web_authorized!r} is not a "
+            f"strict boolean; the round's bound condition is refused, never "
+            f"defaulted (R-REVIEW-WEB)")
+    if not _valid_date(ctx.review_date):
+        raise PromptSpecError(
+            f"review_date {ctx.review_date!r} is not a UTC date YYYY-MM-DD; "
+            f"the round's bound date is refused, never defaulted (R-PROMPT)")
     filename = LEG_FILES[family]
     own, order = _parse_file(filename)
     common = load_clauses(COMMON_FILE)
     if not order:
         raise PromptSpecError(f"{filename}: '## order' list is empty")
+    policy_ref = "common:" + REVIEW_WEB_POLICY[ctx.review_web_authorized]
+    policy = _resolve(policy_ref, own, common, filename)
 
     axis = A_ONLY_AXIS[family]
     subs = ctx.substitutions(family)
+    subs[WEB_POLICY_PLACEHOLDER] = policy.body
     bodies: list[str] = []
     manifest: list[tuple[str, str]] = []
 
     for item in order:
-        clause = _resolve(item.ref, own, common, filename)
+        ref = item.ref
+        if ref == PURPOSE_REF:
+            ref = "common:" + REVIEW_PURPOSE[ctx.review_kind]
+        clause = _resolve(ref, own, common, filename)
+        if item.b_only or _is_b_only(clause.header_note):
+            continue
         if item.a_only or clause.a_only:
             if axis is None:
                 raise PromptSpecError(
-                    f"{filename}: clause '{item.ref}' is marked A-only, but the "
+                    f"{filename}: clause '{ref}' is marked A-only, but the "
                     f"{family} leg has no A-only axis — either the marker or the "
                     f"axis table is wrong (a silent drop is not an option)"
                 )
@@ -520,14 +618,29 @@ def render_with_manifest(
         if leftover:
             raise PromptSpecError(
                 f"{filename}: unresolved placeholder(s) in the {family} clause "
-                f"'{item.ref}': {', '.join(leftover)}"
+                f"'{ref}': {', '.join(leftover)}"
             )
         # ONE pass: `re.sub` never re-scans what it inserted, so a value that
         # itself spells a placeholder is carried through verbatim.
         bodies.append(_PLACEHOLDER_RE.sub(lambda m: subs[m.group(0)], clause.body))
-        manifest.append((item.ref, clause.sha256()))
+        manifest.append((ref, clause.sha256()))
+        if WEB_POLICY_PLACEHOLDER in clause.body:
+            manifest.append((policy_ref, policy.sha256()))
 
     return "\n\n".join(bodies), manifest
+
+
+def _valid_date(value) -> bool:
+    """True for a bound round date: a string, `YYYY-MM-DD` in ASCII digits,
+    and a real calendar day. The ONE strict validator — the renderer and
+    `collect_v2._bound_metadata` both ask it (A2)."""
+    if not (isinstance(value, str) and _REVIEW_DATE_RE.fullmatch(value)):
+        return False
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def render_with_provenance(
@@ -604,6 +717,24 @@ def _build_parser() -> argparse.ArgumentParser:
     render_cmd.add_argument("--leg-name", required=True)
     render_cmd.add_argument("--attempt", required=True)
     render_cmd.add_argument("--google-route", choices=list(INVESTIGATION_ROUTES))
+    render_cmd.add_argument(
+        "--review-kind",
+        choices=list(REVIEW_PURPOSE),
+        default=DEFAULT_REVIEW_KIND,
+        help=f"review stage (R-PROMPT); omitted = {DEFAULT_REVIEW_KIND}",
+    )
+    render_cmd.add_argument(
+        "--review-web-authorized",
+        choices=["true", "false"],
+        required=True,
+        help="the round's bound review-web condition (R-REVIEW-WEB): true "
+        "renders the review-web-permission clause, false review-no-web",
+    )
+    render_cmd.add_argument(
+        "--review-date",
+        required=True,
+        help="the round's bound UTC date YYYY-MM-DD (fills <review-date>)",
+    )
     render_cmd.add_argument("--brief-file", default="brief.md")
     render_cmd.add_argument("--gated-patch-file", default="diff.prod.patch")
     render_cmd.add_argument(
@@ -740,6 +871,9 @@ def main(argv: list[str] | None = None) -> int:
             packet_files=tuple(args.packet_files)
             if args.packet_files
             else RenderCtx.__dataclass_fields__["packet_files"].default,
+            review_kind=args.review_kind,
+            review_web_authorized=args.review_web_authorized == "true",
+            review_date=args.review_date,
         )
         controls = HostControls(
             hook_active=not args.no_hook,
@@ -756,6 +890,9 @@ def main(argv: list[str] | None = None) -> int:
                             "hook_active": controls.hook_active,
                             "raw_admission": controls.raw_admission,
                         },
+                        "review_kind": args.review_kind,
+                        "review_web_authorized": ctx.review_web_authorized,
+                        "review_date": ctx.review_date,
                         "spec_dir": str(used_spec_dir),
                         "seam_active": seam,
                         "clauses": [

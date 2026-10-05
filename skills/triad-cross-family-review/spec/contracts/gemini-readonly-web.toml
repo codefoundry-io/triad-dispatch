@@ -1,0 +1,67 @@
+# Gemini CLI Policy Engine — per-call READ-ONLY policy for host A's gemini REVIEW leg when the bound
+# review_web_authorized condition is true (reference/review-rules.md#R-REVIEW-WEB, owner D-REVIEW-LEGS-20261003).
+# SHARED CONTRACT. A host vendors this FILE byte-for-byte at the revision it adopts (README § How a host uses a
+# revision, step 2). It is a COMPLETE profile, never an overlay: it is host A's no-web profile
+# (contracts/gemini-readonly.toml) with ONLY google_web_search and web_fetch moved from deny (200) to allow (100);
+# every other rule is unchanged. Attached via `--policy <this file>` instead of the no-web profile; `--policy`
+# replaces only the USER tier, so system/admin denies still outrank these rows. Explicit allow rows are required
+# because the built-in default tier denies web_fetch in headless runs. Runtime effect: NOT RUN
+# (contracts/review-web.verify.toml, owner briefing route R-GOOGLE).
+
+# --- allow read tools ---
+[[rule]]
+toolName = "read_file"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "read_many_files"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "glob"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "search_file_content"
+decision = "allow"
+priority = 100
+
+[[rule]]
+toolName = "list_directory"
+decision = "allow"
+priority = 100
+
+# --- deny mutation + shell tools (higher priority) ---
+[[rule]]
+toolName = "write_file"
+decision = "deny"
+priority = 200
+
+[[rule]]
+toolName = "replace"
+decision = "deny"
+priority = 200
+
+[[rule]]
+toolName = "run_shell_command"
+decision = "deny"
+priority = 200
+
+# --- defense-in-depth: deny MCP-server tools (read-only must not depend on
+# headless ask_user->deny defaults for unlisted tools). Wildcard is DOCUMENTED:
+# policy-engine reference — "mcp_*: Matches any tool from any MCP server"
+# (geminicli.com/docs/reference/policy-engine, verified 2026-07-05). ---
+[[rule]]
+toolName = "mcp_*"
+decision = "deny"
+priority = 200
+
+# --- R-REVIEW-WEB (true condition): the two web tools are allowed for this review call. Web evidence follows the
+# round's review-web-permission clause; every mutation, shell and MCP deny above stays. ---
+[[rule]]
+toolName = ["google_web_search", "web_fetch"]
+decision = "allow"
+priority = 100

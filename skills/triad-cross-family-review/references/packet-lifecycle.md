@@ -11,7 +11,7 @@ deciding whether an edit made mid-round invalidates it.
 | Where packet files live | choosing a path for a brief / diff / context file a vendor leg has to read |
 | Packet dir lifecycle | opening, refreshing, or closing a packet dir — `review_scratch.py` and its ownership fences |
 | Per-entry results tree (v2) | finding an entry's attempt artifacts, or asking whether a file is censused |
-| Packet dir lifecycle → Removing a stray checkout | `open` / `prepare` / `close` refused (or the prune skipped) over an entry it could not name as its own round tree — the ONE supported manual intervention |
+| Packet dir lifecycle → Going on in a new packet dir | `open` / `prepare` / `verify` / `close` refused (or the prune skipped) over an entry it could not name as its own round tree, or a second round tree — the ONE supported manual intervention |
 | Large diff — shrink the reviewed surface | the diff is big or the review spans several documents |
 | Packet order and fencing | assembling the packet itself — block order, the data fence, containment placement |
 | Deterministic round preparation — prepare | building a round's packet + leg bodies (the normal path — one command) |
@@ -29,9 +29,11 @@ uniform.
 
 Every review-context file goes inside a helper-managed packet dir under the
 gitignored `_runs/review/` — never a bare `_shared/<name>.md`, never `/tmp` — so
-every READING leg can `Read` it; the codex leg reads the same files through its read-only shell (rule 9). The claude `Agent` leg is not
-workspace-sandboxed and could read `/tmp`; the vendor legs cannot, so the
-convention holds for all of them.
+every READING leg can `Read` it; the codex leg reads the same files through its read-only shell (rule 9). This is a
+DELIVERY convention, not a read boundary: the claude `Agent` leg, the codex leg and current
+agy builds can read outside the repository (including `/tmp`), and only the
+gemini route is workspace-sandboxed; the read limits that exist are the ones
+`references/leg-contracts.md` states per leg.
 
 ## Packet dir lifecycle
 
@@ -43,8 +45,8 @@ exported installs.
 - `python3 <skill>/lib/review_scratch.py open <abs-root> <slug>` at review start
   — creates `<root>/<UTC-date>-<slug>/` with an `.active` heartbeat, prunes stale
   HELPER-MANAGED siblings (date-prefixed dirs whose `.active` heartbeat mtime is
-  past the floor — a crashed loop stops refreshing it; default 7 days,
-  `TRIAD_REVIEW_SCRATCH_MAX_AGE_DAYS` overrides), and prints the packet dir. A
+  past the floor — a crashed loop stops refreshing it; the floor is the
+  review-scratch role's in the cleanup configuration), and prints the packet dir. A
   date-dir WITHOUT a regular `.active` file is unmanaged: it is skipped with a
   note and never deleted (the wrong-root fence). `open` is create-NEW-only — a
   same-day duplicate slug is refused loud rather than silently shared.
@@ -55,40 +57,72 @@ exported installs.
   digests) outside `_runs/review/`, in the session scratchpad.
   `<abs-root>` = the ABSOLUTE `<repo>/_runs/review` path (canonicalized; the
   final component must not be a symlink).
-- `… touch <abs-dir>` when a fix→re-confirm loop spans days with no
-  `prepare` / `capture` / `verify` inside the floor, so an ACTIVE loop's
-  heartbeat outlives it — those three refresh the heartbeat themselves, after
-  their input checks: an invocation refused on its label or its worktree /
-  source argument does not refresh it.
+- `… touch <abs-dir>` when a fix→re-review loop spans days with no
+  `prepare` / `capture` / `verify` / `retry` / `collect` / native admission
+  inside the floor, so an ACTIVE loop's heartbeat outlives it. `prepare`,
+  `capture` and `verify` refresh it when they succeed (a refusal or failure
+  never refreshes it) after checking the provenance marker; `retry` and its
+  adoption (each round-record write), `collect` (after its record) and the
+  native `--admit … --admitted-out` (after it writes the admitted result or a
+  refused reply's seal) refresh it best-effort: a `utime` of an existing
+  regular `.active`, no provenance check, never minting it, never following
+  a link, never failing their command. A gate
+  resumed close to the floor runs `touch` first: a sibling `open` / `close`
+  sweep may reclaim a packet whose heartbeat is older than the floor while a
+  long command is still running (the command then fails, nothing false is
+  recorded).
 - `… close <abs-dir>` at review end — the primary cleanup path. The
   prune at the next `open` or `close` is only the crash backstop. Close first REPORTS whether
-  the highest captured round carries a `.verified-r<N>.json` — a WARNING when
-  it does not (the owner-ruled disposition is to proceed), never a
-  refusal — then writes a `.claim` ownership record inside the dir, renames it
-  to `<name>.pruning` and deletes it. A SECOND `close` of the same (now
-  absent) dir is a NO-OP at rc 0 with every shape check still run (C7): the
-  first one already deleted it, so a repeat must not look like a failure.
+  the highest captured round verifies NOW — it re-runs `verify` fresh and never
+  trusts a remembered `.verified-r<N>.json`; a WARNING when it does not (the
+  owner-ruled disposition is to proceed), never a
+  refusal — then, every check passed, appends one `close verified` line to
+  `.active` and deletes the dir in place through the host's deletion command
+  (`.active` kept until last). A close stopped part-way (Ctrl-C, a timeout, a
+  failing git step) is completed by running close again: it re-checks the
+  round tree as a SUBSET of what it checked — a tracked file or a delivered
+  artifact may be missing; anything untracked, modified or differing from its
+  record still refuses, saying the close was stopped part-way. Until then
+  `prepare` and `capture` refuse the packet (no new round in a folder whose
+  deletion has started); a partly written `close verified` line reads as not
+  started (close checks everything again and rewrites it in full); a close
+  stopped after `.active` went leaves an EMPTY dated folder, which close
+  removes. A worktree git has LOCKED, at any depth, is refused by every
+  deletion — unlocking it is the operator's act. Every check — the cleanup configuration of the
+  root's project, the root being the declared one, no link in any component
+  of that root — runs before the round tree or anything else is touched. A SECOND `close` of the same (now absent)
+  dir is a NO-OP at rc 0 with every shape check and the configuration check
+  still run (C7): the first one already deleted it, so a repeat must not look
+  like a failure.
 - **Deletion follows a CLAIM RECORD, never a name shape (C4/C5).** A
-  `<name>.pruning` directory is reclaimed by a later `open` or `close` sweep only when
+  `<name>.pruning` directory (left by a close of an earlier version, which
+  renamed) skips the age floor at a later `open` or `close` sweep only when
   `<name>.pruning/.claim` PROVES this helper claimed THAT directory: a
   regular non-symlink file under 4096 bytes, parsing as a JSON object,
   carrying the provenance magic, and naming an `original` equal to the
   directory's own name minus the suffix. A foreign tree that merely wears the
   suffix, a record copied from another dir, or a symlinked record is NOT ours
-  and is preserved and reported. Disposal removes the `.claim` LAST, so an
-  interrupted disposal leaves nothing, residue WITH the proof that resumes
-  it, or an EMPTY `<name>.pruning` dir — which the sweep removes with
-  `rmdir` (it can only remove an empty dir) once it is older than the floor;
-  a fresher one is reported and left.
+  and is preserved and reported. The removal is the host's deletion command,
+  which proves the residue by its `.active` (a claim-only residue whose
+  `.active` is gone stays, reported); a residue with a managed `.active` but no
+  claim is judged like a packet (the floor applies); an EMPTY `<name>.pruning`
+  dir goes through the command's empty-folder rule once it is older than the
+  floor; a fresher one is left. A residue holding a git-LOCKED worktree is
+  left and reported (no deletion ever forces a lock).
 
 Symlinks are refused (root and children), non-date-prefixed entries and plain
 files are never touched, and the root is always an explicit absolute path (never
 cwd-derived). EVERY ownership-checked operation — the `close`/prune deletions and
-the heartbeat refresh (`touch` / `prepare` / `capture` / `verify`) alike — operates ONLY on dirs carrying the helper's
+the heartbeat refresh by `touch` / `prepare` / `capture` / `verify` alike — operates ONLY on dirs carrying the helper's
 `.active` ownership marker WITH its provenance magic inside; a foreign file that
-merely happens to be named `.active` never qualifies. An arbitrary date-named dir
-is skipped or refused rather than rmtree'd, so even a typo'd root cannot reap
-foreign directories. A deliberately KEPT record dir retains `.active` and is
+merely happens to be named `.active` never qualifies. The one exception is an
+EMPTY dated folder under the declared root (an emptied packet whose close
+stopped before its `rmdir` cannot be told from any other empty one, and it holds
+nothing to lose): an explicit `close` of it removes it whatever its age, and the
+sweep removes one past the floor — both through the host's deletion command's
+empty-folder rule. A NON-empty date-named dir without the marker is skipped or
+refused rather than rmtree'd, so even a typo'd root cannot reap foreign
+directories. A deliberately KEPT record dir retains `.active` and is
 pruned by a later `open` or `close` once its heartbeat passes the floor, so keep long-term
 records outside the packet root.
 
@@ -111,7 +145,10 @@ immutable custody under the packet dir:
                                     bases — see below)
   .snapshot-r<N>.json               capture's census + worktree fingerprint
   .verified-r<N>.json               verify's record (content digest + fingerprint)
-  collect-r<N>.json                 the collector's folded per-entry result
+  collect-r<N>.json                 the collector's folded per-entry result (the
+                                    LAST collection that wrote it; a refused
+                                    collect, exit 2, leaves it untouched — the
+                                    outcome is the latest collect's exit code)
   agy-hook-r<N>.jsonl               the agy PreToolUse hook log
   results-r<N>/<name>/attempt-K/
       binding.json            the six-field bind (review_id, family,
@@ -135,8 +172,8 @@ each record is exclusive-create, so a second write of any of them fails loud.
 that attempt's `retry-diagnosis.txt`. Before anything is allocated `retry`
 refuses: a disabled or SKIPPED entry (it never ran); an entry whose recorded
 attempt returned a VALID verdict (a completed review is not a transport
-failure); a recorded `attempt-<K>` that is not on disk (restore it, or
-re-prepare the round); and any retry that cannot certify the round — it runs
+failure); a recorded `attempt-<K>` that is not on disk (prepare a new
+round); and any retry that cannot certify the round — it runs
 the round's hook load check itself, and a verdict a later attempt cannot clear
 means a NEW round, while another agy entry's dispatched attempt that has not
 written its audit yet means WAIT for it to return, then retry
@@ -209,10 +246,11 @@ rule the adoption path applies.
 
 **Adoption's write order**: validate everything → write the diagnosis →
 print the dispatch block → bump `.roster-r<N>.json` LAST, so a refused print
-never leaves the record bumped over an attempt nobody dispatched. The
-printed `--expected-*` flags come from the DERIVED binding, never read back
-from the attempt's own `binding.json`, and every interpolated value is
-`shlex.quote`d.
+never leaves the record bumped over an attempt nobody dispatched. A
+wrapper entry's printed `--expected-*` flags come from the DERIVED binding,
+never read back from the attempt's own `binding.json` (the native `--admit`
+line types none and reads that record itself), and every interpolated value
+is `shlex.quote`d.
 
 **THE ROUND RECORD NAMES THE ATTEMPT THAT IS EVALUATED.** Allocation is the
 RECORD's act — `prepare` writes attempt 1, `retry` bumps the entry
@@ -227,7 +265,7 @@ lands on INCOMPLETE — but only when the recorded attempt did not itself
 return a valid verdict (a completed review is never vetoed by an
 unallocated directory). Exactly `attempt-<record.attempt>/` is evaluated: a
 RECORDED attempt missing from disk is that entry's `invalid`, and `retry`
-refuses it before allocating (restore it, or re-prepare the round). The
+refuses it before allocating (prepare a new round). The
 ADOPTION path recovers only the one-step orphan, whose recorded attempt is
 on disk.
 
@@ -320,41 +358,38 @@ certifying the round; censusing it would make `verify` refuse its own record
 on the next run). What those records point at is frozen elsewhere — the
 worktree by the fingerprint, each attempt's inputs by this census.
 
-### Removing a stray checkout
+### Going on in a new packet dir
 
 The packet dir is HELPER-OWNED (owner ruling): the steps below are
 the ONLY supported manual intervention in it, and everything else — renaming,
 moving or locking a round tree, dropping a foreign clone or worktree in, or
 re-pinning from a repository other than the gate's source — is out of scope, so
 the helper REFUSES such a state without deleting anything and states what it
-observes instead of prescribing a command.
+observes instead of prescribing a command. No step removes one entry from a
+packet dir: only the host's deletion command deletes, and it removes a whole
+packet dir.
 
-Run these when `open`, `prepare` or `close` refuses (or the stale-sibling prune
-skips) over an entry it could not name as its own round tree. `<path>` is the
-entry the refusal quoted; `<repo>` is the repository it reported, or — when the
-refusal said `unresolvable` — the gate's own source repository.
+Run these when `open`, `prepare`, `verify` or `close` refuses (or the stale-sibling
+prune skips) over an entry it could not name as its own round tree, or over a
+second round tree.
 
-1. **See whether the path is registered.**
-   `git -C <repo> worktree list --porcelain` — look for a `worktree <path>`
-   line. The refusal's `source registration:` observation already answers this
-   for the source repository; this step answers it for any other repository the
-   refusal named.
-2. **Registered at THAT path, with a `.git` gitfile git can read** — detach it:
-   `git -C <repo> worktree remove --force <path>`.
-   A LOCKED worktree refuses that; run `git -C <repo> worktree unlock <path>`
-   first, then repeat.
-3. **Otherwise** — not registered, registered under a different path (a moved or
-   copied tree), or a gitfile git cannot read:
-   `rm -rf <path>` then `git -C <repo> worktree prune`
-   (the first deletes the directory and everything in it; the second clears the
-   registration git still holds for a tree that is not where that
-   registration says). When the entry's `.git` entry is a **DIRECTORY** — a
-   clone or a primary repository, which no `.git/worktrees` registration
-   anywhere names — `rm -rf <path>` alone is the whole of it; there is nothing
-   to prune. When the entry is a plain FILE or a SYMLINK, plain `rm <path>`.
-4. **Re-run the command that refused** — `close`, or `prepare` for the next
-   round. Verify a round tree BEFORE deleting it if you have not: `verify` is
-   the only chance to check the delivered artifacts against their record.
+1. **Verify the round's own tree first**, if it holds work you have not verified:
+   `verify` is the only chance to check the delivered artifacts against their
+   record. When the refusal names a second round tree, `verify` refuses as well;
+   the round then goes on unverified.
+2. **Go on in a new packet dir** — `open` with a NEW slug (a same-day duplicate
+   slug is refused), then `prepare` the round there. The refusing packet dir keeps
+   everything in it.
+3. **Remove the old packet dir whole, later**, with the host's deletion command,
+   from the repository that holds it, once its `.active` is past the
+   review-scratch floor:
+   `cd <repo> && python3 <wrappers>/cleanup.py remove review-scratch <packet-dir>`
+   (a refusal that offers this exit prints the line ready to run). It detaches
+   each linked worktree inside through the repository that owns it and refuses,
+   deleting nothing, what it cannot prove — a clone, a locked worktree, a moved
+   or copied tree, a `.git` file that names no registration — with one line
+   saying what it saw. A packet dir it refuses stays; removing it is the
+   operator's own act.
 
 ## Large diff — shrink the reviewed surface
 
@@ -399,7 +434,7 @@ Canonical for EVERY leg, inline or file:
    anchored "based on the material above".
 
 **Per-round excerpt policy.** Every
-round's packet — NARROW re-confirm rounds included — carries the code
+round's packet — every full re-review round included — carries the code
 excerpts its questions ride on: a packet-only leg goes blind exactly where
 they are absent (`docs/reviews/2026-09-18-cfr-skill-history.md` records the
 incident). The marginal size of two or three functions is noise; the blind spot is
@@ -432,7 +467,8 @@ python3 <skill>/lib/review_scratch.py prepare <abs-packet-dir> \
   --diff <git-range> [--diff-path <repo-relative-path>]... \
   [--tests-path <repo-relative-path>]... \
   [--excerpt <repo-relative-path>:<start>-<end>]... \
-  [--prior-residual /abs/residuals.md]
+  [--prior-residual /abs/current-residual.md] \
+  [--review-kind formal-plan|pre-merge|implementation-review]
 ```
 
 `--v2` is the STANDARD path: it keeps this whole packet
@@ -440,15 +476,80 @@ pipeline and replaces only the leg-facing half — instead of three fixed
 `*-r<N>.txt` bodies and the X-leg renders it resolves the NAMED ROSTER and
 allocates § Per-entry results tree. `--v2` is mutually exclusive with
 `--x-leg` / `--no-x-leg` / a set `$TRIAD_REVIEW_X_LEGS` (exit 2), and
-`--prior-residual` belongs to the v2 path only. Everything below describes
+`--prior-residual` and `--review-kind` belong to the v2 path only.
+`--review-kind` (omitted = `pre-merge`; an empty, `null` or unknown value is
+refused before the round exists) selects `plan-purpose` for `formal-plan` and
+`code-purpose` otherwise in every attempt prompt. `prepare` also binds
+`review_web_authorized` — true for every round under the owner's standing
+authorization (R-REVIEW-WEB; a caller's `--review-web-authorized false` is
+ignored with a NOTE, a non-boolean is refused) — and the round's UTC date
+(`review_date`). The stage, the web condition, the date, the entry selection
+and the roster-configuration digest are BOUND into the round's `Review
+metadata:` line, so they are inside the content digest (identical bytes under
+another condition bind another digest). `collect`, a retry and an orphan
+adoption re-hash `delivery-r<N>.md` against the recorded digest and compare the
+record's selection, configuration digest, web condition and date with the bound
+values (`collect_v2._bound_metadata`); a retry and an adoption also compare the
+stage (`_bound_conditions`), which `collect` does not re-check. The copies in
+`.roster-r<N>.json` are only copies; a mismatch is refused as a new round. The policy clause each prompt rendered
+(`review-web-permission` or `review-no-web`) is recorded in its prompt
+manifest.
+
+`--prior-residual` names ONE file: the leader's condensed CURRENT residual for
+this round (R-REREVIEW, R-CONTEXT; `references/triage.md` § Residual table) —
+current findings and dispositions, needed prior excerpts, counterevidence,
+verification results, changes and remaining uncertainties — rebuilt each
+round, never the running ledger table or earlier residuals appended. `prepare`
+renders it ONCE, fenced as DATA, inside `brief.md` under the heading "Current
+residual", which every leg reads; it does not narrow the full-scope review.
+An empty residual is expressed by omitting the flag (an empty or
+whitespace-only file is refused).
+
+**Symlinks (R-PREPARE, case C26).** A v2 `brief.md` lists every symlink of the
+reviewed basis under "Symlinks in the reviewed tree": path, kind and exact link
+text as JSON strings. Committed links carry the text from the commit's
+objects — the text the round copy holds, on any range; on a WORKING-TREE range
+(`--diff` without `..`) the source's untracked, nonignored links are part of the
+basis too and are listed as `untracked link`, each text read from the link
+itself (`readlink`). An untracked entry whose kind cannot be inspected refuses
+the prepare, naming it. No target is opened or followed. Each text is walked
+component by component against the reviewed commit's own path list (the
+directories and files the round copy holds; untracked links still count as
+links), never the filesystem: a climb above the root or an absolute text, a
+component that is another link, an absent component (a directory present only
+as untracked content included), a file used as a directory or a trailing `/`
+on a file, a path at or beneath a submodule (gitlink — an empty directory in
+the round copy) and an empty text are each marked as a coverage gap, each with
+its own note; only a walk that succeeds on every component carries no mark.
+The walk starts at the link's own directory, which must be a directory of the
+commit: an untracked link inside a directory the commit lacks is an absent gap
+(beneath a gitlink, a submodule gap). An untracked link is not in the round
+copy. A symlink that appears INSIDE the round copy is refused at
+`capture` / `verify` and by the untracked walk — a mutation guard, not the
+basis.
+
+**Operator note — rounds prepared before the binding.** A v2 round prepared
+before the stage, selection and roster-configuration binding (commits
+`6c5364d`, `b7c32f3`, `436dd5f`) or before the review-web condition and date
+binding (`b53409b`) cannot be retried or adopted, and a round without the
+selection or configuration binding cannot be collected either: prepare a new
+round. A round prepared before a host update — here the executed-command
+receipt binding (`a9f78bc`, sealed by `2bda56f`) — is the operator's to replace:
+prepare a new round. The host does not refuse every such round by name: an
+unsealed wrapper attempt is judged by its run-log against `dispatch.json`'s
+argv, and a line prepared before the binding wrote no run-log there, so it
+always collects INVALID (no receipt). What the host refuses by name: a seal
+without the `run_log` role is reported as "sealed before a host change …
+prepare a new round".
+Everything below describes
 both paths unless it names one.
 
 - **The brief is the leader's ONLY per-round authored text**: deployment
   context above one `=====QUESTIONS=====` marker line, suspect questions
   below it. No other fence-like line is allowed in it (fence forgery).
-  Same-family entries are differentiated only here — a leg-name emphasis
-  table in the brief, each leg selecting its row by its bound `leg_name`;
-  the roster has no lens / focus / prompt field.
+  It is the SAME for every selected leg (R-PROMPT): no per-leg emphasis or
+  persona (the owner superseded them); same-family entries are separate
+  invocation identities, and the roster has no lens / focus / prompt field.
   **The brief's home is OUTSIDE the packet dir** (leader scratch space) —
   `prepare` embeds its parts into the packet, so the brief file itself is
   not round evidence; a brief placed INSIDE the packet dir under a fixed
@@ -495,18 +596,22 @@ both paths unless it names one.
   material (`references/leg-contracts.md` § agy leg, the hook bullet). A
   reviewed tree that TRACKS `.agents/hooks.json` is refused before the
   worktree exists; a reviewed repo that gitignores `.agents/` hides the file
-  from the fingerprint's untracked arm (disclosed). The leg bodies carry the binding values, the per-leg
+  from the fingerprint's untracked arm (disclosed). The LEGACY v1 leg bodies carry the binding values, the per-leg
   READ-GRANT blocks, the reviewer-side severity instruction, and the
   verdict-selection rule (`references/triage.md` § Reviewer-side
   instruction — the doc text stays the SoT; a doc-side revision updates
-  the templates in the same change).
+  the templates in the same change); a v2 round's `prompt.txt` carries the
+  vendored shared clauses instead (`spec/prompts/`).
 - **Pre-mutation boundary: everything that can refuse DETERMINISTICALLY runs
   before the first byte moves.** The order is `_precheck_packet_dir` → (v2)
   the PURE render of every enabled non-skipped roster entry → (v2) the
   two SPEC-BASIS DIGESTS (`projection_digest` + `contract_digest`) →
-  `_preserve_round_invariants` → `_worktree_remove` of the outgoing tree →
+  `_round_invariant_moves` (every refusal of the preserve-and-clear step) →
+  `_preserve_round_invariants` (the moves; a failed link refuses there) →
+  `_worktree_remove` of the outgoing tree →
   `_worktree_add` → the WRITES (`v2_write_attempt`, the delivery record, the
-  four artifacts, `.agents/hooks.json`) → `capture`. The v2 render is PURE —
+  four artifacts, `.agents/hooks.json`) → `capture` (its success refreshes
+  the heartbeat). The v2 render is PURE —
   it creates no attempt directory and no file — and it belongs on the
   pre-mutation side for the same reason v1 renders its three leg bodies
   there: the refusals only a render can surface (an unrenderable clause set,
@@ -690,12 +795,14 @@ macOS, not yet on Ubuntu 24.04):
   censused copy that a later dispatch rewrites is a guaranteed false
   "round evidence changed" on an unmutated tree. Both `prepare` and `capture`
   auto-rename it to the suffix of the round that PRODUCED it — the
-  latest captured `.snapshot-r<K>.json`, never label-minus-one, so an
-  operator label skip cannot stamp false provenance — and fail loud on
-  an unparseable label, a leftover with no captured round to attribute
-  it to, or a rename-target collision; the manual `mv` is the
-  fallback for hand-built rounds only (one slip = a deterministic false
-  round-INVALID). Per-leg
+  latest captured `.snapshot-r<M>.json`, never label-minus-one, so an
+  operator label skip cannot stamp false provenance, whatever the label — and
+  fail loud on a leftover with no captured round to attribute it to, a
+  rename-target collision with a different file, or an output that is a
+  symbolic link (in each case the round then goes to a new packet dir, `open`
+  with a new slug); a move stopped between its link and its unlink is
+  finished by the next `prepare` / `capture`; a hand-built round runs `capture`
+  too, so no round renames it by hand between rounds. Per-leg
   consolidation artifacts avoid the same trap by
   carrying the round in their name (`<leg>-r<N>-verdict.json`,
   `references/triage.md`).
@@ -710,14 +817,19 @@ macOS, not yet on Ubuntu 24.04):
   `_LEG_OUTPUT_GLOBS` (`*.err`, `*-read-audit.json`, `*-verdict.json`) or the
   X shape rule above (which carries the optional `-attempt<K>` segment), so
   the round's evidence keeps both attempts without tripping the
-  uncovered-file refusal.
-- **NEVER hand-move `agy-read-audit.json`** (v1) — `prepare` and `capture`
-  auto-rename it to its producing round's suffix, so
-  a manual `cp`/`mv` is at best redundant and at worst destructive. Above
-  all, never CHAIN such a file operation before a dispatch (`mv … && …
-  wrapper`): when the chained hand-move fails first, the dispatch never
-  launches. The helper owns the packet
-  dir. The same rule covers the X-leg artifacts: `<name>-prompt-r<N>.txt` /
+  uncovered-file refusal. For the agy leg this rename moves
+  `agy-read-audit.json` to `agy-r<N>-attempt<K>-read-audit.json`: it is the
+  one hand move of the read-audit file a v1 round makes (between rounds
+  `prepare` / `capture` rename it to `agy-read-audit-r<M>.json`, M = the latest
+  captured round), it preserves attempt K's audit
+  (nothing is deleted), and it leaves the literal path ABSENT, so a misbound
+  re-dispatch reads as ABSENT, never as attempt K's audit. Run it as its own
+  step — never CHAIN it before the dispatch (`mv … && … wrapper`): when the
+  chained move fails first, the dispatch never launches.
+- **Otherwise never hand-move `agy-read-audit.json`** (v1) — between rounds
+  `prepare` and `capture` auto-rename it to its producing round's suffix, so
+  a manual `cp`/`mv` there is at best redundant and at worst destructive. The
+  helper owns the packet dir. The same rule covers the X-leg artifacts: `<name>-prompt-r<N>.txt` /
   `<name>-body-r<N>.txt` and `.x-legs-r<N>.json` are ROUND EVIDENCE (written
   before capture, censused with the standing inputs) — never hand-remove them,
   even for an X leg that was abandoned; record that leg MISSING in the round
@@ -739,7 +851,7 @@ macOS, not yet on Ubuntu 24.04):
 - The reviewed tree stays FROZEN for the round's duration: fixes for
   returned findings are STAGED and applied only after the last leg
   returns and `verify` passes. An edit adopted while closing a
-  probe-refuted finding is still an edit; it ships only through a
+  refuted finding is still an edit; it ships only through a
   round that reviewed it (rule 5). The freeze covers EVERY tracked file
   in the worktree — the gate LEDGER doc included: the leader writes
   NOTHING between `prepare` and the round's final `verify` —

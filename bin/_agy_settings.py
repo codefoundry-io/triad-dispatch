@@ -132,7 +132,7 @@ def _crash_recover(p: Path, bak: Path) -> None:
         sys.stderr.write(
             f"[agy_settings] corrupt .agybak dropped: {e}; "
             f"~/.gemini/antigravity-cli/settings.json may retain leaked deny "
-            f"rules from a crashed transaction — verify/remove manually\n")
+            f"rules from a crashed transaction — check its deny rules by hand\n")
         try:
             bak.unlink()
         except FileNotFoundError:
@@ -436,7 +436,7 @@ def _shared_readonly_guard(
                                 sys.stderr.write(
                                     f"[agy_settings] last-exit snapshot unreadable: {e}; "
                                     f"{p} may retain leaked deny rules from this "
-                                    "transaction — verify/remove manually\n")
+                                    "transaction — check its deny rules by hand\n")
                             if snap is not None:
                                 _restore(p, snap)  # OSError propagates, .agybak kept for a later heal
                             try:

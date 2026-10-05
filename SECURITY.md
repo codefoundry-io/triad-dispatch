@@ -154,9 +154,12 @@ the leader, and a poisoned parent-start environment), not at the user:
   resolve the real vendor, defeating a workspace-planted same-named binary.
 - **Audit redaction** — `TRIAD_AUDIT_REDACT_PROMPTS=1` keeps prompt/stream text
   out of the durable audit.
-- **claude-host** — a **PreToolUse hook** validates each wrapper invocation and
-  resolves-and-rejects a foreign same-named script on PATH (the reliable gate the
-  basename Bash grant defers to).
+- **claude-host** — no layer of its own. The basename Bash grant
+  (`Bash(codex_wrapper.py:*)`) runs a script of that name without asking; the
+  plugin's environment assumes one operator and nothing planted on PATH. The
+  wrappers contain `--prompt-file` / `--image` / `--cwd` in the allowed roots and
+  pin the vendor binary under the hardening env (`TRIAD_WRAPPER_HARDENED=1`,
+  `TRIAD_REQUIRE_PINNED_VENDOR=1`) that the setup writes.
 - **codex-host** — `[shell_environment_policy] inherit = "core"` in the merged
   config drops loader/interpreter injection vars (`LD_PRELOAD`, `NODE_OPTIONS`,
   `PYTHONPATH`, …) from every subprocess codex spawns, closing the
