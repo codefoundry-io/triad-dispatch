@@ -3454,7 +3454,9 @@ def install_terminal_signal_handlers() -> None:
     `antigravity_wrapper.py` installs its own `_terminate_to_exit`, which
     DELEGATES to `_terminal_signal_to_exit` (same record-only behaviour); a
     signal outside those windows before the dispatch still unwinds through the
-    permissive baseline's settings guard (`.agybak` restore).
+    permissive baseline's settings guard, which holds an empty deny list (no
+    snapshot, nothing to restore) and releases its lock; the read-only route
+    enters no guard.
     """
     for name in ("SIGTERM", "SIGHUP"):
         sig = getattr(signal, name, None)
@@ -3782,7 +3784,7 @@ def _run_once(
         # handler — antigravity_wrapper.py's _terminate_to_exit interrupts
         # exactly this wait()) must not leave the vendor subtree orphaned:
         # kill+reap before the exception propagates. Never swallowed —
-        # the caller's unwind (settings-guard restore, exit code) still runs
+        # the caller's unwind (settings-guard lock release, exit code) still runs
         # as the exception continues up the stack.
         #
         # The cleanup is itself exception-safe (r1/R5): an unexpected raise

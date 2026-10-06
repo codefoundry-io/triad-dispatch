@@ -649,9 +649,9 @@ Three layers keep the agy leg healthy; the leader drives only the first.
 1. **`agy-wrapper-repair` analyzer (reactive, per call)** — the Step 5 path:
    read-only proposal → deterministic apply → the same vendor error auto-routes
    next time. Dispatch frequency falls as the classifier matures.
-2. **`.agybak` crash-recovery (reactive, per call)** — every call heals a stale
-   settings backup before mutating settings, so none runs against deny-polluted
-   global settings.
+2. **`.agybak` crash-recovery (reactive)** — a permissive-baseline call and
+   `--setup-agents` heal a stale settings backup before they run; a read-only
+   call enters no settings guard and heals nothing.
 3. **`agy-daily-check.sh` (a manual run; the user may schedule it)** — a drift
    detector with split exit semantics (`0` no change / `1` actionable / `2`
    informational), surfaced as a dated report for owner review.

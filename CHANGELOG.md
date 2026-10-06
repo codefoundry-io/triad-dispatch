@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1514 — 2026-10-06
+## 0.2.1530 — 2026-10-06
 
 **codex `--task` mode removed.** `bin/codex_wrapper.py` no longer
 takes `--task` / `--fanout` / `--report-dir` (each is now an

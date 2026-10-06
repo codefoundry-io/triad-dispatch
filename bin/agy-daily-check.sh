@@ -115,9 +115,11 @@ if [ -n "${AGY_DAILY_DEEP:-}" ]; then
   echo "agy-daily-check: AGY_DAILY_DEEP is ignored — the deep probe was removed (it sent a prompt)" >&2
 fi
 
-# 6. leaked deny-transaction probe (ACTIONABLE). A wrapper call that died
-#    without cleanup (SIGKILL-class) leaves its per-call deny rules merged in
-#    the global settings until the NEXT wrapper call heals them on entry;
+# 6. leaked deny-transaction probe (ACTIONABLE). A deny transaction that died
+#    without cleanup (SIGKILL-class; the codex host's copy, or a pre-v2 build)
+#    leaves its deny rules merged in the global settings until the next guard
+#    entry heals them (`--setup-agents`, or a permissive call on a non-hardened
+#    install; a read-only dispatch enters no guard);
 #    interactive agy in that window mis-runs silently (a denied tool can come
 #    back as an EMPTY answer with status SUCCESS). Age floor 2h so a LIVE
 #    transaction is never flagged. Read-only: report + heal guidance only —
@@ -126,7 +128,7 @@ AGY_SETTINGS="${AGY_SETTINGS_PATH:-$HOME/.gemini/antigravity-cli/settings.json}"
 AGY_CFG_DIR="$(dirname "$AGY_SETTINGS")"
 for leak in "$AGY_CFG_DIR/.agybak" "$AGY_CFG_DIR/.agy_settings.shared.json"; do
   if [ -f "$leak" ] && [ -n "$(find "$leak" -mmin +120 2>/dev/null)" ]; then
-    note "- DRIFT (actionable): stale $(basename "$leak") (>2h) — a crashed wrapper call likely left deny rules merged in $AGY_SETTINGS; run any wrapper dispatch (it heals on entry) or check its deny rules by hand"
+    note "- DRIFT (actionable): stale $(basename "$leak") (>2h) — a crashed deny transaction (the codex host's copy, or a pre-v2 build) may have left deny rules merged in $AGY_SETTINGS; run antigravity_wrapper.py --setup-agents (or, on a non-hardened install, a permissive call) to heal it (a read-only dispatch does not), or check its deny rules by hand"
     actionable=1
   fi
 done

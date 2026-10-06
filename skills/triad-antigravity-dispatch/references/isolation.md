@@ -156,7 +156,8 @@ Still owed on current builds: an `execute_url(...)`, an `mcp(...)`, and an
 The read-only path v2 enters NO settings transaction. The permissive baseline
 (`--sandbox` omitted, non-hardened) still brackets the call in the exclusive
 settings guard (`_agy_settings.agy_settings_guard` with empty deny rules:
-lock, `.agybak` heal, byte-exact restore). The deny-merging read-only
+it takes the lock, heals a stale `.agybak`, and yields — no snapshot, no merge,
+no restore). The deny-merging read-only
 transaction below is kept in `_agy_settings.py` for codex-host, which still
 drives it; this host's wrapper no longer selects it.
 
@@ -235,26 +236,28 @@ than `--cwd`, so hand it absolute paths.
 
 ## Self-healing coverage
 
-- **`.agybak` crash-recovery.** The deny transaction restores through a `.agybak`
-  crash sentinel healed on the NEXT agy call — every call, permissive ones
-  included, acquires the lock and heals first. The crash window is narrowed by
-  SIGTERM/SIGHUP unwind handlers (settings restore + vendor child kill on the way
-  out) plus a process-group kill on abnormal unwind inside `_common._run_once`.
-  Only SIGKILL-class death still leaves the sentinel, by design.
+- **`.agybak` crash-recovery.** A stale `.agybak` crash sentinel is healed when
+  the next guard is entered: a permissive-baseline call or `--setup-agents`. A
+  read-only call enters no guard and heals nothing. SIGTERM/SIGHUP unwind
+  handlers (vendor child kill, guard lock release) plus a process-group kill on
+  abnormal unwind inside `_common._run_once` cover the vendor subtree.
 - **Leaked-transaction probe.** `agy-daily-check.sh` fires ACTIONABLE on a stale
   `.agybak` or shared-lease sentinel older than 2h — the SIGKILL-class residual,
-  which would otherwise be healed only on the NEXT wrapper call while interactive
+  which would otherwise be healed only at the next guard entry while interactive
   agy mis-runs silently.
 
 ## Operational notes
 
-- **Stale-sentinel recovery.** The transaction restores through a `.agybak` crash
-  sentinel healed on the NEXT agy call — every call, including a permissive one,
-  acquires the lock and heals first. If an agy call crashes and no subsequent agy
-  call runs, the owner's global `settings.json` stays in the deny state. So: if
-  interactive `agy` suddenly cannot write files, remove a stale
-  `~/.gemini/antigravity-cli/.agybak`. Writes are atomic (temp + `os.replace`), so
-  the file is never left half-written.
+- **Stale-sentinel recovery.** This host's wrapper never writes a deny set or a
+  `.agybak`: a read-only call enters no guard, and the permissive baseline's guard
+  has an empty deny list (it locks, heals and yields). A stale
+  `~/.gemini/antigravity-cli/.agybak` can only come from the codex host's copy,
+  which runs a deny transaction against the same settings file, or from a pre-v2
+  build. It holds the only snapshot the heal restores from, so never delete it:
+  if interactive `agy` suddenly cannot write files, run
+  `antigravity_wrapper.py --setup-agents` (or, on a non-hardened install, a
+  permissive call), which heals it.
+  Writes are atomic (temp + `os.replace`), so the file is never left half-written.
 - The SIGKILL-class residual window is capped by `agy-daily-check.sh`, which
   fires ACTIONABLE on a leaked deny transaction (a stale `.agybak` or shared-lease
   sentinel older than 2h).

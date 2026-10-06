@@ -2053,8 +2053,10 @@ def _terminate_to_exit(signum, frame):
     # The engine's handler (spec C1): during a pre-dispatch probe (`--version`,
     # the catalog) and from the first dispatch on it only records the signal
     # and the call ends through the terminal record; outside those windows
-    # before the first dispatch it raises SystemExit(128+signum) and the
-    # settings-guard restore runs.
+    # before the first dispatch it raises SystemExit(128+signum); a
+    # permissive-baseline call then unwinds through its settings guard, which
+    # holds an empty deny list (lock + stale-`.agybak` heal, nothing to
+    # restore) and releases the lock. The read-only route enters no guard.
     _common._terminal_signal_to_exit(signum, frame)
 
 
@@ -2193,9 +2195,11 @@ def _main(ctx: dict) -> int:
     # The DIAGNOSTIC stream survives any locale; the PAYLOAD stream is never
     # re-encoded (gate-1 r7 row r7-c2 — `_common` § payload vs diagnostic).
     _common._relax_diagnostic_stream()
-    # SIGTERM/SIGHUP unwind instead of dying mid-transaction, so the settings
-    # guard restore + vendor child kill run on the way out (SIGKILL stays
-    # uncoverable by design — .agybak + next-call heal owns that window).
+    # SIGTERM/SIGHUP unwind instead of dying mid-call, so the vendor child
+    # kill and (permissive baseline only) the settings guard's lock release run
+    # on the way out; that guard holds an empty deny list, so it writes no
+    # snapshot and restores nothing. SIGKILL stays uncoverable by design — the
+    # kernel drops the lock and the next guard entry heals a stale `.agybak`.
     try:
         signal.signal(signal.SIGTERM, _terminate_to_exit)
         signal.signal(signal.SIGHUP, _terminate_to_exit)
@@ -2303,7 +2307,8 @@ def _main(ctx: dict) -> int:
         for path in written:
             _common._emit_payload(os.fsencode(path) + b"\n")
         try:
-            # heal a stale `.agybak` a pre-v2 read-only transaction may have left
+            # heal a stale `.agybak` a deny transaction left (the codex host's copy,
+            # which shares the settings file, or a pre-v2 build)
             # (gate r1, claude): on a hardened host every dispatch is now read-only
             # and never enters the guard, so setup is the remaining heal point
             with _agy_settings.agy_settings_guard([], lock_timeout=30.0):
