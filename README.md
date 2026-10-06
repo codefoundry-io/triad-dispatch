@@ -144,27 +144,26 @@ and runs claude (`Agent`) + codex + that leg.
 ### Choose the claude review leg's model and effort
 
 *Do this ONLY if you want the claude leg of `triad-cross-family-review` at another
-effort or on an older model than the default.* That leg runs as a native Claude
-Code subagent, and its model and effort are fixed in its agent file. Claude Code
-has no per-call effort setting, so another effort or model is another preset. The
-plugin ships these (each with a `-web` twin of the same model and effort, which a
-review round with web spawns):
+effort than the default.* That leg runs as a native Claude Code subagent, and its
+model and effort are fixed in its agent file. Claude Code has no per-call effort
+setting, so another effort is another preset. The plugin ships these (each with a
+`-web` twin of the same model and effort, which a review round with web spawns):
 
-| `claude.agent` | role | effort |
+| `claude.agent` | model | effort |
 |---|---|---|
-| `cross-family-review-reviewer` (default) | current | `xhigh` |
-| `cross-family-review-reviewer-high` | current | `high` |
-| `cross-family-review-reviewer-max` | current | `max` |
-| `cross-family-review-reviewer-older` | older | `xhigh` |
+| `cross-family-review-reviewer` (default) | `opus` | `xhigh` |
+| `cross-family-review-reviewer-high` | `opus` | `high` |
+| `cross-family-review-reviewer-max` | `opus` | `max` |
 
-The exact model is the `model:` line of the plugin's `agents/<name>.md` (role:
-current = the default's model, older = an older supported one).
+The model is the `opus` alias: Claude Code resolves it to the latest Opus on the
+subscription login route (an `ANTHROPIC_DEFAULT_OPUS_MODEL` setting remaps it). An
+older model is not selectable.
 
 Name one in the claude entry of your project roster
 `<repo>/.claude/triad-review-legs.json`, for example
 `{"schema": "triad-review-legs.v2", "legs": [{"name": "claude", "claude": {"agent": "cross-family-review-reviewer-high"}}]}`.
 Write the bare name: the helper adds the plugin prefix itself, and a name with
-`:` or a name outside the eight shipped presets (these four and their `-web`
+`:` or a name outside the six shipped presets (these three and their `-web`
 twins) is refused before the round starts. Any other model or effort needs
 another shipped preset, that is, a new plugin release. Your own Claude Code
 settings — a setting that forces the subagent model, an effort environment
@@ -554,8 +553,8 @@ they are yours.
 
 - **skills** (4): `triad-codex-dispatch`, `triad-gemini-dispatch`,
   `triad-antigravity-dispatch`, `triad-cross-family-review`.
-- **agents** (11): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`,
-  and the eight claude review presets (see [Choose the claude review leg's model and effort](#choose-the-claude-review-legs-model-and-effort)).
+- **agents** (9): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`,
+  and the six claude review presets (see [Choose the claude review leg's model and effort](#choose-the-claude-review-legs-model-and-effort)).
 - **bin**: the Python wrappers (codex / gemini / agy) + `agy-daily-check.sh` +
   `gemini-daily-check.sh` + `policies/gemini-readonly.toml` (the per-call
   read-only Policy Engine file the gemini `--sandbox read-only` mode attaches).

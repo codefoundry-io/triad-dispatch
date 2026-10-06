@@ -2,7 +2,7 @@
 name: "cross-family-review-reviewer-web"
 description: "The claude leg of a review round for which the owner asked for web. A READ-ONLY, evidence-centred reviewer that may verify an external fact on the web as the prompt of the round allows. Invoked ONLY by name from the `triad-cross-family-review` skill; never auto-delegated. It reads with Read, Grep and Glob, fetches with WebSearch and WebFetch, and runs and writes nothing."
 tools: Read, Grep, Glob, WebSearch, WebFetch
-model: claude-opus-5-5
+model: opus
 effort: xhigh
 ---
 

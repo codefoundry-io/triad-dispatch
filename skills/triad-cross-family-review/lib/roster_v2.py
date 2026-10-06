@@ -151,7 +151,7 @@ GOOGLE_SKIP_NONE = ("no Google CLI installed — skip and log (R-GOOGLE); "
 PLACEHOLDER_RE = re.compile(r"<[^<>\n]+>")
 # R-ROSTER On A, R-REVIEW-WEB (cases C12, C32): THE CLOSED LIST of reviewer
 # presets this host ships (`agents/<name>.md`), each base preset with its web
-# twin. A claude entry names one of the eight by its BARE name — the host
+# twin. A claude entry names one of the six by its BARE name — the host
 # scopes it in a plugin install (`review_scratch._qualify_claude_agent_id`) —
 # and any other name is refused at resolve: `subagent_type: None` would spawn
 # the layout default (the gating reviewer), and a preset this host does not
@@ -163,7 +163,6 @@ CLAUDE_WEB_TWINS = {
     "cross-family-review-reviewer": "cross-family-review-reviewer-web",
     "cross-family-review-reviewer-high": "cross-family-review-reviewer-high-web",
     "cross-family-review-reviewer-max": "cross-family-review-reviewer-max-web",
-    "cross-family-review-reviewer-older": "cross-family-review-reviewer-older-web",
 }
 # A shipped preset's two pins, one line each in its frontmatter (the shape the
 # build-time check of the shipped files fixes; no YAML is parsed).

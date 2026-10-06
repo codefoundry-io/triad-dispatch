@@ -140,27 +140,27 @@ codex + 그 leg 를 실행합니다.
 
 ### claude 리뷰 leg 의 모델과 effort 고르기
 
-*`triad-cross-family-review` 의 claude leg 를 기본값과 다른 effort 나 이전 모델로
-돌리고 싶을 때만.* 이 leg 는 Claude Code 의 native subagent 로 돌고, 모델과 effort 는
-그 agent 파일에 고정되어 있습니다. Claude Code 에는 호출마다 effort 를 정하는 설정이
-없으므로, 다른 effort 나 모델은 다른 preset 입니다. 플러그인이 제공하는 preset
-(각각 같은 모델·effort 의 `-web` 쌍이 있고, 웹을 쓰는 리뷰 라운드는 그 쌍을 띄웁니다):
+*`triad-cross-family-review` 의 claude leg 를 기본값과 다른 effort 로 돌리고 싶을
+때만.* 이 leg 는 Claude Code 의 native subagent 로 돌고, 모델과 effort 는 그 agent
+파일에 고정되어 있습니다. Claude Code 에는 호출마다 effort 를 정하는 설정이 없으므로,
+다른 effort 는 다른 preset 입니다. 플러그인이 제공하는 preset (각각 같은 모델·effort 의
+`-web` 쌍이 있고, 웹을 쓰는 리뷰 라운드는 그 쌍을 띄웁니다):
 
-| `claude.agent` | 역할 | effort |
+| `claude.agent` | 모델 | effort |
 |---|---|---|
-| `cross-family-review-reviewer` (기본값) | 현재 | `xhigh` |
-| `cross-family-review-reviewer-high` | 현재 | `high` |
-| `cross-family-review-reviewer-max` | 현재 | `max` |
-| `cross-family-review-reviewer-older` | 이전 | `xhigh` |
+| `cross-family-review-reviewer` (기본값) | `opus` | `xhigh` |
+| `cross-family-review-reviewer-high` | `opus` | `high` |
+| `cross-family-review-reviewer-max` | `opus` | `max` |
 
-정확한 모델은 플러그인의 `agents/<name>.md` 의 `model:` 줄입니다 (역할: 현재 =
-기본값의 모델, 이전 = 지원되는 이전 모델).
+모델은 `opus` 별칭입니다: 구독 로그인 경로에서 Claude Code 가 최신 Opus 로 해석합니다
+(`ANTHROPIC_DEFAULT_OPUS_MODEL` 설정이 있으면 그 값으로 바뀝니다). 이전 모델은 고를 수
+없습니다.
 
 프로젝트 roster `<repo>/.claude/triad-review-legs.json` 의 claude 항목에 하나를
 적으세요. 예:
 `{"schema": "triad-review-legs.v2", "legs": [{"name": "claude", "claude": {"agent": "cross-family-review-reviewer-high"}}]}`.
 이름은 접두어 없이 적습니다: 플러그인 접두어는 helper 가 붙이고, `:` 가 든 이름이나
-제공 preset 8개 (위 4개와 각각의 `-web` 쌍) 에 없는 이름은 라운드가 시작되기 전에
+제공 preset 6개 (위 3개와 각각의 `-web` 쌍) 에 없는 이름은 라운드가 시작되기 전에
 거부됩니다. 그 밖의 모델이나 effort 는 새 preset, 곧 새 플러그인 릴리스가 필요합니다.
 사용자 자신의 Claude Code 설정 — subagent 모델을 강제하는 설정, effort 환경변수, 조직의
 effort 상한 — 은 preset 의 고정값보다 우선합니다. 각 subagent 의 대화 기록은 Claude Code 가
@@ -534,8 +534,8 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
 
 - **skills** (4): `triad-codex-dispatch`, `triad-gemini-dispatch`,
   `triad-antigravity-dispatch`, `triad-cross-family-review`.
-- **agents** (11): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`,
-  그리고 claude 리뷰 preset 8개 (위 "claude 리뷰 leg 의 모델과 effort 고르기" 참고).
+- **agents** (9): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`,
+  그리고 claude 리뷰 preset 6개 (위 "claude 리뷰 leg 의 모델과 effort 고르기" 참고).
 - **bin**: Python wrapper 들 (codex / gemini / agy) + `agy-daily-check.sh` +
   `gemini-daily-check.sh` + `policies/gemini-readonly.toml` (gemini `--sandbox
   read-only` 모드가 per-call 로 부착하는 read-only Policy Engine 파일).

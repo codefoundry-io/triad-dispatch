@@ -101,7 +101,7 @@ The native claude spawn has no wrapper and so no receipt (DL-18).
   frontmatter, so passing one replaces the pinned model) on the CONTENT of
   `<attempt>/prompt.txt` — the renderer derives it from the entry's
   `claude.agent`: under a true `review_web_authorized` the preset's web twin
-  (`-web` / `-high-web` / `-max-web` / `-older-web`), under a false one the
+  (`-web` / `-high-web` / `-max-web`), under a false one the
   no-web base preset (`roster_v2.render_dispatch`, `CLAUDE_WEB_TWINS`) — save
   the final message VERBATIM to `<attempt>/raw.json`, then admit with
   `verdict_v2.py --admit … --end-marker '<END-VERDICT>' --admitted-out
@@ -118,7 +118,7 @@ The native claude spawn has no wrapper and so no receipt (DL-18).
   agent resolves over a plugin agent and would silently shadow the read-only
   reviewer. In the DEV tree there is no manifest and the bare name is the
   correct id. The ROSTER DATA is always BARE: `claude.agent` names one of the
-  eight presets this host ships (`roster_v2.CLAUDE_WEB_TWINS`, the closed list —
+  six presets this host ships (`roster_v2.CLAUDE_WEB_TWINS`, the closed list —
   SKILL rule 15), and any other value — a `:`-scoped id, an unlisted name, a
   name with a trailing newline or any other byte — is refused at resolve
   (`roster_v2._check_capabilities`), so nothing but a listed name ever reaches
@@ -1542,7 +1542,7 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
 - **Identity (v2).** The leader spawns EXACTLY the printed `subagent_type`
   (§ v2 dispatch shapes). Under a true web condition — every v2 round under
   the owner's standing authorization — that is the named preset's `-web` twin
-  (`cross-family-review-reviewer-web`, `-high-web`, `-max-web`, `-older-web`; frontmatter
+  (`cross-family-review-reviewer-web`, `-high-web`, `-max-web`; frontmatter
   `tools: Read, Grep, Glob, WebSearch, WebFetch`, the preset's model and
   effort); under a false condition it is the base preset itself.
 - **Identity (LEGACY v1, and the base preset of a false-condition v2
@@ -1583,11 +1583,10 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   wanted must be typed) — never as the standing claude leg. Both claude arms
   read the same packet bytes and the same family template; only the binding
   `review_id` differs (§ Fourth leg), so a verdict difference is an EFFORT
-  difference, never a framing one. A FOURTH sibling,
-  `cross-family-review-reviewer-older` (identical body, the older supported
-  model its `model:` line pins, `effort: xhigh`; twin `-older-web`), is the
-  shipped older-model preset a roster entry selects by naming it (C12). These
-  four and their `-web` twins are the CLOSED list a v2 entry may name;
+  difference, never a framing one. Every preset names the model by the `opus`
+  alias (Claude Code resolves it to the latest Opus; an older model is not
+  selectable). These three and their `-web` twins are the CLOSED list a v2
+  entry may name (C12);
   `prepare` binds the spawned file's sha256 (with the model and effort it
   pins), and `collect` / `retry` refuse a changed or missing file — a new
   round (C19).
@@ -1850,7 +1849,7 @@ never delays the round.
   MODEL field is an AGENT TYPE and effort is not accepted — effort is
   frontmatter-fixed on the agent, so a different tier IS a different agent id
   (the shipped reviewer presets: `cross-family-review-reviewer` xhigh, `-max`,
-  `-high`, `-older` — § claude fresh-eye leg, SKILL rule 15).
+  `-high` — § claude fresh-eye leg, SKILL rule 15).
   A claude agent id may carry a plugin scope, so for that vendor EVERY field
   after the vendor rejoins as one id (`x-c:claude:<plugin>:<agent>`); for the
   other vendors a fifth field is a loud "too many fields" refusal. Because

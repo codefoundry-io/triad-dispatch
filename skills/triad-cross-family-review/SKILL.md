@@ -405,19 +405,19 @@ Five references carry the detail — open one only when its column applies.
     NO `model` parameter (one would override the file's pin). So `claude.model` and `claude.effort` must
     be null (refused, as `gemini.effort` is), and another model or effort is another preset — a host
     release, not a roster value. Name one in `claude.agent` by its bare name, in a plugin install too (a
-    `:` is refused; the host adds the scope). A name outside the eight shipped presets (the four below
+    `:` is refused; the host adds the scope). A name outside the six shipped presets (the three below
     and their `-web` twins) is refused before the round starts. A web round spawns the twin (same model
     and effort, plus `WebSearch`, `WebFetch`):
 
-    | `claude.agent` | role | effort | web twin |
+    | `claude.agent` | model | effort | web twin |
     |---|---|---|---|
-    | `cross-family-review-reviewer` (default) | current | `xhigh` | `-web` |
-    | `cross-family-review-reviewer-high` | current | `high` | `-high-web` |
-    | `cross-family-review-reviewer-max` | current | `max` | `-max-web` |
-    | `cross-family-review-reviewer-older` | older | `xhigh` | `-older-web` |
+    | `cross-family-review-reviewer` (default) | `opus` | `xhigh` | `-web` |
+    | `cross-family-review-reviewer-high` | `opus` | `high` | `-high-web` |
+    | `cross-family-review-reviewer-max` | `opus` | `max` | `-max-web` |
 
-    The exact model is the `model:` line of the preset's agent file (`agents/<name>.md`);
-    `roster_v2.py resolve` prints it. The operator's own Claude Code settings — a setting that forces
+    The model is the `opus` alias: Claude Code resolves it to the latest Opus on the subscription login
+    route (an `ANTHROPIC_DEFAULT_OPUS_MODEL` setting remaps it). An older model is not selectable.
+    `roster_v2.py resolve` prints the model and effort of the preset each enabled claude entry names. The operator's own Claude Code settings — a setting that forces
     the subagent model, an effort environment variable, an organization effort cap — outrank the
     preset's pins. Claude Code keeps each subagent's own transcript. A comparison CAMPAIGN over two arms
     of one family (when the leader declares one) gets a leader-written ledger at

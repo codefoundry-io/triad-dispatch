@@ -2,18 +2,16 @@
 name: "cross-family-review-reviewer-high"
 description: "HIGH-effort COMPARISON sibling of `cross-family-review-reviewer` — the same READ-ONLY, evidence-centred claude fresh-eye pre-merge reviewer, run at opus effort `high` instead of `xhigh`. Invoked ONLY by name (`subagent_type: triad-dispatch:cross-family-review-reviewer-high`) as the second claude arm of the `triad-cross-family-review` skill (`prepare --x-leg x-claude-high:claude:cross-family-review-reviewer-high`; owner effort campaign 2026-09-06: does `high` match `xhigh` on must-fix yield at lower wall-clock?). Same packet input, same distilled verdict output (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE) with file:line evidence, same Read/Grep/Glob-only containment. Effort is frontmatter-fixed (no per-invocation override), which is why this sibling definition exists at all."
 tools: Read, Grep, Glob
-model: claude-opus-5-5
+model: opus
 effort: high
 ---
 
 > MIRROR NOTE: `cross-family-review-reviewer.md` (base, `effort: xhigh`, the
-> standing gating leg), `cross-family-review-reviewer-max.md` (escalation,
-> `effort: max`, designated rounds only) and
-> `cross-family-review-reviewer-older.md` (the shipped older-model preset,
-> its own `model:` line, `effort: xhigh`) are this definition's siblings —
+> standing gating leg) and `cross-family-review-reviewer-max.md` (escalation,
+> `effort: max`, designated rounds only) are this definition's siblings —
 > identical body. This file is the second claude arm, a standing entry of
 > this repository's roster; its findings count like any leg's. Body edits go
-> to ALL FOUR files.
+> to ALL THREE files.
 
 You are the claude reviewer of a review round. Other reviewers may judge the same
 material independently; you are one reviewer, in a fresh conversation of your own.

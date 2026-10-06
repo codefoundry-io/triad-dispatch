@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1508 — 2026-10-06
+## 0.2.1514 — 2026-10-06
 
 **codex `--task` mode removed.** `bin/codex_wrapper.py` no longer
 takes `--task` / `--fanout` / `--report-dir` (each is now an
@@ -10,14 +10,15 @@ is a plain `--sandbox workspace-write` dispatch whose `--cwd` you
 isolate.
 
 **Cross-family review — the v2 claude leg takes only SHIPPED
-presets.** A v2 roster's `claude.agent` names one of the eight
+presets.** A v2 roster's `claude.agent` names one of the six
 presets this plugin ships (`cross-family-review-reviewer`, `-high`,
-`-max`, `-older` — an older supported model — and their `-web`
-twins) by its bare name; any other name, a `:`-scoped one
+`-max` and their `-web` twins) by its bare name; any other name, a `:`-scoped one
 included, is refused before the round starts. The round binds the
 spawned preset file's sha256; a changed or missing file refuses
 `collect` / `retry` (prepare a new round). No YAML library is
-needed any more. Guide: README § Choose the claude review leg's model and
+needed any more. Every preset names the model by the `opus` alias
+(Claude Code resolves it to the latest Opus); the older-model preset
+pair is removed. Guide: README § Choose the claude review leg's model and
 effort.
 
 **Cross-family review 0.31.0 — advisory X legs are configured in a

@@ -172,7 +172,7 @@ accepted for the pre-merge gate; cost is never a reason to skip a leg.
 
 The v2 claude leg carries no max-thinking (intensity) request — neither in its
 prompt (the shared spec's clauses give every leg the same prompt, R-PROMPT) nor
-in any reviewer agent body, the four base presets and the four `-web` twins
+in any reviewer agent body, the three base presets and the three `-web` twins
 alike; its depth lever is the preset's frontmatter effort (SKILL rules 10 and
 15). The earlier directive rested on a lab observation with no measurement
 behind it; only the LEGACY v1 claude prompt (`_render_claude_prompt` in
