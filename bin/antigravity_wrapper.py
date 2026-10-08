@@ -2330,11 +2330,6 @@ def _main(ctx: dict) -> int:
     if args.attempt < 1:
         _common.log(f"--attempt must be >= 1 (got {args.attempt})")
         return _common.EXIT_ARG_ERROR
-    _refused = _common._review_argv_refusal()
-    if _refused is not None:  # C32: an edited review line, before any vendor work
-        _common.log(_refused)
-        return _common.EXIT_ARG_ERROR
-
     # C28: resolve the (possibly relative) --prompt-file once so the absolute
     # path can be RECORDED on the summary line and in the audit/run-log
     # records. load_prompt_text() re-resolves the same way and reads the text.

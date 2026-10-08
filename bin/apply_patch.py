@@ -34,7 +34,7 @@ EXIT_INVALID = 3
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Apply a validated classifier patch proposal.")
-    ap.add_argument("--cli", required=True, help="Target CLI name (codex/gemini/claude/antigravity).")
+    ap.add_argument("--cli", required=True, help="Target CLI name (codex/gemini/antigravity).")
     ap.add_argument(
         "--proposal-file",
         default=None,

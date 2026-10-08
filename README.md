@@ -179,19 +179,6 @@ your vendor auth. To also pre-approve the vendor APIs and set a fallback, add
 `sandbox.network.allowedDomains` and `allowUnsandboxedCommands` yourself; see the
 [Claude Code sandboxing docs](https://code.claude.com/docs/en/sandboxing).
 
-### Optional: daily drift checks
-
-`bin/agy-daily-check.sh` and `bin/gemini-daily-check.sh` are optional drift
-detectors — they check for CLI / model-list / skill-set drift (for example, a
-Superpowers release for agy, or a gemini extension/skill change). Run them
-occasionally, or wire one up to a daily cron/launchd job; each splits its exit
-code into 0 (no change), 1 (actionable), and 2 (informational).
-`agy-daily-check.sh` runs `agy update` only when passed `--update` (the default
-run never updates) and sends no prompt; when the agy model list changed, its
-report names the removed and added models — check the model pinned in your
-roster entry. Neither is required for normal use — read the scripts' own header comments for exact
-behavior.
-
 ### Recommended companion — Superpowers
 
 *Do this ONLY if you want the implementer / TDD / review workflow skills.*
@@ -204,10 +191,9 @@ https://github.com/obra/superpowers .
 - **codex**: recommended — `triad-cross-family-review` is the capstone of
   `superpowers:subagent-driven-development`.
 - **gemini**: supported — gemini has native skills (`gemini skills`), so
-  Superpowers installs as a companion. The bundled `gemini-daily-check.sh` tracks
-  the installed skill set.
+  Superpowers installs as a companion.
 - **antigravity (agy)**: Superpowers does not yet support the Antigravity CLI — a
-  future update is planned. `agy-daily-check.sh` probes daily for it.
+  future update is planned.
 
 ### Extra verify steps
 
@@ -237,9 +223,7 @@ hardening `env` block and two sidecar files (see
 { "permissions": { "allow": [
   "Bash(codex_wrapper.py:*)",
   "Bash(gemini_wrapper.py:*)",
-  "Bash(antigravity_wrapper.py:*)",
-  "Bash(agy-daily-check.sh:*)",
-  "Bash(gemini-daily-check.sh:*)"
+  "Bash(antigravity_wrapper.py:*)"
 ] } }
 ```
 
@@ -451,23 +435,19 @@ and removes nothing there.
 | machine | `~/.gemini/config/agents/triad-readonly-review.md` and `triad-readonly-research.md` | `bin/antigravity_wrapper.py --setup-agents` | `setup_permissions.py --uninstall-machine` |
 | machine | `~/.gemini/antigravity-cli/.agy_settings.lock` | `--setup-agents`, and on a non-hardened install an agy dispatch without `--sandbox read-only` (the install's default hardened mode makes every dispatch read-only, which takes no lock) | `setup_permissions.py --uninstall-machine` |
 | machine | the agy settings transaction state in `~/.gemini/antigravity-cli/`: `.agybak`, `.agy_settings.shared.json`, `.agy_settings.holders/`, and the temporary `.agybak.tmp` and `.agy_settings.shared.json.tmp` | an agy settings transaction while it runs — the codex-host plugin's deny transaction on the same settings file, or an older build of this plugin; a run that stops early leaves them (this plugin's `--setup-agents` — and, on a non-hardened install, a dispatch without `--sandbox read-only` — only takes the lock and heals what is left) | the transaction when it ends; when `.agybak` or `.agy_settings.shared.json` is left, run `bin/antigravity_wrapper.py --setup-agents` once (it restores the agy settings); `setup_permissions.py --uninstall-machine` removes the rest, and while `.agybak` or `.agy_settings.shared.json` is there it removes none of these and names each one that exists |
-| machine | `~/.gemini/antigravity-cli/triad-daily/` and `~/.gemini/triad-daily/` | `bin/agy-daily-check.sh`, `bin/gemini-daily-check.sh` | `setup_permissions.py --uninstall-machine` |
 | temporary | `$TMPDIR/codex_last_*.txt`, `$TMPDIR/codex_schema_*.json` | each codex dispatch | the wrapper after each call; what is left stays (`setup_permissions.py --uninstall-machine` lists it and removes nothing there) |
 | plugin directory | `bin/_logs/<cli>/` (audit log, run logs, read-audit digests) | every dispatch | the wrappers' rotation, sweep and cap prunes above (a file younger than its role's floor stays); the plugin directory's removal |
 | plugin directory | `bin/_debug/<UTC-date>/` | only with `--debug` | day directories past the `wrapper-debug` floor, by the next `--debug` call; the plugin directory's removal |
 
 - A repair proposal is applied AUTOMATICALLY into the classifier file; nothing
   asks you first.
-- `bin/agy-daily-check.sh` runs `agy update` (it changes your agy install) only
-  when you pass `--update`; a plain run updates nothing and sends no prompt.
 - The plugin may create these directories when they are absent and never
   removes them: `<project>/.claude/`, `<project>/_runs/`, the config home,
   `~/.gemini/`, `~/.gemini/config/`, `~/.gemini/config/agents/`,
   `~/.gemini/antigravity-cli/`.
 - A location you moved with an environment variable (`TRIAD_DISPATCH_LOG_DIR`,
-  `TRIAD_DEBUG_DIR`, `TRIAD_CLASSIFIER_EXTENSION`, `AGY_DAILY_STATE`,
-  `GEMINI_DAILY_STATE`, `AGY_SETTINGS_PATH`, `AGY_AGENTS_DIR`,
-  `TRIAD_READ_AUDIT_FILE`) is yours:
+  `TRIAD_DEBUG_DIR`, `TRIAD_CLASSIFIER_EXTENSION`, `AGY_SETTINGS_PATH`,
+  `AGY_AGENTS_DIR`, `TRIAD_READ_AUDIT_FILE`) is yours:
   nothing removes it. `TRIAD_READ_AUDIT_FILE` names a read-audit file the caller
   chose; the review helper puts it inside the review packet, which `close`
   removes.
@@ -477,7 +457,7 @@ and removes nothing there.
   machine (a second checkout, the source tree): after uninstalling one build,
   run `bin/antigravity_wrapper.py --setup-agents` in the other.
 - The uninstall leaves an item that is a symlink, and a plugin-named directory
-  (`triad-dispatch/`, `triad-daily/`) that is a symlink. A symlinked parent
+  (`triad-dispatch/`) that is a symlink. A symlinked parent
   (`~/.config`, `~/.gemini`) is your layout: the wrappers wrote through it, so
   the uninstall removes through it. The uninstall removes nothing in the shared
   temporary directory.
@@ -518,17 +498,14 @@ they are yours.
    fails. After updating the plugin, run `setup_permissions.py` once, with the
    same `--target` as the install, in each project an earlier version set up: it
    takes out that hook entry.
-3. **Remove the scheduled daily check** — the cron or launchd entry that runs
-   `agy-daily-check.sh` or `gemini-daily-check.sh`, if you made one. Do this
-   BEFORE the next step: a scheduled run writes the daily-check state again.
-4. **ONCE per machine, after the last project**:
+3. **ONCE per machine, after the last project**:
    `python3 <plugin-dir>/scripts/setup_permissions.py --uninstall-machine`. It
    prints `removed <path>` or `left <path>: <reason>` per item (a recorded agy
    settings transaction is left whole, each of its items named); `--dry-run`
    previews it. It removes nothing in the shared temporary directory, which holds
    no record of what is the plugin's: it lists the codex temporary entries there;
    they are yours to remove.
-5. **The host steps.** From a shell:
+4. **The host steps.** From a shell:
 
    ```
    claude plugin uninstall triad-dispatch@triad-dispatch
@@ -543,7 +520,7 @@ they are yours.
    is still installed: when this was your last plugin,
    `~/.claude/plugins/cache/triad-dispatch/` stays. Removing the marketplace
    also uninstalls every plugin installed from it.
-6. **What stays — yours**: the `_runs/review/` and `_runs/worktrees/` lines in `.gitignore`; roster files
+5. **What stays — yours**: the `_runs/review/` and `_runs/worktrees/` lines in `.gitignore`; roster files
    (`.claude/triad-review-legs.json`, `~/.config/triad/review-legs.json`); review
    ledgers under `docs/reviews/`.
 
@@ -553,8 +530,7 @@ they are yours.
   `triad-antigravity-dispatch`, `triad-cross-family-review`.
 - **agents** (9): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`,
   and the six claude review presets (see [Choose the claude review leg's model and effort](#choose-the-claude-review-legs-model-and-effort)).
-- **bin**: the Python wrappers (codex / gemini / agy) + `agy-daily-check.sh` +
-  `gemini-daily-check.sh` + `policies/gemini-readonly.toml` (the per-call
+- **bin**: the Python wrappers (codex / gemini / agy) + `policies/gemini-readonly.toml` (the per-call
   read-only Policy Engine file the gemini `--sandbox read-only` mode attaches).
 - **tests**: stdlib-only wrapper tests you can run as-is to verify the install:
 

@@ -6,9 +6,8 @@ contract of `setup_permissions.py`:
   (1) a fresh --install writes the bare BASENAME wrapper grants (matching the bare
       invocation the dispatch SKILLs emit so dispatch stays promptless),
       the sandbox.excludedCommands (excluded posture), and the wrapper hardening
-      `env` block (TRIAD_WRAPPER_HARDENED / TRIAD_REQUIRE_PINNED_VENDOR / resolved
-      TRIAD_<CLI>_BIN pins / TRIAD_WRAPPER_ALLOWED_ROOTS /
-      TRIAD_AUDIT_REDACT_PROMPTS), and a provenance sidecar records them;
+      `env` block (TRIAD_WRAPPER_HARDENED / TRIAD_WRAPPER_ALLOWED_ROOTS; no
+      vendor pin), and a provenance sidecar records them;
   (2) a second --install is a byte-identical no-op (idempotent);
   (3) a directory --target resolves to <dir>/.claude/settings.json;
   (4) an unrelated settings key + a pre-existing allow entry survive;
@@ -79,7 +78,8 @@ def _load_script():
 setup_permissions = _load_script()
 WRAPPER_SCRIPTS = setup_permissions.WRAPPER_SCRIPTS
 SANDBOX_PATTERNS = setup_permissions.SANDBOX_EXCLUDE_PATTERNS
-VENDOR_CLIS = setup_permissions.VENDOR_CLIS
+# the vendor CLIs whose wrappers this product ships (the fake vendors on PATH)
+VENDOR_CLIS = ("codex", "gemini", "agy")
 
 
 # ── hermetic fixtures ────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ class _Machine:
     `~/.gemini`, the real `~/.config`, or the real system temp dir."""
 
     VARS = ("HOME", "XDG_CONFIG_HOME", "TMPDIR", "TRIAD_CLASSIFIER_EXTENSION",
-            "AGY_DAILY_STATE", "GEMINI_DAILY_STATE", "AGY_SETTINGS_PATH")
+            "AGY_SETTINGS_PATH")
 
     def __init__(self, tmp: Path):
         self.tmp = tmp
@@ -231,13 +231,6 @@ def _plant_machine(m: _Machine) -> dict:
         "agent_research": _touch(g / "config" / "agents" / "triad-readonly-research.md"),
         "agent_tmp": _touch(g / "config" / "agents" / "triad-readonly-review.md.x9.tmp"),
         "agy_lock": _touch(g / "antigravity-cli" / ".agy_settings.lock", ""),
-        "agy_report": _touch(g / "antigravity-cli" / "triad-daily" / "report.md"),
-        "agy_snap": _touch(g / "antigravity-cli" / "triad-daily" / "models.snapshot"),
-        "agy_now": _touch(g / "antigravity-cli" / "triad-daily" / "models.now"),
-        "agy_raw": _touch(g / "antigravity-cli" / "triad-daily" / "changelog.raw"),
-        "gem_report": _touch(g / "triad-daily" / "report.md"),
-        "gem_snap": _touch(g / "triad-daily" / "version.snapshot"),
-        "gem_deep": _touch(g / "triad-daily" / "deep.out"),
     }
     return items
 
@@ -284,12 +277,12 @@ def test_fresh_install_writes_basename_grants_and_hardening():
                 assert pat in excluded, f"missing sandbox exclude: {pat}"
             env = data["env"]
             assert env["TRIAD_WRAPPER_HARDENED"] == "1"
-            assert env["TRIAD_REQUIRE_PINNED_VENDOR"] == "1"
-            assert env["TRIAD_AUDIT_REDACT_PROMPTS"] == "1"
             assert env["TRIAD_WRAPPER_ALLOWED_ROOTS"] == str(e.work.resolve())
-            assert env["TRIAD_CODEX_BIN"] == str((e.vbin / "codex").resolve())
-            assert env["TRIAD_GEMINI_BIN"] == str((e.vbin / "gemini").resolve())
-            assert env["TRIAD_AGY_BIN"] == str((e.vbin / "agy").resolve())
+            # SET-08: the hardened mode already redacts prompts
+            assert "TRIAD_AUDIT_REDACT_PROMPTS" not in env, env
+            assert not any(k == "TRIAD_REQUIRE_PINNED_VENDOR"
+                           or (k.startswith("TRIAD_") and k.endswith("_BIN"))
+                           for k in env), env
             prov = target.parent / setup_permissions.PROVENANCE_NAME
             assert prov.exists(), "install must write a provenance sidecar"
 
@@ -936,9 +929,7 @@ def _left_hook(target: Path, command: str) -> str:
 
 # The env key names the plugin writes (written out here, not read from the
 # script, so a change of the script's set shows in this test).
-PLUGIN_ENV_NAMES = ("TRIAD_WRAPPER_HARDENED", "TRIAD_REQUIRE_PINNED_VENDOR",
-                    "TRIAD_CODEX_BIN", "TRIAD_GEMINI_BIN", "TRIAD_AGY_BIN",
-                    "TRIAD_WRAPPER_ALLOWED_ROOTS", "TRIAD_AUDIT_REDACT_PROMPTS")
+PLUGIN_ENV_NAMES = ("TRIAD_WRAPPER_HARDENED", "TRIAD_WRAPPER_ALLOWED_ROOTS")
 USER_CONTENT = {"model": "opus", "env": {"MY_VAR": "keep-me"},
                 "permissions": {"allow": ["Bash(ls *)"]}}
 
@@ -1024,11 +1015,11 @@ def test_remove_names_every_entry_of_the_plugins_in_no_record():
             _assert_user_content_unnamed(out, e)
             assert target.read_bytes() == before, out
             # one entry: the singular text
-            target.write_text('{"env": {"TRIAD_AUDIT_REDACT_PROMPTS": "1"}}\n',
+            target.write_text('{"env": {"TRIAD_WRAPPER_HARDENED": "1"}}\n',
                               encoding="utf-8")
             rc, out = m.run("--remove", "--target", str(target))
             assert rc == 0, out
-            assert _unrecorded_note(target, ["TRIAD_AUDIT_REDACT_PROMPTS"]) in out, out
+            assert _unrecorded_note(target, ["TRIAD_WRAPPER_HARDENED"]) in out, out
 
 
 def test_a_record_of_every_entry_gets_no_note():
@@ -1161,7 +1152,7 @@ def test_remove_of_a_record_without_entries_that_names_another_file_is_refused()
             _add_an_unrecorded_hook(local)
             # an entry of the plugin's in the default file too: a read would name it
             _touch(claude / "settings.json",
-                   '{"env": {"TRIAD_AUDIT_REDACT_PROMPTS": "1"}}\n')
+                   '{"env": {"TRIAD_WRAPPER_HARDENED": "1"}}\n')
             before = _snapshot(tmp)
             with contextlib.chdir(proj):     # the default target, a relative path
                 rc, out = m.run("--remove")
@@ -1203,9 +1194,7 @@ def test_every_env_key_the_install_writes_is_named():
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         with _Env(tmp) as e, _Machine(tmp) as m:
-            pins, missing = setup_permissions.resolve_vendor_pins()
-            assert missing == [] and len(pins) == len(VENDOR_CLIS), (pins, missing)
-            env = setup_permissions.hardening_env(str(e.work), pins)
+            env = setup_permissions.hardening_env(str(e.work))
             claude = tmp / "proj" / ".claude"
             target = _touch(claude / "settings.json", json.dumps({"env": env}))
             _empty_record(claude)
@@ -1669,8 +1658,7 @@ def test_uninstall_machine_removes_every_item():
                 assert not path.exists(), f"{name} survived: {path}\n{out}"
             for path in (items["patches"], items["agent_review"], items["agy_lock"]):
                 assert f"removed {path}" in out, f"no 'removed {path}' line:\n{out}"
-            for gone in (m.config / "triad-dispatch",
-                         g / "antigravity-cli" / "triad-daily", g / "triad-daily"):
+            for gone in (m.config / "triad-dispatch",):
                 assert not gone.exists(), f"{gone} not removed\n{out}"
             for kept in foreign:
                 assert kept.exists(), f"a file that is not the plugin's was removed: {kept}"
@@ -1693,18 +1681,12 @@ def test_uninstall_machine_leaves_env_override_locations():
         tmp = Path(t)
         with _Machine(tmp) as m:
             ext = _touch(tmp / "mine" / "patches.json", "{}")
-            agyd = _touch(tmp / "mine" / "agyd" / "report.md").parent
-            gemd = _touch(tmp / "mine" / "gemd" / "report.md").parent
             os.environ["TRIAD_CLASSIFIER_EXTENSION"] = str(ext)
-            os.environ["AGY_DAILY_STATE"] = str(agyd)
-            os.environ["GEMINI_DAILY_STATE"] = str(gemd)
             rc, out = m.run("--uninstall-machine")
             assert rc == 0, out
-            for path, var in ((ext, "TRIAD_CLASSIFIER_EXTENSION"),
-                              (agyd, "AGY_DAILY_STATE"), (gemd, "GEMINI_DAILY_STATE")):
+            for path, var in ((ext, "TRIAD_CLASSIFIER_EXTENSION"),):
                 assert path.exists(), f"{path} (set by {var}) was removed"
                 assert f"left {path}: set by {var} (yours)" in out, out
-            assert (agyd / "report.md").exists() and (gemd / "report.md").exists()
 
 
 # ── (B4) the agy settings lock stays while a transaction is recorded ─────────
@@ -1832,11 +1814,11 @@ def test_uninstall_machine_leaves_symlinks():
         tmp = Path(t)
         with _Machine(tmp) as m:
             real = _touch(tmp / "elsewhere" / "real.json", "{}")
-            real_dir = _touch(tmp / "elsewhere" / "daily" / "report.md").parent
+            real_dir = _touch(tmp / "elsewhere" / "patches" / "report.md").parent
             link = m.config / "triad-dispatch" / "classifier-patches.json"
             link.parent.mkdir(parents=True)
             os.symlink(real, link)
-            dlink = m.home / ".gemini" / "triad-daily"
+            dlink = m.home / ".config" / "triad-dispatch"
             dlink.parent.mkdir(parents=True)
             os.symlink(real_dir, dlink)
             tlink = m.systmp / "codex_last_1_zzzzzzzz.txt"
@@ -2071,6 +2053,180 @@ def test_modes_are_mutually_exclusive():
                 assert "not allowed with argument" in out, (pair, out)
 
 
+# ── (E1) --install retires the env keys its record shows an earlier version wrote
+def test_install_retires_recorded_pin_keys():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            prov = target.parent / setup_permissions.PROVENANCE_NAME
+            assert e.install(target) == 0
+            # the settings and the record as an earlier version left them
+            retired = ["TRIAD_REQUIRE_PINNED_VENDOR", "TRIAD_CODEX_BIN",
+                       "TRIAD_AUDIT_REDACT_PROMPTS"]
+            data = json.loads(target.read_text(encoding="utf-8"))
+            record = json.loads(prov.read_text(encoding="utf-8"))
+            data["env"].update({"TRIAD_REQUIRE_PINNED_VENDOR": "1",
+                                "TRIAD_CODEX_BIN": "/old/codex",
+                                "TRIAD_AUDIT_REDACT_PROMPTS": "1", "MY_VAR": "keep"})
+            record["env"] = sorted(set(record["env"]) | set(retired))
+            target.write_text(json.dumps(data), encoding="utf-8")
+            prov.write_text(json.dumps(record), encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                assert e.install(target) == 0
+            out = buf.getvalue()
+            envblock = json.loads(target.read_text(encoding="utf-8"))["env"]
+            assert not {"TRIAD_REQUIRE_PINNED_VENDOR", "TRIAD_CODEX_BIN",
+                        "TRIAD_AUDIT_REDACT_PROMPTS"} & set(envblock), envblock
+            assert envblock["MY_VAR"] == "keep"
+            assert sorted(json.loads(prov.read_text(encoding="utf-8"))["env"]) == [
+                "TRIAD_WRAPPER_ALLOWED_ROOTS", "TRIAD_WRAPPER_HARDENED"]
+            assert ("removed 3 entries an earlier version of the setup wrote: "
+                    "TRIAD_AUDIT_REDACT_PROMPTS, TRIAD_CODEX_BIN, "
+                    "TRIAD_REQUIRE_PINNED_VENDOR\n") in out, out
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                assert e.install(target) == 0
+            assert buf.getvalue().startswith("already up to date"), buf.getvalue()
+
+
+# ── (E3) a run stopped before the settings write still retires the keys later
+def test_install_retires_the_keys_an_interrupted_run_left():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            prov = target.parent / setup_permissions.PROVENANCE_NAME
+            assert e.install(target) == 0
+            # the keys an earlier version wrote and recorded
+            retired = ["TRIAD_REQUIRE_PINNED_VENDOR", "TRIAD_CODEX_BIN"]
+            data = json.loads(target.read_text(encoding="utf-8"))
+            record = json.loads(prov.read_text(encoding="utf-8"))
+            data["env"].update({"TRIAD_REQUIRE_PINNED_VENDOR": "1",
+                                "TRIAD_CODEX_BIN": "/old/codex"})
+            record["env"] = sorted(set(record["env"]) | set(retired))
+            target.write_text(json.dumps(data), encoding="utf-8")
+            prov.write_text(json.dumps(record), encoding="utf-8")
+            # the retiring run stops after the interim record, before the
+            # settings write
+            real_write = setup_permissions.write_atomic
+
+            def fail(target, settings):
+                raise OSError(28, "No space left on device")
+
+            setup_permissions.write_atomic = fail
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    assert e.install(target) != 0
+            finally:
+                setup_permissions.write_atomic = real_write
+            envblock = json.loads(target.read_text(encoding="utf-8"))["env"]
+            assert set(retired) <= set(envblock), envblock
+            record = json.loads(prov.read_text(encoding="utf-8"))
+            assert set(retired) <= set(record["env"]), record
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                assert e.install(target) == 0
+            out = buf.getvalue()
+            assert not set(retired) & set(
+                json.loads(target.read_text(encoding="utf-8"))["env"]), out
+            assert not set(retired) & set(
+                json.loads(prov.read_text(encoding="utf-8"))["env"]), out
+            assert ("removed 2 entries an earlier version of the setup wrote: "
+                    "TRIAD_CODEX_BIN, TRIAD_REQUIRE_PINNED_VENDOR\n") in out, out
+
+
+# ── (E2) a pin key in no record is the user's: --install leaves it ───────────
+def test_unrecorded_pin_key_is_left():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            prov = target.parent / setup_permissions.PROVENANCE_NAME
+            assert e.install(target) == 0
+            data = json.loads(target.read_text(encoding="utf-8"))
+            data["env"]["TRIAD_REQUIRE_PINNED_VENDOR"] = "1"
+            target.write_text(json.dumps(data), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                assert e.install(target) == 0
+            envblock = json.loads(target.read_text(encoding="utf-8"))["env"]
+            assert envblock["TRIAD_REQUIRE_PINNED_VENDOR"] == "1", envblock
+            record = json.loads(prov.read_text(encoding="utf-8"))
+            assert "TRIAD_REQUIRE_PINNED_VENDOR" not in record["env"], record
+
+
+# ── (D1) the grants are the three Python wrappers; no daily check is granted ─
+def test_wrapper_scripts_are_the_three_python_wrappers():
+    module = _load_script()
+    assert module.WRAPPER_SCRIPTS == (
+        "codex_wrapper.py", "gemini_wrapper.py", "antigravity_wrapper.py"), \
+        module.WRAPPER_SCRIPTS
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert e.install(target) == 0
+            data = json.loads(target.read_text(encoding="utf-8"))
+            assert not [x for x in data["permissions"]["allow"]
+                        + data["sandbox"]["excludedCommands"] if "daily" in x], data
+
+
+# ── (D1) --install retires the daily-check grants its record shows it wrote ──
+def test_install_retires_recorded_daily_grants():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            prov = target.parent / setup_permissions.PROVENANCE_NAME
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert e.install(target) == 0
+            # the settings and the record as an earlier version left them
+            data = json.loads(target.read_text(encoding="utf-8"))
+            record = json.loads(prov.read_text(encoding="utf-8"))
+            old_allow = ["Bash(agy-daily-check.sh:*)", "Bash(gemini-daily-check.sh:*)"]
+            old_excl = ["agy-daily-check.sh *", "gemini-daily-check.sh *"]
+            data["permissions"]["allow"] += old_allow + ["Bash(my-own.sh:*)"]
+            data["sandbox"]["excludedCommands"] += old_excl
+            record["allow"] = sorted(set(record["allow"]) | set(old_allow))
+            record["excludedCommands"] = sorted(
+                set(record["excludedCommands"]) | set(old_excl))
+            target.write_text(json.dumps(data), encoding="utf-8")
+            prov.write_text(json.dumps(record), encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                assert e.install(target) == 0
+            out = buf.getvalue()
+            assert ("removed 4 entries an earlier version of the setup wrote: "
+                    "Bash(agy-daily-check.sh:*), Bash(gemini-daily-check.sh:*), "
+                    "agy-daily-check.sh *, gemini-daily-check.sh *\n") in out, out
+            data = json.loads(target.read_text(encoding="utf-8"))
+            record = json.loads(prov.read_text(encoding="utf-8"))
+            assert not [x for x in data["permissions"]["allow"]
+                        + data["sandbox"]["excludedCommands"] if "daily" in x], data
+            assert "Bash(my-own.sh:*)" in data["permissions"]["allow"], data
+            assert not [x for x in record["allow"] + record["excludedCommands"]
+                        if "daily" in x], record
+
+
+# ── (D1) --uninstall-machine leaves a triad-daily folder: it is the user's ───
+def test_uninstall_machine_leaves_triad_daily():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Machine(tmp) as m:
+            g = m.home / ".gemini"
+            kept = [_touch(g / "triad-daily" / "report.md"),
+                    _touch(g / "antigravity-cli" / "triad-daily" / "report.md")]
+            rc, out = m.run("--uninstall-machine")
+            assert rc == 0, out
+            for path in kept:
+                assert path.exists(), f"{path} was removed\n{out}"
+            assert "triad-daily" not in out, out
+
+
 TESTS = [
     test_fresh_install_writes_basename_grants_and_hardening,
     test_second_install_is_idempotent,
@@ -2145,6 +2301,12 @@ TESTS = [
     test_temp_names_match_the_wrapper_shapes_only,
     test_agy_agent_names_match_the_wrapper,
     test_modes_are_mutually_exclusive,
+    test_install_retires_recorded_pin_keys,
+    test_unrecorded_pin_key_is_left,
+    test_install_retires_the_keys_an_interrupted_run_left,
+    test_wrapper_scripts_are_the_three_python_wrappers,
+    test_install_retires_recorded_daily_grants,
+    test_uninstall_machine_leaves_triad_daily,
 ]
 
 

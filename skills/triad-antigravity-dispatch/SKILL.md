@@ -1,8 +1,9 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg; `triad-gemini-dispatch` exists for legacy compatibility with the older gemini CLI); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.16.9
+version: 0.16.10
 # changelog:
+#   0.16.10 (2026-10-08): doc — the daily drift check is removed (owner 2026-10-08 item 9); § Self-healing names two layers.
 #   0.16.9 (2026-10-03): doc — Step 4 `timeout` row names agy's own stderr
 #     line `[agy] print timeout after … returning partial output` (any vendor
 #     rc, partial answer withheld; R-CLASSIFY / C43) as a cause; routing unchanged.
@@ -644,7 +645,7 @@ case block, and the branch-summary table:
 
 ## Self-healing
 
-Three layers keep the agy leg healthy; the leader drives only the first.
+Two layers keep the agy leg healthy; the leader drives only the first.
 
 1. **`agy-wrapper-repair` analyzer (reactive, per call)** — the Step 5 path:
    read-only proposal → deterministic apply → the same vendor error auto-routes
@@ -652,13 +653,8 @@ Three layers keep the agy leg healthy; the leader drives only the first.
 2. **`.agybak` crash-recovery (reactive)** — a permissive-baseline call and
    `--setup-agents` heal a stale settings backup before they run; a read-only
    call enters no settings guard and heals nothing.
-3. **`agy-daily-check.sh` (a manual run; the user may schedule it)** — a drift
-   detector with split exit semantics (`0` no change / `1` actionable / `2`
-   informational), surfaced as a dated report for owner review.
 
-Coverage of layers 2-3, including the leaked-transaction probe:
-[references/isolation.md](references/isolation.md) § Self-healing coverage.
-Daily-check mechanics and flags: the plugin `README.md` § agy daily-check.
+Coverage of layer 2: [references/isolation.md](references/isolation.md) § Self-healing coverage.
 
 ## Path scope
 

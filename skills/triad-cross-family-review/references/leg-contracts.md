@@ -31,18 +31,14 @@ in the rendered argv (the renderer refuses a relative one), and every wrapper
 argv ends with the same tail: `--prompt-file <attempt>/prompt.txt --cwd
 <worktree> --timeout <entry timeout_s> --attempt <K>`.
 
-**Every wrapper line runs with `env TRIAD_REVIEW_ARGV_SHA256=<digest>
-TRIAD_REVIEW_LOG_DIR=<attempt>/logs`, and the wrapper's run-log is the
-attempt's receipt (R-BIND).** The digest is the sha256 of the recorded argv
-(compact ASCII JSON of every token after `python3`). A line that keeps EITHER
-env member is checked by the wrapper before any vendor work: an argv that does
-not hash to the digest, or a missing digest or log dir, is refused with exit 3
-(C32: refused before inference). The line's own redirections have already
-created that attempt's output files, so the same line cannot run again:
-`retry` the entry and run the new attempt's printed line verbatim. A line with
-BOTH env members removed runs as an ordinary call — a recorded known limit
-(owner, 2026-10-03): it writes no receipt and `collect` makes the entry
-INVALID, never agreement. With the log-dir member
+**Every wrapper line runs with `env TRIAD_REVIEW_LOG_DIR=<attempt>/logs`, and the
+wrapper's run-log is the attempt's receipt (R-BIND).** A line edited before it
+ran still runs; `collect` compares its receipt with the recorded argv and
+makes the entry INVALID. A line run without that env member writes no
+receipt, and `collect` makes the entry INVALID too — a recorded known limit
+(owner, 2026-10-03). The line's own redirections have created that attempt's
+output files, so `retry` the entry and run the new attempt's printed line
+verbatim. With the log-dir member
 the wrapper writes its run-log on success too, into `<attempt>/logs/<cli>/runs/`
 (`<cli>` = `codex` / `antigravity` / `gemini`), and its `wrapper_cmd` is the
 argv the wrapper actually ran with. `collect` compares every run-log there with
@@ -62,8 +58,7 @@ this binding (no `run_log` role) names a new round. The wrapper entry's early `a
 admits the answer alone and says so on stderr; the receipt is `collect`'s.
 The native claude spawn has no wrapper and so no receipt (DL-18).
 
-- **codex** — `env TRIAD_REVIEW_ARGV_SHA256=<digest> env
-  TRIAD_REVIEW_LOG_DIR=<attempt>/logs python3
+- **codex** — `env TRIAD_REVIEW_LOG_DIR=<attempt>/logs python3
   <wrappers>/codex_wrapper.py --sandbox read-only
   [--search] [--reasoning <tier>] [--model <slug>] --output-schema-file
   <attempt>/schema.projected.json` + the common tail, redirected to
@@ -73,7 +68,7 @@ The native claude spawn has no wrapper and so no receipt (DL-18).
   a false round, where the wrapper pins `web_search="disabled"`). Never
   `--pydantic`: v2 admission runs on the output FILE, in `verdict_v2.py`.
 - **agy** — `env TRIAD_READ_AUDIT_FILE=<attempt>/read-audit.json env
-  TRIAD_REVIEW_ARGV_SHA256=<digest> env TRIAD_REVIEW_LOG_DIR=<attempt>/logs python3
+  TRIAD_REVIEW_LOG_DIR=<attempt>/logs python3
   <wrappers>/antigravity_wrapper.py --sandbox read-only [--review-web]
   [--model <slug>] [--effort <tier>] --json-schema-file <attempt>/schema.projected.json` + the
   common tail, same redirections. A true `review_web_authorized` adds
@@ -82,8 +77,7 @@ The native claude spawn has no wrapper and so no receipt (DL-18).
   clause — and `prepare` writes the round's hook in its web mode; never the
   investigation `--web` (R-INVEST). The per-attempt read audit is part of
   this entry's contract, gated below.
-- **gemini** — `env TRIAD_REVIEW_ARGV_SHA256=<digest> env
-  TRIAD_REVIEW_LOG_DIR=<attempt>/logs python3
+- **gemini** — `env TRIAD_REVIEW_LOG_DIR=<attempt>/logs python3
   <wrappers>/gemini_wrapper.py --sandbox read-only
   --approval-mode default [--review-web] [--model <slug>]` + the common tail
   (`--review-web` on a true `review_web_authorized`: the complete review web
@@ -906,7 +900,7 @@ renderer's `agy-prompt-r<N>.txt` (pinned by `t4-prepare.sh`). A v2 round's
   manage_task (do not create task lists; keep your plan in your reasoning),
   run_command or any shell, write_to_file / replace_file_content / sed_file,
   send_message, define_subagent / invoke_subagent / manage_subagents,
-  browser_*, read_url_content / search_web — is off-limits. On agy, tools
+  browser_* , read_url_content / search_web — is off-limits. On agy, tools
   outside the five are BLOCKED before they run by a PreToolUse hook in this
   worktree; a blocked call costs you the step and is logged — it does not void
   your review — but you cannot see from inside whether the hook loaded, so

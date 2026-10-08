@@ -98,9 +98,8 @@ version is pinned, so updates keep flowing.
 
 **Floor, not a range — a known over-application.** Once agy eventually RESTORES
 the headless allow-list in some later release, this floor still fires (voiding
-isolation) until a human narrows it to a bounded range. `agy-daily-check.sh`
-tracks the version bump but not the allow-list-restored behavior, so nothing
-auto-detects the narrow trigger; that is a standing residual. The only
+isolation) until a human narrows it to a bounded range. Nothing auto-detects the
+narrow trigger; that is a standing residual. The only
 behavior-adaptive part is the secondary in-loop retry
 (`_is_headless_softdeny`), which fires on the zero-output edge.
 
@@ -241,10 +240,6 @@ than `--cwd`, so hand it absolute paths.
   read-only call enters no guard and heals nothing. SIGTERM/SIGHUP unwind
   handlers (vendor child kill, guard lock release) plus a process-group kill on
   abnormal unwind inside `_common._run_once` cover the vendor subtree.
-- **Leaked-transaction probe.** `agy-daily-check.sh` fires ACTIONABLE on a stale
-  `.agybak` or shared-lease sentinel older than 2h — the SIGKILL-class residual,
-  which would otherwise be healed only at the next guard entry while interactive
-  agy mis-runs silently.
 
 ## Operational notes
 
@@ -258,6 +253,3 @@ than `--cwd`, so hand it absolute paths.
   `antigravity_wrapper.py --setup-agents` (or, on a non-hardened install, a
   permissive call), which heals it.
   Writes are atomic (temp + `os.replace`), so the file is never left half-written.
-- The SIGKILL-class residual window is capped by `agy-daily-check.sh`, which
-  fires ACTIONABLE on a leaked deny transaction (a stale `.agybak` or shared-lease
-  sentinel older than 2h).

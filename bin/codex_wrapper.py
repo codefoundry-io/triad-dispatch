@@ -42,7 +42,6 @@ from _common import (
     _emit_canonical_summary,
     _payload_or_demote,
     _prune_empty_worktrees,
-    _review_argv_refusal,
     _relax_diagnostic_stream,
     load_prompt_text,
     resolve_prompt_file,
@@ -191,11 +190,6 @@ def _main(ctx: dict) -> int:
     if args.attempt < 1:
         log(f"--attempt must be >= 1 (got {args.attempt})")
         return EXIT_ARG_ERROR
-    _refused = _review_argv_refusal()
-    if _refused is not None:  # C32: an edited review line, before any vendor work
-        log(_refused)
-        return EXIT_ARG_ERROR
-
     # C28: resolve the (possibly relative) --prompt-file once so the absolute
     # path can be RECORDED on the summary line and in the audit/run-log
     # records. load_prompt_text() re-resolves the same way and reads the text.

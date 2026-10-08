@@ -43,7 +43,6 @@ from _common import (
     _payload_or_demote,
     _relax_diagnostic_stream,
     _summary_tail,
-    _review_argv_refusal,
     _wrapper_hardened,
     validate_wrapper_cwd,
     load_prompt_text,
@@ -440,11 +439,6 @@ def _main(ctx: dict) -> int:
     if args.attempt < 1:
         log(f"--attempt must be >= 1 (got {args.attempt})")
         return EXIT_ARG_ERROR
-    _refused = _review_argv_refusal()
-    if _refused is not None:  # C32: an edited review line, before any vendor work
-        log(_refused)
-        return EXIT_ARG_ERROR
-
     # C28: resolve the (possibly relative) --prompt-file once so the absolute
     # path can be RECORDED on the summary line and in the audit/run-log
     # records. load_prompt_text() re-resolves the same way and reads the text.
@@ -552,11 +546,10 @@ def _main(ctx: dict) -> int:
     if (args.sandbox == "workspace-write" or args.approval_mode == "auto_edit") \
             and not args.cwd:
         # Write-posture directory precondition (owner ruling 2026-08-26,
-        # closing the codex/claude symmetry gap): a write-enabled dispatch's
+        # closing the codex symmetry gap): a write-enabled dispatch's
         # blast radius must be an isolated directory, never the wrapper's
-        # inherited cwd — claude_wrapper (workspace-write) already carries the
-        # same guard, and so does codex_wrapper (workspace-write); gemini was
-        # the one write-capable wrapper without it. The read-only/auto_edit CONFLICT
+        # inherited cwd — codex_wrapper (workspace-write) already carries the
+        # same guard; gemini was the one write-capable wrapper without it. The read-only/auto_edit CONFLICT
         # above still fires first (more specific diagnosis).
         log("--sandbox workspace-write / --approval-mode auto_edit requires --cwd "
             "(write-enabled dispatch: the blast radius must be an isolated "

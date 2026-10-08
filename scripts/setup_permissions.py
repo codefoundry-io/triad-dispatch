@@ -17,7 +17,7 @@ the Bash sandbox so they can reach the vendor APIs with your auth):
     grant is by the script's NAME: it runs a script of that name without asking.
     The plugin's environment assumes one operator and nothing planted on PATH;
     the wrappers themselves contain --prompt-file / --image / --cwd in the
-    allowed roots and pin the vendor binary under the hardening env below.
+    allowed roots under the hardening env below.
   * `sandbox.excludedCommands` — the space-glob form (`codex_wrapper.py *`) that
     runs the wrappers outside the Bash sandbox if you enable it. Harmless when the
     sandbox is off; the same bare basename form as the allow grant, so both match
@@ -27,10 +27,11 @@ the Bash sandbox so they can reach the vendor APIs with your auth):
     subprocesses outside the sandbox — docs.claude.com/en/settings "env" +
     /en/sandboxing "excludedCommands ... runs outside the sandbox"):
       TRIAD_WRAPPER_HARDENED=1        contain --prompt-file/--cwd/--image in roots
-      TRIAD_REQUIRE_PINNED_VENDOR=1   refuse a PATH-planted vendor binary
-      TRIAD_<CLI>_BIN=<abs>           the resolved vendor pin (codex/gemini/agy)
+                                      and redact prompt text from the audit log
       TRIAD_WRAPPER_ALLOWED_ROOTS=…   the workspace root the wrappers may touch
-      TRIAD_AUDIT_REDACT_PROMPTS=1    redact prompt text from the audit log
+    An `--install` removes the entries its record shows an earlier version
+    wrote and this version no longer writes; an entry in no record is yours
+    and stays.
 
 An `--install` writes no hook. It takes out the `hooks.PreToolUse` handlers an
 earlier version of the plugin wrote and its record lists: such a handler is
@@ -97,7 +98,7 @@ Usage:
                     Once per machine, after --remove in every project: delete
                     the plugin's files outside any project (the classifier
                     patches, the two agy agent files, the agy settings lock and
-                    transaction residue, the daily-check state); prints
+                    transaction residue); prints
                     `removed` / `left <path>: <reason>` per item — while an agy
                     settings transaction is recorded, every item of it is left
                     and named. Nothing in the
@@ -121,27 +122,17 @@ import fnmatch
 import json
 import os
 import re
-import shutil
 import stat
 import sys
 import tempfile
+from collections.abc import Collection
 from pathlib import Path
-
-# The vendor CLIs whose wrappers this (claude-host) product ships. claude is the
-# leader here, not a worker, so it is intentionally absent. Each name is the
-# vendor binary the matching wrapper execs (antigravity_wrapper.py -> `agy`).
-VENDOR_CLIS = ("codex", "gemini", "agy")
-
-# The env key of a vendor pin: TRIAD_<CLI>_BIN.
-_PIN_NAME = "TRIAD_{}_BIN"
 
 # The shipped wrapper scripts that get a basename Bash grant.
 WRAPPER_SCRIPTS = (
     "codex_wrapper.py",
     "gemini_wrapper.py",
     "antigravity_wrapper.py",
-    "agy-daily-check.sh",
-    "gemini-daily-check.sh",
 )
 
 # The same wrappers in the space-glob form `sandbox.excludedCommands` uses: the
@@ -163,8 +154,6 @@ PROVENANCE_VERSION = 2
 # --setup-agents` writes (its AGY_REVIEW_AGENT / AGY_RESEARCH_AGENT), duplicated
 # so this script never imports the wrapper engine — a shipped test compares them.
 AGY_AGENT_NAMES = ("triad-readonly-review", "triad-readonly-research")
-# The known file set of the two daily-check scripts' state directories.
-DAILY_STATE_FILES = ("report.md", "*.snapshot", "*.now", "changelog.raw", "deep.out")
 # The exact names Python's `tempfile` gives the wrappers' calls in
 # codex_wrapper.py (`mkstemp(prefix=f"codex_last_{pid}_", suffix=".txt")`,
 # `mkstemp(prefix=f"codex_schema_{pid}_", suffix=".json")`): the prefix, 8
@@ -250,35 +239,33 @@ def wrapper_grant_entries(bin_dir: Path) -> list[str]:
     return [f"Bash({name}:*)" for name in WRAPPER_SCRIPTS]
 
 
-def resolve_vendor_pins() -> tuple[dict[str, str], list[str]]:
-    """Resolve TRIAD_<CLI>_BIN pins for the installed vendors.
-
-    Returns (pins, missing): `pins` maps the env var name to the resolved,
-    canonical absolute path for each vendor found on PATH; `missing` lists the
-    vendors not found (their wrappers fail closed under TRIAD_REQUIRE_PINNED_VENDOR
-    until a re-run resolves them).
-    """
-    pins: dict[str, str] = {}
-    missing: list[str] = []
-    for cli in VENDOR_CLIS:
-        found = shutil.which(cli)
-        if found:
-            pins[_PIN_NAME.format(cli.upper())] = str(Path(found).resolve())
-        else:
-            missing.append(cli)
-    return pins, missing
-
-
-def hardening_env(allowed_roots: str, pins: dict[str, str]) -> dict[str, str]:
+def hardening_env(allowed_roots: str) -> dict[str, str]:
     """The full `env` block this installer authors (insertion-ordered)."""
-    env = {
+    return {
         "TRIAD_WRAPPER_HARDENED": "1",
-        "TRIAD_REQUIRE_PINNED_VENDOR": "1",
+        "TRIAD_WRAPPER_ALLOWED_ROOTS": allowed_roots,
     }
-    env.update(pins)
-    env["TRIAD_WRAPPER_ALLOWED_ROOTS"] = allowed_roots
-    env["TRIAD_AUDIT_REDACT_PROMPTS"] = "1"
-    return env
+
+
+def _retire_unwanted(box: dict | list | None, recorded: list[str],
+                     wanted: Collection[str]) -> tuple[list[str], list[str]]:
+    """Retire what an earlier version wrote and this version no longer writes.
+
+    Returns (dropped, removed), each sorted: `dropped` = the `recorded` entries
+    not in `wanted` (they leave the record); `removed` = those of them present
+    in `box` and now taken out of it (a dict: the key; a list: the item). An
+    entry in `box` that is not in `recorded` is never touched: it is the user's.
+    """
+    dropped = sorted(set(recorded) - set(wanted))
+    removed = []
+    for entry in dropped:
+        if isinstance(box, dict) and entry in box:
+            del box[entry]
+            removed.append(entry)
+        elif isinstance(box, list) and entry in box:
+            box[:] = [item for item in box if item != entry]
+            removed.append(entry)
+    return dropped, removed
 
 
 # ── settings IO (O_NOFOLLOW read, flock, atomic write) ───────────────────────
@@ -482,7 +469,7 @@ def merge_env(container: dict, desired: dict, prior_env_keys: set,
     """Merge the hardening env into settings['env'].
 
     Returns (added_keys, updated_keys, foreign_keys). A key we previously authored
-    is UPDATED to the current value (e.g. a moved vendor pin); a key present but
+    is UPDATED to the current value (e.g. moved allowed roots); a key present but
     NOT authored by us is treated as the user's, left untouched, and returned as
     `foreign` so the caller can warn.
     """
@@ -553,8 +540,7 @@ def _report_unrecorded(target: Path, settings: dict, record: dict) -> None:
         box = settings.get(key)
         return (box.get(sub) if isinstance(box, dict) else None) if sub else box
 
-    env_names = list(hardening_env(
-        "", {_PIN_NAME.format(cli.upper()): "" for cli in VENDOR_CLIS}))
+    env_names = list(hardening_env(""))
     yours = [entry for present, kind, names, recorded in (
         (member("permissions", "allow"), list,
          [f"Bash({n}:*)" for n in WRAPPER_SCRIPTS], record["allow"]),
@@ -652,8 +638,7 @@ def remove_authored(settings: dict, record: dict) -> int:
 def do_install(target: Path, bin_dir: Path, allowed_roots: str,
                dry_run: bool) -> int:
     grants = wrapper_grant_entries(bin_dir)
-    pins, missing = resolve_vendor_pins()
-    desired_env = hardening_env(allowed_roots, pins)
+    desired_env = hardening_env(allowed_roots)
 
     lock_fd = _open_lock(target, create=not dry_run)
     try:
@@ -701,6 +686,15 @@ def do_install(target: Path, bin_dir: Path, allowed_roots: str,
         prior_env_keys = set(prior.get("env", []))
         added_env, updated_env, foreign_env = merge_env(
             settings, desired_env, prior_env_keys, created_containers)
+        # the entries an earlier version wrote and this one no longer writes
+        dropped_allow, removed_allow = _retire_unwanted(
+            permissions.get("allow"), prior["allow"], grants)
+        dropped_excl, removed_excl = _retire_unwanted(
+            sandbox.get("excludedCommands"), prior["excludedCommands"],
+            SANDBOX_EXCLUDE_PATTERNS)
+        dropped_env, removed_env = _retire_unwanted(
+            settings["env"], prior["env"], desired_env)
+        removed = removed_allow + removed_excl + removed_env
 
         # The hook commands an earlier version wrote are pinned inside its
         # versioned cache dir, which the host deletes later: take them out.
@@ -714,10 +708,12 @@ def do_install(target: Path, bin_dir: Path, allowed_roots: str,
         our_env_keys = set(desired_env) - set(foreign_env)
         authored = {
             "version": PROVENANCE_VERSION,
-            "allow": sorted(set(prior["allow"]) | set(added_allow)),
+            "allow": sorted((set(prior["allow"]) - set(dropped_allow))
+                            | set(added_allow)),
             "excludedCommands": sorted(
-                set(prior["excludedCommands"]) | set(added_sandbox)),
-            "env": sorted(set(prior["env"]) | our_env_keys),
+                (set(prior["excludedCommands"]) - set(dropped_excl))
+                | set(added_sandbox)),
+            "env": sorted((set(prior["env"]) - set(dropped_env)) | our_env_keys),
             "hooks_pretooluse": [],
             "created_containers": sorted(set(created_containers)),
             "created_settings_file": bool(
@@ -731,7 +727,7 @@ def do_install(target: Path, bin_dir: Path, allowed_roots: str,
         # block are never empty) — so the settings file is written only when
         # `changed` is true.
         changed = bool(added_allow or added_sandbox or added_env or updated_env
-                       or replaced_hooks)
+                       or replaced_hooks or removed)
         # also (re)write if the provenance record drifted from the desired set
         prov_drift = _normalize_provenance(authored) != prior
 
@@ -743,8 +739,12 @@ def do_install(target: Path, bin_dir: Path, allowed_roots: str,
 
         if dry_run:
             _report_install(target, added_allow, added_sandbox,
-                            added_env, updated_env, foreign_env, missing,
+                            added_env, updated_env, foreign_env,
                             verb="would add")
+            if removed:
+                print(f"{'would remove' if dry_run else 'removed'} {len(removed)} "
+                      f"{'entry' if len(removed) == 1 else 'entries'} an earlier "
+                      f"version of the setup wrote: {', '.join(removed)}")
             if replaced_hooks:
                 print(f"would remove {replaced_hooks} hook path(s) of a previous version")
             if not changed:
@@ -753,16 +753,25 @@ def do_install(target: Path, bin_dir: Path, allowed_roots: str,
 
         # The record is written first, so an interrupted run leaves a record
         # of everything that may be in the settings file: the interim record
-        # still lists the earlier hook commands this write takes out.
-        interim = dict(authored, hooks_pretooluse=list(prior["hooks_pretooluse"]))
+        # still lists the earlier hook commands and the entries this write
+        # takes out.
+        interim = dict(authored, hooks_pretooluse=list(prior["hooks_pretooluse"]),
+                       allow=sorted(set(authored["allow"]) | set(dropped_allow)),
+                       excludedCommands=sorted(
+                           set(authored["excludedCommands"]) | set(dropped_excl)),
+                       env=sorted(set(authored["env"]) | set(dropped_env)))
         _write_provenance(target, interim)
         if changed:     # a run that changes the record alone leaves the file as it is
             write_atomic(target, settings)
         if interim != authored:
             _write_provenance(target, authored)
         _report_install(target, added_allow, added_sandbox,
-                        added_env, updated_env, foreign_env, missing,
+                        added_env, updated_env, foreign_env,
                         verb="added")
+        if removed:
+            print(f"{'would remove' if dry_run else 'removed'} {len(removed)} "
+                  f"{'entry' if len(removed) == 1 else 'entries'} an earlier "
+                  f"version of the setup wrote: {', '.join(removed)}")
         if replaced_hooks:
             print(f"removed {replaced_hooks} hook path(s) of a previous version")
         if not changed:
@@ -1013,13 +1022,6 @@ def do_uninstall_machine(dry_run: bool) -> int:
         _sweep(cli, (".agy_settings.lock", ".agybak.tmp",
                      ".agy_settings.shared.json.tmp"), dry_run, rmdir=False)
         _sweep(cli / ".agy_settings.holders", ("*",), dry_run, rmdir=True)
-    for var, default in (("AGY_DAILY_STATE", cli / "triad-daily"),
-                         ("GEMINI_DAILY_STATE", gemini / "triad-daily")):
-        moved = os.environ.get(var)
-        if moved:
-            print(f"left {moved}: set by {var} (yours)")
-        if not moved or os.path.abspath(moved) != str(default):
-            _sweep(default, DAILY_STATE_FILES, dry_run, rmdir=True)
     # The shared temp dir holds no record of what is the plugin's: nothing is
     # removed there, the user's entries of the wrappers' name shapes are listed.
     try:
@@ -1044,7 +1046,7 @@ def do_uninstall_machine(dry_run: bool) -> int:
 
 
 def _report_install(target, added_allow, added_sandbox, added_env, updated_env,
-                    foreign_env, missing, verb: str) -> None:
+                    foreign_env, verb: str) -> None:
     if added_allow:
         print(f"{verb} {len(added_allow)} permissions.allow grant"
               f"{'' if len(added_allow) == 1 else 's'} to {target}:")
@@ -1060,10 +1062,6 @@ def _report_install(target, added_allow, added_sandbox, added_env, updated_env,
         print(f"note: left your own env var(s) untouched ({', '.join(foreign_env)}); "
               "not overwriting a value you set. Remove them if you want the "
               "hardening default.", file=sys.stderr)
-    if missing:
-        print(f"note: vendor(s) not found on PATH ({', '.join(missing)}); their "
-              "wrappers fail closed under TRIAD_REQUIRE_PINNED_VENDOR until you "
-              "install them and re-run --install.", file=sys.stderr)
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────

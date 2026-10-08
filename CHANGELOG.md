@@ -1,6 +1,23 @@
 # Changelog
 
-## 0.2.1542 — 2026-10-08
+## 0.2.1551 — 2026-10-08
+
+**The daily drift checks are removed.** `bin/agy-daily-check.sh` and
+`bin/gemini-daily-check.sh` no longer ship; remove a cron or launchd entry you made for them. Run
+`scripts/setup_permissions.py` once in each project an earlier version set up: it removes the two scripts' grants
+its record shows it wrote. `--uninstall-machine` no longer removes `~/.gemini/antigravity-cli/triad-daily/` or
+`~/.gemini/triad-daily/`; a folder left there is yours to delete.
+
+**Setup no longer pins the vendor binaries.** `scripts/setup_permissions.py --install` writes
+`TRIAD_WRAPPER_HARDENED` and `TRIAD_WRAPPER_ALLOWED_ROOTS` only (the hardened mode already redacts prompts);
+run it once in each project an earlier version set up and it removes the `TRIAD_REQUIRE_PINNED_VENDOR`,
+`TRIAD_<CLI>_BIN` and `TRIAD_AUDIT_REDACT_PROMPTS` keys its record shows it wrote. The wrappers run the vendor
+CLI found on PATH, and `--pydantic` needs no opt-in under the hardened mode.
+
+**Cross-family review — the review line carries no argv digest.** A wrapper review line's env is
+`TRIAD_REVIEW_LOG_DIR` (agy adds `TRIAD_READ_AUDIT_FILE`); an edited line runs and `collect` refuses it by its
+executed-command receipt. An attempt an earlier version prepared and left without a verdict is not adopted
+by `retry`: prepare a new round.
 
 **The small review path is no longer shipped.** `skills/triad-cross-family-review/lib/review_small.py` and `small/`
 are gone; review rounds use `review_scratch.py prepare --v2`. Close any open small-path round with

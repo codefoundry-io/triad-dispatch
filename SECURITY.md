@@ -72,25 +72,13 @@ plus owner review of the applied deltas, not claimed as a hard deterministic con
 
 ## Per-product enforcement
 
-The two products enforce the read/write split with different mechanisms, matching
-their host:
+The plugin enforces the read/write split with its host's mechanism:
 
 - **claude-host** (Claude Code leader). The repair analyzer runs IN-SESSION as a
   subagent whose tool allowlist is **harness-enforced** to `Read, Grep, Glob` —
   no Write, Edit, Bash, or network. It literally cannot write. It returns the
   inline proposal; the leader applies it by running `bin/apply_patch.py`. The
   privilege boundary is the harness tool allowlist plus the deterministic applier.
-
-- **codex-host** (codex leader). A codex subagent inherits the leader's sandbox
-  and cannot be confined by an agent file, so this product ships **no in-session
-  repair worker at all**. Instead, on a novel `unknown` error the dispatch SKILL
-  surfaces a top-level `codex exec -s read-only` analyzer command the owner runs
-  in a **fresh terminal**. `-s read-only` is a hard read-only sandbox — the
-  analyzer cannot write — and its proposal is piped to `bin/apply_patch.py`, the
-  same deterministic applier. The generated profile also pins
-  `features.multi_agent = false` as a defensive backstop so no stray subagent can
-  be spawned. The privilege boundary is the top-level read-only sandbox plus the
-  deterministic applier.
 
 ## Project-agent shadow (claude-host) — a second confused-deputy path
 
@@ -120,14 +108,9 @@ The mitigation is two-layered:
   that needs no plugin name and also covers the source/dev repo (project agent,
   no scoping).
 
-The **codex-host** product is structurally immune to this path: it spawns no
-named in-session subagent at all — the analyzer is a top-level
-`codex exec -s read-only` command in a fresh terminal — so there is no
-`subagent_type` a project agent could override.
-
 ## Intent-gated broad-capability surface (accepted residual)
 
-The leader (Claude Code, or codex) is **user-driven**, and this toolkit lets it
+The leader (Claude Code) is **user-driven**, and this toolkit lets it
 dispatch a wrapper with broad arguments once the install leg allow-lists the
 wrapper command (so the user is not re-prompted on every dispatch). That broad,
 promptless capability is a **documented residual, deliberately not hardened**.
@@ -150,20 +133,11 @@ the leader, and a poisoned parent-start environment), not at the user:
 - **Wrapper roots-containment** — `--prompt-file` / `--image` / `--cwd` are
   confined to the configured workspace roots by the shared engine, regardless of
   which product runs it.
-- **Pinned vendor binary** — `TRIAD_REQUIRE_PINNED_VENDOR=1` + `TRIAD_<CLI>_BIN`
-  resolve the real vendor, defeating a workspace-planted same-named binary.
-- **Audit redaction** — `TRIAD_AUDIT_REDACT_PROMPTS=1` keeps prompt/stream text
-  out of the durable audit.
 - **claude-host** — no layer of its own. The basename Bash grant
   (`Bash(codex_wrapper.py:*)`) runs a script of that name without asking; the
   plugin's environment assumes one operator and nothing planted on PATH. The
-  wrappers contain `--prompt-file` / `--image` / `--cwd` in the allowed roots and
-  pin the vendor binary under the hardening env (`TRIAD_WRAPPER_HARDENED=1`,
-  `TRIAD_REQUIRE_PINNED_VENDOR=1`) that the setup writes.
-- **codex-host** — `[shell_environment_policy] inherit = "core"` in the merged
-  config drops loader/interpreter injection vars (`LD_PRELOAD`, `NODE_OPTIONS`,
-  `PYTHONPATH`, …) from every subprocess codex spawns, closing the
-  parent-start-env boundary the launcher's own scrub cannot reach.
+  wrappers contain `--prompt-file` / `--image` / `--cwd` in the allowed roots under
+  the hardening env (`TRIAD_WRAPPER_HARDENED=1`) that the setup writes.
 
 Those layers are the security posture. The broad promptless capability is the one
 item we accept and document rather than harden, because its only reachable abuse

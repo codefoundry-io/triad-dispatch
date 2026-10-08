@@ -175,18 +175,6 @@ effort 상한 — 은 preset 의 고정값보다 우선합니다. 각 subagent �
 `sandbox.network.allowedDomains` 와 `allowUnsandboxedCommands` 를 직접
 추가하세요; [Claude Code 샌드박스 문서](https://code.claude.com/docs/en/sandboxing) 참고.
 
-### 선택: daily drift check
-
-`bin/agy-daily-check.sh` 와 `bin/gemini-daily-check.sh` 는 선택적 drift
-detector 입니다 — CLI / 모델 목록 / skill 세트 drift(예: agy 용 Superpowers
-출시나 gemini extension/skill 변경)를 확인합니다. 가끔 실행하거나 daily
-cron/launchd job 으로 연결하세요; 각각 exit code 를 0(변화 없음),
-1(조치 필요), 2(정보성)로 나눕니다. `agy-daily-check.sh` 는 `--update` 를
-줄 때만 `agy update` 를 실행하고(기본 실행은 업데이트하지 않음) 프롬프트를
-보내지 않습니다; agy 모델 목록이 바뀌면 보고서에 제거·추가된 모델을
-적으니, roster 항목에 고정한 모델을 확인하세요. 일반 사용에는 필요 없습니다 — 정확한
-동작은 스크립트 자체의 헤더 주석을 참고하세요.
-
 ### 권장 동반 도구 — Superpowers
 
 *implementer / TDD / 리뷰 워크플로 skill 을 원할 때만.* Superpowers 는 이 툴킷과
@@ -198,11 +186,9 @@ https://github.com/obra/superpowers .
 - **codex**: 권장 — `triad-cross-family-review` 는
   `superpowers:subagent-driven-development` 의 마무리(capstone)입니다.
 - **gemini**: 지원 — gemini 는 네이티브 skills (`gemini skills`)를 갖추어
-  Superpowers 를 동반 설치합니다. 동봉된 `gemini-daily-check.sh` 가 설치된 skill
-  세트를 추적합니다.
+  Superpowers 를 동반 설치합니다.
 - **antigravity (agy)**: Superpowers 는 Antigravity CLI 를 아직 지원하지
-  않습니다 — 향후 업데이트가 예정되어 있습니다. `agy-daily-check.sh` 가 매일
-  탐지합니다.
+  않습니다 — 향후 업데이트가 예정되어 있습니다.
 
 ### 추가 검증 단계
 
@@ -231,9 +217,7 @@ https://github.com/obra/superpowers .
 { "permissions": { "allow": [
   "Bash(codex_wrapper.py:*)",
   "Bash(gemini_wrapper.py:*)",
-  "Bash(antigravity_wrapper.py:*)",
-  "Bash(agy-daily-check.sh:*)",
-  "Bash(gemini-daily-check.sh:*)"
+  "Bash(antigravity_wrapper.py:*)"
 ] } }
 ```
 
@@ -443,20 +427,17 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
 | 머신 | `~/.gemini/config/agents/triad-readonly-review.md` 와 `triad-readonly-research.md` | `bin/antigravity_wrapper.py --setup-agents` | `setup_permissions.py --uninstall-machine` |
 | 머신 | `~/.gemini/antigravity-cli/.agy_settings.lock` | `--setup-agents`, 그리고 하드닝되지 않은 설치에서 `--sandbox read-only` 가 아닌 agy 디스패치 (설치 기본값인 하드닝 모드에서는 모든 디스패치가 읽기 전용이 되어 잠금을 잡지 않음) | `setup_permissions.py --uninstall-machine` |
 | 머신 | `~/.gemini/antigravity-cli/` 의 agy 설정 트랜잭션 상태: `.agybak`, `.agy_settings.shared.json`, `.agy_settings.holders/`, 그리고 임시 파일 `.agybak.tmp`, `.agy_settings.shared.json.tmp` | agy 설정 트랜잭션이 실행되는 동안 — 같은 설정 파일을 쓰는 codex-host 플러그인의 deny 트랜잭션, 또는 이 플러그인의 이전 빌드; 도중에 멈춘 실행은 이를 남김 (이 플러그인의 `--setup-agents` 와, 하드닝되지 않은 설치에서 `--sandbox read-only` 가 아닌 디스패치는 잠금만 잡고 남은 것을 되돌림) | 트랜잭션이 끝날 때; `.agybak` 이나 `.agy_settings.shared.json` 이 남아 있으면 `bin/antigravity_wrapper.py --setup-agents` 를 한 번 실행 (agy 설정을 되돌림); 나머지는 `setup_permissions.py --uninstall-machine` 이 지우며, `.agybak` 이나 `.agy_settings.shared.json` 이 있는 동안에는 이 중 아무것도 지우지 않고 있는 항목마다 이름을 알림 |
-| 머신 | `~/.gemini/antigravity-cli/triad-daily/` 와 `~/.gemini/triad-daily/` | `bin/agy-daily-check.sh`, `bin/gemini-daily-check.sh` | `setup_permissions.py --uninstall-machine` |
 | 임시 | `$TMPDIR/codex_last_*.txt`, `$TMPDIR/codex_schema_*.json` | codex 디스패치마다 | 호출이 끝날 때 wrapper 가 지움; 남은 것은 남음 (`setup_permissions.py --uninstall-machine` 은 목록만 출력하고 그곳에서는 아무것도 지우지 않음) |
 | 플러그인 디렉터리 | `bin/_logs/<cli>/` (audit log, run log, read-audit digest) | 디스패치마다 | 위의 rotation, sweep, cap prune (role 의 floor 보다 새 파일은 남음); 플러그인 디렉터리 삭제 |
 | 플러그인 디렉터리 | `bin/_debug/<UTC-date>/` | `--debug` 를 줄 때만 | `wrapper-debug` floor 를 지난 날짜 디렉터리는 다음 `--debug` 호출이 지움; 플러그인 디렉터리 삭제 |
 
 - repair 제안은 classifier 파일에 **자동으로** 적용됩니다. 먼저 묻지 않습니다.
-- `bin/agy-daily-check.sh` 는 `--update` 를 줄 때만 `agy update` 를 실행합니다
-  (agy 설치가 바뀝니다). 옵션 없이 실행하면 업데이트하지 않고 프롬프트도 보내지 않습니다.
 - 플러그인은 다음 디렉터리가 없으면 만들 수 있고, 지우지는 않습니다:
   `<project>/.claude/`, `<project>/_runs/`, config home, `~/.gemini/`,
   `~/.gemini/config/`, `~/.gemini/config/agents/`, `~/.gemini/antigravity-cli/`.
 - 환경 변수로 옮긴 위치(`TRIAD_DISPATCH_LOG_DIR`, `TRIAD_DEBUG_DIR`,
-  `TRIAD_CLASSIFIER_EXTENSION`, `AGY_DAILY_STATE`, `GEMINI_DAILY_STATE`,
-  `AGY_SETTINGS_PATH`, `AGY_AGENTS_DIR`, `TRIAD_READ_AUDIT_FILE`)는 사용자의 것이며, 어떤 단계도
+  `TRIAD_CLASSIFIER_EXTENSION`, `AGY_SETTINGS_PATH`, `AGY_AGENTS_DIR`,
+  `TRIAD_READ_AUDIT_FILE`)는 사용자의 것이며, 어떤 단계도
   지우지 않습니다. `TRIAD_READ_AUDIT_FILE` 은 호출한 쪽이 정한 read-audit 파일이며,
   리뷰 도우미는 이를 리뷰 packet 안에 두므로 `close` 가 지웁니다.
 - 파일을 쓰는 동안에는 비슷한 이름의 임시 파일이 잠깐 옆에 생깁니다. 정상적으로
@@ -465,7 +446,7 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
   트리)가 함께 씁니다. 한 빌드를 제거한 뒤에는 다른 빌드에서
   `bin/antigravity_wrapper.py --setup-agents` 를 실행하세요.
 - 제거 단계는 심볼릭 링크인 항목과, 심볼릭 링크인 플러그인 이름의 디렉터리
-  (`triad-dispatch/`, `triad-daily/`)를 남깁니다. 심볼릭 링크인 상위 디렉터리
+  (`triad-dispatch/`)를 남깁니다. 심볼릭 링크인 상위 디렉터리
   (`~/.config`, `~/.gemini`)는 사용자의 구성입니다: wrapper 가 그 경로를 거쳐
   썼으므로 제거 단계도 그 경로를 거쳐 지웁니다. 제거 단계는 공유 임시 디렉터리에서
   아무것도 지우지 않습니다.
@@ -501,17 +482,14 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
    그 디렉터리를 지우면 그 프로젝트의 모든 셸 명령이 실패합니다. 플러그인을 업데이트한
    뒤에는 이전 버전이 설정한 프로젝트마다 설치 때와 같은 `--target` 으로
    `setup_permissions.py` 를 한 번 실행하세요: 그 hook 항목을 지워 줍니다.
-3. **예약된 daily check 지우기** — `agy-daily-check.sh` 나 `gemini-daily-check.sh`
-   를 실행하는 cron 또는 launchd 항목을 만들었다면 지우세요. 다음 단계보다 **먼저**
-   하세요: 예약된 실행이 daily check 상태를 다시 씁니다.
-4. **마지막 프로젝트 다음에, 머신당 한 번**:
+3. **마지막 프로젝트 다음에, 머신당 한 번**:
    `python3 <plugin-dir>/scripts/setup_permissions.py --uninstall-machine`. 항목마다
    `removed <path>` 또는 `left <path>: <reason>` 을 출력하며 (기록된 agy 설정
    트랜잭션은 통째로 남기고 그 항목마다 이름을 알림), `--dry-run` 으로 미리
    볼 수 있습니다. 공유 임시 디렉터리에는 무엇이 플러그인의 것인지 기록이 없어서
    아무것도 지우지 않고, 그곳의 codex 임시 항목을 목록으로만 알려 줍니다; 그
    항목은 사용자가 지웁니다.
-5. **호스트 단계.** 셸에서:
+4. **호스트 단계.** 셸에서:
 
    ```
    claude plugin uninstall triad-dispatch@triad-dispatch
@@ -525,7 +503,7 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
    지우는데, 이 정리는 설치된 플러그인이 하나 이상 남아 있을 때만 돕니다. 이것이
    마지막 플러그인이었다면 `~/.claude/plugins/cache/triad-dispatch/` 는
    남습니다. marketplace 를 제거하면 거기서 설치한 플러그인도 모두 제거됩니다.
-6. **남는 것 — 사용자의 것**: `.gitignore` 의 `_runs/review/` 와 `_runs/worktrees/` 줄; roster 파일 (`.claude/triad-review-legs.json`,
+5. **남는 것 — 사용자의 것**: `.gitignore` 의 `_runs/review/` 와 `_runs/worktrees/` 줄; roster 파일 (`.claude/triad-review-legs.json`,
    `~/.config/triad/review-legs.json`); `docs/reviews/` 아래 리뷰 ledger.
 
 ## 구성 (What's inside)
@@ -534,8 +512,7 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
   `triad-antigravity-dispatch`, `triad-cross-family-review`.
 - **agents** (9): `codex-wrapper-repair`, `gemini-wrapper-repair`, `agy-wrapper-repair`,
   그리고 claude 리뷰 preset 6개 (위 "claude 리뷰 leg 의 모델과 effort 고르기" 참고).
-- **bin**: Python wrapper 들 (codex / gemini / agy) + `agy-daily-check.sh` +
-  `gemini-daily-check.sh` + `policies/gemini-readonly.toml` (gemini `--sandbox
+- **bin**: Python wrapper 들 (codex / gemini / agy) + `policies/gemini-readonly.toml` (gemini `--sandbox
   read-only` 모드가 per-call 로 부착하는 read-only Policy Engine 파일).
 - **tests**: stdlib-only wrapper 테스트 — 설치 검증에 그대로 사용:
 

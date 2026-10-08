@@ -26,7 +26,6 @@ import errno
 import fcntl
 import functools
 import importlib
-import hashlib
 import json
 import math
 import os
@@ -179,7 +178,7 @@ _EXIT_BY_CLASSIFICATION: dict[str, int] = {
         "schema-fail": EXIT_SCHEMA_FAIL,
         "schema-rejected": EXIT_SCHEMA_REJECTED,
         "config-conflict": EXIT_TERMINAL,
-        "task-blocked": EXIT_TERMINAL,  # claude: permission_denials with an empty result (promote_claude_extraction)
+        "task-blocked": EXIT_TERMINAL,  # the shared contract's claude permission-denial class; the codex host emits it, this host has no producer
         "vendor-error": EXIT_TERMINAL,  # agy: rc!=0 but a non-empty answer — surface, NOT repair
         "admission-refused": EXIT_TERMINAL,  # agy: a tool OUTSIDE the agent allowlist in the stream (v2 census) — surface, NOT repair
         "vendor-timeout": EXIT_TERMINAL,  # agy: the vendor's OWN turn timeout (result.error "timeout waiting for response", empty answer) — surface, NOT repair
@@ -202,17 +201,6 @@ assert all(
     isinstance(_v, int) and _v in KNOWN_EXIT_CODES
     for _v in _EXIT_BY_CLASSIFICATION.values()
 ), "map_classification_to_exit maps a token to a code outside KNOWN_EXIT_CODES"
-
-# The two verdicts that mean "the ENGINE did not decide this run" (gate-1 r8
-# row r8-3, the shared-driver statement of the agy driver's r3-1 / r4-2 rule;
-# `antigravity_wrapper._ENGINE_UNDECIDED` is the same set for the driver that
-# spawns `_run_once` itself). `unclassified` is the sentinel `_run_once` parks
-# on every pair it leaves UNJUDGED under `classify_and_log=False`; `ok` is the
-# rc-0 verdict a later layer may legitimately correct once it has read the
-# answer. Everything else `_run_once` returns it reached from the reader /
-# writer records a later layer cannot see, so no layer above re-derives it
-# from the same stdout.
-_ENGINE_UNDECIDED: frozenset[str] = frozenset(("unclassified", "ok"))
 
 
 def map_classification_to_exit(cls: str) -> int:
@@ -258,8 +246,8 @@ CONFIG_CONFLICT_PATTERNS: tuple[str, ...] = ()
 # into oauth-env because a fetched page in its transcript said "… on 401
 # Unauthorized responses …" (_logs/codex/audit.20260827T185251Z-55035-80b19439.jsonl
 # row of 2026-07-16T09:05:59Z). The measured authentication STOPs come from the
-# carrier rung (`_auth_carrier_stop`: codex error / turn.failed, claude is_error,
-# the gemini error object and exit 41, agy's banner at a stderr line start).
+# carrier rung (`_auth_carrier_stop`: codex error / turn.failed, the gemini error
+# object and exit 41, agy's banner at a stderr line start).
 
 # Each CLI's OWN measured sentences, keyed cli -> list name; classify() reads a
 # CLI's entries only on that CLI's runs, after the shared list of the same name.
@@ -286,11 +274,6 @@ CLI_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
             "your quota will reset after",  # gemini stderr "…exhausted your capacity on this model. Your quota will reset after <t>." — 158 real rows, 37 classified cli-subscription-cap (same file)
             "no longer supported for gemini code assist for individuals",  # gemini stderr "Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals." — 43 real rows (same file, 2026-06/07)
             "ineligibletiererror",  # the same captured line's error class
-        ),
-    },
-    "claude": {
-        "SERVER_CAPACITY_PATTERNS": (
-            "overloaded_error",  # Anthropic API error type for 529, claude `api_error_status` (the vendor's own error enum; real overload confirmed 2026-07-05, plan 2026-07-05-codex-twin-commercialization D2)
         ),
     },
     "antigravity": {
@@ -331,14 +314,6 @@ CODEX_VENDOR_EXIT_MAP: dict[int, str] = {
     # add after empirical observation.
 }
 
-CLAUDE_VENDOR_EXIT_MAP: dict[int, str] = {
-    0: "ok",
-    # Further claude `--print` vendor exit codes: add after observing.
-    # An ENV/AUTH failure carrying `is_error: true` still exits rc=0
-    # (envelope-only signal); extract_claude_answer analyzes the envelope
-    # and propagates extraction-error.
-}
-
 ANTIGRAVITY_VENDOR_EXIT_MAP: dict[int, str] = {
     0: "extraction-error",  # 2026-06-25: agy rc=0 + no-sentinel (answer present, sentinel not emitted);
                             # classify() is called ONLY on the no-answer path so rc=0 + no-sentinel
@@ -359,13 +334,6 @@ ANTIGRAVITY_VENDOR_EXIT_MAP: dict[int, str] = {
 # (`antigravity_wrapper._catalog_auth_observed`, on a catalog call that did not
 # complete with the model listed).
 AGY_AUTH_BANNER_PATTERNS = ("authentication required. please visit the url",)
-# claude's measured authentication result lines ("Not logged in · Please run
-# /login", "Invalid API key · Fix external API key"): beside a non-null
-# `structured_output` (the answer) only these and a 401 still STOP
-# (`_auth_carrier_stop`, R-AUTH; host B returns the answer there — a recorded
-# host difference).
-_CLAUDE_AUTH_BANNER_PATTERNS = ("not logged in · please run /login",
-                                "invalid api key · fix external api key")
 
 
 # ── Original-text JSON guard: duplicate members (spec C14 / R-BIND) ───────
@@ -1444,7 +1412,7 @@ class RunResult:
     # would silently change a symlinked-cwd child's view.
     effective_cwd: Optional[str] = None
     # stdin prompt delivery outcome (codex maintainer handoff, 2026-09-18):
-    # None for every non-stdin caller (gemini/claude/agy — key OMITTED on the
+    # None for every non-stdin caller (gemini/agy — key OMITTED on the
     # audit/run-log records, same shape rule as vendor_version), otherwise
     # "complete" (write + flush finished), "failed:<ExceptionClass>" (write,
     # flush or pre-spawn UTF-8 encode raised — the CLASS name only, never the
@@ -1472,16 +1440,13 @@ class RunResult:
     # prompt-bearing (the vendor_version class).
     requested_model: Optional[str] = None
     # The reasoning / effort tier the caller REQUESTED (codex `--reasoning`,
-    # claude / agy `--effort`; spec C35 as amended), or None when none was
+    # agy `--effort`; spec C35 as amended), or None when none was
     # requested. Same RECORD-ONLY, omit-when-None, unredacted shape as
     # requested_model.
     requested_reasoning: Optional[str] = None
     # R-REVIEW-WEB (case C32): True on a review leg dispatched with web
     # (`--review-web`); recorded in the audit row only when True.
     review_web: bool = False
-    # R-INVEST (case C31): True on a claude worker dispatched with web
-    # (`--web`); recorded in the audit row only when True.
-    web: bool = False
     # The model the vendor EXPOSED at runtime (agy stream `init.model`,
     # R-MODEL / DL-9): the contradicting value when the run is refused, else
     # the admitted (last) attempt's first exposed value; None when that
@@ -1650,36 +1615,6 @@ def _payload_or_demote(cli: str, result, text: str, obj=None) -> bytes:
 
 
 def require_binary(name: str) -> str:
-    """Resolve the vendor binary, honoring an install-time pin (finding #3).
-
-    A codex-host launcher execs the wrapper with
-    `TRIAD_<name.upper()>_BIN=<resolved absolute path>` and
-    `TRIAD_REQUIRE_PINNED_VENDOR=1`, so a workspace-planted `<name>` earlier on
-    PATH cannot shadow the real vendor CLI an allow-listed launcher executes.
-    Lab default (neither env set) = `shutil.which` (PATH), unchanged.
-
-    - a valid pin (absolute, existing, executable) always wins over PATH;
-    - `TRIAD_REQUIRE_PINNED_VENDOR=1` with the pin unset OR invalid fails closed
-      (`EXIT_BINARY_MISSING`) — NEVER a silent PATH fallback (that is the vuln);
-    - an invalid pin WITHOUT the require flag falls through to PATH (lab convenience).
-    """
-    pin = os.environ.get(f"TRIAD_{name.upper()}_BIN")
-    require_pinned = os.environ.get("TRIAD_REQUIRE_PINNED_VENDOR") == "1"
-    if pin:
-        if os.path.isabs(pin) and os.path.isfile(pin) and os.access(pin, os.X_OK):
-            return pin
-        log(
-            f"pinned vendor binary TRIAD_{name.upper()}_BIN is not an executable "
-            f"absolute path: {pin}"
-        )
-        if require_pinned:
-            sys.exit(EXIT_BINARY_MISSING)
-    elif require_pinned:
-        log(
-            f"TRIAD_REQUIRE_PINNED_VENDOR=1 but TRIAD_{name.upper()}_BIN is unset "
-            f"for '{name}' — refusing PATH fallback"
-        )
-        sys.exit(EXIT_BINARY_MISSING)
     path = shutil.which(name)
     if not path:
         log(f"binary '{name}' not found on PATH")
@@ -1763,10 +1698,10 @@ def _load_classifier_extension() -> dict:
 
 # ─── Product hardening mode (L8 twin→SoT port, owner adjudications 2026-07-05) ───
 # The lab (SoT callers, skill contracts) runs UNRESTRICTED by default; the
-# public codex-host product's bootstrap sets TRIAD_WRAPPER_HARDENED=1, which
-# activates: allowed-roots containment (required), the pydantic import gate,
-# and audit prompt redaction. Each control also has an individual env so it
-# can be engaged on its own (set TRIAD_WRAPPER_ALLOWED_ROOTS to enforce
+# claude-host installer sets TRIAD_WRAPPER_HARDENED=1, which activates
+# allowed-roots containment (required) and audit prompt redaction. Each control
+# also has an individual env so it can be engaged on its own (set
+# TRIAD_WRAPPER_ALLOWED_ROOTS to enforce
 # containment; TRIAD_AUDIT_REDACT_PROMPTS=1 to redact) — per-product defaults,
 # one engine.
 
@@ -2037,11 +1972,10 @@ def _redact_prompt_args(cmd: list[str]) -> list[str]:
 _TRANSPORT_ROUTE_BY_CLI: dict[str, str] = {
     "codex": "codex",
     "gemini": "gemini",
-    "claude": "claude",
     "antigravity": "agy",
 }
 # Routes that hand the prompt to the vendor over STDIN. Every other route
-# passes it by argv (gemini `-p`, claude `-p`, agy `-p`), where "stdin was not
+# passes it by argv (gemini `-p`, agy `-p`), where "stdin was not
 # used" is the accurate statement, not "delivery unknown".
 _TRANSPORT_STDIN_ROUTES: frozenset[str] = frozenset({"codex"})
 TRANSPORT_BINARY_REDACTED = "<redacted:binary-path>"
@@ -2182,7 +2116,7 @@ def _summary_tail(dispatch_attempt: int, prompt_file_resolved: Optional[str],
 def _emit_canonical_summary(cli: str, result) -> None:
     """Re-emit the canonical one-line summary from a RunResult's CURRENT state.
 
-    gate-1 r8 row r8-5. codex / gemini / claude print their summary inside
+    gate-1 r8 row r8-5. codex / gemini print their summary inside
     `run_cli_with_retry`, i.e. BEFORE main() calls `_payload_or_demote` — so
     after a demotion the last `[wrapper]` line on stderr still said `ok
     exit=0` while the process exited 1 and the audit row said
@@ -2287,10 +2221,6 @@ def _json_len(value: Any) -> int:
 #           (transient retry noise only on a run that exited 0 with an
 #           answer and turn.completed); and a stderr line BEGINNING
 #           `Error loading configuration:`, printed before any JSONL event
-#   claude  the `is_error` envelope: `api_error_status` 401, or its `result` text;
-#           beside a non-null `structured_output` (the answer, R2) only a 401 or
-#           claude's measured auth result line (A keeps that STOP; B returns the
-#           answer before reading `is_error` — a recorded host difference)
 #   gemini  the error object (stdout as one JSON document, any indentation; the
 #           trailing stderr envelope): its message, or code 41
 #           (FatalAuthenticationError's exit code, gemini CLI 0.60.0 bundle) /
@@ -2376,15 +2306,6 @@ def _gemini_trailing_envelope(stderr: str) -> Optional[dict]:
     return None
 
 
-def _claude_envelope(stdout: str) -> Optional[dict]:
-    """claude's print-mode JSON envelope (a fence-wrapped one too), or None."""
-    s = (stdout or "").strip()
-    if s.startswith("```"):
-        s = s.split("\n", 1)[1] if "\n" in s else ""
-        s = s[:-3] if s.endswith("```") else s
-    return _json_document(s)
-
-
 # agy's `result.error` can echo the model's text through a finish-schema
 # validation report (host A's record; spec R-CLASSIFY fact): such a report is
 # model text, so only agy's own sign-in banner (at a line start) is read there.
@@ -2450,19 +2371,6 @@ def _auth_carrier_stop(cli: str, stderr: str, stdout: str,
         if completed and not failed and vendor_exit_code == 0 and answered:
             return False
         return _said(*texts)
-    if cli == "claude":
-        env = _claude_envelope(stdout)
-        if env is None or env.get("is_error") is not True:
-            return False
-        if env.get("api_error_status") in (401, "401"):
-            return True
-        result = env.get("result")
-        if env.get("structured_output") is not None:
-            # R2: a non-null structured_output is the answer (B returns it before
-            # reading is_error); beside it only claude's measured auth line STOPs
-            return isinstance(result, str) and result.strip().lower().startswith(
-                _CLAUDE_AUTH_BANNER_PATTERNS)
-        return _said(result)
     if cli == "gemini":
         # gemini's own authentication exit code (FATAL_AUTHENTICATION_ERROR,
         # gemini CLI v0.60.0 exitCodes.ts): the code IS the carrier — its
@@ -2574,8 +2482,6 @@ def classify(
 
     if cli == "gemini":
         vmap = GEMINI_VENDOR_EXIT_MAP
-    elif cli == "claude":
-        vmap = CLAUDE_VENDOR_EXIT_MAP
     elif cli == "antigravity":
         vmap = ANTIGRAVITY_VENDOR_EXIT_MAP
     else:
@@ -2653,13 +2559,6 @@ def load_pydantic_class(spec: str):
             '(see the wrappers README section "Pydantic schema enforcement", '
             'or the plugin README\'s setup section — "Required" in English, '
             '"필수 설정" in Korean)')
-    if _wrapper_hardened() and os.environ.get("TRIAD_ALLOW_PYDANTIC_IMPORT") != "1":
-        # Hardened installs (public codex-host product) must opt in explicitly:
-        # --pydantic imports arbitrary Python outside the vendor sandbox.
-        raise PermissionError(
-            "--pydantic imports Python code outside the sandbox; under "
-            "TRIAD_WRAPPER_HARDENED=1 set TRIAD_ALLOW_PYDANTIC_IMPORT=1 only "
-            "for trusted schema modules")
     if ":" in spec:
         mod_path, cls_name = spec.rsplit(":", 1)
     else:
@@ -3020,107 +2919,19 @@ def extract_gemini_answer(stdout: str, stderr: str) -> Tuple[str, Optional[str]]
     return "", "empty stdout and no parseable error in stderr"
 
 
-@_never_raises(lambda exc: ("", f"classification guard: {type(exc).__name__}"), cli="claude")
-def extract_claude_answer(stdout: str, stderr: str) -> Tuple[str, Optional[str]]:
-    """Claude `-p ... --output-format json` extraction.
-
-    Envelope shape (verified 2026-05-05 via spike):
-      {"type": "result", "subtype": "success",
-       "is_error": bool, "api_error_status": <str|null>,
-       "result": "<final answer text>",
-       "stop_reason": "...", "session_id": "...",
-       "permission_denials": [...], "terminal_reason": "...",
-       "total_cost_usd": <float>, "usage": {...}, "modelUsage": {...},
-       ...}
-
-    Success: `is_error == false` → returns (result, None).
-    Failure surfaces:
-      - `is_error == true` (e.g. "Not logged in", API error) → ext_err = result text
-      - permission_denials non-empty → ext_err = denial summary (objective signal)
-      - JSON parse fail / empty stdout → ext_err = parse description
-
-    Markdown fence-strip safety: `--print` emits no fence (envelope = raw
-    JSON) but `--agent` mode can fence-wrap (haiku pattern, recorded in the
-    empirical observations). This helper strips a fence safely.
-    """
-    s = (stdout or "").strip()
-    if not s:
-        # stdout empty — claude's envelope always arrives on stdout (rc=0
-        # case); stderr carries only progress/warnings. A missing envelope
-        # is abnormal.
-        return "", "empty stdout — claude envelope missing"
-
-    # Fence-strip safety (--agent mode can markdown-wrap the envelope).
-    if s.startswith("```"):
-        nl = s.find("\n")
-        if nl != -1:
-            s = s[nl + 1:]
-        if s.endswith("```"):
-            s = s[:-3]
-        s = s.strip()
-
-    try:
-        obj = json.loads(s)
-    except Exception as e:
-        return "", f"stdout is not valid JSON: {e}"
-    if not isinstance(obj, dict):
-        return "", "stdout JSON is not an object"
-
-    subtype = obj.get("subtype", "")
-    if subtype == "error_max_structured_output_retries":
-        return "", "schema-retries-exhausted: structured output failed validation"
-    structured = obj.get("structured_output")
-    if structured is not None:
-        return json.dumps(structured, ensure_ascii=False), None
-
-    is_error = obj.get("is_error", False)
-    result = obj.get("result", "")
-    if not isinstance(result, str):
-        result = json.dumps(result, ensure_ascii=False)
-
-    if is_error:
-        # Vendor returned an envelope with is_error=true. The result field
-        # carries the detailed message (e.g. "Not logged in · Please run
-        # /login", an API error description). The repair agent classifies
-        # from this message.
-        api_status = obj.get("api_error_status")
-        prefix = f"is_error=true (api_error_status={api_status})"
-        if result:
-            return "", f"{prefix}: {result}"
-        return "", prefix
-
-    permission_denials = obj.get("permission_denials")
-    if permission_denials and not result.strip():
-        return "", (
-            "task-blocked: permission_denials: "
-            f"{json.dumps(permission_denials, ensure_ascii=False)}"
-        )
-
-    # A permission_denials entry = a tool block was observed (an objective
-    # signal from the claude worker, not the leader's framing). With a
-    # NON-EMPTY result the answer is returned first and denials are never
-    # surfaced as failure; the EMPTY-result + denials case above promotes to
-    # task-blocked (owner adjudication 2026-07-05 — the two rules compose).
-    if not result:
-        return "", "vendor JSON valid but result field empty"
-    return result, None
-
-
 # ─── Subprocess core ──────────────────────────────────────────────────────
 
 # Loader / interpreter injection env vars scrubbed from the vendor child (I-2/I-3).
-# `_run_once` is the SINGLE vendor-child spawn site (codex/gemini/claude/agy —
+# `_run_once` is the SINGLE vendor-child spawn site (codex/gemini/agy —
 # the pre-2026-07-31 pty transport, agy's former SEPARATE spawn site, is
 # deleted). It applies the scrub via the shared `scrubbed_child_env()` below,
-# so a poisoned parent env cannot reach the vendor CLI (gemini/claude/agy are
+# so a poisoned parent env cannot reach the vendor CLI (gemini/agy are
 # Node runtimes; codex/agy spawn tools). The classic
 # vectors: the dynamic loader (LD_PRELOAD / LD_AUDIT / the macOS DYLD_* family),
 # the Node runtime (NODE_OPTIONS=--require=<evil.js> would run workspace code
 # OUTSIDE any sandbox; NODE_PATH), the Python / shell / Perl / Ruby interpreters
 # (PYTHONPATH / BASH_ENV / ENV / PERL5LIB / RUBYOPT ...). PATH is deliberately
-# NOT scrubbed here — the vendor-binary pin (`require_binary` / `TRIAD_<CLI>_BIN`)
-# fixes the vendor bin, and PATH policy belongs to the install leg, not this
-# shared engine change.
+# NOT scrubbed here — PATH policy belongs to the install leg.
 _CHILD_ENV_SCRUB = (
     "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG",
     "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
@@ -3244,7 +3055,7 @@ def scrubbed_child_env(base=None, cli=None) -> dict:
     vendor credential / endpoint / model-selector vars (C11/C17/C37) — except, on
     the gemini route (`cli == "gemini"`), the `_GEMINI_ROUTE_KEEP` project
     family. Applied at the single vendor-child spawn site (`_run_once`, Popen —
-    codex/gemini/claude/agy all go through it since the 2026-07-31
+    codex/gemini/agy all go through it since the 2026-07-31
     pty-transport deletion), so the scrub policy lives in exactly ONE place.
     Returns a fresh dict (safe to mutate)."""
     src = base if base is not None else os.environ
@@ -3433,7 +3244,7 @@ def install_terminal_signal_handlers() -> None:
     is only RECORDED: `_run_once` observes it (after Popen, in its short-step
     wait, inside the timeout kill, at the next spawn after a backoff), reaps the
     group with the SIGKILL escalation intact and returns `unknown` / exit 1
-    ("wrapper interrupted (<SIG>)") — for codex, gemini and claude the captured
+    ("wrapper interrupted (<SIG>)") — for codex and gemini the captured
     output goes through the auth-carrier rung first (`oauth-env` / 65 on a
     carrier STOP, gemini's exit 41 included); never retried; a signalled agy
     run's carriers are not read (a recorded limit) — and the wrapper writes its
@@ -3486,7 +3297,7 @@ def _run_once(
     stderr = mirror to parent stderr (human progress visibility).
     stdin_text: when provided, feed via a daemon writer thread so a large
     prompt cannot deadlock against a full OS pipe before the child starts
-    reading. When None (default), stdin is DEVNULL (gemini/claude behavior
+    reading. When None (default), stdin is DEVNULL (gemini/agy behavior
     unchanged). Fail-closed contract (2026-09-18): an unencodable stdin_text
     returns EXIT_ARG_ERROR (3) BEFORE any child exists; a child that exited 0
     while delivery was not confirmed "complete" returns EXIT_TERMINAL (65) —
@@ -3504,7 +3315,7 @@ def _run_once(
     returns "unknown" at EXIT_CLI_FAIL. A terminal signal received during the
     call (C1) reaps the group and returns "unknown" at EXIT_CLI_FAIL with
     extraction_error "wrapper interrupted (<SIG>)" — unless, with
-    classify_and_log (codex, gemini, claude), the captured output carries an
+    classify_and_log (codex, gemini), the captured output carries an
     auth-carrier STOP (gemini's exit 41 included): then "oauth-env" at
     EXIT_TERMINAL; never retried (agy's carriers are not read here — a recorded
     limit). Precedence: timeout >
@@ -3514,7 +3325,7 @@ def _run_once(
     signal recorded BETWEEN attempts spawns nothing and returns the previous
     attempt's record (the SAME object) marked with the failure, keeping its
     captured evidence; the drivers count that attempt once.
-    classify_and_log: default True keeps codex/gemini/claude byte-identical
+    classify_and_log: default True keeps codex/gemini byte-identical
     (classify() + the "[wrapper] <cli> ..." summary line run here as before).
     False skips BOTH — the agy stream-json driver decides classification and
     emits its own canonical summary line later; a premature line here would
@@ -4032,41 +3843,9 @@ def run_cli_with_retry(
         _emit_canonical_summary(cli, r)
         return r
 
-    def promote_claude_extraction(r: RunResult, ext_err: str) -> Optional[RunResult]:
-        # R-AUTH (ii): a rc-0 `is_error` envelope never reached classify()'s
-        # carrier rung (exit 0 returns `ok` first) — read the envelope here.
-        if _auth_carrier_stop(cli, "", r.stdout):
-            r.extraction_error = ext_err
-            return promote_terminal(r, "oauth-env")
-        if ext_err.startswith("schema-retries-exhausted:"):
-            log(f"answer extraction error: {ext_err}")
-            r.extraction_error = ext_err
-            return promote_schema_fail(r)
-        if ext_err.startswith("task-blocked:"):
-            log(f"answer extraction error: {ext_err}")
-            r.extraction_error = ext_err
-            return promote_terminal(r, "task-blocked")
-        if ext_err.startswith("is_error=true"):
-            cls = classify(
-                "claude",
-                stderr=ext_err,
-                stdout="",
-                exit_code=EXIT_CLI_FAIL,
-                vendor_exit_code=r.vendor_exit_code,
-            )
-            if cls in terminal_classes:
-                log(f"answer extraction error: {ext_err}")
-                r.extraction_error = ext_err
-                return promote_terminal(r, cls)
-        return None
-
     def promote_extraction_classification(
         r: RunResult, ext_err: str
     ) -> Optional[RunResult]:
-        if cli == "claude":
-            promoted = promote_claude_extraction(r, ext_err)
-            if promoted is not None:
-                return promoted
         if _auth_carrier_stop(cli, r.stderr, r.stdout,     # R-AUTH (ii), rc-0 run
                               r.vendor_exit_code):
             r.extraction_error = ext_err
@@ -4119,89 +3898,6 @@ def run_cli_with_retry(
                     r.mode = "normal"
             result = r
             cls = r.classification
-            # AN ENGINE-DECIDED RESULT IS NEVER RE-INTERPRETED (gate-1 r8 row
-            # r8-3). `_run_once` reaches its own TERMINAL verdicts from the
-            # reader / writer records this layer cannot see — `truncated-
-            # answer` (a rc-0 run whose reader died, so the capture is a
-            # PREFIX) and `input-delivery-failed` (the prompt was never
-            # confirmed delivered). The claude arm below re-reads the
-            # envelope out of THAT stdout and, for a retryable cause,
-            # overwrites `cls` / `r.classification` with `server-capacity`,
-            # so a successful retry replaced the terminal verdict and its
-            # incomplete-capture evidence with an `ok` the engine had already
-            # refused. This is the r3-1 / r4-2 rule the agy driver enforces,
-            # stated for the shared driver: interpretation runs only on a
-            # pair the engine LEFT UNDECIDED, and everything else falls
-            # through to the fail-fast rung below, which returns the
-            # RunResult unchanged.
-            #
-            # THE LICENCE IS THE UNDECIDED TOKEN, NOT THE EXIT CODE (gate-1
-            # r9 row r9-14). The r8-3 spelling ALSO carried
-            # `r.exit_code == EXIT_OK`, and on a NONZERO vendor rc that
-            # skipped the claude arm twice over: `classify()` returns `ok`
-            # only at exit 0 and `_run_once` never parks `unclassified`
-            # under `classify_and_log=True`, so a failed claude run arrives
-            # here as the L3 fallback `unknown`. The two TERMINAL signals
-            # that exist ONLY in the envelope —
-            # `subtype=error_max_structured_output_retries` (schema-fail
-            # 66) and a `permission_denials` block with an empty result
-            # (task-blocked 65) — therefore landed on `unknown` (1), which
-            # the dispatch SKILLs route to a MANDATORY repair-agent
-            # dispatch with nothing to patch. `unknown` IS the engine's own
-            # "I did not decide" token, so it joins the sentinel here; an
-            # engine-DECIDED terminal (`truncated-answer`,
-            # `input-delivery-failed`) still falls through to the rung
-            # below and is returned UNCHANGED, which is exactly what r8-3
-            # required. Promotion never rewrites a decided terminal.
-            #
-            # AN ENGINE-DETECTED TRANSPORT FAILURE IS NOT "UNDECIDED"
-            # (gate-1 r10 row r10-3). `unknown` is also what `_run_once`
-            # returns for the two shapes where it HAS decided and the
-            # stdout it carries is not a transcript: the reader/writer
-            # THREAD-START failure (the child is killed and reaped and the
-            # buffer is a PREFIX by construction — `capture_complete=False`,
-            # row r6-7) and the PRE-SPAWN refusals (`spawned=False`, no
-            # child ever existed). An overload envelope sitting in such a
-            # prefix was re-classified `server-capacity` and RETRIED, and a
-            # clean second attempt then REPLACED the incomplete-capture
-            # failure with an `ok` — the r5-2 / r8-3 rule ("interpretation
-            # runs only on a pair the engine LEFT undecided"), reached
-            # through the one token r9-14 opened. Both facts are recorded
-            # on the RunResult, so the guard reads them rather than
-            # re-deriving anything from the bytes.
-            if (cli == "claude" and r.capture_complete and r.spawned
-                    and (cls in _ENGINE_UNDECIDED or cls == "unknown")
-                    and _auth_carrier_stop(cli, "", r.stdout)):
-                # R-AUTH (ii): an is_error auth outcome STOPS before any answer
-                # extraction; beside a non-null `structured_output` only a 401
-                # or claude's measured auth line does (R2, `_auth_carrier_stop`).
-                r.extraction_error = "is_error envelope: authentication failure"
-                return promote_terminal(r, "oauth-env")
-            if (cli == "claude" and r.capture_complete and r.spawned
-                    and (cls in _ENGINE_UNDECIDED or cls == "unknown")):
-                _answer, ext_err = extract_claude_answer(r.stdout, r.stderr)
-                if ext_err:
-                    promoted = promote_claude_extraction(r, ext_err)
-                    if promoted is not None:
-                        return promoted
-                    # Finding #1 (2026-07-05): a claude API error envelope
-                    # (is_error=true, rc=0) is classified "ok" by the rc-based
-                    # `classify` above (cls = r.classification). promote_claude_
-                    # extraction returns None for a NON-terminal re-classification
-                    # (server-capacity is retryable, not terminal), so cls stayed
-                    # "ok" and the loop broke BELOW before the server-cap retry —
-                    # a retryable overload surfaced as extraction-error with zero
-                    # retries. Propagate a retryable re-classification into cls
-                    # (and r.classification, so a retry-exhaust returns a consistent
-                    # rc=64/server-capacity result) to engage the retry branch.
-                    if ext_err.startswith("is_error=true"):
-                        recls = classify(
-                            "claude", stderr=ext_err, stdout="",
-                            exit_code=EXIT_CLI_FAIL,
-                            vendor_exit_code=r.vendor_exit_code,
-                        )
-                        if recls == "server-capacity":
-                            r.classification = cls = "server-capacity"
             if cls == "ok":
                 break
             if cls in terminal_classes:
@@ -4236,7 +3932,7 @@ def run_cli_with_retry(
             # "truncated-answer"} — fail-fast. The last two arrive from
             # `_run_once` ALREADY judged (exit 65, the answer blanked), and
             # this rung returns that RunResult UNCHANGED: it is where the
-            # three shared-driver wrappers honour an engine-decided terminal
+            # two shared-driver wrappers honour an engine-decided terminal
             # exit, and the reason the r3-1 defect was agy-only (that driver
             # spawns `_run_once` itself). Do not "re-classify" here — the
             # engine decided from the reader and writer records, which this
@@ -4251,8 +3947,6 @@ def run_cli_with_retry(
         # Layer 3: extract final answer.
         if cli == "codex":
             answer, ext_err = extract_codex_answer(result.stdout, last_msg_path)
-        elif cli == "claude":
-            answer, ext_err = extract_claude_answer(result.stdout, result.stderr)
         else:
             answer, ext_err = extract_gemini_answer(result.stdout, result.stderr)
 
@@ -4522,7 +4216,7 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
         # Not prompt-bearing (the vendor CLI's own dotted version string, no
         # user/model content) — exempt from the custody taxonomy above (P4.b,
         # spec 3-way 2026-07-11), unlike every other field in this record.
-        # Key omitted (not null) when absent, so codex/gemini/claude records
+        # Key omitted (not null) when absent, so codex/gemini records
         # keep their existing shape byte-for-byte (agy-only today).
         rec["vendor_version"] = result.vendor_version
     if result.effective_cwd is not None:
@@ -4562,10 +4256,6 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
         # observation of the caller's request, no prompt content; key omitted
         # when False, same shape rule as vendor_version above.
         rec["review_web"] = True
-    if result.web:
-        # C31: a claude worker launched with web (`--web`). Same boolean,
-        # omit-when-False shape as review_web above.
-        rec["web"] = True
     if result.runtime_model is not None:
         rec["runtime_model"] = result.runtime_model
     if result.orphans_reaped:
@@ -4843,8 +4533,8 @@ _VENDOR_EXIT_CODE_MAX = 125
 # Excluded (the wrapper/status classes the WRAPPER decides, never a raw vendor
 # exit): timeout (wrapper kills the vendor on its own timeout — exit_code==
 # EXIT_TIMEOUT in classify(), not a vmap code); schema-fail (wrapper pydantic
-# JSON validation — EXIT_SCHEMA_FAIL, not in classify()); task-blocked (claude's
-# permission_denials with an empty result — an envelope reading, not an exit);
+# JSON validation — EXIT_SCHEMA_FAIL, not in classify()); task-blocked (a shared
+# contract row with no producer on this host — an envelope reading, not an exit);
 # config-conflict
 # (wrapper/config condition via CONFIG_CONFLICT_PATTERNS + agy settings txn).
 # Verified against classify() + the wrapper exit-code semantics (2026-07-06).
@@ -5150,30 +4840,6 @@ def apply_classifier_patch(cli: str, proposal: dict) -> str:
 
     log(f"[apply] {cli} {classification} — {reason}")
     return "applied"
-
-
-def _review_argv_refusal(argv: Optional[list] = None) -> Optional[str]:
-    """None, or why a v2 REVIEW line must not run (C32, R-BIND): its argv does
-    not hash to `TRIAD_REVIEW_ARGV_SHA256` (set only by the review dispatch, in
-    `roster_v2._argv_digest`'s canonical form), or one of the two review env
-    values (it and `TRIAD_REVIEW_LOG_DIR`) is missing while the other marks a
-    review. Neither set = nothing checked (a recorded limit; collect catches)."""
-    want = os.environ.get("TRIAD_REVIEW_ARGV_SHA256")
-    if not want and not os.environ.get("TRIAD_REVIEW_LOG_DIR"):
-        return None
-    if not os.environ.get("TRIAD_REVIEW_LOG_DIR"):
-        want = None  # the receipt namespace was dropped: refuse as edited
-    tokens = list(sys.argv if argv is None else argv)
-    got = hashlib.sha256(json.dumps(tokens, ensure_ascii=True,
-                                    separators=(",", ":")).encode("ascii")
-                         ).hexdigest()
-    if got == want:
-        return None
-    return ("refused: this review line is not the recorded dispatch (its argv "
-            "does not hash to TRIAD_REVIEW_ARGV_SHA256, or that value or "
-            "TRIAD_REVIEW_LOG_DIR is missing) - nothing was run; this "
-            "attempt's output files now exist, so retry the entry and run the "
-            "new attempt's printed line verbatim (R-BIND, C32)")
 
 
 # ─── Per-execution run-log (dispatch SKILL input) ─────────────────────────

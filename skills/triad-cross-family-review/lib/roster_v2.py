@@ -872,16 +872,6 @@ def _token(value, what: str, *, absolute: bool = False) -> str:
     return text
 
 
-def _argv_digest(tokens: list) -> str:
-    """sha256 of the recorded wrapper argv (without the interpreter token) in
-    the ONE canonical form the wrapper recomputes from its own `sys.argv`
-    before it spawns the vendor (`_common._review_argv_refusal`; t12 axis 38
-    and t64 pin the two equal): compact ASCII JSON."""
-    return hashlib.sha256(json.dumps(list(tokens), ensure_ascii=True,
-                                     separators=(",", ":")).encode("ascii")
-                          ).hexdigest()
-
-
 def _deep_drop(node):
     """The vendored contract with every `PROJECTION_DEEP_DROP_KEYS` member
     removed at any depth, byte-derived otherwise (same key order, same values).
@@ -994,14 +984,11 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
     # THE RECEIPT NAMESPACE (R-BIND): with this env member the wrapper writes
     # its run-log — the argv it actually ran with — into the attempt's own
     # `logs/<cli>/runs/` on success too, and `collect` compares it with this
-    # dispatch's argv, so a line edited before it ran never counts. The argv
-    # DIGEST lets the wrapper itself refuse an edited line before it spawns
-    # the vendor (C32: refused before inference).
+    # dispatch's argv, so a line edited before it ran never counts.
     logs_dir = _token(ctx.attempt_dir / "logs", "review log dir", absolute=True)
 
-    def review_env(full_argv: list) -> dict:
-        return {"TRIAD_REVIEW_LOG_DIR": logs_dir,
-                "TRIAD_REVIEW_ARGV_SHA256": _argv_digest(full_argv[1:])}
+    def review_env() -> dict:
+        return {"TRIAD_REVIEW_LOG_DIR": logs_dir}
     common_tail = ["--prompt-file",
                    _token(ctx.prompt_file, "prompt file", absolute=True),
                    "--cwd", _token(ctx.worktree, "worktree", absolute=True),
@@ -1029,7 +1016,7 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
         argv += ["--output-schema-file",
                  _token(schema_file, "producer schema projection", absolute=True)]
         return Dispatch(kind="wrapper", argv=argv + common_tail,
-                        env=review_env(argv + common_tail),
+                        env=review_env(),
                         native=None, stdout_path=stdout_path,
                         stderr_path=stderr_path, schema_file=schema_file,
                         schema_text=projected_schema_text())
@@ -1054,7 +1041,7 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
                  _token(schema_file, "producer schema projection", absolute=True)]
         # The read audit is part of the agy leg's contract.
         return Dispatch(kind="wrapper", argv=argv + common_tail,
-                        env={**review_env(argv + common_tail),
+                        env={**review_env(),
                              "TRIAD_READ_AUDIT_FILE":
                              _token(read_audit, "read audit file", absolute=True)},
                         native=None, stdout_path=stdout_path,
@@ -1076,7 +1063,7 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
         # No effort flag on this route, ever (PRD: never translate an agy effort
         # into an unsupported Gemini argument).
         return Dispatch(kind="wrapper", argv=argv + common_tail,
-                        env=review_env(argv + common_tail),
+                        env=review_env(),
                         native=None, stdout_path=stdout_path,
                         stderr_path=stderr_path)
 
