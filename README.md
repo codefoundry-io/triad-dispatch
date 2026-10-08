@@ -433,8 +433,6 @@ and removes nothing there.
 | project | `_runs/worktrees/<name>/` git worktrees for codex write calls (`triad-codex-dispatch` § Write calls; keep `_runs/worktrees/` in the project's `.gitignore`, so a commit never stages a tree as an embedded repository) | the leader, per that paragraph; the codex wrapper removes an empty leftover folder there at the start of a call | `python3 <plugin-dir>/bin/cleanup.py remove code-worktrees _runs/worktrees/<name>` from the project's top level, after everything in the tree is committed to its branch (a tree with uncommitted or untracked changes is refused) |
 | machine | `~/.config/triad-dispatch/classifier-patches.json` and `classifier-patches.json.lock` | when a repair proposal is applied | `setup_permissions.py --uninstall-machine` |
 | machine | `~/.gemini/config/agents/triad-readonly-review.md` and `triad-readonly-research.md` | `bin/antigravity_wrapper.py --setup-agents` | `setup_permissions.py --uninstall-machine` |
-| machine | `~/.gemini/antigravity-cli/.agy_settings.lock` | `--setup-agents`, and on a non-hardened install an agy dispatch without `--sandbox read-only` (the install's default hardened mode makes every dispatch read-only, which takes no lock) | `setup_permissions.py --uninstall-machine` |
-| machine | the agy settings transaction state in `~/.gemini/antigravity-cli/`: `.agybak`, `.agy_settings.shared.json`, `.agy_settings.holders/`, and the temporary `.agybak.tmp` and `.agy_settings.shared.json.tmp` | an agy settings transaction while it runs — the codex-host plugin's deny transaction on the same settings file, or an older build of this plugin; a run that stops early leaves them (this plugin's `--setup-agents` — and, on a non-hardened install, a dispatch without `--sandbox read-only` — only takes the lock and heals what is left) | the transaction when it ends; when `.agybak` or `.agy_settings.shared.json` is left, run `bin/antigravity_wrapper.py --setup-agents` once (it restores the agy settings); `setup_permissions.py --uninstall-machine` removes the rest, and while `.agybak` or `.agy_settings.shared.json` is there it removes none of these and names each one that exists |
 | temporary | `$TMPDIR/codex_last_*.txt`, `$TMPDIR/codex_schema_*.json` | each codex dispatch | the wrapper after each call; what is left stays (`setup_permissions.py --uninstall-machine` lists it and removes nothing there) |
 | plugin directory | `bin/_logs/<cli>/` (audit log, run logs, read-audit digests) | every dispatch | the wrappers' rotation, sweep and cap prunes above (a file younger than its role's floor stays); the plugin directory's removal |
 | plugin directory | `bin/_debug/<UTC-date>/` | only with `--debug` | day directories past the `wrapper-debug` floor, by the next `--debug` call; the plugin directory's removal |
@@ -443,10 +441,9 @@ and removes nothing there.
   asks you first.
 - The plugin may create these directories when they are absent and never
   removes them: `<project>/.claude/`, `<project>/_runs/`, the config home,
-  `~/.gemini/`, `~/.gemini/config/`, `~/.gemini/config/agents/`,
-  `~/.gemini/antigravity-cli/`.
+  `~/.gemini/`, `~/.gemini/config/`, `~/.gemini/config/agents/`.
 - A location you moved with an environment variable (`TRIAD_DISPATCH_LOG_DIR`,
-  `TRIAD_DEBUG_DIR`, `TRIAD_CLASSIFIER_EXTENSION`, `AGY_SETTINGS_PATH`,
+  `TRIAD_DEBUG_DIR`, `TRIAD_CLASSIFIER_EXTENSION`,
   `AGY_AGENTS_DIR`, `TRIAD_READ_AUDIT_FILE`) is yours:
   nothing removes it. `TRIAD_READ_AUDIT_FILE` names a read-audit file the caller
   chose; the review helper puts it inside the review packet, which `close`
@@ -500,8 +497,7 @@ they are yours.
    takes out that hook entry.
 3. **ONCE per machine, after the last project**:
    `python3 <plugin-dir>/scripts/setup_permissions.py --uninstall-machine`. It
-   prints `removed <path>` or `left <path>: <reason>` per item (a recorded agy
-   settings transaction is left whole, each of its items named); `--dry-run`
+   prints `removed <path>` or `left <path>: <reason>` per item; `--dry-run`
    previews it. It removes nothing in the shared temporary directory, which holds
    no record of what is the plugin's: it lists the codex temporary entries there;
    they are yours to remove.

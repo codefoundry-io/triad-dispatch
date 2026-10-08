@@ -30,25 +30,17 @@
 # error (64).
 #
 # stdout: one "[gate] <VERDICT> <file>" line per EVALUATED packet file
-#   (the ABSENT/symlink/oversized refusals evaluate none; the refused_attempt VOID
-#   evaluates none; the broken-evidence stop evaluates no later file), then
+#   (the ABSENT/symlink/oversized refusals evaluate none; the broken-evidence
+#   stop evaluates no later file), then
 #   the final greppable summary
 #   "READ_AUDIT_GATE_<VERDICT> checked=<n> pass=<n> void=<n>
 #   inconclusive=<n>[ unevaluated=<n>]" — the unevaluated field appears
 #   exactly when some argument was not evaluated, so anchor on the token,
-#   never on a four-field-only pattern. The refused_attempt VOID appends
-#   ONE further field after unevaluated:
-#   "READ_AUDIT_GATE_VOID checked=0 pass=0 void=0 inconclusive=0
-#   unevaluated=<n> refused_attempt=1" — a trailing marker field, so the
-#   same "anchor on the token" rule applies to it too.
+#   never on a four-field-only pattern.
 # stderr: operator guidance (the canonical leg-contracts messages).
 # exit:  0 PASS (every file matched)
 #        2 ABSENT       (no digest file — check the dispatch env FIRST)
-#        3 VOID         (>=1 confirmed miss with files_read_omitted == 0,
-#                        OR — since gate-1 r5 row r5-6 — a refused_attempt
-#                        marker at EITHER level (top-level or .digest) of
-#                        the digest: a knowingly INCOMPLETE transcript,
-#                        evaluated before any packet file)
+#        3 VOID         (>=1 confirmed miss with files_read_omitted == 0)
 #        4 INCONCLUSIVE (broken evidence, capped digest, symlinked digest,
 #                        an audit over the 64 MiB evidence cap — refused
 #                        before jq reads it, gate-1 r21 row r21-2 — or an
@@ -223,36 +215,6 @@ if [[ "$_audit_bytes" =~ ^[0-9]+$ ]] && [ "$_audit_bytes" -gt "$_EVIDENCE_MAX_BY
   exit 4
 fi
 
-# POISONED ATTEMPT CHAIN (gate-1 r5 row r5-6). The agy duplicate-JSON-member
-# refusal deliberately KEEPS the merged read audit and stamps a
-# `refused_attempt {attempt, line_no, key}` marker on it (row r4-4), so the
-# reads gathered before the violation stay accounted for. That digest is an
-# aggregate of the attempts digested SO FAR and the refused attempt
-# contributed nothing — it is, by construction, an INCOMPLETE transcript.
-# Gating on it could PASS every packet file from an earlier attempt's reads
-# and certify a leg whose final attempt was thrown away. Fail closed: the
-# marker VOIDs this audit file and the summary line names it. VOID (not
-# INCONCLUSIVE) because the evidence is not broken or unreadable — it is
-# knowingly partial, which is the leg-not-proven state VOID already means.
-# Checked at BOTH levels: the wrapper stamps the marker on the digest object
-# (`emit_read_audit` nests it under `.digest`), and a caller that hands the
-# gate the bare digest carries it at the top level.
-set +e
-jq -e '(.refused_attempt? // .digest.refused_attempt?) != null' \
-  "$AGY_READ_AUDIT_FILE" >/dev/null 2>/dev/null
-_refused_rc=$?
-set -e
-if [ "$_refused_rc" -eq 0 ]; then
-  # the sibling / NEW-round sentence only for the v2 per-attempt shape (r16-4)
-  if [ "$_V2_ATTEMPT" -eq 1 ]; then
-    echo "[review] agy leg read-audit VOID — this digest carries a refused_attempt marker (the duplicate-JSON-member refusal kept the merged audit of the attempts digested so far, spec C14 / row r4-4), so it is a KNOWINGLY INCOMPLETE transcript: an earlier attempt's reads can satisfy a packet file the refused attempt never read. Treat the leg as not run for this round. The refused attempt stays a SIBLING of every later attempt of this round (the hook load check reads every attempt and deletes none), so a re-dispatch inside the round cannot clear it: prepare a NEW round (a fresh hook log)." >&2
-  else
-    echo "[review] agy leg read-audit VOID — this digest carries a refused_attempt marker (the duplicate-JSON-member refusal kept the merged audit of the attempts digested so far, spec C14 / row r4-4), so it is a KNOWINGLY INCOMPLETE transcript: an earlier attempt's reads can satisfy a packet file the refused attempt never read. Treat the leg as not run for this round; re-dispatch once (rename attempt K's audit aside first — references/packet-lifecycle.md § Round integrity)." >&2
-  fi
-  echo "READ_AUDIT_GATE_VOID checked=0 pass=0 void=0 inconclusive=0 unevaluated=$# refused_attempt=1"
-  exit 3
-fi
-
 n_args=$#
 checked=0
 n_pass=0
@@ -324,7 +286,7 @@ for PACKET_ABS_PATH in "$@"; do
       echo "[gate] INCONCLUSIVE $PACKET_ABS_PATH"
       n_inconclusive=$((n_inconclusive + 1))
     else
-      # RETRY-CLEARABLE, unlike the ABSENT / refused_attempt / jq rc>=2 arms
+      # RETRY-CLEARABLE, unlike the ABSENT / jq rc>=2 arms
       # (gate-1 r15 row r15-2): a read-blind attempt wrote a readable audit
       # with its census, so the hook load check attributes it like any other
       # hooked attempt and a later attempt of the same round can stand beside

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1551 — 2026-10-08
+## 0.2.1570 — 2026-10-09
 
 **The daily drift checks are removed.** `bin/agy-daily-check.sh` and
 `bin/gemini-daily-check.sh` no longer ship; remove a cron or launchd entry you made for them. Run

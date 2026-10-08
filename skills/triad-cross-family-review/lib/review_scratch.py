@@ -5241,7 +5241,8 @@ def v2_resolve_roster(source: Path):
     it here keeps the Google chain the SAME question in the resolver CLI and
     in a round prepared through this command. The agy route's web capability
     depends on this install — its `read_url(*)` allow
-    (`_v2_agy_web_refusal`) — and is checked by `prepare` before the round
+    (`_v2_agy_web_refusal`, which reads the settings file agy reads; writes
+    and locks nothing) — and is checked by `prepare` before the round
     exists (R-REVIEW-WEB); every preset the claude route may select ships
     with its web twin."""
     roster = _load_v2_sibling("roster_v2")
@@ -5265,29 +5266,14 @@ def _v2_agy_web_refusal(web: bool, routes) -> str | None:
     agy settings allow `read_url(*)` (and do not deny it); else the refusal
     sentence. Called by `prepare --v2` for the round's startable routes and by
     `collect_v2.retry` for the retried entry's route — before any record or
-    attempt exists, i.e. before inference. The settings file is the one the
-    wrappers' own `_agy_settings._settings_path()` names (one reader of that
-    location, its `AGY_SETTINGS_PATH` override included); this reads it and
-    writes nothing."""
+    attempt exists, i.e. before inference. It reads the settings file agy
+    reads — `AGY_SETTINGS_PATH` when set, else
+    `~/.gemini/antigravity-cli/settings.json` (DL-112) — and writes and locks
+    nothing."""
     if not web or "agy" not in set(routes):
         return None
-    module_path = _v2_wrapper_dir() / "_agy_settings.py"
-    mod = sys.modules.get("_agy_settings")
-    try:
-        if mod is None:
-            spec = importlib.util.spec_from_file_location("_agy_settings",
-                                                          module_path)
-            if spec is None or spec.loader is None:
-                raise OSError(f"no loadable module at {module_path}")
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            sys.modules["_agy_settings"] = mod
-        settings = mod._settings_path()
-    except Exception as exc:  # noqa: BLE001 — any failure is this refusal
-        return (f"an agy leg of this round runs with web, and the wrappers' "
-                f"agy settings module {module_path} cannot be read "
-                f"({' '.join(str(exc).split())}), so whether `{_AGY_WEB_ALLOW}` "
-                f"is allowed cannot be checked before inference (R-REVIEW-WEB)")
+    env = os.environ.get("AGY_SETTINGS_PATH")
+    settings = Path(env) if env else Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
     try:
         doc = json.loads(Path(settings).read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -5302,7 +5288,9 @@ def _v2_agy_web_refusal(web: bool, routes) -> str | None:
         denied = isinstance(deny, list) and _AGY_WEB_ALLOW in deny
         if allowed and not denied:
             return None
-        why = ("it denies it" if denied
+        why = ("it denies it (the operator's own setting, or a codex-host agy "
+               "call in progress, which adds a temporary deny for its length — "
+               "then run again after that call ends)" if denied
                else "its permissions.allow does not list it")
     return (f"an agy leg of this round runs with web (review_web_authorized="
             f"true), which needs `{_AGY_WEB_ALLOW}` allowed in the operator's "
@@ -5564,21 +5552,6 @@ def _v2_expected_flags(binding: dict, packet_dir: Path, label: str) -> str:
             f"--expected-route {q(route)}")
 
 
-def _v2_agy_round_audits(allocs: list, this: dict) -> list:
-    """The OTHER agy-route attempts' read audits in this round.
-
-    One `.agents/hooks.json` serves the whole round, so every agy leg appends
-    to the same hook log and the load check can only answer per ROUND (it
-    attributes hook rows to attempts by the conversation ids each census row
-    recorded — one owner per id across the round's audits, and no attribution
-    at all while any census row omitted ids — `lib/agy_hook.py`). The PRINTED
-    check must carry the same inputs the collector uses, or a leader running
-    it by hand would read a PASS the collector refuses.
-    """
-    return [str(a["dispatch"]["read_audit_path"]) for a in allocs
-            if a is not this and (a.get("dispatch") or {}).get("read_audit_path")]
-
-
 def _v2_unsealed_guard(attempt_dir: Path, absent: list) -> str:
     """A bash/zsh command that exits 1, naming the reason on stderr, when the
     attempt is SEALED (its answer was recorded — R-BIND, case C66) or any of
@@ -5596,12 +5569,11 @@ def _v2_unsealed_guard(attempt_dir: Path, absent: list) -> str:
 
 
 def v2_print_dispatch(alloc: dict, packet_dir: Path, worktree: Path,
-                      label: str, sibling_audits: list | None = None) -> None:
+                      label: str) -> None:
     """ONE complete dispatch line for this entry's attempt, plus the checks
     that entry's contract owes: the admission command for every leg, and for
-    an agy route also the per-attempt read-audit gate and the hook load
-    check (which takes the round's other agy audits — see
-    `_v2_agy_round_audits`)."""
+    an agy route also the per-attempt read-audit gate and the per-attempt
+    hook load check (this attempt's audit and the round hook log)."""
     q = shlex.quote
     entry = alloc["entry"]
     dispatch = alloc["dispatch"]
@@ -5689,16 +5661,16 @@ def v2_print_dispatch(alloc: dict, packet_dir: Path, worktree: Path,
             f"--audit-file {q(audit)} {q(str(packet_dir))} "
             f"{q(str(worktree / _WT_BRIEF))} "
             f"{q(str(worktree / _WT_DIFF_PROD))}\n")
-        _v2_print_hook_check(packet_dir, label, audit, sibling_audits)
+        _v2_print_hook_check(packet_dir, label, audit)
     _emit_payload(
         f"{_V2_PAD}admit: python3 {verdict_v2} {q(dispatch['stdout_path'])} "
         f"{_v2_expected_flags(binding, packet_dir, label)}\n")
 
 
-def _v2_print_hook_check(packet_dir: Path, label: str, audit,
-                         sibling_audits) -> None:
+def _v2_print_hook_check(packet_dir: Path, label: str, audit) -> None:
     """The agy hook LOAD CHECK for one attempt's read audit — the command
-    ALONE on its `hook:` line, its note on the line after.
+    ALONE on its `hook:` line (`agy_hook.py check <attempt audit> <round hook
+    log>`), its note on the line after.
 
     COPY-RUNNABLE (gate-1 r12 row r12-5). The note used to ride the END of
     the command line, and `bash` refuses its parenthesis, so the leader's
@@ -5706,11 +5678,9 @@ def _v2_print_hook_check(packet_dir: Path, label: str, audit,
     `retry` printers (`collect_v2`) print through this one function, so the
     shape cannot drift between them."""
     q = shlex.quote
-    siblings = "".join(f" {q(str(p))}" for p in (sibling_audits or []))
     _emit_payload(
         f"{_V2_PAD}hook: python3 {q(_v2_lib_path('agy_hook.py'))} check "
-        f"{q(str(audit))} {q(str(_hook_log_path(packet_dir, label)))}"
-        f"{siblings}\n"
+        f"{q(str(audit))} {q(str(_hook_log_path(packet_dir, label)))}\n"
         f"{_V2_PAD}      (HOOK_LOAD_PASS required; VOID = the hook layer did "
         f"not load)\n")
 
@@ -5991,8 +5961,7 @@ def _v2_finish_prepare(packet_dir: Path, worktree: Path, label: str,
         print(f"WARNING: {' '.join(str(warning).split())}")
     _print_round_header(packet_dir, worktree, label, digest, sha)
     for alloc in allocs:
-        v2_print_dispatch(alloc, packet_dir, worktree, label,
-                          _v2_agy_round_audits(allocs, alloc))
+        v2_print_dispatch(alloc, packet_dir, worktree, label)
     for entry in resolved.legs:
         if entry.enabled and entry.skipped_reason:
             # Named, never silently dropped, and never counted as agreement

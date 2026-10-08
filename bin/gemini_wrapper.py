@@ -37,6 +37,7 @@ from typing import Optional, Tuple
 from _common import (
     _emit_payload,
     _guarded_main,
+    _investigation_clause,
     _emit_canonical_summary,
     _SIGNAL_STATE,
     map_classification_to_exit,
@@ -99,10 +100,6 @@ _VERSION_RE = re.compile(
     r"(?<![0-9.])(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?(?![0-9])")
 _PREFLIGHT_TIMEOUT_S = 10
 _REQUIRED_HELP_FLAGS = ("--policy", "--approval-mode", "--output-format")
-# C18 / R-NOCOST: the gemini CLI exposes no model listing, so the review route
-# checks an explicit --model against this versioned list of the CLI's own model
-# table (its source and CLI version are recorded in the file).
-_MODEL_LIST = Path(__file__).resolve().parent / "gemini-models.json"
 
 # Tier-2 (installed gemini CLI 0.60.0 bundle, packages/core/dist/src/core/
 # contentGenerator.js `AuthType`): the non-OAuth selections. `oauth-personal`
@@ -133,32 +130,6 @@ _RESEARCH_POLICY = Path(__file__).resolve().parent / "policies" / "gemini-resear
 # profile with ONLY google_web_search / web_fetch moved to allow. Attached
 # instead of `_READONLY_POLICY` under `--review-web`, never as an overlay.
 _READONLY_WEB_POLICY = Path(__file__).resolve().parent / "policies" / "gemini-readonly-web.toml"
-
-# The shared clause `web-evidence` (`spec/prompts/investigation.md`), whose seed
-# is `antigravity_wrapper.AGY_WEB_EVIDENCE_CLAUSE`. § order of that file: "On a
-# gemini route the tool names read `web_fetch` for the page fetch and
-# `google_web_search` for the summary; a host renderer substitutes the names of
-# the CLI it dispatches and changes nothing else." So these bytes are the agy
-# bytes with exactly two substitutions (`read_url_content` -> `web_fetch`,
-# `search_web` -> `google_web_search`) — t58 axis 8 imports BOTH constants and
-# proves the derivation, which is also the drift guard: editing one without the
-# other fails that axis. Written out literally rather than computed from the
-# agy module, so this wrapper never imports its sibling at runtime.
-GEMINI_WEB_EVIDENCE_CLAUSE = (
-    "WEB EVIDENCE PROCEDURE (appended by the caller to every research dispatch; it "
-    "binds every external fact in your answer). google_web_search returns a "
-    "model-written summary and grounding-redirect links: a POINTER to sources, "
-    "never a citation. For every fact you take from the web, call web_fetch on the "
-    "source page itself (the official document, the version-tagged source file, the "
-    "release note or the repository page) and cite the exact URL you fetched "
-    "together with the date or version string visible ON that page. Never write a "
-    "URL you did not fetch, a placeholder such as `https://example.com/...`, or a "
-    "bare year in place of a page date. If the fetch fails or the page shows no "
-    "date or version, report that fact as UNSURE and name the URL you tried. Local "
-    "file facts come first, cited as path:line; web facts follow, each with its "
-    "fetched URL and page date."
-)
-
 
 def _probe(gemini_bin: str, probe_args: list[str]) -> Tuple[int, str]:
     """One bounded vendor probe. Returns (rc, stdout+stderr); rc -1 = the probe
@@ -269,34 +240,8 @@ def _auth_refusal(cwd: Optional[str]) -> Optional[str]:
     return None
 
 
-def _model_list_refusal(model: str, version: tuple,
-                        version_str: str) -> Optional[str]:
-    """None when the versioned gemini model list supports `model` on the
-    probed CLI `version`, else the refusal reason (C18; an unreadable list
-    refuses — an unchecked model is never admitted as checked)."""
-    try:
-        data = json.loads(_MODEL_LIST.read_text(encoding="utf-8"))
-        minimum = _parse_version(data["minimum_version"])
-        models = data["models"]
-    except (OSError, ValueError, KeyError, TypeError) as e:
-        return (f"gemini model list {_MODEL_LIST} unreadable "
-                f"({type(e).__name__}) — the requested model {model!r} cannot "
-                f"be checked against the route's catalog")
-    if minimum is None or version < minimum:
-        return (f"gemini {version_str} is older than the model "
-                f"list's version {data['minimum_version']} — no support evidence "
-                f"for the requested model {model!r}; update the gemini CLI")
-    if model not in models:
-        return (f"the gemini model list ({_MODEL_LIST.name}, CLI "
-                f"{data.get('cli_version')}) does not list the requested model "
-                f"{model!r} — change the model in the roster entry (or the "
-                f"--model value) to a listed one")
-    return None
-
-
 def _review_preflight(gemini_bin: str,
-                      cwd: Optional[str],
-                      model: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+                      cwd: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     """(refusal reason or None, observed CLI version or None) for the review route.
 
     The observed version rides EVERY return made after it was observed — a
@@ -325,8 +270,6 @@ def _review_preflight(gemini_bin: str,
         return (f"gemini {version_str} does not advertise {', '.join(missing)} in "
                 f"--help — the read-only review argv depends on every one of "
                 f"{', '.join(_REQUIRED_HELP_FLAGS)}"), version_str
-    if model:
-        return _model_list_refusal(model, version, version_str), version_str
     return None, version_str
 
 
@@ -598,8 +541,7 @@ def _main(ctx: dict) -> int:
         prev_dispatch = _SIGNAL_STATE["dispatch"]
         _SIGNAL_STATE["dispatch"] = True
         try:
-            refusal, probed_version = _review_preflight(gemini_bin, args.cwd,
-                                                        args.model)
+            refusal, probed_version = _review_preflight(gemini_bin, args.cwd)
         finally:
             # a signal recorded during the probe keeps the record-only mode on
             # until its refusal is written (C1: a second signal never loses it)
@@ -632,19 +574,25 @@ def _main(ctx: dict) -> int:
             # by hand here silently opted out of both.
             return _refuse("config-conflict", refusal, probed_version)
 
+    # The engine gets the caller's text alone; build_cmd appends the clause
+    # LAST after whatever the engine adds (schema instruction, repair notice),
+    # so no caller text is ever moved or stripped (C29).
+    engine_prompt = args.prompt
+    web_clause = ""
     if args.web:
         # C29: the web-evidence rule rides the END of the prompt on every
         # research dispatch — after every refusal above, so the clause never
         # rescues a dispatch that should not run, and after the caller's own
         # text, because a rule at the START of a long prompt is the one most
         # likely dropped. `args.prompt` is what audit/run-log record, so the
-        # record shows the prompt AS SENT.
-        args.prompt = args.prompt + "\n\n" + GEMINI_WEB_EVIDENCE_CLAUSE
-    # The engine gets the caller's text alone; build_cmd appends the clause
-    # LAST after whatever the engine adds (schema instruction, repair notice),
-    # so no caller text is ever moved or stripped (C29).
-    engine_prompt = (args.prompt[:-len("\n\n" + GEMINI_WEB_EVIDENCE_CLAUSE)]
-                     if args.web else args.prompt)
+        # record shows the prompt AS SENT. The clause is rendered from the
+        # vendored spec (one source); a failure is refused before the spawn.
+        try:
+            web_clause = _investigation_clause("gemini")
+        except RuntimeError as e:
+            log(str(e))
+            return _refuse("config-conflict", str(e), probed_version)
+        args.prompt = args.prompt + "\n\n" + web_clause
 
     pydantic_cls = None
     if args.pydantic:
@@ -657,7 +605,7 @@ def _main(ctx: dict) -> int:
     def build_cmd(effective_prompt: str) -> list[str]:
         if args.web:
             # C29: the host-appended clause is LAST, after every instruction.
-            effective_prompt = effective_prompt + "\n\n" + GEMINI_WEB_EVIDENCE_CLAUSE
+            effective_prompt = effective_prompt + "\n\n" + web_clause
         cmd = [
             gemini_bin,   # resolved/pinned path (finding #3) — never a bare name
             "-p", effective_prompt,

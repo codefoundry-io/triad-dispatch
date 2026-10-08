@@ -22,12 +22,10 @@ the maintenance agent's responsibility.
 from __future__ import annotations
 
 import enum
-import errno
 import fcntl
 import functools
 import importlib
 import json
-import math
 import os
 import re
 import shutil
@@ -281,6 +279,9 @@ CLI_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
             "network issue connecting to the server",  # `There was a network issue connecting to the server, please try again.` — the frozen contracts/vendor-failure-lines.json agy row (status ERROR, empty response, vendor rc 1)
             "unavailable (code 503)",  # agy stderr `error: UNAVAILABLE (code 503): Deadline expired …` (agy 1.2.11, run-log 20260926T020525Z-78105-da2d3ccf); never a bare "503"
         ),
+        "CLI_SUB_CAP_PATTERNS": (
+            "your ai credits balance is too low to continue",  # agy "Your AI credits balance is too low to continue." — agy changelog 1.2.15 (vendor source); contracts/vendor-failure-lines.json agy row; stream position not captured
+        ),
     },
 }
 
@@ -325,14 +326,12 @@ ANTIGRAVITY_VENDOR_EXIT_MAP: dict[int, str] = {
 
 # agy only, in no raw-text list (FP-safe). Matched ONLY on a
 # line BEGINNING with it (`_agy_banner_line`: lines split on LF only; the
-# classifier extension's learned variants too), in three places: the
+# classifier extension's learned variants too), in two places: the
 # auth-carrier rung (`_auth_carrier_stop`, which the agy driver runs on a failed
 # or timed-out call — agy's stderr, and inside a finish-schema validation report
-# in `result.error`); the antigravity classify arm's L2 rung over the no-answer
+# in `result.error`); and the antigravity classify arm's L2 rung over the no-answer
 # blob (whose typed stream signals carry a `[agy signal] ` prefix, so a tool's
-# error text never starts a line); and the model-catalog check
-# (`antigravity_wrapper._catalog_auth_observed`, on a catalog call that did not
-# complete with the model listed).
+# error text never starts a line).
 AGY_AUTH_BANNER_PATTERNS = ("authentication required. please visit the url",)
 
 
@@ -358,24 +357,12 @@ class _DuplicateJSONMember(ValueError):
     the hook itself sees one object, not a stream — and stays None for the
     whole-document scans. It is 1-based so a wrapper log line points at the
     stream line an operator would count to.
-
-    `undecodable_lines` carries the PARTIAL census the line-oriented caller
-    had already collected when it raised (gate-1 r9 row r9-15). The agy
-    driver used to reset that list to `[]` on the raise, so an undecodable
-    line at N followed by a duplicate member at M>N left the refused
-    attempt's digest saying nothing about line N — and the duplicate
-    refusal, which deliberately KEEPS the read audit (row r4-4) precisely
-    so the evidence gathered before it survives, is where a reader most
-    needs to know the transcript also had a hole in it. Empty for the
-    whole-document scans, which have no line census.
     """
 
-    def __init__(self, key: str, line_no: int | None = None,
-                 undecodable_lines: list | None = None):
+    def __init__(self, key: str, line_no: int | None = None):
         super().__init__(f"duplicate JSON member '{key}'")
         self.key = key
         self.line_no = line_no
-        self.undecodable_lines = list(undecodable_lines or ())
 
 
 def _reject_duplicate_pairs(pairs):
@@ -425,18 +412,9 @@ _AGY_DIGEST_VALUE_CAP = 200
 # parameter KEYS and tool NAMES were uncapped (only VALUES were), so a vendor
 # could still balloon the leader-visible read-audit line through either.
 _AGY_DIGEST_KEY_CAP = 64
-_AGY_DIGEST_USAGE_KEY_CAP = 12
 # Per-attempt breakdown kept in the merged aggregate (r1/R4). The union lists
 # carry the evidence; this list is the bounded per-attempt census.
 _AGY_DIGEST_ATTEMPT_CAP = 10
-# Structural failure strings handed to classify() (r1/R2). Bounded count.
-_AGY_SIGNAL_CAP = 12
-# Max signal strings ONE event may contribute (r3/G2). A single malformed
-# `error_message` step could otherwise emit up to 16 (4 text keys on the step
-# itself + 4 on each of its 3 sub-containers) and monopolise its bucket,
-# crowding out every later event's signal.
-_AGY_SIGNAL_EVENT_CAP = 2
-_AGY_ERROR_TEXT_KEYS = ("message", "text", "detail", "description")
 # Tool CLASS recorded on every read_attempts entry (r2/C5). read_attempts
 # collects EVERY unsuccessful tool, but the review SKILL's VOID diagnostic
 # reports a match as "the leg failed to READ the packet" — a failed write or
@@ -446,45 +424,13 @@ _AGY_ERROR_TEXT_KEYS = ("message", "text", "detail", "description")
 _AGY_TOOL_CLASSES = (("read", _AGY_READ_TOOLS), ("write", _AGY_WRITE_TOOLS),
                      ("web", _AGY_WEB_TOOLS))
 # The digest's capped lists — each merged pairwise with its _omitted counter.
-_AGY_DIGEST_LISTS = ("files_read", "writes", "commands", "denied", "web",
-                     "read_attempts")
-# Per-stream cap on the UNDECODABLE-line log (row r6-8): the line count is
-# vendor-controlled, so the diagnostic is bounded like every other
-# vendor-driven emission here — the overflow is reported once at the end.
-_AGY_UNDECODABLE_LOG_CAP = 5
+_AGY_DIGEST_LISTS = ("files_read", "denied", "web", "read_attempts")
 
 
 def _agy_tail_fragment(text: str) -> int:
-    """1-based line number of a TRAILING FRAGMENT, or 0 when there is none
-    (gate-1 r9 row r9-10).
-
-    A fragment is the FINAL segment of a stream that does not end in `\\n`,
-    starts with `{`, and does not decode — i.e. exactly the tail a killed or
-    crashed vendor leaves behind. The three conditions are all load-bearing:
-    a newline-terminated last line is COMPLETE (a malformed one is a hole in
-    the transcript and must still refuse), a non-`{` tail already belongs to
-    the framing rule, and a tail that DECODES is the ordinary shape of a
-    clean stream whose writer simply did not emit the final newline.
-
-    A duplicate member in the tail is NOT a cut: it is the content violation
-    `parse_agy_stream` refuses the whole stream for, so it returns 0 and the
-    raise stands.
-
-    NEITHER IS A DECODER-LIMIT FAILURE (gate-1 r10 row r10-4). The exemption
-    used to catch `(RecursionError, ValueError)`, which covers two failures
-    that say nothing about truncation: a COMPLETE object nested past the
-    interpreter's recursion limit, and a COMPLETE object carrying an integer
-    literal over the 4300-digit conversion limit (a bare `ValueError`).
-    Nothing was cut off either of them — the whole document is there and
-    this host simply cannot decode it — so exempting them dropped a real
-    hole out of the undecodable census and let the attempt be classified
-    from a transcript the parser had already refused to read. Only
-    `json.JSONDecodeError`, the SYNTAX class, is the cut this helper names.
-
-    Both `parse_agy_stream` (which excludes the line from its census) and
-    the agy driver (which stamps `truncated_tail` on the attempt digest)
-    call this, so the two can never disagree about which line it is.
-    """
+    """1-based line number of a trailing fragment, else 0: the text does not
+    end in `\\n`, its last segment starts with `{`, and decoding that segment
+    raises anything but `_DuplicateJSONMember` (the driver's `truncated_tail`)."""
     if not text or text.endswith("\n"):
         return 0
     lines = text.split("\n")
@@ -495,80 +441,25 @@ def _agy_tail_fragment(text: str) -> int:
         json.loads(stripped, object_pairs_hook=_reject_duplicate_pairs)
     except _DuplicateJSONMember:
         return 0
-    except json.JSONDecodeError:
+    except Exception:
         return len(lines)
-    except (RecursionError, ValueError):
-        # A decoder LIMIT, not truncation (row r10-4): the line stays in
-        # `parse_agy_stream`'s undecodable census and the attempt is refused.
-        return 0
     return 0
 
 
 def parse_agy_stream(text: str) -> tuple:
-    """Parse agy stream-json NDJSON into (events, result, undecodable).
+    """Parse agy stream-json NDJSON into (events, result).
 
-    Tolerant by design: non-JSON lines, truncated trailing lines (killed
-    runs), and non-dict payloads are skipped — a partial stream still yields
-    its parsed prefix. `result` is the payload dict of the LAST
-    `{"event":"result"}` line, or None.
-
-    Framing is `"\\n"` ONLY (r1/R7). `str.splitlines()` additionally breaks on
-    U+2028 / U+2029 / U+0085, and V8 (agy's runtime) does NOT escape those in
-    JSON string output — so one legal NDJSON line carrying any of them would
-    be cut in half, both halves would fail to parse, and a COMPLETE answer
-    would vanish silently. A trailing `\\r` is absorbed by the `.strip()`.
-
-    DUPLICATE MEMBERS (spec C14 / R-BIND): every line is parsed with the
-    original-text hook, and a repeated member anywhere in a line RAISES
-    `_DuplicateJSONMember` (carrying the key and the 1-based line number) out
-    of this function — the whole stream is refused, never edited. Silently
-    keeping the last value is how a blocking verdict launders into a benign
-    one; DROPPING the line is how it launders one layer up (gate-1 r3 row
-    r3-2): the caller's framing check reparses the stream WITHOUT this hook
-    and counts `result` events among the SURVIVORS, so a clean SAFE result
-    followed by a duplicate-bearing second result looked like exactly one
-    result and the first was admitted, and a dropped tool event vanished from
-    the allowlist census. The refusal is NON-REPAIRABLE at the caller (a
-    repair turn would replay the discarded half).
-
-    UNDECODABLE LINES ARE REPORTED, NOT JUST SKIPPED (gate-1 r7 row r7-k1,
-    widened at r8 row r8-1). The third member is the bounded census of the
-    `{`-prefixed lines this parse could not decode AT ALL — an ordinary
-    malformed line (JSONDecodeError), one nested past the recursion limit
-    (RecursionError) and an integer literal past the 4300-digit conversion
-    limit (a bare ValueError) alike: one
-    `{"line": <1-based>, "error": "<ExceptionClass>"}` per line, capped at
-    `_AGY_UNDECODABLE_LOG_CAP` entries, NEVER carrying the vendor bytes.
-    r6-8 skipped such a line so the parse would not cost the caller its
-    classification, audit row and run-log — correct — but left no flag, so a
-    drained NO-ANSWER attempt carrying a capacity phrase took the driver's
-    automatic retry and a clean second attempt returned `ok` over a merged
-    audit that omitted the event and said nothing. r7-k1 flagged the two
-    EXOTIC classes only, leaving that hole open for the likeliest shape.
-
-    The list stays EMPTY for a line that does not START with `{`: prose on
-    stdout (a vendor banner) belongs to the framing rule, and counting it
-    here would refuse every partial stream.
-
-    A TRAILING FRAGMENT IS A CUT, NOT A HOLE (gate-1 r9 row r9-10). r8-1
-    claimed the exemption above also covered "a killed run's trailing
-    fragment" — true only for a fragment that does not start with `{`, and
-    a stream cut mid-EVENT usually does. Such a fragment therefore entered
-    the census and the caller's r7-k1 rung refused the attempt as a generic
-    `vendor-error` BEFORE `_classify_no_answer` could name the ACTIONABLE
-    token the run really carried (`oauth-env`, `cli-subscription-cap`, the
-    capacity retry) — a diagnosis regression. The FINAL segment of a text
-    that does not end in `\\n` is excluded from the census (see
-    `_agy_tail_fragment`); the caller records it as `truncated_tail`
-    instead. Everything else is unchanged: a complete-but-malformed line
-    anywhere — the LAST line included, as long as it is newline-terminated
-    — is still a hole and still refuses.
+    Read like the codex host reads its own stream: a line that does not start
+    with `{`, a `{` line that does not decode, and a non-dict payload are
+    skipped; `result` is the payload dict of the LAST `{"event":"result"}`
+    line, or None. Framing is `"\\n"` ONLY (r1/R7): `str.splitlines()` also
+    breaks on U+2028 / U+2029 / U+0085, which V8 does not escape in JSON
+    strings, so a complete answer would be cut in half. A duplicate member
+    anywhere in a line raises `_DuplicateJSONMember(key, line_no)` and the
+    whole stream is refused (spec C14 / R-BIND), never edited.
     """
     events: list = []
     result = None
-    undecodable = 0
-    undecodable_lines: list = []
-    tail_fragment_line = _agy_tail_fragment(text)
     for line_no, line in enumerate((text or "").split("\n"), 1):
         line = line.strip()
         if not line.startswith("{"):
@@ -576,61 +467,15 @@ def parse_agy_stream(text: str) -> tuple:
         try:
             obj = json.loads(line, object_pairs_hook=_reject_duplicate_pairs)
         except _DuplicateJSONMember as e:
-            # The partial census rides OUT on the exception (row r9-15): the
-            # caller keeps the read audit for this refusal, so the lines it
-            # had already found undecodable must not vanish with the raise.
-            raise _DuplicateJSONMember(e.key, line_no,
-                                       undecodable_lines) from None
-        except (RecursionError, ValueError) as e:
-            # EVERY `{`-PREFIXED LINE THAT DOES NOT DECODE IS RECORDED
-            # (gate-1 r6 row r6-8, WIDENED at r8 row r8-1). `json.loads`
-            # raises more than JSONDecodeError — a line nested past the
-            # interpreter's recursion limit raises RecursionError, and an
-            # integer literal over the 4300-digit conversion limit raises a
-            # bare ValueError — and r6-8 caught those two so they could not
-            # escape this "tolerant by design" parser as a traceback. But the
-            # ORDINARY malformed line (a plain JSONDecodeError: a truncated
-            # or mangled event) kept its own silent `continue` above this
-            # arm, so the common case left NO flag: a drained no-answer
-            # attempt carrying a capacity phrase took the driver's automatic
-            # retry and a clean second attempt returned `ok` over a merged
-            # audit that omitted the event (the r7-1 hole, reached through
-            # the likeliest shape). JSONDecodeError IS a ValueError, so one
-            # arm now covers all three; `_DuplicateJSONMember` is a
-            # ValueError too and is caught ABOVE, so the order matters. The
-            # line is skipped either way — the caller's framing check refuses
-            # the stream exactly as it does for a non-JSON line. Logged
-            # (bounded: the line NUMBER and the exception CLASS, never the
-            # vendor bytes) and capped, so a stream of bad lines cannot flood
-            # the leader-visible log.
-            if line_no == tail_fragment_line:
-                # THE CUT TAIL IS NOT A HOLE (row r9-10). The caller stamps
-                # `truncated_tail` on the attempt digest from the same
-                # helper, so the fact is recorded — it just does not refuse
-                # the transcript and blind the no-answer classifier.
-                log(f"agy stream line {line_no} is a TRAILING FRAGMENT "
-                    f"(the stream was cut mid-line) — recorded as a "
-                    f"truncated tail, not as an undecodable line")
-                continue
-            undecodable += 1
-            if undecodable <= _AGY_UNDECODABLE_LOG_CAP:
-                # Same cap on the RETURNED census (row r7-k1): the line count
-                # is vendor-controlled, so the caller's audit entry is bounded
-                # exactly like this log.
-                undecodable_lines.append({"line": line_no,
-                                          "error": type(e).__name__})
-                log(f"agy stream line {line_no} is undecodable "
-                    f"({type(e).__name__}) — line skipped")
+            raise _DuplicateJSONMember(e.key, line_no) from None
+        except (RecursionError, ValueError):
             continue
         if not isinstance(obj, dict):
             continue
         events.append(obj)
         if obj.get("event") == "result" and isinstance(obj.get("result"), dict):
             result = obj["result"]
-    if undecodable > _AGY_UNDECODABLE_LOG_CAP:
-        log(f"agy stream: {undecodable - _AGY_UNDECODABLE_LOG_CAP} further "
-            f"undecodable line(s) skipped (log capped)")
-    return events, result, undecodable_lines
+    return events, result
 
 
 def _agy_params_hint(params) -> dict:
@@ -644,51 +489,6 @@ def _agy_params_hint(params) -> dict:
     for k, v in list(params.items())[:6]:
         if isinstance(v, (str, int, float, bool)):
             out[str(k)[:_AGY_DIGEST_KEY_CAP]] = str(v)[:_AGY_DIGEST_VALUE_CAP]
-    return out
-
-
-def _agy_finite(v) -> bool:
-    """False for a NON-FINITE float — NaN / Infinity / -Infinity (r2/N4).
-
-    `json.loads` ACCEPTS those literals, so a vendor result can carry them, and
-    `json.dumps` writes them back BARE (`NaN`), which is not valid JSON per
-    RFC 8259. Empirically (jq 1.7.1) jq does not reject such a line: it
-    silently COERCES (NaN -> null, Infinity -> 1.797e308), so the damage is a
-    silently corrupted leader-visible audit value plus a hard parse failure on
-    any strict consumer. Dropping the value at the digest boundary is the fix;
-    `allow_nan=False` on the dumps is NOT (it raises inside main(), costing the
-    caller its summary line, audit row and run-log).
-    """
-    return not isinstance(v, float) or math.isfinite(v)
-
-
-def _agy_scalar(v, cap: int = _AGY_DIGEST_VALUE_CAP):
-    """Bounded, JSON-SAFE copy of a vendor-controlled scalar: strings capped,
-    non-finite numerics dropped, anything else -> None."""
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, str):
-        return v[:cap]
-    if isinstance(v, (int, float)):
-        return v if _agy_finite(v) else None
-    return None
-
-
-def _agy_usage_hint(usage) -> dict:
-    """Bounded copy of the terminal result's `usage` object (r1/R6). The whole
-    object used to ride verbatim into a leader-visible line; it is
-    vendor-controlled, so cap the key count, the key length and any string
-    value, and keep scalars only. Non-finite numerics are dropped (r2/N4)."""
-    out: dict = {}
-    if not isinstance(usage, dict):
-        return out
-    for k, v in list(usage.items())[:_AGY_DIGEST_USAGE_KEY_CAP]:
-        key = str(k)[:_AGY_DIGEST_KEY_CAP]
-        if isinstance(v, (bool, int, float)):
-            if _agy_finite(v):
-                out[key] = v
-        elif isinstance(v, str):
-            out[key] = v[:_AGY_DIGEST_VALUE_CAP]
     return out
 
 
@@ -817,8 +617,7 @@ def digest_agy_stream(events: list, result=None) -> dict:
     review SKILL) decides what a missing packet-read means. Each tool call
     is counted once, on its terminal DONE/ERROR update (ACTIVE skipped).
 
-    OUTCOME FIDELITY (r1/R1): `files_read` / `writes` / `commands` / `web`
-    record only tool calls that actually SUCCEEDED — terminal state DONE with
+    OUTCOME FIDELITY (r1/R1): `files_read` / `web` record only tool calls that actually SUCCEEDED — terminal state DONE with
     no `tool_info.error`. The review SKILL's mechanical gate reads a
     `files_read` hit as PROOF the reviewer received the packet bytes, and its
     own text declares a `denied` entry non-voiding, so appending errored /
@@ -842,8 +641,6 @@ def digest_agy_stream(events: list, result=None) -> dict:
     """
     files_read: list = []
     runtime_models: list = []
-    writes: list = []
-    commands: list = []
     denied: list = []
     web: list = []
     read_attempts: list = []
@@ -855,26 +652,6 @@ def digest_agy_stream(events: list, result=None) -> dict:
     # logs. Collected before any step filter, so a run whose only call was a
     # `finish` or a hook-denied prompt-shaped call still records its id.
     conv_seen: list = []
-    # TOOL STEPS STILL IN FLIGHT (gate-1 r18 row r18-1, r19 row r19-1). A
-    # tool call emits `ACTIVE` and later a terminal `DONE`/`ERROR` under the
-    # SAME `step_index` (MEASURED, id spike 2026-09-26; the hook row carries
-    # it as `step_idx`). A run that exits on its own between the two updates
-    # counts that step nowhere, so a real zero is indistinguishable from a
-    # lost step. PER INDEX, LAST STATE WINS: a `step_type: tool` ACTIVE with
-    # an int `step_index` OPENS that index; ANY later DONE / ERROR update with
-    # the same index CLOSES it WHATEVER its step_type — MEASURED 2026-09-26
-    # (agy 1.2.11, a review-shaped run): the final `finish` call goes ACTIVE
-    # as `step_type: tool` and ends as `step_type: finish` DONE under the same
-    # index, so pairing tool-typed terminals only stamped every successful
-    # run; a later ACTIVE with the same index REOPENS it (index reuse is
-    # unobserved — handled by construction). Only DONE / ERROR close; an
-    # unknown state leaves the step open (fail-closed). An update with no int
-    # `step_index` cannot be paired by index: an index-less tool ACTIVE is
-    # closed only by a LATER index-less terminal of a tool call (`tool` or
-    # `finish`, the two measured terminal types), first in first out — never
-    # by another index's terminal, which closes its own step.
-    open_idx: dict = {}       # step_index -> True while that step is open
-    loose_open = 0            # index-less tool ACTIVEs not yet closed (FIFO)
     for ev in events or []:
         if isinstance(ev, dict) and ev.get("event") == "init":
             conv_seen.append(ev.get("conversation_id"))
@@ -889,25 +666,11 @@ def digest_agy_stream(events: list, result=None) -> dict:
         stype = su.get("step_type")
         state = su.get("state")
         state_s = state if isinstance(state, str) else ""
-        idx = su.get("step_index")
-        has_idx = isinstance(idx, int) and not isinstance(idx, bool)
-        if state_s == "ACTIVE" and stype == "tool":
-            if has_idx:
-                open_idx[idx] = True
-            else:
-                loose_open += 1
-        elif state_s in ("DONE", "ERROR"):
-            if has_idx:
-                if open_idx.get(idx):
-                    open_idx[idx] = False
-            elif loose_open and stype in ("tool", "finish"):
-                loose_open -= 1
         if stype == "error_message":
             error_steps += 1
             continue
-        # The ACCOUNTING below is unchanged: only a terminal `step_type:
-        # tool` update is a tool step. The `finish` terminal (step_type
-        # `finish`) closes its step above and is not counted as one.
+        # Only a terminal `step_type: tool` update is a tool step; the
+        # `finish` terminal (step_type `finish`) is not counted as one.
         if stype != "tool" or state_s == "ACTIVE":
             continue
         info = su.get("tool_info")
@@ -926,11 +689,6 @@ def digest_agy_stream(events: list, result=None) -> dict:
         if state_s == "DONE" and not err_present:
             if name in _AGY_READ_TOOLS:
                 files_read.append({"tool": name, "params": hint})
-            elif name in _AGY_WRITE_TOOLS:
-                writes.append({"tool": name, "params": hint})
-            elif name == "run_command":
-                cmdline = params.get("CommandLine", "") if isinstance(params, dict) else ""
-                commands.append(str(cmdline)[:_AGY_DIGEST_VALUE_CAP])
             elif name in _AGY_WEB_TOOLS:
                 web.append({"tool": name, "params": hint})
             continue
@@ -947,17 +705,10 @@ def digest_agy_stream(events: list, result=None) -> dict:
         "tool_steps": tool_steps,
         "error_steps": error_steps,
     }
-    # Omit-when-DEFAULT (the rule every per-attempt marker follows): the key
-    # appears exactly on a transcript that ends with a tool step in flight. A
-    # plain count like `tool_steps`, bounded by the event count.
-    steps_open = sum(1 for is_open in open_idx.values() if is_open) + loose_open
-    if steps_open:
-        digest["steps_open"] = steps_open
     # EVERY capped list carries its own omitted counter (r1/R6 — only
-    # files_read did, so a truncated writes/commands/denied/web list looked
-    # complete to the leader).
-    for key, values in (("files_read", files_read), ("writes", writes),
-                        ("commands", commands), ("denied", denied),
+    # files_read did, so a truncated denied/web list looked complete to the
+    # leader).
+    for key, values in (("files_read", files_read), ("denied", denied),
                         ("web", web), ("read_attempts", read_attempts)):
         digest[key] = values[:_AGY_DIGEST_LIST_CAP]
         digest[key + "_omitted"] = max(0, len(values) - _AGY_DIGEST_LIST_CAP)
@@ -971,24 +722,18 @@ def digest_agy_stream(events: list, result=None) -> dict:
     if over:
         digest["runtime_models_omitted"] = over
     if isinstance(result, dict):
-        # r2/C3: `status` was the ONE uncapped vendor string left in the
-        # digest, and it is replicated into the merged terminal fields AND
-        # into every per-attempt census row — three copies of an unbounded
-        # vendor value on a leader-visible line. Capped like `outcome`.
-        digest["status"] = _agy_scalar(result.get("status"),
-                                       _AGY_DIGEST_KEY_CAP)
-        dur = result.get("duration_seconds")
-        digest["duration_seconds"] = (dur if isinstance(dur, (int, float))
-                                      and _agy_finite(dur) else None)
-        if isinstance(result.get("usage"), dict):
-            digest["usage"] = _agy_usage_hint(result["usage"])
+        # r2/C3: the vendor `status` feeds every per-attempt census row on a
+        # leader-visible line — capped like `outcome`; a non-string is None.
+        status = result.get("status")
+        digest["status"] = (status[:_AGY_DIGEST_KEY_CAP]
+                            if isinstance(status, str) else None)
     return digest
 
 
 def _agy_entry_key(v) -> str:
     """Order-stable identity for a digest list entry, for dedupe (r2/C4).
-    Entries are either bounded dicts (`{tool, params, ...}`) or bounded
-    strings (commands), so a canonical JSON rendering is a total, cheap key;
+    Entries are bounded dicts (`{tool, params, ...}`), so a canonical JSON
+    rendering is a total, cheap key;
     anything unexpected falls back to `repr` rather than raising."""
     try:
         return json.dumps(v, sort_keys=True, ensure_ascii=True, default=str)
@@ -1006,11 +751,9 @@ def merge_agy_digests(digests) -> Optional[dict]:
     reads, which the review SKILL's mechanical gate treats as a VOID leg. The
     aggregate unions every attempt's lists (no evidence lost, DEDUPED in
     first-seen order per r2/C4 so a path re-read on every retry cannot consume
-    the cap), carries a bounded per-attempt census under `attempts` (which
-    keeps each attempt's own pre-dedupe totals), and takes the terminal fields
-    (status / duration / usage) from the LAST attempt — the one whose
-    classification the caller returns. Returns None for an empty input (no
-    completed vendor call ⇒ no digest, as before). `runtime_models` rides each
+    the cap), and carries a bounded per-attempt census under `attempts`
+    (each attempt's own pre-dedupe totals and `status`). Returns None for an
+    empty input (no completed vendor call ⇒ no digest, as before). `runtime_models` rides each
     `attempts[]` row (omit-when-empty); the top level carries the ordered
     distinct union. Which attempt is judged against a request is the
     wrapper's decision.
@@ -1070,10 +813,6 @@ def merge_agy_digests(digests) -> Optional[dict]:
         merged["runtime_models"] = models
     if models_omitted + over:
         merged["runtime_models_omitted"] = models_omitted + over
-    last = items[-1]
-    for key in ("status", "duration_seconds", "usage"):
-        if key in last:
-            merged[key] = last[key]
     attempts = []
     for i, d in enumerate(items[:_AGY_DIGEST_ATTEMPT_CAP]):
         entry: dict = {"attempt": i + 1, "status": d.get("status"),
@@ -1086,20 +825,6 @@ def merge_agy_digests(digests) -> Optional[dict]:
         # rule the audit row and the run-log apply to this flag.
         if d.get("capture_complete") is False:
             entry["capture_complete"] = False
-        # WHICH lines this attempt's transcript could not decode (gate-1 r7
-        # row r7-k1). Same omit-when-default rule as `capture_complete`: the
-        # key appears exactly where the transcript had a hole, so a reader can
-        # never mistake an incomplete attempt for ordinary evidence. The value
-        # is already bounded by the parser's own cap.
-        if d.get("undecodable_lines"):
-            entry["undecodable_lines"] = d["undecodable_lines"]
-        # HOW MANY TERMINAL `result` EVENTS this attempt's transcript
-        # carried (gate-1 r9 row r9-1). The driver stamps it only when the
-        # count is not the expected 1 (omit-when-default, as above), so the
-        # key appears exactly on an attempt whose terminal answer was
-        # ambiguous or absent.
-        if d.get("result_events") is not None:
-            entry["result_events"] = d["result_events"]
         # WHETHER this attempt's transcript was CUT MID-LINE (gate-1 r9 row
         # r9-10). Same omit-when-default rule: a cut tail does not refuse
         # the attempt, so the merged audit is the only place a reader can
@@ -1113,12 +838,6 @@ def merge_agy_digests(digests) -> Optional[dict]:
         # above, and this is what tells a reader it is a known prefix.
         if d.get("interrupted"):
             entry["interrupted"] = d["interrupted"]
-        # HOW MANY TOOL STEPS WERE STILL IN FLIGHT when this attempt's
-        # transcript ended (gate-1 r18 row r18-1): an ACTIVE update with no
-        # terminal one, so the step is counted nowhere else. Same
-        # omit-when-default rule; a per-attempt fact, never at the top level.
-        if d.get("steps_open"):
-            entry["steps_open"] = d["steps_open"]
         if isinstance(d.get("runtime_models"), list) and d["runtime_models"]:
             entry["runtime_models"] = d["runtime_models"]
         if d.get("runtime_models_omitted"):
@@ -1159,44 +878,6 @@ def _agy_first_line(v: str) -> str:
     return ""
 
 
-def _agy_emit_signals(buckets, cap: int = _AGY_SIGNAL_CAP) -> list:
-    """Flatten priority-ordered signal buckets under ONE global cap, RESERVING
-    a floor for every non-empty bucket (r3/G2).
-
-    r2/C1 fixed the ORDER (terminal error first) but kept a single global cap
-    consumed in bucket order, so an earlier bucket could still STARVE a later
-    one: 12 `error_message` step strings — or one terminal error plus eleven
-    steps — exhaust the cap before a single per-tool error is emitted, and a
-    capacity/auth indication present ONLY in `tool_info.error` never reaches
-    classify() at all. Each non-empty bucket now gets `cap // <non-empty>`
-    slots first (never more than `cap` in total), then the leftovers are handed
-    out in priority order — terminal-first is preserved.
-
-    Scope of the guarantee (r4/H1 correction — narrowed from a prior claim
-    that "starvation is not possible"): this floor protects only a bucket
-    that is ALREADY non-empty by the time this function runs. It says
-    nothing about whether a signal reaches a bucket in the first place —
-    `agy_classify_signals`'s per-event COLLECTION can still drop a signal
-    before it is ever handed to a bucket (see that function's r4/H2 fix for
-    a case where it did). The floor is also blind to informativeness: a
-    reserved slot can go to a low-value string ahead of a more useful one
-    waiting later in the same bucket.
-    """
-    live = sum(1 for b in buckets if b)
-    if not live:
-        return []
-    floor = max(1, cap // live)
-    out: list = []
-    for b in buckets:
-        out.extend(b[:floor])
-    for b in buckets:
-        for s in b[floor:]:
-            if len(out) >= cap:
-                return out[:cap]
-            out.append(s)
-    return out[:cap]
-
-
 def _never_raises(fallback, cli: Optional[str] = None):
     """Classification never raises (essential 3; spec R-TERMINAL): an Exception
     inside the wrapped classifier / extractor is ONE stderr line naming the CLI
@@ -1218,121 +899,28 @@ def _never_raises(fallback, cli: Optional[str] = None):
 
 
 @_never_raises(lambda exc: [], cli="antigravity")
-def agy_classify_signals(events: list, result=None) -> list:
-    """STRUCTURAL failure strings from an agy stream, for classify() (r1/R2).
+def agy_classify_signals(result) -> list:
+    """The failure text classify() reads from an agy stream: the ONE measured
+    carrier, the result-level `error` (its `message` when a dict).
 
-    The no-answer classify blob used to be `stderr + the RAW NDJSON stream`,
-    which carries model-authored prose, tool OUTPUT and tool PARAMETERS — the
-    reviewed content itself. A packet quoting a capacity phrase therefore
-    forced spurious `server-capacity` retries, and one quoting an auth banner
-    produced a terminal `oauth-env`. This helper returns ONLY typed error
-    payloads: `step_type == "error_message"` step text, `tool_info.error`
-    message strings, and a result-level typed error. The full raw stream is
-    still preserved verbatim in the run-log — diagnostics are unchanged; only
-    what CLASSIFICATION sees is narrowed.
-
-    PRIORITY (r2/C1): the cap used to be filled in EVENT order with the
-    result-level error appended LAST and then sliced away, so a run whose tools
-    failed repeatedly reached classify() carrying only per-tool noise — the one
-    signal that decides the class (capacity / auth / quota, reported at the
-    RESULT level) was discarded and the call landed on `unknown`. Signals are
-    now collected into three buckets and emitted terminal-first: the
-    result-level typed error, then `error_message` steps, then per-tool errors.
-    Emission goes through `_agy_emit_signals`, which RESERVES a floor for
-    every bucket that is non-empty BY THE TIME emission runs (r3/G2) — see
-    that function's docstring for the r4/H1 correction: this narrows
-    starvation, it does not eliminate it, because it cannot protect a
-    bucket a signal never reached in the first place.
-
-    PER-EVENT BUDGET, SPLIT PER SINK (r3/G2, corrected r4/H2): each event
-    contributes at most `_AGY_SIGNAL_EVENT_CAP` strings to the STEP sink
-    and, INDEPENDENTLY, up to `_AGY_SIGNAL_EVENT_CAP` more to the TOOL
-    sink — two separate per-event budgets, not one shared between them.
-    r3 gave the whole event a single shared budget: a `step_type ==
-    "error_message"` step carrying its own `message`/`text`/`detail`/
-    `description` (or nested `content`/`error`/`error_message`) fields
-    could exhaust that shared budget on the STEPS sink before the SAME
-    event's `tool_info.error` was ever examined, silently dropping the
-    tool error — if that string was the only capacity/auth phrase in the
-    whole run, classification degraded to `unknown`. Splitting the budget
-    per sink means a step-heavy event can no longer spend its own
-    tool-error slot.
-
-    FIRST LINE ONLY (r2/N2), and what it does NOT close (r3/G6): a typed error
-    message ECHOES a model-authored argument — the observed denial shape is
-    `"User denied permission to run command:\\n<the model's own command line>"`
-    — so a model-chosen argument quoting a classifier phrase re-entered the
-    blob through the channel that is supposed to be structural. Taking only the
-    first non-empty line removes an echo that FOLLOWS a newline. It does NOT
-    close the channel: a typed error that INLINES the argument on line 1
-    (`"Denied: run_command(find / -name 'model overloaded')"`) still carries
-    model-authored text into the classify blob, and the r1/R2 damage direction
-    (a quoted capacity/auth phrase forcing a spurious retry or a wrong terminal
-    class) remains reachable through that shape. The channel is NARROWED to
-    typed error fields and to line 1 of each — not eliminated. Second residual:
-    a genuine classifier phrase appearing ONLY on a later line is lost, which
-    degrades to `unknown` → the repair agent (the safe direction).
+    Its first non-empty stripped line, capped at `_AGY_DIGEST_VALUE_CAP` — a
+    typed error echoes model-authored text after a newline. A finish-schema
+    validation report is model text (R-CLASSIFY): only the first line agy's
+    sign-in banner begins is forwarded, else nothing. Step-level and tool-level
+    error text never reaches classify() (no capture shows a vendor class
+    there); the raw stream stays in the run-log for diagnostics.
     """
-    terminal: list = []   # result-level typed error — THE terminal signal
-    steps: list = []      # error_message step payloads
-    tools: list = []      # per-tool typed errors
-
-    def _take(container, sink: list, budget: list) -> None:
-        def _add(v: str) -> None:
-            # budget = this EVENT's remaining contribution (r3/G2).
-            if budget[0] <= 0 or len(sink) >= _AGY_SIGNAL_CAP:
-                return
-            head = _agy_first_line(v)
-            if head:
-                sink.append(head[:_AGY_DIGEST_VALUE_CAP])
-                budget[0] -= 1
-
-        if isinstance(container, str):
-            _add(container)
-            return
-        if not isinstance(container, dict):
-            return
-        for k in _AGY_ERROR_TEXT_KEYS:
-            v = container.get(k)
-            if isinstance(v, str):
-                _add(v)
-
-    for ev in events or []:
-        if len(steps) >= _AGY_SIGNAL_CAP and len(tools) >= _AGY_SIGNAL_CAP:
-            break
-        if not isinstance(ev, dict):
-            continue
-        su = ev.get("step_update")
-        if not isinstance(su, dict):
-            continue
-        # r4/H2: SEPARATE per-event budgets per sink. A budget SHARED across
-        # the error_message arm below and the tool_info arm let the former
-        # spend both slots on `steps` and starve THIS SAME EVENT's
-        # `tool_info.error` before it was ever examined.
-        step_budget = [_AGY_SIGNAL_EVENT_CAP]
-        if su.get("step_type") == "error_message":
-            _take(su, steps, step_budget)
-            for k in ("content", "error", "error_message"):
-                _take(su.get(k), steps, step_budget)
-        info = su.get("tool_info")
-        if isinstance(info, dict):
-            tool_budget = [_AGY_SIGNAL_EVENT_CAP]
-            _take(info.get("error"), tools, tool_budget)
-    if isinstance(result, dict):
-        err = result.get("error")
-        msg = err.get("message") if isinstance(err, dict) else err
-        if isinstance(msg, str) and _AGY_SCHEMA_REPORT_RE.match(_agy_first_line(msg)):
-            # a finish-schema validation report echoes the model's answer —
-            # model text (R-CLASSIFY): only its lines beginning with agy's
-            # sign-in banner are forwarded, nothing else
-            budget = [_AGY_SIGNAL_EVENT_CAP]
-            for ln in msg.split("\n"):
-                if _agy_banner_line(ln):
-                    _take(ln, terminal, budget)
-        else:
-            _take(err, terminal, [_AGY_SIGNAL_EVENT_CAP])
-
-    return _agy_emit_signals((terminal, steps, tools))
+    err = result.get("error") if isinstance(result, dict) else None
+    msg = err.get("message") if isinstance(err, dict) else err
+    if not isinstance(msg, str):
+        return []
+    head = _agy_first_line(msg)
+    if _AGY_SCHEMA_REPORT_RE.match(head):
+        for ln in msg.split("\n"):
+            if _agy_banner_line(ln):
+                return [ln.strip()[:_AGY_DIGEST_VALUE_CAP]]
+        return []
+    return [head[:_AGY_DIGEST_VALUE_CAP]] if head else []
 
 
 # ─── Retry policy ─────────────────────────────────────────────────────────
@@ -1385,8 +973,8 @@ class RunResult:
     # Vendor raw exit code — the repair agent's web-search key for unobserved codes.
     vendor_exit_code: int = -1
     # Antigravity stream-json read-audit digest (Task 6) — None for every other
-    # CLI/wrapper (zero behavior change); antigravity fills it from
-    # AgyResult.read_audit on every completed vendor call.
+    # CLI/wrapper (zero behavior change); the antigravity driver sets it on
+    # every completed vendor call.
     read_audit: Optional[dict] = None
     # Vendor CLI's own dotted version string (agy telemetry slice,
     # 2026-08-19 — origin: agy 1.1.15's release-day vendor-error outage was
@@ -1711,6 +1299,42 @@ def _wrapper_hardened() -> bool:
 
 def _audit_redact_enabled() -> bool:
     return _wrapper_hardened() or os.environ.get("TRIAD_AUDIT_REDACT_PROMPTS") == "1"
+
+
+# The investigation clause `web-evidence` (spec C29, R-INVEST) has ONE source:
+# the vendored review library renders it. Located from this module's own
+# directory — plugin layout first (`bin/`), then the source tree (two levels
+# below the repository root).
+_PROMPTS_V2_CANDIDATES = (
+    "../skills/triad-cross-family-review/lib/prompts_v2.py",
+    "../../.claude/skills/triad-cross-family-review/lib/prompts_v2.py",
+)
+
+
+@functools.lru_cache(maxsize=None)
+def _investigation_clause(route: str) -> str:
+    """The `web-evidence` clause a `--web` dispatch on `route` (agy / gemini)
+    appends, as `prompts_v2.render_investigation_clause(route)` renders it.
+    Loaded only when called (a dispatch without --web never reads the file).
+    RuntimeError names the path(s) tried when the library is missing or
+    unreadable or the clause set does not render; the caller refuses
+    `config-conflict` before the spawn."""
+    import importlib.util
+    here = Path(__file__).resolve().parent
+    tried = [str(here / rel) for rel in _PROMPTS_V2_CANDIDATES]
+    path = next((p for p in tried if os.path.isfile(p)), None)
+    if path is None:
+        raise RuntimeError("the web-evidence clause library prompts_v2.py is missing "
+                           f"(tried {', '.join(tried)}) — reinstall the plugin")
+    spec = importlib.util.spec_from_file_location("_triad_prompts_v2", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod   # its dataclasses resolve the module by name
+    try:
+        spec.loader.exec_module(mod)
+        return mod.render_investigation_clause(route)
+    except (OSError, SyntaxError, ImportError, getattr(mod, "PromptSpecError", OSError)) as e:
+        raise RuntimeError(f"the web-evidence clause cannot be rendered from {path}: "
+                           f"{e} — reinstall the plugin") from e
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
@@ -3195,7 +2819,7 @@ def _kill_proc_group(proc: subprocess.Popen, pgid: Optional[int] = None) -> None
 # next spawn and in its backoff sleeps, finishes the bounded group / reader
 # cleanup and returns the terminal record (`unknown` / exit 1, "wrapper
 # interrupted (<SIG>)"). A pre-dispatch vendor probe (the gemini preflight,
-# agy `--version`, the agy catalog) sets `dispatch` for its own call and
+# agy `--version`) sets `dispatch` for its own call and
 # restores it after only when no signal arrived: a signal during it is recorded
 # and the mode stays on until its interrupted-run refusal record is written, so
 # a second signal cannot exit before that record. Outside those windows before
@@ -3249,7 +2873,7 @@ def install_terminal_signal_handlers() -> None:
     carrier STOP, gemini's exit 41 included); never retried; a signalled agy
     run's carriers are not read (a recorded limit) — and the wrapper writes its
     summary, audit row and run-log. A pre-dispatch vendor probe (the gemini
-    preflight, agy `--version`, the agy catalog) runs in the same record-only
+    preflight, agy `--version`) runs in the same record-only
     mode: a signal during it is recorded, the mode stays on, and the wrapper
     writes the interrupted-run refusal (`unknown` / 1) first. Outside those
     windows before the first dispatch the handler still raises
@@ -3776,7 +3400,7 @@ def _run_once(
         # (CLASSIFICATION_TOKENS is unchanged and this value never reaches
         # audit, the summary line or a repair proposal): the sole
         # classify_and_log=False caller is the agy stream-json driver, which
-        # sets the real classification on its own AgyResult/RunResult.
+        # sets the real classification on this RunResult before returning it.
         result.classification = "unclassified"
 
     _SIGNAL_STATE["last"] = result   # C1: the evidence a later signal keeps
@@ -4968,7 +4592,6 @@ def _prune_dir_by_caps(
     max_bytes: int,
     preserve: Optional[Path],
     glob_patterns: tuple[str, ...],
-    extra_preserve: Optional[Path] = None,
     age_floor_s: Optional[float] = None,
 ) -> None:
     """Shared oldest-first prune-by-cap logic (file count + total bytes).
@@ -5000,18 +4623,8 @@ def _prune_dir_by_caps(
     binding it as a function default: the constant is defined further down
     this module, and the call-time read is the same rule the cap constants
     above follow, so a test can shrink either.
-
-    `extra_preserve` (fix wave W1 item 5, claude m1, 2026-08-19) — an
-    OPTIONAL second path to protect in the SAME call, additive to
-    `preserve`. `emit_read_audit`'s default-location copy needed this: when
-    a caller parks `TRIAD_READ_AUDIT_FILE` INSIDE the default read-audit
-    dir, that override file sits in the SAME glob the copy-write's own
-    prune walks, and `preserve` alone (the fresh copy's path) left the
-    override file — written moments earlier by the SAME call — as the one
-    unprotected candidate. Every other caller (`_prune_run_logs`, the
-    override-unset default-dir prune) passes `None` here and is unaffected.
     """
-    preserve_paths = {p.resolve(strict=False) for p in (preserve, extra_preserve) if p is not None}
+    preserve_paths = {preserve.resolve(strict=False)} if preserve is not None else set()
     # Race-resilient listing: a concurrent unlink (or a dangling symlink) makes
     # p.stat() raise mid-sort. Materialize (path, mtime) per-file, skipping any
     # entry that vanishes — a single bad entry must NOT abort the whole prune
@@ -5135,21 +4748,11 @@ def _prune_run_logs(runs_dir: Path, preserve: Optional[Path] = None) -> None:
 # READING WORK, not an authenticated control — no nonce, no dedicated fd,
 # nothing framed as authentication. The digest's CONTENT is still folded
 # from vendor-supplied stream events regardless of transport.
-# 100 -> 200 (fix wave W1 item 6, claude m2, 2026-08-19; precision r2): the
-# dir now holds TWO record classes (override-unset PRIMARY digests and
-# override-set copies -- each call writes exactly ONE file in either mode),
-# so the cap doubles to grow the shared retention window; how many of the
-# 200 are primaries depends on the workload mix (a review-dominated mix
-# retains mostly copies). No consumer binds to this dir, so the caps set
-# operator-forensics depth only. The 20 MB byte cap is untouched -- digest
-# values are already capped at 200 chars (_AGY_DIGEST_VALUE_CAP), so the
-# extra writer's byte impact is small relative to the file-count pressure.
-_READ_AUDIT_MAX_FILES = 200
+_READ_AUDIT_MAX_FILES = 100
 _READ_AUDIT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB total cap, same policy shape as run-logs
 
 
-def _publish_json(path: Path, doc: dict, mode: int,
-                  refuse_link: bool = False) -> None:
+def _publish_json(path: Path, doc: dict, mode: int) -> None:
     """Publish `doc` at `path` ATOMICALLY (gate-1 r19 row r19-4): the JSON is
     written to a temp file in the SAME directory
     (`<final-name>.tmp-<pid>-<uuid8>`, created O_EXCL | O_NOFOLLOW with
@@ -5158,15 +4761,9 @@ def _publish_json(path: Path, doc: dict, mode: int,
     or partial one a concurrent reader (the collector's retry guard / hook
     check reading a sibling still being written) would pronounce permanently
     unreadable. On ANY failure the temp is removed and the error re-raised,
-    so the caller's best-effort handling is unchanged.
-
-    `refuse_link`: a symlink AT the final name is refused (OSError ELOOP)
-    instead of replaced — the caller-NAMED override path's O_NOFOLLOW
-    contract (a planted link is refused and left in place, never written
-    through; `os.replace` would not follow it either, but would remove it)."""
-    if refuse_link and os.path.islink(path):
-        raise OSError(errno.ELOOP, "refusing to publish over a symlink",
-                      str(path))
+    so the caller's best-effort handling is unchanged. A symlink at the final
+    name is replaced, never written through (`os.replace` renames over the
+    link itself)."""
     # the uuid nonce (gate-1 r20 row r20-5): a process killed between create
     # and replace leaves its temp behind, and a later wrapper that got the
     # SAME pid failed O_EXCL on `<name>.tmp-<pid>` and emitted NO audit
@@ -5205,27 +4802,10 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
     call its own path (the review SKILL uses one `<packet-dir>/agy-read-audit.json`
     per packet dir, one packet dir per leg).
 
-    Default-location copy (task-1, 2026-08-19 telemetry slice, behavior 2):
-    when the override is set, this function ALSO writes the SAME record to
-    the default location (below) — origin: a review packet dir is deleted at
-    gate close, so the override was the ONLY copy of a round's digest and it
-    was lost along with the packet. The override write stays PRIMARY: this
-    function's return value and the caller's `read-audit-file:` stderr
-    contract are UNCHANGED (still the override path). The copy runs the SAME
-    self-prune the default dir already runs, and logs one additional stderr
-    line via `log()`: `read-audit-copy: <abs-path>`. Best-effort exactly like
-    every other clause here — a copy-write failure never touches the
-    (already-succeeded) override write or the wrapper's exit code/classification.
-
-    The OVERRIDE-path write refuses a symlink at the final name (final-gate
-    fix round, converged claude must-fix / codex hardening — it was an
-    `os.open(..., O_NOFOLLOW)`): the override path is CALLER-supplied (an env
-    var a review-leg dispatch sets), so a symlink planted there must be
-    refused rather than followed — the same leader-privileged-write
-    convention `setup_permissions.py`'s `read_settings_nofollow`/lock-file
-    opens already use elsewhere in this repo. The DEFAULT-dir path needs no
-    such refusal: its basename is a fresh uuid8 this function itself mints,
-    so it cannot be pre-planted the way a caller-NAMED override path can.
+    Custody is the caller's `read-audit-file:` stderr line alone: the
+    override is the only file this call writes (no second copy in the
+    default dir), and a symlink already at the override path is replaced by
+    the atomic publish, never written through.
 
     EVERY write here is an ATOMIC PUBLISH (`_publish_json`, gate-1 r19 row
     r19-4): temp file in the same directory, fsync, `os.replace` — the final
@@ -5249,17 +4829,8 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
     never mutated on this path.
 
     The default dir self-prunes after write (`_READ_AUDIT_MAX_FILES` /
-    `_READ_AUDIT_MAX_BYTES`, same shape as `_prune_run_logs`). PRECISE prune
-    invariant (fix wave W1 item 5, claude m1, 2026-08-19 — narrows the prior
-    unconditional "never pruned" claim): the override path is never pruned
-    BY THE CALL THAT WROTE IT — this function protects its own override
-    write even when that path happens to sit inside the default dir (an
-    edge case: `TRIAD_READ_AUDIT_FILE` parked under `_LOG_DIR/<cli>/read-audit/`).
-    An override path PARKED inside the default dir is, however, subject to
-    LATER calls' caps, same as any other file there — a caller that needs
-    durability for an override path independent of subsequent calls uses a
-    path OUTSIDE the default dir (the `triad-cross-family-review` packet-dir
-    convention already does this).
+    `_READ_AUDIT_MAX_BYTES`, same shape as `_prune_run_logs`). An override
+    call writes only its override path and runs no prune.
     """
     if result.read_audit is None:
         return None
@@ -5289,86 +4860,19 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
             "digest": result.read_audit,
         }
         # ATOMIC PUBLISH (gate-1 r19 row r19-4) — `_publish_json`. The
-        # override keeps its 0600 mode and its refusal of a symlink at the
-        # caller-named path; the default-dir file keeps the plain
+        # override keeps its 0600 mode; the default-dir file keeps the plain
         # `open("w")` mode (0666 less the umask).
-        if override:
-            _publish_json(path, rec, 0o600, refuse_link=True)
-        else:
-            _publish_json(path, rec, 0o666)
+        _publish_json(path, rec, 0o600 if override else 0o666)
 
-        role = _swept("wrapper-run-logs", "inside-owned-packet",
-                      path.parent if not override else _LOG_DIR / cli / "read-audit", _log_reroots(),
-                      minimum=_STALE_IPC_AGE_FLOOR_S)
         if not override:
+            role = _swept("wrapper-run-logs", "inside-owned-packet",
+                          path.parent, _log_reroots(),
+                          minimum=_STALE_IPC_AGE_FLOOR_S)
             if role is not None:
                 _prune_dir_by_caps(
                     read_audit_dir, _READ_AUDIT_MAX_FILES, _READ_AUDIT_MAX_BYTES,
                     preserve=path, glob_patterns=("*.json",), age_floor_s=role[1],
                 )
-        else:
-            # Telemetry copy for post-hoc forensics (fix wave W1 item 7,
-            # claude HS1, reworded 2026-08-19 to not overclaim bindability):
-            # the binding artifact REMAINS the override path written above —
-            # consumers never bind to this dir. This is a best-effort
-            # ADDITIONAL copy at the default location a non-override call
-            # would have used, so a consumer that scans the default dir for
-            # post-hoc forensics (e.g. after a packet dir was already
-            # deleted) still finds the digest. Own try/except: a copy
-            # failure must never affect the override write already on disk
-            # or the wrapper's exit code/classification.
-            try:
-                copy_dir = _LOG_DIR / cli / "read-audit"
-                copy_dir.mkdir(parents=True, exist_ok=True)
-                copy_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                copy_suffix = uuid.uuid4().hex[:8]
-                copy_path = copy_dir / f"{copy_ts}-{os.getpid()}-{copy_suffix}.json"
-                # copied_from (fix wave W1 item 4, claude m4): the COPY's own
-                # meta gains provenance — which override path it was copied
-                # from — so two same-day gates/rounds can be told apart once
-                # their packet dir (and its override path) is gone. Built as
-                # a SEPARATE dict from the override's `rec["meta"]` (never
-                # mutated in place): the primary override file's shape is a
-                # consumer contract and must stay byte-unchanged.
-                copy_rec = {
-                    "meta": {**rec["meta"], "copied_from": override},
-                    "digest": rec["digest"],
-                }
-                # Explicit mode 0600 (fix wave W1 item 1, codex must-fix /
-                # claude HS — was a plain `path.open("w")`, umask-dependent
-                # mode): the SAME bits the override write above uses. No
-                # O_NOFOLLOW here (unlike the override write): this
-                # basename is a fresh uuid8 THIS function mints, so — same
-                # reasoning as the plain default-path write a few lines up —
-                # it cannot be pre-planted the way a caller-NAMED override
-                # path can; the sensitivity of the DATA (the same digest)
-                # still warrants the same explicit permission bits.
-                # Published atomically like the override (gate-1 r19 row
-                # r19-4): a failed copy leaves no partial file behind.
-                _publish_json(copy_path, copy_rec, 0o600)
-                # extra_preserve (fix wave W1 item 5, claude m1): protect
-                # THIS call's own override write too, when it happens to sit
-                # inside `copy_dir` (TRIAD_READ_AUDIT_FILE parked under the
-                # default read-audit dir) — see the docstring's PRECISE
-                # prune invariant above. `preserve=copy_path` alone left
-                # that override file, written moments earlier by this SAME
-                # call, as the one candidate this prune step didn't know to
-                # protect.
-                extra = (path if path.resolve(strict=False).parent
-                         == copy_dir.resolve(strict=False) else None)
-                if role is not None:
-                    _prune_dir_by_caps(
-                        copy_dir, _READ_AUDIT_MAX_FILES, _READ_AUDIT_MAX_BYTES,
-                        preserve=copy_path, glob_patterns=("*.json",),
-                        extra_preserve=extra, age_floor_s=role[1],
-                    )
-                # percent-escaped filesystem bytes, the same formatter as
-                # the caller's `read-audit-file:` line (gate-1 r13 row
-                # r13-5): an ordinary path is byte-identical, an exotic one
-                # stays ONE line
-                log(f"read-audit-copy: {_summary_field(str(copy_path))}")
-            except Exception as e:
-                log(f"emit_read_audit: failed to write default-location copy — {e}")
         return path
     except Exception as e:
         log(f"emit_read_audit: failed to write digest file — {e}")

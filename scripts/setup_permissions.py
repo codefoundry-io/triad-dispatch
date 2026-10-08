@@ -97,11 +97,10 @@ Usage:
     --uninstall-machine
                     Once per machine, after --remove in every project: delete
                     the plugin's files outside any project (the classifier
-                    patches, the two agy agent files, the agy settings lock and
-                    transaction residue); prints
-                    `removed` / `left <path>: <reason>` per item — while an agy
-                    settings transaction is recorded, every item of it is left
-                    and named. Nothing in the
+                    patches, the two agy agent files); prints
+                    `removed` / `left <path>: <reason>` per item. The agy
+                    settings files are never the plugin's and are left as
+                    they are. Nothing in the
                     shared temp dir is removed: the codex temp entries there are
                     only listed. An item, or a plugin-named
                     directory, that is a symlink is left; a symlinked PARENT
@@ -998,30 +997,6 @@ def do_uninstall_machine(dry_run: bool) -> int:
     _sweep(gemini / "config" / "agents",
            [f"{n}.md" for n in AGY_AGENT_NAMES] + ["triad-readonly-*.md.*.tmp"],
            dry_run, rmdir=False)
-    cli = gemini / "antigravity-cli"
-    agy_settings = os.environ.get("AGY_SETTINGS_PATH")
-    if agy_settings:
-        print(f"left {Path(agy_settings).parent}: set by AGY_SETTINGS_PATH (yours)")
-    # A recorded agy settings transaction (_agy_settings.py) is `.agybak` or
-    # the shared state; without them the lock, the two crash temp files and
-    # the holders directory go. `settings.json.tmp` is never touched (not the
-    # plugin's alone).
-    if any(os.path.lexists(cli / n)
-           for n in (".agybak", ".agy_settings.shared.json")):
-        wrapper = resolve_bin_dir(None) / "antigravity_wrapper.py"
-        print(f"left {cli / '.agy_settings.lock'}: an agy settings transaction is "
-              f"recorded — run {wrapper} --setup-agents once (it restores the agy "
-              "settings the transaction recorded), then run --uninstall-machine "
-              "again")
-        for name in (".agybak", ".agy_settings.shared.json", ".agybak.tmp",
-                     ".agy_settings.shared.json.tmp", ".agy_settings.holders"):
-            if os.path.lexists(cli / name):
-                print(f"left {cli / name}: part of the recorded agy settings "
-                      "transaction")
-    else:
-        _sweep(cli, (".agy_settings.lock", ".agybak.tmp",
-                     ".agy_settings.shared.json.tmp"), dry_run, rmdir=False)
-        _sweep(cli / ".agy_settings.holders", ("*",), dry_run, rmdir=True)
     # The shared temp dir holds no record of what is the plugin's: nothing is
     # removed there, the user's entries of the wrappers' name shapes are listed.
     try:

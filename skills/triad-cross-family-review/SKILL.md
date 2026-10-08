@@ -1,7 +1,7 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — prepares ONE frozen round from a named ROSTER of INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime — agy via triad-antigravity-dispatch, with compatibility for the older gemini CLI via triad-gemini-dispatch — plus any entry the project configured), frames the suspect/omitted/simplified decisions as QUESTIONS, admits every entry's verdict (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE) against the canonical schema, and folds them into ONE outcome (AGREED / BLOCKED / INCOMPLETE) driving a fix→NEW-round loop. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.39.1
+version: 0.39.2
 # changelog: docs/reviews/2026-09-18-cfr-skill-history.md (every entry; the newest section is last)
 ---
 
@@ -100,10 +100,11 @@ Five references carry the detail — open one only when its column applies.
    `references/leg-contracts.md`. An agy entry's verdict is weighed only after
    CUSTODY (its `stderr.log` carries the whole line `read-audit-file: <path>`),
    `lib/read_audit_gate.sh --audit-file <attempt>/read-audit.json` AND the
-   ROUND hook LOAD CHECK `lib/agy_hook.py check <abs-read-audit.json>
-   <abs-hook-log.jsonl> [<abs-sibling-audit> ...]` pass (`prepare` / `retry`
-   print both): every stepped census row owns a hook row under a conversation
-   id no other row recorded (`HOOK_LOAD_PASS`).
+   hook LOAD CHECK `lib/agy_hook.py check <abs-read-audit.json>
+   <abs-hook-log.jsonl>` pass (`prepare` / `retry` print both): every stepped
+   census row of the attempt has a hook row under its own conversation id
+   (`HOOK_LOAD_PASS`). The hook check is per attempt: another entry's audit or
+   census never blocks this entry's `retry` (rule 13).
 2. **Frame suspect decisions as QUESTIONS, not settled facts.** "Is X actually
    safe to omit?" — never "X is a no-op." Biased framing propagates.
 3. **Every entry gets the SAME scope, through the SAME transport.** Give the
@@ -354,14 +355,13 @@ Five references carry the detail — open one only when its column applies.
     mutation a changed review condition, selection or control of that basis
     (a claude entry's shipped preset file is bound by its digest — model,
     effort and body, rule 15), a SKIPPED entry, an absent recorded attempt
-    directory, a record with no absolute `hook_log`, an agy hook load check
-    (`retry` runs it) that a later attempt cannot clear, a `binding.json` that no longer binds the entry (the recorded attempt's, or attempt 1's — round evidence) and a saved `raw.json` beside an `admitted.json` that is not a readable file — each a NEW round;
-    ANOTHER entry's dispatched attempt with no audit yet is a WAIT (retry once
-    it returns; a NEW round only if it returned without one). A valid NEGATIVE
+    directory, a record with no absolute `hook_log` and a saved `raw.json`
+    beside an `admitted.json` that is not a readable file — each a NEW round.
+    A valid NEGATIVE
     verdict is completed work, never retried — correcting what it found changes
     the basis, a NEW ROUND (rule 5). **A recorded attempt is SEALED (R-BIND):**
     the native admission seals it, the first `collect` that judges an answer
-    seals a wrapper attempt (never one whose binding no longer binds the entry: it stays unsealed, INVALID, and the remedy is a new round), `retry` seals the attempt it replaces over the bytes it judged (`failed-to-run`, or `invalid` over an inadmissible answer; a write while it judged refuses: collect again; a refused reply's cut-short seal is completed only while `raw.json` stays inadmissible — beside an admissible one `retry` takes the stub away and refuses: run the `admit:` line), and later collections re-check the sealed files of EVERY attempt, and those of every attempt before the recorded one once more right before an AGREED record; when a retried leg may still be running, collect once more before using an AGREED — a late answer after the last check is caught only by the next `collect` (a
+    seals a wrapper attempt, `retry` seals the attempt it replaces over the bytes it judged (`failed-to-run`, or `invalid` over an inadmissible answer; a write while it judged refuses: collect again; a refused reply's cut-short seal is completed only while `raw.json` stays inadmissible — beside an admissible one `retry` takes the stub away and refuses: run the `admit:` line), and later collections re-check the sealed files of EVERY attempt, and those of every attempt before the recorded one once more right before an AGREED record; when a retried leg may still be running, collect once more before using an AGREED — a late answer after the last check is caught only by the next `collect` (a
     change — a late answer into a replaced attempt included — is that entry's integrity failure, `INCOMPLETE`, whose reason ends
     "prepare a new round", and `retry` refuses it too). A sealed attempt is never re-answered: the printed
     `guard:` line and the guard inside each wrapper line refuse a re-run into

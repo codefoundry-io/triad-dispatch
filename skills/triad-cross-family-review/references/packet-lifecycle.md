@@ -172,14 +172,11 @@ each record is exclusive-create, so a second write of any of them fails loud.
 that attempt's `retry-diagnosis.txt`. Before anything is allocated `retry`
 refuses: a disabled or SKIPPED entry (it never ran); an entry whose recorded
 attempt returned a VALID verdict (a completed review is not a transport
-failure); a recorded `attempt-<K>` that is not on disk (prepare a new
-round); and any retry that cannot certify the round — it runs
-the round's hook load check itself, and a verdict a later attempt cannot clear
-means a NEW round, while another agy entry's dispatched attempt that has not
-written its audit yet means WAIT for it to return, then retry
-(`references/failure-modes.md`). Never move, copy or rename an attempt's
-artifacts by hand: the custody line ties each read audit to the attempt that
-wrote it, and every attempt of the round stays a sibling in the hook check.
+failure); and a recorded `attempt-<K>` that is not on disk (prepare a new
+round) (`references/failure-modes.md`). Never move, copy or rename an
+attempt's artifacts by hand: the custody line ties each read audit to the
+attempt that wrote it, and the hook check judges each attempt on its own
+audit.
 
 **Recipe facts.** Dispatch exactly the lines `prepare` / `retry` print; `collect`
 runs once every dispatched entry has terminated and `verify` has passed. When a

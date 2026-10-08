@@ -230,7 +230,6 @@ def _plant_machine(m: _Machine) -> dict:
         "agent_review": _touch(g / "config" / "agents" / "triad-readonly-review.md"),
         "agent_research": _touch(g / "config" / "agents" / "triad-readonly-research.md"),
         "agent_tmp": _touch(g / "config" / "agents" / "triad-readonly-review.md.x9.tmp"),
-        "agy_lock": _touch(g / "antigravity-cli" / ".agy_settings.lock", ""),
     }
     return items
 
@@ -1656,7 +1655,7 @@ def test_uninstall_machine_removes_every_item():
             assert rc == 0, out
             for name, path in items.items():
                 assert not path.exists(), f"{name} survived: {path}\n{out}"
-            for path in (items["patches"], items["agent_review"], items["agy_lock"]):
+            for path in (items["patches"], items["agent_review"]):
                 assert f"removed {path}" in out, f"no 'removed {path}' line:\n{out}"
             for gone in (m.config / "triad-dispatch",):
                 assert not gone.exists(), f"{gone} not removed\n{out}"
@@ -1689,85 +1688,22 @@ def test_uninstall_machine_leaves_env_override_locations():
                 assert f"left {path}: set by {var} (yours)" in out, out
 
 
-# ── (B4) the agy settings lock stays while a transaction is recorded ─────────
-def test_uninstall_machine_leaves_agy_lock_with_transaction_state():
-    for state in (".agybak", ".agy_settings.shared.json"):
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            with _Machine(tmp) as m:
-                cli = m.home / ".gemini" / "antigravity-cli"
-                lock = _touch(cli / ".agy_settings.lock", "")
-                recorded = _touch(cli / state)
-                rest = [_touch(cli / ".agybak.tmp"),
-                        _touch(cli / ".agy_settings.shared.json.tmp"),
-                        _touch(cli / ".agy_settings.holders" / "tok123.lock")]
-                rc, out = m.run("--uninstall-machine")
-                assert rc == 0, out
-                assert lock.exists(), f"lock removed beside {state}"
-                assert recorded.exists(), f"{state} removed"
-                for path in rest:
-                    assert path.exists(), f"{path} removed beside {state}\n{out}"
-                assert (f"left {lock}: an agy settings transaction is recorded"
-                        in out), out
-                # the advice that heals a hardened install (a read-only
-                # dispatch never enters the settings guard)
-                assert "antigravity_wrapper.py --setup-agents once" in out, out
-                assert "then run --uninstall-machine again" in out, out
-                assert "run one agy dispatch" not in out, out
-
-
-# ── (B15) no transaction recorded: the empty holders dir goes, settings.json.tmp stays
-def test_uninstall_machine_agy_residue_without_transaction():
-    with tempfile.TemporaryDirectory() as t:
-        with _Machine(Path(t)) as m:
-            cli = m.home / ".gemini" / "antigravity-cli"
-            lock = _touch(cli / ".agy_settings.lock", "")
-            holders = cli / ".agy_settings.holders"
-            holders.mkdir()
-            not_ours = _touch(cli / "settings.json.tmp", "{}")
-            rc, out = m.run("--uninstall-machine")
-            assert rc == 0, out
-            assert not lock.exists() and not holders.exists(), out
-            assert f"removed {holders}" in out, out
-            assert not_ours.exists(), "settings.json.tmp is not the plugin's alone"
-
-
-# ── (B17) temp files and holder files alone are no recorded transaction ──────
-def test_uninstall_machine_agy_temp_and_holder_files_are_no_transaction():
-    with tempfile.TemporaryDirectory() as t:
-        with _Machine(Path(t)) as m:
-            cli = m.home / ".gemini" / "antigravity-cli"
-            lock = _touch(cli / ".agy_settings.lock", "")
-            tmp_file = _touch(cli / ".agybak.tmp")
-            holder = _touch(cli / ".agy_settings.holders" / "tok123.lock")
-            rc, out = m.run("--uninstall-machine")
-            assert rc == 0, out
-            for path in (lock, tmp_file, holder, holder.parent):
-                assert not path.exists(), f"{path} survived\n{out}"
-            assert "an agy settings transaction is recorded" not in out, out
-            assert "--setup-agents" not in out, out
-
-
-# ── (B19) every item of a recorded agy transaction that exists gets its line ─
-def test_uninstall_machine_names_every_item_of_a_recorded_agy_transaction():
+# ── (B4) the agy settings files are never the plugin's: every one is left ────
+def test_uninstall_machine_leaves_agy_settings_files():
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         with _Machine(tmp) as m:
             cli = m.home / ".gemini" / "antigravity-cli"
-            lock = _touch(cli / ".agy_settings.lock", "")
-            present = [_touch(cli / ".agybak"), _touch(cli / ".agy_settings.shared.json"),
-                       _touch(cli / ".agy_settings.holders" / "tok123.lock").parent]
-            absent = [cli / ".agybak.tmp", cli / ".agy_settings.shared.json.tmp"]
-            before = _snapshot(tmp)
+            for name in (".agy_settings.lock", ".agybak", ".agy_settings.shared.json",
+                         ".agybak.tmp"):
+                _touch(cli / name, "")
+            _touch(cli / ".agy_settings.holders" / "tok.lock", "")
+            before = _snapshot(cli)
             rc, out = m.run("--uninstall-machine")
             assert rc == 0, out
-            assert _snapshot(tmp) == before, out
-            assert f"left {lock}: an agy settings transaction is recorded" in out, out
-            for path in present:
-                assert (f"left {path}: part of the recorded agy settings transaction\n"
-                        in out), out
-            for path in absent:
-                assert f"left {path}:" not in out, out
+            assert _snapshot(cli) == before, f"an agy settings file was touched\n{out}"
+            for text in ("agy_settings", ".agybak", "AGY_SETTINGS_PATH"):
+                assert text not in out, f"the uninstall names {text!r}\n{out}"
 
 
 # ── (B20) no usable temporary directory: reported, and the run goes on ───────
@@ -1792,20 +1728,6 @@ def test_uninstall_machine_without_a_usable_temporary_directory():
                 assert rc == 0, out
                 assert f"left {where}: No usable temporary directory found\n" in out, out
                 assert out.endswith("machine-scope clean-up finished\n"), out
-
-
-# ── (B16) AGY_SETTINGS_PATH moves the agy settings: its directory is the user's
-def test_uninstall_machine_reports_agy_settings_path():
-    with tempfile.TemporaryDirectory() as t:
-        with _Machine(Path(t)) as m:
-            moved = _touch(m.tmp / "mine" / "agy" / ".agy_settings.lock", "")
-            os.environ["AGY_SETTINGS_PATH"] = str(moved.parent / "settings.json")
-            lock = _touch(m.home / ".gemini" / "antigravity-cli" / ".agy_settings.lock", "")
-            rc, out = m.run("--uninstall-machine")
-            assert rc == 0, out
-            assert f"left {moved.parent}: set by AGY_SETTINGS_PATH (yours)" in out, out
-            assert moved.exists(), out
-            assert not lock.exists(), "the default location is still handled"
 
 
 # ── (B5) a symlinked item is left, and its target is untouched ───────────────
@@ -2284,12 +2206,8 @@ TESTS = [
     test_uninstall_machine_removes_every_item,
     test_uninstall_machine_nothing_present_creates_nothing,
     test_uninstall_machine_leaves_env_override_locations,
-    test_uninstall_machine_leaves_agy_lock_with_transaction_state,
-    test_uninstall_machine_agy_residue_without_transaction,
-    test_uninstall_machine_agy_temp_and_holder_files_are_no_transaction,
-    test_uninstall_machine_names_every_item_of_a_recorded_agy_transaction,
+    test_uninstall_machine_leaves_agy_settings_files,
     test_uninstall_machine_without_a_usable_temporary_directory,
-    test_uninstall_machine_reports_agy_settings_path,
     test_uninstall_machine_leaves_symlinks,
     test_uninstall_machine_keeps_dir_with_foreign_file,
     test_uninstall_machine_dry_run_changes_nothing,

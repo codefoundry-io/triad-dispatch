@@ -425,8 +425,6 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
 | 프로젝트 | codex write 호출용 `_runs/worktrees/<name>/` git worktree (`triad-codex-dispatch` § Write calls; `_runs/worktrees/` 를 프로젝트 `.gitignore` 에 두어 커밋이 트리를 embedded repository 로 담지 않게 함) | 그 문단대로 leader 가 만듦; 비어 있는 남은 폴더는 codex wrapper 가 호출을 시작할 때 지움 | 트리의 모든 작업을 그 브랜치에 커밋한 뒤 프로젝트 최상위에서 `python3 <plugin-dir>/bin/cleanup.py remove code-worktrees _runs/worktrees/<name>` (커밋되지 않았거나 추적되지 않는 변경이 있는 트리는 거부됨) |
 | 머신 | `~/.config/triad-dispatch/classifier-patches.json` 과 `classifier-patches.json.lock` | repair 제안이 적용될 때 | `setup_permissions.py --uninstall-machine` |
 | 머신 | `~/.gemini/config/agents/triad-readonly-review.md` 와 `triad-readonly-research.md` | `bin/antigravity_wrapper.py --setup-agents` | `setup_permissions.py --uninstall-machine` |
-| 머신 | `~/.gemini/antigravity-cli/.agy_settings.lock` | `--setup-agents`, 그리고 하드닝되지 않은 설치에서 `--sandbox read-only` 가 아닌 agy 디스패치 (설치 기본값인 하드닝 모드에서는 모든 디스패치가 읽기 전용이 되어 잠금을 잡지 않음) | `setup_permissions.py --uninstall-machine` |
-| 머신 | `~/.gemini/antigravity-cli/` 의 agy 설정 트랜잭션 상태: `.agybak`, `.agy_settings.shared.json`, `.agy_settings.holders/`, 그리고 임시 파일 `.agybak.tmp`, `.agy_settings.shared.json.tmp` | agy 설정 트랜잭션이 실행되는 동안 — 같은 설정 파일을 쓰는 codex-host 플러그인의 deny 트랜잭션, 또는 이 플러그인의 이전 빌드; 도중에 멈춘 실행은 이를 남김 (이 플러그인의 `--setup-agents` 와, 하드닝되지 않은 설치에서 `--sandbox read-only` 가 아닌 디스패치는 잠금만 잡고 남은 것을 되돌림) | 트랜잭션이 끝날 때; `.agybak` 이나 `.agy_settings.shared.json` 이 남아 있으면 `bin/antigravity_wrapper.py --setup-agents` 를 한 번 실행 (agy 설정을 되돌림); 나머지는 `setup_permissions.py --uninstall-machine` 이 지우며, `.agybak` 이나 `.agy_settings.shared.json` 이 있는 동안에는 이 중 아무것도 지우지 않고 있는 항목마다 이름을 알림 |
 | 임시 | `$TMPDIR/codex_last_*.txt`, `$TMPDIR/codex_schema_*.json` | codex 디스패치마다 | 호출이 끝날 때 wrapper 가 지움; 남은 것은 남음 (`setup_permissions.py --uninstall-machine` 은 목록만 출력하고 그곳에서는 아무것도 지우지 않음) |
 | 플러그인 디렉터리 | `bin/_logs/<cli>/` (audit log, run log, read-audit digest) | 디스패치마다 | 위의 rotation, sweep, cap prune (role 의 floor 보다 새 파일은 남음); 플러그인 디렉터리 삭제 |
 | 플러그인 디렉터리 | `bin/_debug/<UTC-date>/` | `--debug` 를 줄 때만 | `wrapper-debug` floor 를 지난 날짜 디렉터리는 다음 `--debug` 호출이 지움; 플러그인 디렉터리 삭제 |
@@ -434,9 +432,9 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
 - repair 제안은 classifier 파일에 **자동으로** 적용됩니다. 먼저 묻지 않습니다.
 - 플러그인은 다음 디렉터리가 없으면 만들 수 있고, 지우지는 않습니다:
   `<project>/.claude/`, `<project>/_runs/`, config home, `~/.gemini/`,
-  `~/.gemini/config/`, `~/.gemini/config/agents/`, `~/.gemini/antigravity-cli/`.
+  `~/.gemini/config/`, `~/.gemini/config/agents/`.
 - 환경 변수로 옮긴 위치(`TRIAD_DISPATCH_LOG_DIR`, `TRIAD_DEBUG_DIR`,
-  `TRIAD_CLASSIFIER_EXTENSION`, `AGY_SETTINGS_PATH`, `AGY_AGENTS_DIR`,
+  `TRIAD_CLASSIFIER_EXTENSION`, `AGY_AGENTS_DIR`,
   `TRIAD_READ_AUDIT_FILE`)는 사용자의 것이며, 어떤 단계도
   지우지 않습니다. `TRIAD_READ_AUDIT_FILE` 은 호출한 쪽이 정한 read-audit 파일이며,
   리뷰 도우미는 이를 리뷰 packet 안에 두므로 `close` 가 지웁니다.
@@ -484,8 +482,7 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
    `setup_permissions.py` 를 한 번 실행하세요: 그 hook 항목을 지워 줍니다.
 3. **마지막 프로젝트 다음에, 머신당 한 번**:
    `python3 <plugin-dir>/scripts/setup_permissions.py --uninstall-machine`. 항목마다
-   `removed <path>` 또는 `left <path>: <reason>` 을 출력하며 (기록된 agy 설정
-   트랜잭션은 통째로 남기고 그 항목마다 이름을 알림), `--dry-run` 으로 미리
+   `removed <path>` 또는 `left <path>: <reason>` 을 출력하며, `--dry-run` 으로 미리
    볼 수 있습니다. 공유 임시 디렉터리에는 무엇이 플러그인의 것인지 기록이 없어서
    아무것도 지우지 않고, 그곳의 codex 임시 항목을 목록으로만 알려 줍니다; 그
    항목은 사용자가 지웁니다.

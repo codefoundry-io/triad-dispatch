@@ -899,11 +899,14 @@ def _token(text: str, prefix: str) -> str:
 # too little room to name the attempt it is about.
 _GUIDANCE_CAP = 500
 _GUIDANCE_HEAD = re.compile(r"^\[review\] [^\n]{0,80}? — ")
-_GUIDANCE_REMEDY = "prepare a NEW round"
-# The step the hook check's two VOID arms put BEFORE the NEW-round clause
-# ("check <worktree>/.agents/hooks.json, then prepare a NEW round …"): when the
-# text before the remedy ends with it, the remedy starts at it (row r16-2).
-_GUIDANCE_CHECK = re.compile(r"check \S*hooks\.json, then\s*$")
+# matched case-insensitively: the hook check says "prepare a new round", the
+# read-audit gate "prepare a NEW round"
+_GUIDANCE_REMEDY = re.compile(r"prepare a NEW round", re.IGNORECASE)
+# The step the hook check puts BEFORE the new-round clause ("check hooks.json
+# in the round worktree, then prepare a new round"): when the text before the
+# remedy ends with it, the remedy starts at it (row r16-2).
+_GUIDANCE_CHECK = re.compile(
+    r"check \S*hooks\.json(?: in the round worktree)?, then\s*$")
 _SENTENCE_END = re.compile(r"\.\s")
 # An absolute path, kept as its last THREE components when the WHY must
 # shrink, so `<name>/attempt-K/read-audit.json` keeps the entry name (row
@@ -934,9 +937,9 @@ def _guidance(stderr) -> str:
     report. The tool's own header (`[review] agy hook load check VOID — `)
     repeats the token and is dropped; the rest is whitespace-collapsed to
     ONE line. WHY = its first sentence; REMEDY = the clause starting at
-    "prepare a NEW round", up to its end of sentence, when the line has one
-    — or at the "check <worktree>/.agents/hooks.json, then" step directly
-    before it (the hook check's two VOID arms, row r16-2) — and a clause
+    "prepare a NEW round" (any case), up to its end of sentence, when the
+    line has one — or at the "check hooks.json in the round worktree, then"
+    step directly before it (the hook check's remedy, row r16-2) — and a clause
     starting inside the first sentence ends the WHY there. The two are
     joined with "; " and capped at `_GUIDANCE_CAP` characters (a vendor id
     or a long path cannot grow the report). When the join is over the cap
@@ -953,7 +956,8 @@ def _guidance(stderr) -> str:
     end = _SENTENCE_END.search(text)
     why = text[:end.start() + 1] if end else text
     remedy = ""
-    at = text.find(_GUIDANCE_REMEDY)
+    found = _GUIDANCE_REMEDY.search(text)
+    at = found.start() if found else -1
     if at >= 0:
         step = _GUIDANCE_CHECK.search(text, 0, at)
         if step:
@@ -972,114 +976,6 @@ def _guidance(stderr) -> str:
     if len(joined) > _GUIDANCE_CAP:
         joined = joined[:_GUIDANCE_CAP - 1] + "…"
     return f" — {joined}" if joined else ""
-
-
-def _agy_round_audits(packet_dir: Path, record: dict, primary) -> list:
-    """Every OTHER agy read audit in this round — EVERY ATTEMPT of every
-    agy-route entry, `primary` (the one the caller is checking) excluded.
-
-    The round worktree carries ONE `.agents/hooks.json`, so every agy leg and
-    every retry of the round appends to the SAME hook log. The load check can
-    therefore only answer per ROUND: it ATTRIBUTES hook rows to attempts by
-    the conversation ids each attempt's census row recorded
-    (`lib/agy_hook.py`, spec case C23) — every row with tool steps needs a
-    hook row under an id that NO OTHER census row of the round recorded (one
-    owner per id), and while any census row omitted ids at the writer's cap
-    no id's single owner can be established, so nothing is attributed.
-    Without these paths the check sees one leg's census beside every leg's
-    rows, cannot tell whether an id is single-owned, and admits a leg on its
-    SIBLINGS' evidence — the swap case C33 forbids.
-
-    SUPERSEDED ATTEMPTS ARE CENSUS ROWS (gate-1 r11 row r11-1). This used to
-    pass each entry's RECORDED attempt only, on the reasoning that leaving
-    one out could only make the check stricter. It cannot: the superseded
-    attempt's rows are STILL in the shared log, and a check that never sees
-    that attempt's census can neither attribute those rows to it nor tell
-    whether an id it recorded is shared — a run whose hook never loaded was
-    covered by a stale attempt's rows (REPRODUCED by the leader at r11: two
-    audits of one run each, a log holding leg A's current AND superseded
-    rows and nothing from leg B, reported PASS). Every attempt of the round
-    is a census row of the check.
-
-    The attempt-directory scan is DELIBERATELY tolerant where `_attempts` is
-    strict: this runs inside ONE entry's evaluation, and a `CollectError`
-    raised for a directory under ANOTHER entry would throw away every
-    entry's verdict (the r5-11 rule). A name this helper cannot read as an
-    attempt directory belongs to an entry whose OWN evaluation refuses it by
-    name, which makes the round INCOMPLETE on its own; anything present at
-    a `read-audit.json` name is handed to the load check, which refuses
-    every non-regular type itself (row r11-7).
-
-    The ALLOCATED ATTEMPT DIRECTORY is what this enumerates, not the audit
-    file's presence: the file appears when the leg is dispatched, and the
-    load check skips a name that is not there only while its attempt was
-    never DISPATCHED (no `stderr.log` beside it, or one without the engine's
-    spawn line — gate-1 r12 row r12-1 / r13 row r13-1; a dispatched attempt
-    with no audit is INCONCLUSIVE there). That keeps ONE
-    answer for the collector and for the printers that put this
-    command in front of the operator BEFORE any dispatch has run (row
-    r11-5) — a printed command weaker than the collector's would certify a
-    leg the collection refuses.
-    """
-    out = []
-    primary = None if primary is None else str(primary)
-    for other in _dispatched(record):
-        if other.get("route") != "agy":
-            continue
-        entry_dir = Path(packet_dir) / record["results_dir"] / other["name"]
-        try:
-            items = sorted(os.scandir(entry_dir), key=lambda i: i.name)
-        except OSError:
-            continue
-        for item in items:
-            if not item.name.startswith("attempt-"):
-                continue
-            if not item.is_dir(follow_symlinks=False):
-                continue
-            audit = Path(item.path) / "read-audit.json"
-            if str(audit) != primary:
-                out.append(audit)
-    return out
-
-
-def _print_round_hook_checks(packet_dir: Path, record: dict, label: str,
-                             retried: str) -> None:
-    """After a `retry` allocates (or adopts) attempt K+1, re-print the hook
-    load check of EVERY OTHER agy-route entry of the round.
-
-    A HAND-RUN CHECK MUST NEVER BE WEAKER THAN THE COLLECTOR (gate-1 r12 row
-    r12-5). The checks `prepare` printed for the other agy entries name the
-    sibling audits that existed THEN, so after a retry they lack the new
-    attempt — whose run the collector counts (row r11-1). Each entry's check
-    is printed for its RECORDED attempt, with the sibling set
-    `_agy_round_audits` computes now, i.e. exactly what `_agy_evidence_reason`
-    will run. An entry whose record carries no usable attempt is left to the
-    collector, which refuses it by name.
-
-    AN AGY RETRY ONLY (gate-1 r13 row r13-7): the sibling set is the agy
-    attempts of the round, so a codex / claude retry changes nothing any
-    agy check counts — re-printing then claimed a false "now includes …
-    new attempt" and repeated commands the operator already holds. A
-    retried entry whose recorded route is not `agy` prints nothing."""
-    if not any(e.get("name") == retried and e.get("route") == "agy"
-               for e in _dispatched(record)):
-        return
-    review_scratch = _load_sibling("review_scratch")
-    for other in _dispatched(record):
-        if other.get("route") != "agy" or other.get("name") == retried:
-            continue
-        attempt = other.get("attempt")
-        if (not isinstance(attempt, int) or isinstance(attempt, bool)
-                or attempt < 1):
-            continue
-        audit = (Path(packet_dir) / record["results_dir"] / other["name"]
-                 / f"attempt-{attempt}" / "read-audit.json")
-        print(f"  {other['name']} (attempt {attempt}) — hook check RE-PRINTED: "
-              f"every attempt is attributed; the sibling set now includes "
-              f"{retried}'s new attempt")
-        review_scratch._v2_print_hook_check(
-            Path(packet_dir), label, audit,
-            _agy_round_audits(packet_dir, record, audit))
 
 
 def _agy_custody_reason(attempt_dir: Path, audit: Path) -> str | None:
@@ -1168,155 +1064,6 @@ def _agy_custody_reason(attempt_dir: Path, audit: Path) -> str | None:
     return None
 
 
-def _retry_cannot_certify(packet_dir: Path, record: dict, entry: dict,
-                          attempt: int, *, collecting: bool = False
-                          ) -> str | None:
-    """The sentence saying a retry of this entry cannot certify the round,
-    or None (gate-1 r17 row r17-4, r18 row r18-2, r19 row r19-3; the
-    missing-hook_log refusal covers every route, the rest agy-route entries
-    only). ONE builder for both places that must say it: `retry` refuses on
-    it BEFORE any allocation, and the collector puts it on a non-valid
-    entry's reason, so the operator reads it in the collect report before
-    reaching for `retry`.
-
-    IT RUNS THE ROUND'S HOOK LOAD CHECK ITSELF (row r19-3). r18-2 mirrored the
-    check by reading the round's AUDITS one by one, so every verdict decided
-    by the HOOK LOG (a proven-unhooked stepped row, an anonymous hook row
-    beside an unattributed one, a shared logged id, an unreadable log or a
-    line that is not a hook row) and every OTHER entry's absent-with-spawn-
-    line audit still let `retry` allocate a paid attempt that could never
-    certify. Now the census is built exactly as the collector builds it for
-    the entry — `_agy_round_audits` (every OTHER agy attempt of the round,
-    absent ones included: `check_loaded` evaluates an absent audit by the
-    spawn-line rule) — with the retried entry's recorded audit as the
-    PRIMARY when it is present, else the first PRESENT sibling as primary and
-    the own audit path among the siblings; the log is the round's hook log.
-    `agy_hook.check_loaded` runs in-process (stdlib, importable).
-
-    WHICH VERDICTS REFUSE. Every non-PASS verdict is PERMANENT by
-    construction except two: a later attempt only ADDS a census row and hook
-    rows — it cannot remove an anonymous hook row, un-share a logged id, hook
-    a finished unhooked run, make an absent audit's spawn line disappear,
-    complete an incomplete transcript, or repair an unreadable file. The
-    first exception is "no hook invocation and NO census row with tool steps"
-    (the check's INCONCLUSIVE "nothing proves or disproves the hook" — the
-    brief called it the zero-invocation VOID with no stepped row): the
-    retry's own hooked attempt adds the first stepped row and its hook rows,
-    so it is allocated. (Residual, disclosed: that verdict also stays
-    clearable when a zero-step row's id list is not whole — a shape the
-    writer cannot produce, a zero-step run records no omitted ids.)
-
-    THE SECOND IS NOT PERMANENT, IT IS NOT YET DECIDED (gate-1 r20 row
-    r20-1): ANOTHER entry's CURRENTLY RECORDED attempt that was dispatched
-    (its `stderr.log` carries the spawn line) and has no read audit may
-    still be RUNNING — SKILL.md documents deciding a per-entry retry BEFORE
-    the fold, while the other legs are out. The check reads it as the
-    dispatched-no-audit INCONCLUSIVE, so the retry is still refused (exit 2,
-    nothing allocated), but with a WAIT remedy: the round is re-checked
-    without those in-flight attempts, and only when THAT check passes (or
-    is the clearable verdict) is the refusal a wait — any other verdict is
-    permanent whatever the in-flight legs do, and wins. A SUPERSEDED
-    attempt of another entry, and every attempt of the retried entry
-    itself, cannot be in flight, so they keep the permanent refusal. The
-    check itself is unchanged; this guard only classifies its reason.
-    THE WAIT IS A `retry`-TIME CLASSIFICATION ONLY (gate-1 r21 row r21-4):
-    `collect` runs once every dispatched entry has TERMINATED (SKILL.md), so
-    `_evaluate` passes `collecting=True` and such an attempt is one that
-    RETURNED WITHOUT an audit — the permanent NEW-round text, never "may
-    still be running".
-
-    THE HOOK LOG IS VALIDATED FIRST, FOR EVERY ROUTE (gate-1 r20 row r20-4
-    and the leader's R4b ruling): a record without an absolute `hook_log`
-    refuses every retry — codex, claude or agy — whatever the audits show:
-    `prepare` always writes one, and without it the collection stops on that
-    same host fault, so any retry is a paid dispatch nobody can collect. It
-    is the ONE check here that is not agy-only; everything below is.
-
-    WHEN NO AUDIT OF THE ROUND IS PRESENT at all there is no primary to check;
-    every absent attempt (the retried entry's own first) is read by the
-    spawn-line rule the check would apply once the retry's audit exists: a
-    dispatched attempt with no audit, or one whose `stderr.log` is
-    unreadable, refuses (another entry's current dispatched attempt with a
-    WAIT, as above); a never-dispatched allocation is retried."""
-    hook_log = record.get("hook_log")
-    if not isinstance(hook_log, str) or not os.path.isabs(hook_log):
-        return ("a retry cannot certify this round: the round record names "
-                "no absolute hook_log, so the round's hook load check "
-                "cannot run (the collection stops on the same host fault) "
-                "— prepare a NEW round (a fresh hook log)")
-    if entry.get("route") != "agy":
-        return None
-    hook = _load_sibling("agy_hook")
-    name = entry["name"]
-    own = (Path(packet_dir) / record["results_dir"] / name
-           / f"attempt-{attempt}" / "read-audit.json")
-    everyone = [own, *_agy_round_audits(packet_dir, record, own)]
-    # ANOTHER entry's CURRENTLY RECORDED attempt (row r20-1): the only
-    # attempts that may still be running when `retry` is called — none at
-    # collect time, when every dispatched entry has terminated (row r21-4)
-    current = {}
-    for other in ([] if collecting else _dispatched(record)):
-        other_attempt = other.get("attempt")
-        if (other.get("route") != "agy" or other.get("name") == name
-                or not isinstance(other_attempt, int)
-                or isinstance(other_attempt, bool)):
-            continue
-        current[str(Path(packet_dir) / record["results_dir"] / other["name"]
-                     / f"attempt-{other_attempt}" / "read-audit.json")] = (
-            other["name"], other_attempt)
-    in_flight = [a for a in everyone
-                 if str(a) in current and not os.path.lexists(a)
-                 and hook._spawned(a.parent / "stderr.log")[0] is True]
-    census = [a for a in everyone if a not in in_flight]
-    present = [a for a in census if os.path.lexists(a)]
-    why = None
-    if not present:
-        for audit in census:
-            spawned, unread = hook._spawned(audit.parent / "stderr.log")
-            if spawned is None:
-                why = (f" — {audit} wrote no read audit and its stderr.log "
-                       f"{unread}, so whether it was DISPATCHED is unknown "
-                       f"(the hook check reads it as INCONCLUSIVE); prepare a "
-                       f"NEW round (a fresh hook log)")
-                break
-            if spawned:
-                why = (f" — {audit} was DISPATCHED (its stderr.log carries the "
-                       f"engine's spawn line) but wrote no read audit, so no "
-                       f"conversation id records its run (the hook check reads "
-                       f"it as INCONCLUSIVE); prepare a NEW round (a fresh hook "
-                       f"log)")
-                break
-        verdict = "INCONCLUSIVE"
-    else:
-        primary = present[0]
-        res = hook.check_loaded(primary, Path(hook_log),
-                                [a for a in census if a != primary])
-        verdict, guidance = res[0], res[3]
-        # PASS, or the ONE clearable verdict (see the docstring): nothing
-        # logged and no census row with tool steps anywhere in the round
-        if verdict != "PASS" and not (len(res) > 8 and res[5] == 0
-                                      and res[8] == 0):
-            why = _guidance(f"[review] agy hook load check {verdict} — "
-                            f"{guidance or ''}")
-    if why is not None:
-        return (f"a retry cannot certify this round: the round's hook load "
-                f"check is {verdict}, and a later attempt only ADDS a census "
-                f"row and hook rows (it deletes none), so every agy leg would "
-                f"stay {verdict}{why}")
-    if not in_flight:
-        return None
-    named = ", ".join(f"attempt {current[str(a)][1]} of {current[str(a)][0]}"
-                      for a in in_flight)
-    one = len(in_flight) == 1
-    return (f"a retry cannot certify this round yet: {named} "
-            f"{'was' if one else 'were'} dispatched and "
-            f"{'has' if one else 'have'} not written "
-            f"{'its' if one else 'their'} read audit yet — "
-            f"{'it' if one else 'they'} may still be running; wait for "
-            f"{'it' if one else 'them'} to return, then retry; prepare a NEW "
-            f"round only if {'it' if one else 'one'} returned WITHOUT an audit")
-
-
 def _agy_evidence_reason(packet_dir: Path, record: dict,
                          attempt_dir: Path) -> str | None:
     """None when this agy attempt's containment evidence holds, else the
@@ -1354,8 +1101,7 @@ def _agy_evidence_reason(packet_dir: Path, record: dict,
                 f"{_guidance(gate.stderr)}"
                 f" — an ungated agy answer is UNVERIFIED, never agreement")
     hook = _run(["python3", str(LIB_DIR / "agy_hook.py"), "check",
-                 str(audit), str(record.get("hook_log", "")),
-                 *[str(p) for p in _agy_round_audits(packet_dir, record, audit)]])
+                 str(audit), str(record.get("hook_log", ""))])
     if hook.returncode == _EVIDENCE_TOOL_HOST_RC:
         raise _HostFault(
             f"the agy hook load check could not RUN on this host "
@@ -1669,55 +1415,6 @@ def _saved_not_admitted(attempt_dir: Path,
     return f"{_ADMIT_BAD} ({admission.reason})"
 
 
-def _unbound_reason(by_number: dict, record: dict, entry: dict,
-                    attempt: int) -> str | None:
-    """Why attempt 1's or the recorded `attempt`'s binding.json (those of
-    `by_number`, `{number: attempt dir}`, on disk) does not equal the
-    derivation (edited, copied in, unreadable, removed), else None (Z6, R3).
-
-    THE EXPECTED SIX ARE DERIVED, NEVER READ BACK (gate-1 r5 row r5-1): a
-    `binding.json` + result copied together from another entry's attempt
-    used to validate each other; a binding that disagrees is an attempt
-    that does not belong to this entry. The binding no longer names this
-    entry, so no answer in that attempt can be credited to it — whichever
-    attempt it is (host B refuses the same retry) — and neither the admit
-    line nor a retry helps: `collect` and `retry` both name a new round.
-    Attempt 1's binding.json is round evidence too (censused at prepare, no
-    seal binds it), so an edit to it after a retry refuses the same way."""
-    for number in sorted({1, attempt} & set(by_number)):
-        binding_path = by_number[number] / "binding.json"
-        expected = _expected_binding(record, entry, number)
-        try:
-            # A FIFO or a link at this helper-owned name is refused by the
-            # reader (r10-7); RecursionError is not a ValueError (r7-k3).
-            binding = json.loads(
-                _read_regular_file(binding_path, "the binding record")
-                .decode("utf-8"))
-        except CollectError as exc:
-            cause = f"binding record unreadable: {' '.join(str(exc).split())}"
-        except (OSError, ValueError, RecursionError) as exc:
-            cause = (f"binding record unreadable: {binding_path} "
-                     f"({' '.join(str(exc).split())})")
-        else:
-            drift = (sorted(f for f, want in expected.items()
-                            if binding.get(f) != want)
-                     if isinstance(binding, dict) else None)  # r6-4: `null`
-            if drift == []:
-                continue
-            cause = (f"binding record is not an object "
-                     f"({type(binding).__name__}): {binding_path}"
-                     if drift is None else
-                     f"binding mismatch: {', '.join(drift)} — {binding_path} "
-                     f"does not bind this entry at attempt {number} (the "
-                     f"round record, the frozen roster entry and the "
-                     f"directory name decide, never the binding's own copy)")
-        return f"{cause} — {_UNBOUND_TAIL}"
-    return None
-
-
-_UNBOUND_TAIL = "the binding no longer binds this entry — prepare a new round"
-
-
 # V4: a directory at seal.json can be neither taken away nor completed by
 # any step, so the reply beside it can never be judged in this attempt.
 _SEAL_DIR = ("attempt {attempt}: {seal} is a directory, not a seal — no step "
@@ -1988,7 +1685,6 @@ def _evaluate(packet_dir: Path, record: dict, entry: dict,
     own = (recorded or {}).get(name, {})
     refused = (_history_reason(entry_dir, by_number, record_attempt, own,
                                entry)
-               or _unbound_reason(by_number, record, entry, record_attempt)
                or _seal_reason(attempt_dir, entry, record_attempt,
                                own.get(record_attempt),
                                expected=_expected_binding(record, entry,
@@ -2037,23 +1733,9 @@ def _evaluate(packet_dir: Path, record: dict, entry: dict,
     else:
         result = _evaluate_unsealed(packet_dir, record, entry, attempt_dir,
                                     base, result_path)
-    if result.state != "valid":
-        # gate-1 r17 row r17-4 / r18 row r18-2 / r19 row r19-3: say BEFORE
-        # the operator reaches for `retry` that a retry cannot certify this
-        # round (`retry` refuses on the same sentence: the round's own hook
-        # load check, run by `_retry_cannot_certify`).
-        # collecting=True (gate-1 r21 row r21-4): at collect time every
-        # dispatched entry has terminated, so an absent-with-spawn-line
-        # attempt RETURNED without an audit — never the retry-time WAIT
-        blind = _retry_cannot_certify(packet_dir, record, entry,
-                                      record_attempt, collecting=True)
-        if blind is not None:
-            result = EntryResult(**{**result.__dict__, "reason": (
-                blind if result.reason is None
-                else f"{result.reason} — {blind}")})
     unallocated = [n for n, _ in attempts if n > record_attempt]
     blocked = (_adoption_blocked(packet_dir, label, record, entry, attempts,
-                                 own, lambda: blind, result, collecting=True)
+                                 own, result, collecting=True)
                if result.state != "valid" and unallocated else None)
     if blocked is not None:
         # V2: `retry` refuses before any adoption, so the reason keeps its
@@ -2089,7 +1771,7 @@ def _evaluate(packet_dir: Path, record: dict, entry: dict,
 
 
 def _adoption_blocked(packet_dir: Path, label: str, record: dict,
-                      entry: dict, attempts: list, own: dict, blind,
+                      entry: dict, attempts: list, own: dict,
                       result: "EntryResult",
                       collecting: bool = False) -> tuple | None:
     """`retry`'s refusals BEFORE it adopts an orphan or allocates, in its
@@ -2100,8 +1782,7 @@ def _adoption_blocked(packet_dir: Path, label: str, record: dict,
     `kind`: "take" (a bad admitted.json retry takes away, then the admit
     line), "admit" (the printed `admit:` line first), "round" (the cause is
     already the entry's reason; a new round), "orphan" (the wider gap or the
-    adoption's own checks on the orphan's files; a new round). `blind` is a
-    callable giving the round's retry-cannot-certify sentence; `result` is
+    adoption's own checks on the orphan's files; a new round). `result` is
     the entry's `_evaluate` state. `collecting` adds the cut-short seal
     `_seal_replaced` meets at retry's action point (retry runs that itself).
     """
@@ -2112,14 +1793,6 @@ def _adoption_blocked(packet_dir: Path, label: str, record: dict,
     replaced = entry_dir / f"attempt-{attempt}"
     expected = _expected_binding(record, entry, attempt)
     head = f"roster entry {name!r}: "
-    # Z6 / R3: an attempt whose binding (or attempt 1's, round evidence) no
-    # longer binds can never agree — a retry would spend a paid attempt
-    # nobody can collect as AGREED. (A recorded attempt not on disk is
-    # refused below, naming a new round.)
-    unbound = (_unbound_reason(by_number, record, entry, attempt)
-               if attempt in by_number else None)
-    if unbound is not None:
-        return ("round", head, f"{unbound}; nothing was allocated")
     # A RECORDED VALID ANSWER IS COMPLETED WORK, WHATEVER ITS STATE NOW (case
     # C66): once it was sealed as valid, a retry would put a second answer
     # beside the recorded one. Its current state (an integrity failure
@@ -2185,19 +1858,6 @@ def _adoption_blocked(packet_dir: Path, label: str, record: dict,
         return ("admit" if any(_saved_not_admitted(by_number[n])
                                for n in range(1, attempt) if n in by_number)
                 else "round", head, history)
-    # A RETRY THAT CANNOT CERTIFY THE ROUND IS REFUSED BEFORE IT IS SPENT
-    # (gate-1 r17 row r17-4). Under the round-wide blind rule the recorded
-    # attempt's read audit stays a sibling of every later attempt, so when
-    # the hook load check cannot attribute its census — or one of its rows'
-    # id lists is not whole — every agy leg of the round is INCONCLUSIVE and
-    # attempt K+1 is a paid dispatch that can never succeed. Before the
-    # orphan adoption and the allocation, so a refusal leaves nothing
-    # behind. ROUND-WIDE (gate-1 r18 row r18-2): since r19-3 the guard runs
-    # the round's hook load check itself (census AND hook log) and refuses on
-    # every verdict a later attempt cannot clear — `_retry_cannot_certify`.
-    cannot = blind()
-    if cannot is not None:
-        return ("round", head, cannot)
     # The replaced attempt must still hold what its seal bound (K9),
     # or the next attempt sits behind a history that fails the same check.
     broken = _seal_reason(replaced, entry, attempt, own.get(attempt),
@@ -2367,7 +2027,8 @@ def _evaluate_recorded(packet_dir: Path, record: dict, entry: dict,
                               "result_path": str(result)})
 
     verdict_v2 = _load_sibling("verdict_v2")
-    # The binding was compared with the derivation first (`_unbound_reason`).
+    # The six expected values are DERIVED (round record, frozen roster entry,
+    # directory name), never read back from the attempt's binding.json.
     expected = _expected_binding(record, entry, attempt)
     admission = verdict_v2.admit_file(result, expected)
     if not admission.ok:
@@ -3357,18 +3018,13 @@ def _adopt_orphan_attempt(packet_dir: Path, label: str, record: dict,
     # printed byte today — it removes the READ-BACK: the `--expected-*` flags
     # the operator runs come from the round record, the frozen roster entry
     # and the directory name, exactly as `_evaluate`'s admission does.
-    # THE SAME SIBLING SET THE COLLECTOR USES (gate-1 r11 row r11-5): the
-    # hook load check is a ROUND check, and a printed command that named
-    # only this attempt's audit read a PASS out of one leg's runs against
-    # every leg's conversations.
+    # The printed hook check is the collector's own: this attempt's audit and
+    # the round hook log.
     review_scratch.v2_print_dispatch(
         {"entry": entry["leg"], "dir": str(attempt_dir),
          "attempt": adopt_attempt, "dispatch": dispatch,
          "binding": dict(expected)},
-        Path(packet_dir), Path(record["worktree"]), label,
-        _agy_round_audits(packet_dir, record,
-                          dispatch.get("read_audit_path")))
-    _print_round_hook_checks(packet_dir, record, label, name)
+        Path(packet_dir), Path(record["worktree"]), label)
     # THE ROUND RECORD IS THE LAST WRITE (the r6-5 amendment): everything
     # above can still refuse, and a refusal must leave the record naming the
     # attempt this round actually dispatched.
@@ -3477,8 +3133,7 @@ def retry(packet_dir, label: str, name: str, diagnosis: str) -> Path:
     # never disagree about what a retry does here (tail follow-up).
     blocked = _adoption_blocked(
         packet_dir, label, record, entry, attempts, recorded.get(name, {}),
-        lambda: _retry_cannot_certify(packet_dir, record, entry,
-                                      entry["attempt"]), result)
+        result)
     if blocked is not None and blocked[0] == "take":
         # G2 / Y1: the bad admitted.json is taken away here, never by hand.
         replaced = (Path(packet_dir) / record["results_dir"] / name
@@ -3559,15 +3214,7 @@ def retry(packet_dir, label: str, name: str, diagnosis: str) -> Path:
     print(f"  diagnosis recorded at {diagnosis_path} (attempt "
           f"{result.attempt}'s own artifacts are retained)")
     print(f"leg outputs ({label}):")
-    # THE SAME SIBLING SET THE COLLECTOR USES (gate-1 r11 row r11-5) — see
-    # the adoption path's note. The record already names attempt K+1 here,
-    # so the retried entry's own SUPERSEDED attempt is one of the siblings,
-    # which is exactly what the shared hook log holds (row r11-1).
-    review_scratch.v2_print_dispatch(
-        alloc, packet_dir, worktree, label,
-        _agy_round_audits(packet_dir, record,
-                          (alloc.get("dispatch") or {}).get("read_audit_path")))
-    _print_round_hook_checks(packet_dir, record, label, name)
+    review_scratch.v2_print_dispatch(alloc, packet_dir, worktree, label)
     return Path(alloc["dir"])
 
 

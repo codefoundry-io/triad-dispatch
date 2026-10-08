@@ -19,15 +19,15 @@ setup-once tools-allowlisted custom agent (`--agent`; review agent without
 web tools, research agent with them under --web) with `--add-dir <cwd>` so
 repository reads are auto-allowed; NO danger flag, NO settings transaction,
 NO agy --sandbox on this path; admission by what the stream shows (`admit`).
-The permissive baseline (`--sandbox` omitted, non-hardened) keeps the
-exclusive settings guard and the version-gated danger flag. workspace-write
+The permissive baseline (`--sandbox` omitted, non-hardened) adds only the
+version-gated danger flag; this host never writes, locks or heals the agy
+settings (DL-112). workspace-write
 was removed 2026-07-25 (owner directive — 616 audited calls, 0 workspace-write).
 Audit log: _logs/antigravity/audit.jsonl (gitignored).
 """
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import re
 import signal
@@ -35,13 +35,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple, Optional
 
 import json
 
-import _agy_settings
 import _common
 from _common import (_content_nonrepairable, load_pydantic_class,
                      strip_markdown_fences)
@@ -49,64 +47,6 @@ from _common import (_content_nonrepairable, load_pydantic_class,
 OFFSET_S = 10  # agy --print-timeout = max(timeout - OFFSET, MIN); _run_once kill is backstop
 MIN_PRINT_TIMEOUT_S = 5
 SERVER_CAP_RETRIES = 2
-
-
-@dataclass
-class AgyResult:
-    final_answer: Optional[str]
-    classification: str
-    exit_code: int
-    vendor_exit_code: int
-    # Raw NDJSON stream text — preserved on EVERY return path (the run-log
-    # transcript: the repair agent reads the literal vendor events).
-    stream_output: str = ""
-    stderr: str = ""
-    extraction_error: Optional[str] = None
-    validated: Optional[dict] = None
-    # Deterministic fold of the stream's tool_info events (REPORT-ONLY).
-    read_audit: Optional[dict] = None
-    # Wall-clock of the vendor dispatch (set by _dispatch; audited as elapsed_s).
-    elapsed: Optional[float] = None
-    # The REAL vendor argv the dispatch ran (set by _dispatch) — main() audits and
-    # run-logs this, never its own pre-dispatch placeholder (gate r1, 3 legs).
-    cmd: Optional[list] = None
-    # Effective working directory of the vendor spawn — threaded VERBATIM from
-    # RunResult.effective_cwd by every rr-based return in _run_agy_with_retry
-    # (cwd record-integrity slice, 2026-08-26). None on the guard paths that
-    # never spawned (config-conflict etc.), so the audit/run-log key is
-    # omitted there — same shape rule as vendor_version.
-    effective_cwd: Optional[str] = None
-    # ENGINE transport facts, carried so `main()`'s AgyResult -> RunResult
-    # rebuild does not drop them (gate-1 r4 row r4-8). `spawned` is the one
-    # `RunResult` field `_common.build_transport` reads that this driver can
-    # contradict: a Popen OSError creates no child, and a receipt built from
-    # the default True then claimed the binary and a stdin delivery that never
-    # happened. `orphans_reaped` is the C1/R-TERMINAL evidence that the owned
-    # process group had members to reap. The other receipt inputs need no
-    # carrier: `stdin_delivery` is structurally None on this route (agy takes
-    # the prompt by argv, so `_run_once` is never given `stdin_text`), and
-    # `vendor_version` / `dispatch_attempt` are set by `main()` itself.
-    # `_dispatch` stamps both from the engine's LAST RunResult.
-    #
-    # `spawned` DEFAULTS FALSE (gate-1 r5 row r5-5). It is an OBSERVATION,
-    # and the only observer is the engine: a True default meant every path
-    # that refuses BEFORE the engine is reached — the stream-json floor, the
-    # --model/--effort pin floor, the v2 read-only floor, a missing or
-    # mismatched allowlist agent — rebuilt a RunResult claiming a spawn that
-    # never happened, and `build_transport` then printed the resolved binary
-    # and a stdin-delivery vocabulary value for a child that was never
-    # created. Those receipts now read `binary: null` /
-    # `stdin_delivery: not-started`, which is what "the engine was never
-    # reached" means. Only the engine-stamped assignments in `_dispatch` can
-    # set it True.
-    spawned: bool = False
-    orphans_reaped: bool = False
-    # `RunResult.capture_complete` (gate-1 r5 row r5-2), carried for the same
-    # reason as the two above: `main()` REBUILDS a RunResult out of this
-    # record, so an engine fact that is not carried here is silently replaced
-    # by the dataclass default — and "the capture is a prefix" would then be
-    # missing from exactly the route whose driver can promote a nonzero rc.
-    capture_complete: bool = True
 
 
 def _build_cmd(prompt, agy_sandbox, model, timeout, *, json_schema=None,
@@ -143,7 +83,7 @@ def _build_cmd(prompt, agy_sandbox, model, timeout, *, json_schema=None,
     return cmd
 
 
-def _repair_cmd(cmd, err):
+def _repair_cmd(cmd, err, web=False):
     """Rebuild the agy cmd with a one-shot JSON-repair hint appended to the
     -p arg (the vendor's own --json-schema repair turn failed to satisfy the
     LOCAL pydantic validation — belt-and-suspenders re-run, exactly once)."""
@@ -151,8 +91,8 @@ def _repair_cmd(cmd, err):
     i = new.index("-p") + 1
     # C29: on a --web dispatch the web-evidence clause stays LAST — the
     # repair notice goes between the caller's text and the clause.
-    tail = "\n\n" + AGY_WEB_EVIDENCE_CLAUSE
-    head = new[i][:-len(tail)] if new[i].endswith(tail) else new[i]
+    tail = "\n\n" + _common._investigation_clause("agy") if web else None
+    head = new[i][:-len(tail)] if tail and new[i].endswith(tail) else new[i]
     new[i] = (head + f"\n\nYour previous output was NOT valid JSON for the "
               f"schema ({err}). Output ONLY the corrected JSON object."
               + new[i][len(head):])
@@ -192,22 +132,6 @@ def _is_vendor_print_timeout(stderr) -> bool:
     return isinstance(stderr, str) and bool(_VENDOR_PRINT_TIMEOUT_RE.search(stderr))
 
 
-_DIAG_NUMBER_BOUND = 10**9
-
-
-def _bounded_number(value):
-    """A numeric vendor field for a diagnostic line, or None: never an
-    unbounded / untyped / non-finite vendor value (gate r2 row 11, post-close
-    row 20 — the JSON parser admits NaN / Infinity)."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    if abs(value) >= _DIAG_NUMBER_BOUND:     # exact int compare FIRST — isfinite() on a
-        return None                          # >float-range int raises OverflowError
-    if not math.isfinite(value):
-        return None
-    return value
-
-
 @_common._never_raises(lambda exc: ("unknown", _common.EXIT_CLI_FAIL), cli="antigravity")
 def _classify_no_answer(stderr: str, signals, vendor_rc: int,
                         status=None, stdout: str = "") -> tuple:
@@ -220,18 +144,16 @@ def _classify_no_answer(stderr: str, signals, vendor_rc: int,
     tool PARAMETERS — the reviewed content itself — so a packet quoting a
     capacity phrase forced spurious `server-capacity` re-dispatches and one
     quoting an auth banner produced a terminal `oauth-env`. `signals` comes
-    from `_common.agy_classify_signals` (typed error payloads only). The full
-    raw stream still rides in `stream_output` for the run-log, so the repair
+    from `_common.agy_classify_signals` (the result-level `error` only). The full
+    raw stream still rides in the record's `stdout` for the run-log, so the repair
     agent's diagnostics are unchanged. `stdout` (the raw stream) reaches
     classify() ONLY for its auth rung, which reads `result.error` alone
     (R-AUTH (ii)); classify() keeps agy's raw stream out of the L2 blob.
     """
     status_tok = f"agy result status={str(status)[:200]}" if status else ""
-    # Each typed stream signal is LABELLED so it never starts a line: a tool's
-    # error text (a fetched page saying "Authentication required …") must not
-    # impersonate agy's own stderr banner (R-CLASSIFY: tool output is never a
-    # carrier). agy's own carriers are its real stderr lines and `result.error`
-    # (read from `stdout` by the auth rung).
+    # Each stream signal is LABELLED so it never starts a line: it must not
+    # impersonate agy's own stderr banner. agy's own carriers are its real
+    # stderr lines and `result.error` (read from `stdout` by the auth rung).
     parts = [stderr, *[f"[agy signal] {t}" for t in (signals or []) if t], status_tok]
     blob = "\n".join(t for t in parts if t and t.strip())
     if not blob.strip() and vendor_rc == 0:
@@ -309,16 +231,13 @@ class _AgyVersion(tuple):
 
 def _parse_agy_version(text):
     """Extract the first dotted numeric version tuple from `agy --version`
-    output (e.g. '1.1.3' -> (1, 1, 3)); None if unparseable. A pre-release
-    (`1.1.18-rc.1`) sorts BELOW its release, so a pre-release of a floor
-    version is below that floor (C18 / R-CLI-VERSION; the other host's
-    rule, bin/google_preflight_v2.py:22-23): its patch reads as patch - 0.5."""
+    output (e.g. '1.1.3' -> (1, 1, 3)); None if unparseable."""
     m = re.search(r"(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?",
                   text or "")
     if not m:
         return None
     major, minor, patch = (int(g) for g in m.groups()[:3])
-    ver = _AgyVersion((major, minor, patch - 0.5 if m.group(4) else patch))
+    ver = _AgyVersion((major, minor, patch))
     ver.text = m.group(0)
     return ver
 
@@ -363,29 +282,6 @@ AGY_RESEARCH_TOOLS = ("view_file", "grep_search", "list_dir", "find_by_name",
 # READ tools (the research agent additionally tolerates its two web tools).
 AGY_READ_TOOLS_ADMIT = frozenset({"view_file", "grep_search", "list_dir", "find_by_name"})
 AGY_WEB_TOOLS_ADMIT = frozenset({"read_url_content", "search_web"})
-
-# Research dispatches (`--web`) get this rule appended LAST to the caller's prompt
-# (spec case C29, rule R-INVEST; seed of the shared clause `web-evidence`).
-# Origin 2026-09-19 (host-parity rounds r1/r2): the research agent made ZERO
-# read_url_content calls in both rounds and cited placeholder URLs in r2 —
-# nothing told it what counts as web evidence, and agy `search_web` returns a
-# model summary with grounding-redirect links, never a page (measured
-# 2026-09-16). The tail position follows the documented constraint-drop shape
-# (a rule at the START of a long prompt is the one most likely dropped). The
-# audit row and the run-log record the prompt AS SENT, clause included.
-AGY_WEB_EVIDENCE_CLAUSE = (
-    "WEB EVIDENCE PROCEDURE (appended by the caller to every research dispatch; it "
-    "binds every external fact in your answer). search_web returns a model-written "
-    "summary and grounding-redirect links: a POINTER to sources, never a citation. For "
-    "every fact you take from the web, call read_url_content on the source page itself "
-    "(the official document, the version-tagged source file, the release note or the "
-    "repository page) and cite the exact URL you fetched together with the date or "
-    "version string visible ON that page. Never write a URL you did not fetch, a "
-    "placeholder such as `https://example.com/...`, or a bare year in place of a page "
-    "date. If the fetch fails or the page shows no date or version, report that fact as "
-    "UNSURE and name the URL you tried. Local file facts come first, cited as "
-    "path:line; web facts follow, each with its fetched URL and page date."
-)
 
 _AGENT_BODY_RULES = (
     "Read files with view_file, search with grep_search using a SPECIFIC\n"
@@ -703,10 +599,8 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
     omitted = max(omitted, prior_omitted)   # cross-attempt overflow: MAX, never a sum (row 19 r1)
     cap = _common._AGY_DIGEST_KEY_CAP
     if forbidden:
-        shown = json.dumps([n[:cap] for n in forbidden[:8]], ensure_ascii=True)
-        more = len(forbidden) - 8 + omitted
-        return Admission(False, f"tool(s) outside the allowlist appeared in the stream: {shown}"
-                                f"{f' (+{more} more)' if more > 0 else ''} — agy fell back to its "
+        return Admission(False, f"tool(s) outside the allowlist appeared in the stream: "
+                                f"{_forbidden_shown(forbidden, omitted)} — agy fell back to its "
                                 f"default agent or the model slipped; answer quarantined",
                          errored_reads, forbidden, omitted, blocked)
     status = result.get("status") if isinstance(result, dict) else None
@@ -745,16 +639,6 @@ def agents_dir() -> Path:
     return Path(env) if env else Path.home() / ".gemini" / "config" / "agents"
 
 
-def _lock_wait_seconds(raw) -> float:
-    """`AGY_SETTINGS_LOCK_TIMEOUT` as a finite non-negative wait (seconds);
-    anything else — unparseable, inf, nan, negative — is 30 (gate r6)."""
-    try:
-        v = float(raw)
-    except (TypeError, ValueError):
-        return 30.0
-    return v if math.isfinite(v) and v >= 0 else 30.0
-
-
 def _probe_agy_version(agy_bin):
     """One `agy --version` probe (scrubbed env, 15s). Returns the parsed
     (major, minor, patch) tuple, or None on OSError / non-zero rc /
@@ -772,155 +656,6 @@ def _probe_agy_version(agy_bin):
     if proc.returncode != 0:
         return None
     return _parse_agy_version(proc.stdout)
-
-
-# The catalog call's own timeout (a module constant, so an in-process test can
-# lower it; the call is bounded either way).
-_CATALOG_TIMEOUT_S = 30
-
-
-@_common._never_raises(lambda exc: None, cli="antigravity")
-def _catalog_auth_observed(text):
-    """What a FAILED `agy models` call's output (a non-zero exit, a timeout, an
-    undecodable listing or the model absent) shows of an AUTHENTICATION
-    outcome, or None.
-
-    The catalog output is the CLI's own text (a model listing — no answer, no
-    reviewed file, no tool output), so it is read like every auth carrier
-    (spec R-NOCOST: "judged for an authentication outcome first"; R-CLASSIFY):
-    a line beginning with an agy sign-in banner (built-in or the classifier
-    extension's), then the whole authentication vocabulary. Its pipe is
-    binary, so a bare CR is turned into a line feed here as the engine's
-    text-mode pipe does (on a CLI's own output a bare CR
-    starts a line); lines are then split on LF only. No other class is
-    consulted."""
-    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-    if _common._agy_banner_line(text):
-        return "agy printed its sign-in banner"
-    phrase = _common._auth_phrase("antigravity", text)
-    if phrase:
-        low = phrase.lower()
-        kind = ("an API-key-shaped authentication failure"
-                if "api_key" in low or "api key" in low or "api-key" in low
-                or "apikey" in low else "an authentication failure")
-        return f"agy printed {kind} ({phrase!r})"
-    return None
-
-
-def _model_catalog_refusal(agy_bin, model):
-    """C18 / R-MODEL: None when `agy models` (one `<slug>\\t<label>` line per
-    model) advertises the requested model, else (classification, reason). A
-    call that exited 0 listing the model completed with its answer and is not
-    judged further; a FAILED call's own output — a timed-out call's captured
-    output included — is judged for an AUTHENTICATION outcome first (R-AUTH:
-    the oauth-env STOP);
-    every other failure, an unreadable or undecodable catalog included, is the
-    configuration refusal — an unchecked model is never admitted as checked."""
-    unchecked = (f"the requested model {model!r} cannot be checked against "
-                 f"the route's catalog")
-    def _text(raw):
-        return raw.decode("utf-8", "replace") if isinstance(raw, bytes) else (raw or "")
-    # SIGTERM / SIGHUP are only RECORDED from before the spawn until the group
-    # is reaped (spec e17521f): the catalog child is a dispatched child, so the
-    # wrapper's handler takes the record-only mode a dispatch uses — nothing a
-    # signal does can raise inside the call; once the group is gone a recorded
-    # signal is RETURNED as the signal record (`unknown`), which main writes like
-    # every refusal — summary, audit row, run-log (spec C1 / R-TERMINAL)
-    prev = _common._SIGNAL_STATE["dispatch"]
-    _common._SIGNAL_STATE["dispatch"] = True
-    try:
-        try:
-            # its own process group, reaped like _run_once's
-            proc = subprocess.Popen([agy_bin, "models"], stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                                    env=_common.scrubbed_child_env(),
-                                    start_new_session=hasattr(os, "getpgid"))
-        except (OSError, subprocess.SubprocessError) as e:
-            return "config-conflict", f"`agy models` could not run ({type(e).__name__}) — {unchecked}"
-        pgid = proc.pid if hasattr(os, "getpgid") else None
-        cut = True
-        try:
-            deadline = time.monotonic() + _CATALOG_TIMEOUT_S
-            while True:   # short steps: a recorded signal cuts the call short
-                try:
-                    out, err = proc.communicate(
-                        timeout=max(0.0, min(0.1, deadline - time.monotonic())))
-                    cut = False
-                    break
-                except subprocess.TimeoutExpired:
-                    if (_common._SIGNAL_STATE["signum"] is not None
-                            or time.monotonic() >= deadline):
-                        break
-        finally:
-            if cut:   # cut short (the deadline, a signal) or unwinding: reap the group
-                _common._kill_proc_group(proc, pgid)
-                out = err = b""
-                try:   # what it printed before; bounded, a pipe a stray holder keeps is closed
-                    out, err = proc.communicate(timeout=5)
-                except subprocess.TimeoutExpired as e:
-                    out, err = e.stdout, e.stderr
-                    for pipe in (proc.stdout, proc.stderr):
-                        if pipe is not None:
-                            pipe.close()
-                proc.wait()   # killed above: reaped, never a zombie
-            elif pgid is not None:   # a normal exit: a helper left in the owned group
-                try:                 # is reaped too (R-TERMINAL), like _run_once's
-                    os.killpg(pgid, 0)
-                except ProcessLookupError:
-                    pass             # the group is empty
-                except PermissionError:
-                    _common._kill_proc_group(proc, pgid)   # cannot confirm empty
-                else:
-                    _common._kill_proc_group(proc, pgid)
-        output = _text(out) + "\n" + _text(err)
-        if cut:
-            proc = None
-            failure = f"`agy models` could not run (TimeoutExpired) — {unchecked}"
-    finally:
-        # a signal recorded during the call keeps the record-only mode on until
-        # main has written its refusal (C1: a second signal never loses it)
-        if _common._SIGNAL_STATE["signum"] is None:
-            _common._SIGNAL_STATE["dispatch"] = prev
-    signum = _common._SIGNAL_STATE["signum"]
-    if signum is not None and not prev:
-        _common._SIGNAL_STATE["signum"] = None
-        return "unknown", (f"wrapper interrupted ({signal.Signals(signum).name}) during the "
-                           f"`agy models` catalog call — nothing was dispatched")
-    listing = advertised = None
-    if proc is not None and proc.returncode == 0:
-        try:
-            listing = out.decode("utf-8")
-        except UnicodeDecodeError:
-            listing = None
-    if listing is not None:
-        def _row(line):   # a `<slug>\t<label>` listing line, or None
-            slug, sep, label = line.partition("\t")
-            return slug.strip() if sep and slug.strip() and label.strip() else None
-        lines = listing.splitlines()
-        advertised = {s for s in map(_row, lines) if s}
-        if model in advertised:
-            # the call COMPLETED with its answer: nothing else of its output is
-            # judged (R-CLASSIFY — a label or notice carrying an auth word
-            # never stops the leg)
-            return None
-        # a completed listing without the model: its listing lines are data,
-        # only the other lines (and stderr) are read for the auth outcome
-        output = "\n".join(ln for ln in lines if _row(ln) is None) + "\n" + _text(err)
-    seen = _catalog_auth_observed(output)    # a FAILED call's output, first
-    if seen:
-        return "oauth-env", (f"`agy models`: {seen} — the owner re-logins through "
-                             f"agy's own browser flow; the wrapper does not retry "
-                             f"or try another route")
-    if proc is None:
-        return "config-conflict", failure
-    if proc.returncode != 0:
-        return "config-conflict", f"`agy models` exited {proc.returncode} — {unchecked}"
-    if listing is None:
-        return "config-conflict", f"`agy models` printed an undecodable listing — {unchecked}"
-    return "config-conflict", (
-        f"the agy model catalog (`agy models`) does not advertise the "
-        f"requested model {model!r} — change the model in the roster entry "
-        f"(or the --model value) to a listed slug")
 
 
 def _agy_needs_skip_permissions(ver) -> bool:
@@ -1013,16 +748,11 @@ def _validate_structured_with_trigger(result, answer, pydantic_cls):
     by the shared `_common.nonrepairable_log_marker` so this driver and the
     shared engine cannot spell the token differently."""
     structured = result.get("structured_output") if isinstance(result, dict) else None
-    # PRESENCE is MEMBERSHIP, never truthiness (gate-1 r3 row r3-3b, the
-    # pydantic twin of r3-3). `.get()` collapses "no such key" and
-    # "`structured_output`: null" into the same None, so one JSON literal put
-    # an explicitly-null schema channel on the struct-ABSENT branch below and
-    # the raw `response` was validated and RETURNED as the answer — the
-    # divergent second answer the r4 rule suppresses whenever the vendor
-    # emitted a schema-checked channel. A present-but-unusable channel takes
-    # the suppression path; only a genuinely ABSENT one keeps the
-    # vendor-drift fallback.
-    if isinstance(result, dict) and "structured_output" in result:
+    # PRESENCE is the measured shape (discard-10): only a dict
+    # `structured_output` is the schema-checked channel; a non-dict one (null
+    # included) is treated as absent and the raw `response` is validated.
+    structured_member = isinstance(structured, dict)
+    if structured_member:
         ok, payload, nonrepairable, trigger = _common.validate_response_with_trigger(
             json.dumps(structured, ensure_ascii=False, default=str), pydantic_cls)
         if ok:
@@ -1066,28 +796,30 @@ def _validate_structured(result, answer, pydantic_cls):
     return ok, payload
 
 
-# The classification values that mean "the ENGINE reached no verdict here"
-# (gate-1 r4 row r4-2). `unclassified` is the sentinel `_common._run_once`
-# parks under `classify_and_log=False` on exactly the exits it leaves UNJUDGED
-# — the discriminator the forwarding guard below tests. `ok` is the
-# RunResult DATACLASS DEFAULT and is impossible from that call: the engine
-# either classifies (classify_and_log=True) or parks the sentinel. Pairing it
-# with a non-OK exit is self-contradictory, so it is treated as "no engine
-# verdict" rather than forwarded — forwarding would report `ok` at exit 0
-# with no answer, the silent success this whole rung exists to prevent.
-_ENGINE_UNDECIDED = frozenset(("unclassified", "ok"))
+def _done(rr: _common.RunResult, cls: str, code: int, *, audit, answer=None,
+          validated=None, err=None) -> _common.RunResult:
+    """This driver's verdict, stamped on the engine's own RunResult. The
+    engine's transport facts (stdout, stderr, vendor rc, effective cwd,
+    spawned, orphans_reaped, capture_complete) ride through untouched."""
+    rr.classification, rr.exit_code = cls, code
+    rr.final_answer = answer or ""
+    rr.validated = validated
+    rr.extraction_error = err
+    rr.read_audit = audit
+    return rr
 
 
 def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                         repair_mode=False, pydantic_cls=None,
                         allow_skip_retry=True, admission=None,
-                        cmd_box=None, schema_file_mode=False,
-                        rr_box=None) -> AgyResult:
+                        schema_file_mode=False, web=False) -> tuple[_common.RunResult, list]:
     """Dedicated extract-then-classify driver over the stream-json transport.
     See the plan's decision table (2026-07-31) — ORDER MATTERS. Spawn =
     _common._run_once(classify_and_log=False): shared scrubbed env + setsid +
     SIGTERM->SIGKILL killpg escalation; classification and the canonical
-    one-line summary stay THIS driver's job."""
+    one-line summary stay THIS driver's job. Returns the engine's own
+    RunResult carrying this driver's verdict (`_done`) and the argv of the
+    last attempt that spawned."""
     if not repair_mode:
         _common.prune_stale_run_logs("antigravity")
 
@@ -1111,56 +843,40 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
     # erase an earlier attempt's evidence.
     forbidden_seen: list = []
     forbidden_omitted_seen = 0          # census overflow beyond the cap, MAX across attempts (row 19 / rs-r1)
+    argv = list(cmd)       # the argv of the last attempt that spawned
+    spawned_rr = None      # that attempt's engine record
     while True:
         prev_rr = _common._SIGNAL_STATE["last"]   # C1: returned AGAIN when nothing spawned
         rr = _common._run_once("antigravity", cmd, cwd, timeout,
                                classify_and_log=False)
-        if rr_box is not None and (rr.spawned or rr_box[0] is None):
-            # the ENGINE's own transport facts of the attempt that runs, for
-            # the AgyResult rebuild in main() (row r4-8) — same out-parameter
-            # idiom as cmd_box, and for the same reason: every return below
-            # would otherwise have to thread them by hand. A later turn that
-            # spawned nothing keeps the last turn that did, as cmd_box does
-            # (the receipt and the audit `cmd` describe the same turn).
-            rr_box[0] = rr
         if rr is prev_rr or (attempt_digests and not rr.spawned):
             # C1 / R-READ-AUDIT: a RETRY turn that spawned nothing — a signal
             # BETWEEN attempts (the engine handed back the previous attempt's
             # record, now carrying the signal failure) or a spawn failure on
             # the re-run. The attempts that ran are already counted; a digest
-            # here would seal an attempt that never ran.
-            return AgyResult(None, rr.classification,
-                             _common.map_classification_to_exit(rr.classification),
-                             rr.vendor_exit_code, stream_output=rr.stdout,
-                             stderr=rr.stderr,
-                             read_audit=_common.merge_agy_digests(attempt_digests),
-                             effective_cwd=rr.effective_cwd,
-                             extraction_error=rr.extraction_error)
-        if cmd_box is not None and rr.spawned:
+            # here would seal an attempt that never ran. R-RECEIPT: the record
+            # describes the last turn that spawned, as `argv` does.
+            if not rr.spawned and spawned_rr is not None:
+                rr.spawned = True
+                rr.orphans_reaped = spawned_rr.orphans_reaped
+                rr.capture_complete = spawned_rr.capture_complete
+            return _done(rr, rr.classification,
+                         _common.map_classification_to_exit(rr.classification),
+                         audit=_common.merge_agy_digests(attempt_digests),
+                         err=rr.extraction_error), argv
+        if rr.spawned:
             # the REAL argv of the attempt that ran (gate r3, codex); a turn
             # that spawned nothing (above, or a spawn OSError) keeps the
             # previous one (C1)
-            cmd_box[0] = list(cmd)
+            argv, spawned_rr = list(cmd), rr
         stream = rr.stdout
-        # A duplicate JSON member ANYWHERE in the stream refuses the whole
-        # stream (spec C14; gate-1 r3 row r3-2). It is held rather than
-        # returned on the spot so the TRANSPORT verdicts below keep their
-        # precedence: a killed run's tail is a fragment, and diagnosing a
-        # fragment as a content violation would mis-route the leader.
+        # A duplicate member refuses the whole stream (C14), held so transport verdicts keep precedence.
         duplicate_member = None
-        # The census the parser had collected BEFORE a duplicate-member
-        # raise (gate-1 r9 row r9-15). It is kept apart from `undecodable`
-        # on purpose: the duplicate refusal has PRECEDENCE (it is the
-        # non-repairable content violation, schema-fail 66), so these lines
-        # are evidence on the refused attempt's digest, never a second
-        # refusal that would change the token.
-        partial_undecodable: list = []
         try:
-            events, result, undecodable = _common.parse_agy_stream(stream)
+            events, result = _common.parse_agy_stream(stream)
         except _common._DuplicateJSONMember as exc:
             duplicate_member = exc
-            events, result, undecodable = [], None, []
-            partial_undecodable = list(exc.undecodable_lines)
+            events, result = [], None
         if admission is not None:
             _fb, _om, _er, _eo, _bl, _rs = _census(events, admission[0], admission[1])
             for _n in _fb:
@@ -1173,44 +889,11 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
         # attempt's transcript was a prefix. `merge_agy_digests` carries the
         # flag into `attempts[]` under the omit-when-default rule.
         attempt_digest["capture_complete"] = bool(rr.capture_complete)
-        # PER-ATTEMPT undecodable-line census (gate-1 r7 row r7-k1), stamped
-        # on the SAME record and carried into `attempts[]` by the same
-        # omit-when-default rule, so the merged audit NAMES the hole in this
-        # attempt's transcript instead of presenting it as ordinary evidence.
-        if undecodable or partial_undecodable:
-            attempt_digest["undecodable_lines"] = (undecodable
-                                                   or partial_undecodable)
-        # THE TRANSCRIPT WAS CUT MID-LINE (gate-1 r9 row r9-10). The parser
-        # excludes a trailing fragment from its undecodable census — it is
-        # a CUT, not a hole, and refusing on it blinded the no-answer
-        # classifier to the actionable token (`oauth-env`,
-        # `cli-subscription-cap`, the capacity retry) the run really
-        # carried. The fact is still evidence, so it is recorded here under
-        # the same omit-when-default rule, from the SAME helper the parser
-        # uses, so the two can never disagree about which line it was.
-        truncated_tail = bool(_common._agy_tail_fragment(stream))
-        if truncated_tail:
+        # THE TRANSCRIPT WAS CUT MID-LINE (gate-1 r9 row r9-10): recorded,
+        # never refused — an answer before the cut is read like any other
+        # (E5-11), and a no-answer run keeps its own diagnosis.
+        if _common._agy_tail_fragment(stream):
             attempt_digest["truncated_tail"] = True
-        # HOW MANY TERMINAL RESULTS THIS ATTEMPT'S TRANSCRIPT CARRIED
-        # (gate-1 r9 row r9-1). Omit-when-DEFAULT, the same rule
-        # `capture_complete` and `undecodable_lines` follow: the key appears
-        # exactly where the count is not the expected 1, so the merged audit
-        # NAMES the ambiguity instead of presenting the attempt as ordinary
-        # evidence. Stamped BEFORE the refusal below, so the refused
-        # attempt's own digest carries it.
-        n_results = sum(1 for ev in events
-                        if isinstance(ev, dict) and ev.get("event") == "result")
-        # NOT A COUNT THE PARSE EVER MADE (gate-1 r10 row r10-10). On a
-        # duplicate-member refusal the handler above resets `events` to `[]`
-        # — the parse is evidence of nothing, which is exactly why it does —
-        # so this stamped `result_events: 0` on the attempt digest and a
-        # reader of the merged audit saw a DRAINED transcript where the
-        # truth is "the stream was refused before it could be counted". The
-        # `undecodable_lines` partial census (row r9-15) and the
-        # `refused_attempt` marker already say what happened to this
-        # attempt; an invented count is not evidence.
-        if n_results != 1 and duplicate_member is None:
-            attempt_digest["result_events"] = n_results
         # THE RUN WAS INTERRUPTED, SO ITS TRANSCRIPT IS A KNOWN PREFIX (gate-1
         # r17 row r17-1). A run killed at the wrapper deadline whose capture
         # happens to end on a line boundary carries none of the markers above
@@ -1235,139 +918,32 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
         elif (rr.spawned and isinstance(rr.vendor_exit_code, int)
               and rr.vendor_exit_code < 0):
             attempt_digest["interrupted"] = "signal"
-        attempt_digests.append(attempt_digest)
+        if duplicate_member is None:
+            attempt_digests.append(attempt_digest)
         audit = _common.merge_agy_digests(attempt_digests)
-        # The key is DECODED VENDOR TEXT (row r4-6): logged verbatim, a
-        # newline plus the trusted `[wrapper] antigravity ` prefix — or a
-        # U+2028 / C0 control a `splitlines()` reader honours — forges
-        # leader-visible lines out of a refusal. Cap first (bounded input),
-        # then `ascii()`-escape, keeping the caller's own quoting; the same
-        # rule verdict_v2's `_safe` applies (row r2-8). Computed ONCE, here,
-        # for the marker below and the refusal's log line.
-        safe_key = (None if duplicate_member is None else ascii(
-            str(duplicate_member.key)[:_common._AGY_DIGEST_KEY_CAP])[1:-1])
-        # THE MARKER IS STAMPED BEFORE ANY RETURN (gate-1 r13 row r13-3).
-        # It lived inside the schema-fail branch below, so a refused attempt
-        # that ALSO ended on the wrapper timeout — or on any other engine-
-        # decided terminal verdict — returned first, and its census row read
-        # as a plain synthetic zero with no marker (the hook load check
-        # attributes a zero-step row nothing — 0 steps, no recorded id — for
-        # a run that may have made hooked calls; with the marker it refuses
-        # that census instead). Every return path now carries it; there is
-        # no `continue` between here and the returns, so the merged audit a
-        # return hands back is this object.
-        if duplicate_member is not None and audit is not None:
-            audit["refused_attempt"] = {"attempt": len(attempt_digests),
-                                        "line_no": duplicate_member.line_no,
-                                        "key": safe_key}
         if rr.exit_code == _common.EXIT_TIMEOUT:
             # Killed short-circuit FIRST: a killed run's stream is a partial
             # prefix — never trust a result event parsed out of it. R-AUTH
             # (ii) / R-CLASSIFY: a timed-out run is still judged on what it
             # printed before — an auth failure in agy's own carrier STOPs.
             if _common._auth_carrier_stop("antigravity", rr.stderr, rr.stdout):
-                # the allowlist census rides on this STOP too, like the
-                # failed-call STOP below
-                note = ""
-                if forbidden_seen:
-                    note = ("; tool(s) outside the allowlist also appeared in "
-                            "the stream: " + _forbidden_shown(
-                                forbidden_seen, forbidden_omitted_seen))
                 _common.log("authentication failure printed before the "
-                            "timeout: STOP (owner browser re-login; no retry)"
-                            + note)
-                return AgyResult(None, "oauth-env", _common.EXIT_TERMINAL,
-                                 rr.vendor_exit_code, stream_output=stream,
-                                 stderr=rr.stderr, read_audit=audit,
-                                 effective_cwd=rr.effective_cwd,
-                                 extraction_error="authentication failure printed "
-                                                  "before the timeout: owner "
-                                                  "browser re-login" + note)
-            return AgyResult(None, "timeout", _common.EXIT_TIMEOUT,
-                             rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd)
+                            "timeout: STOP (owner browser re-login; no retry)")
+                return _done(rr, "oauth-env", _common.EXIT_TERMINAL, audit=audit,
+                             err="authentication failure printed "
+                                 "before the timeout: owner "
+                                 "browser re-login"), argv
+            return _done(rr, "timeout", _common.EXIT_TIMEOUT, audit=audit), argv
         if (rr.exit_code != _common.EXIT_OK
-                and rr.classification not in _ENGINE_UNDECIDED):
-            # EVERY OTHER ENGINE-DECIDED verdict, on the same rung (gate-1 r3
-            # row r3-1, widened by r4 row r4-2). The timeout arm above used to
-            # be the only one, so a TERMINAL verdict `_run_once` reached on
-            # its own — `truncated-answer` (a reader died on a rc-0 run, so
-            # the capture is a PREFIX) or `input-delivery-failed` (the prompt
-            # was never confirmed delivered) — was invisible here: this driver
-            # re-derives its outcome from `vendor_exit_code` and the result
-            # `status`, and BOTH read perfectly healthy in exactly those two
-            # shapes, so the ok branches below printed a COMPLETE-looking
-            # answer at exit 0. The other three wrappers never had the gap:
-            # they reach `_run_once` only through `run_cli_with_retry`, whose
-            # attempt loop returns the RunResult unchanged for every class it
-            # neither retries nor promotes.
-            #
-            # THE DISCRIMINATOR IS THE CLASSIFICATION, NEVER THE EXIT CODE
-            # (row r4-2). The r3-1 spelling was `exit_code not in (EXIT_OK,
-            # EXIT_CLI_FAIL)`, which EXEMPTS every exit-1 result — and the
-            # engine returns EXIT_CLI_FAIL with classification `unknown` when
-            # a reader/writer thread fails to START (the child is killed and
-            # reaped, its stdout kept). That engine-DECIDED failure reached
-            # the ok branches again. `unclassified` is the sentinel the engine
-            # parks on exactly the pairs it leaves UNJUDGED under
-            # `classify_and_log=False`, so testing for it — not for an exit
-            # code — is what separates "this driver decides" from "the engine
-            # already decided".
-            #
-            # EVERY (exit_code, classification) pair `_run_once` can return
-            # under `classify_and_log=False` (_common.py `_run_once`):
-            #
-            #   exit               classification           who owns it here
-            #   -----------------  -----------------------  ----------------
-            #   EXIT_ARG_ERROR 3   input-delivery-failed    forwarded (pre-spawn
-            #                                               refusal: unencodable
-            #                                               stdin, never on this
-            #                                               argv route)
-            #   EXIT_CLI_FAIL 1    unknown                  forwarded (Popen
-            #                                               OSError; nothing ran)
-            #   EXIT_CLI_FAIL 1    unknown                  forwarded (reader/
-            #                                               writer thread start;
-            #                                               a terminal signal
-            #                                               mid-dispatch, C1)
-            #   EXIT_CLI_FAIL 1    unknown                  forwarded ABOVE,
-            #                                               before any digest (a
-            #                                               signal between
-            #                                               attempts: the engine
-            #                                               spawned nothing and
-            #                                               returned the previous
-            #                                               record, C1; or a
-            #                                               spawn OSError on a
-            #                                               retry turn)
-            #   EXIT_TIMEOUT 2     unclassified             the timeout arm ABOVE
-            #                                               short-circuits first
-            #   EXIT_TERMINAL 65   input-delivery-failed    forwarded
-            #   EXIT_TERMINAL 65   truncated-answer         forwarded
-            #   EXIT_OK 0          unclassified             this driver decides
-            #   EXIT_CLI_FAIL 1    unclassified             this driver decides
-            #                                               (the rc-gate /
-            #                                               status-gate /
-            #                                               no-answer arms)
-            #
-            # A forwarded verdict keeps the engine's TOKEN — a second opinion
-            # re-derived from the same stdout is what this row forbids — but
-            # its EXIT is conformed to the vendored vocabulary
-            # (`spec/contracts/exit-tokens.json`, C8/R-TOKENS: `unknown` binds
-            # to 1). Forwarding a spawn OSError verbatim would have reported
-            # `unknown` at exit 3, a pairing that contract does not bind. The
-            # ONE carve-out is `input-delivery-failed`, whose PRE-SPAWN arm is
-            # deliberately an argument error (nothing was sent, no child
-            # existed); its post-spawn arm already sits at the mapped 65, so
-            # keeping `rr.exit_code` serves both. Stream and read-audit
-            # custody are kept so the run-log and the leg's read evidence
-            # survive the refusal.
+                and rr.classification != "unclassified"):
+            # The engine already decided (`unclassified` = the sentinel it parks on
+            # the exits it leaves to this driver): forward its token, conform the exit
+            # to the vocabulary (input-delivery-failed keeps its own), keep custody.
             forwarded_exit = (
                 rr.exit_code if rr.classification == "input-delivery-failed"
                 else _common.map_classification_to_exit(rr.classification))
-            return AgyResult(None, rr.classification, forwarded_exit,
-                             rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit,
-                             effective_cwd=rr.effective_cwd,
-                             extraction_error=rr.extraction_error)
+            return _done(rr, rr.classification, forwarded_exit, audit=audit,
+                         err=rr.extraction_error), argv
         _res = result if isinstance(result, dict) else {}
         _completed = (rr.vendor_exit_code == 0 and _res.get("status") == "SUCCESS"
                       and not _is_vendor_print_timeout(rr.stderr)
@@ -1379,30 +955,21 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             # R-AUTH (ii), C37: an authentication failure in agy's own carrier
             # (`result.error`, or a stderr line beginning with the auth banner)
             # STOPS this attempt before any other classification of the run —
-            # above the print-timeout, capture-prefix, transcript, admission
-            # (allowlist) and answer-present rungs and the vendor-timeout
+            # above the print-timeout, capture-prefix, duplicate-member,
+            # admission (allowlist) and answer-present rungs and the vendor-timeout
             # branch; never retried. Only the engine-decided verdicts above
             # (nothing of this run is read there) come first. It applies to a
             # call that FAILED: a run that completed with an answer (rc 0,
             # status SUCCESS, a response or structured output, no print
             # timeout) is not stopped by a banner line; "an answer" means a
             # USABLE one — a non-blank response or a `structured_output`
-            # OBJECT, never the key's mere presence. The allowlist census
-            # rides on the record when a tool outside it also ran.
-            note = ""
-            if forbidden_seen:
-                note = ("; tool(s) outside the allowlist also appeared in the "
-                        "stream: " + _forbidden_shown(forbidden_seen,
-                                                      forbidden_omitted_seen))
+            # OBJECT, never the key's mere presence.
             _common.log("authentication failure in agy's error carrier: STOP "
-                        "(owner browser re-login; no retry)" + note)
-            return AgyResult(None, "oauth-env", _common.EXIT_TERMINAL,
-                             rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit,
-                             effective_cwd=rr.effective_cwd,
-                             extraction_error="authentication failure in agy's "
-                                              "error carrier: owner browser "
-                                              "re-login" + note)
+                        "(owner browser re-login; no retry)")
+            return _done(rr, "oauth-env", _common.EXIT_TERMINAL, audit=audit,
+                         err="authentication failure in agy's "
+                             "error carrier: owner browser "
+                             "re-login"), argv
         if (_is_vendor_print_timeout(rr.stderr)
                 and not (admission is not None and forbidden_seen)):
             # agy's OWN print timeout (R-CLASSIFY / C43, observed 2026-10-03):
@@ -1416,11 +983,9 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             # run-log; no answer does, and no retry or repair re-run consumes it.
             # R-AUTH (C37): an auth failure the same run carries was already
             # decided by the auth-carrier rung just above — oauth-env / 65.
-            return AgyResult(None, "timeout", _common.EXIT_TIMEOUT,
-                             rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
-                             extraction_error="agy print timeout: turn in progress, "
-                                              "partial output withheld")
+            return _done(rr, "timeout", _common.EXIT_TIMEOUT, audit=audit,
+                         err="agy print timeout: turn in progress, "
+                             "partial output withheld"), argv
         if not rr.capture_complete:
             # THE CAPTURE IS A PREFIX — TERMINAL, ABOVE EVERY BRANCH BELOW
             # (gate-1 r5 row r5-2, HOISTED at r6 row r6-1). The engine's own
@@ -1448,145 +1013,22 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             _common.log("the output capture is incomplete (a reader thread "
                         "failed or did not join), so this attempt's "
                         "transcript is a prefix — terminal, never retried")
-            return AgyResult(None, "truncated-answer", _common.EXIT_TERMINAL,
-                             rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit,
-                             effective_cwd=rr.effective_cwd,
-                             capture_complete=False,
-                             extraction_error=(
-                                 f"incomplete output capture (vendor "
-                                 f"rc={rr.vendor_exit_code}): a reader thread "
-                                 f"failed or did not join, so everything this "
-                                 f"attempt produced came out of a PREFIX of "
-                                 f"the stream and is never admitted, never "
-                                 f"classified from, and never retried"))
-        if n_results > 1:
-            # MORE THAN ONE TERMINAL RESULT REFUSES THIS ATTEMPT (gate-1 r9
-            # row r9-1), on the same PRE-RETRY rung as the undecodable and
-            # duplicate-member refusals below and for the same reason: the
-            # transcript does not have one unambiguous terminal answer, so
-            # nothing may be read out of it.
-            #
-            # `parse_agy_stream` keeps the LAST result event, and the
-            # exactly-one-result rule lived in `admit()` — which runs ONLY
-            # in the answer-present v2 branch. So a FULLY CAPTURED stream
-            # carrying a completed BLOCKING verdict followed by an ERROR
-            # result with an empty `response` and a capacity phrase went the
-            # other way entirely: the empty last result took the no-answer
-            # road, `_classify_no_answer` read `model overloaded`, the
-            # driver took its automatic server-capacity RETRY, and a clean
-            # attempt 2 returned a SAFE answer that REPLACED the blocking
-            # one. The count is a property of the TRANSCRIPT, so it is
-            # checked here for every posture and every exit code.
-            #
-            # ZERO results is NOT this refusal. A drained attempt is the
-            # ordinary no-answer shape whose diagnosis (`oauth-env`,
-            # `cli-subscription-cap`, the capacity retry) is exactly what
-            # the arms below exist for; refusing it here would blind every
-            # actionable no-answer class. `admit()` keeps its own `!= 1`
-            # rule for the answer-present branch, where an answer is in hand
-            # and a missing terminal result IS a framing violation.
-            #
-            # Same token and exit as the sibling transcript refusals —
-            # `vendor-error` / EXIT_TERMINAL, TERMINAL, never retried: the
-            # LEADER re-dispatches (the contract's one retry).
-            reason = (f"{n_results} result events in the stream (expected "
-                      f"exactly 1), so this attempt has no unambiguous "
-                      f"terminal answer and nothing is read out of it")
-            # THE ALLOWLIST CLASS SURVIVES THIS RUNG (gate-1 r10 row r10-9).
-            # The refusal returned a generic `vendor-error` and dropped the
-            # census, so a multi-result stream that ALSO executed an
-            # off-allowlist tool stopped classifying `admission-refused` and
-            # stopped naming the tool — and the leader's handling of that
-            # class (`spec/leg-contracts.md` § admission-refused: one retry,
-            # then terminally missing, with the tool named) keys on the
-            # token. The answer-arm refusal has always appended the census
-            # to its reason (gate r1 row 2); same rule, same wording, on the
-            # pre-retry rung.
-            token = "vendor-error"
-            if forbidden_seen:
-                reason += ("; tool(s) outside the allowlist also appeared in "
-                           "the stream: "
-                           + _forbidden_shown(forbidden_seen,
-                                              forbidden_omitted_seen))
-                token = "admission-refused"
-            _common.log(f"admission refused: {reason}")
-            return AgyResult(None, token, _common.EXIT_TERMINAL,
-                             rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit,
-                             effective_cwd=rr.effective_cwd,
-                             extraction_error=reason)
-        if undecodable:
-            # AN UNDECODABLE LINE REFUSES THIS ATTEMPT (gate-1 r7 row r7-k1),
-            # on the SAME rung as the duplicate member and for the same
-            # reason: the transcript has a hole, so nothing read out of it can
-            # be trusted — neither an answer, nor the absence of one, nor the
-            # capacity phrase that would otherwise earn the automatic retry
-            # below. r6-8 made the parser SKIP such a line rather than let it
-            # escape as a traceback (correct), but left no flag: a drained
-            # no-answer attempt carrying `model overloaded` took the
-            # server-capacity retry, and a clean second attempt returned `ok`
-            # with a merged audit that omitted the event entirely.
-            #
-            # The framing rule is ONE blanket rule and `admit` already emits
-            # exactly this class for a line that does not decode to a JSON
-            # object — `vendor-error` at EXIT_TERMINAL — but it runs only on
-            # the answer-present v2 path, so the no-answer shape and the whole
-            # permissive posture were open. Same token, same exit, decided
-            # here so every posture is covered. TERMINAL: the LEADER
-            # re-dispatches (the contract's one retry), as for every other
-            # terminal class. The log carries the LINE NUMBER and the
-            # EXCEPTION CLASS only — never the vendor bytes (row r4-6).
-            shown = json.dumps(undecodable[:_common._AGY_UNDECODABLE_LOG_CAP],
-                               ensure_ascii=True)
-            reason = (f"stream line(s) undecodable, so this attempt's "
-                      f"transcript has a hole and nothing is read out of it: "
-                      f"{shown}")
-            # the allowlist class survives this rung too (as on the
-            # multi-result rung above): the census names the tool
-            token = "vendor-error"
-            if forbidden_seen:
-                reason += ("; tool(s) outside the allowlist also appeared in "
-                           "the stream: "
-                           + _forbidden_shown(forbidden_seen,
-                                              forbidden_omitted_seen))
-                token = "admission-refused"
-            _common.log(f"admission refused: {reason}")
-            return AgyResult(None, token, _common.EXIT_TERMINAL,
-                             rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit,
-                             effective_cwd=rr.effective_cwd,
-                             extraction_error=reason)
+            return _done(rr, "truncated-answer", _common.EXIT_TERMINAL, audit=audit,
+                         err=f"incomplete output capture (vendor "
+                             f"rc={rr.vendor_exit_code}): a reader thread "
+                             f"failed or did not join, so everything this "
+                             f"attempt produced came out of a PREFIX of "
+                             f"the stream and is never admitted, never "
+                             f"classified from, and never retried"), argv
         if duplicate_member is not None:
-            # NON-REPAIRABLE (C14): a repair turn would re-dispatch on the
-            # very evidence the duplicate hid, so this takes EXIT_SCHEMA_FAIL
-            # directly instead of the one schema-repair re-run. The refused
-            # attempt's OWN digest is empty (it comes from the parse that just
-            # refused, so it is evidence of nothing); the raw stream still
-            # rides out for the run-log. `safe_key` is the escaped key
-            # computed once after the merge (rows r4-6 / r13-3).
+            # NON-REPAIRABLE (C14): no repair turn; the refused attempt adds no read-audit row.
             _common.log(f"agy stream line {duplicate_member.line_no} carries a "
-                        f"duplicate JSON member '{safe_key}' "
+                        f"duplicate JSON member "
+                        f"{str(duplicate_member.key)[:_common._AGY_DIGEST_KEY_CAP]!r} "
                         f"(original-text reject, spec C14) — the whole stream "
                         f"is refused; a surviving sibling result event must "
                         f"never be admitted in its place")
-            # CUSTODY (row r4-4): this return used to hand back `read_audit=
-            # None`, which discards the AGGREGATE — and on attempt 2 of a
-            # schema-repair chain the aggregate is the only record of attempt
-            # 1's reads. main() then wrote neither the read-audit line nor
-            # `agy-read-audit.json`, losing evidence gathered BEFORE the
-            # untrusted-input violation (evidence preservation is the
-            # terminating shape). The leg is INVALID either way — the token
-            # and the 66 are unchanged — so nothing can PASS on this audit;
-            # what it buys is that the reads stay accounted for. The marker
-            # names WHICH attempt was refused, so a reader never mistakes the
-            # aggregate for a complete transcript. The marker itself is
-            # stamped right after the merge, before every return (row
-            # r13-3), so this branch no longer re-stamps it.
-            return AgyResult(None, "schema-fail", _common.EXIT_SCHEMA_FAIL,
-                             rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit,
-                             effective_cwd=rr.effective_cwd)
+            return _done(rr, "schema-fail", _common.EXIT_SCHEMA_FAIL, audit=audit), argv
         # r1/R3: every field below is vendor-controlled. A non-dict result or
         # a non-string `response` (the model can emit a JSON object there)
         # must degrade to "no usable answer" — CLASSIFIED, audited, run-logged
@@ -1608,49 +1050,16 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
         # `--pydantic`): on a plain call an empty response stays the no-answer
         # failure it has always been. Admission still runs first, because the
         # arm it guards is where the v2 census lives.
-        structured_member = (isinstance(result, dict)
-                             and "structured_output" in result)
+        # The one membership test (discard-10): only the measured dict
+        # `structured_output` is the structured channel; a non-dict one is
+        # treated as absent here, in the schema-file arm and in the
+        # quarantine predicate below.
+        structured_member = isinstance(
+            result.get("structured_output") if isinstance(result, dict) else None,
+            dict)
         structured_route = schema_file_mode or pydantic_cls is not None
         if result is not None and (answer.strip()
                                    or (structured_route and structured_member)):
-            if truncated_tail:
-                # AN ANSWER READ OUT OF A CUT TRANSCRIPT IS A FRAGMENT'S
-                # ANSWER (gate-1 r10 row r10-13). Row r9-10 exempts a
-                # trailing fragment from the undecodable census so the
-                # NO-ANSWER classifier can still name the actionable token
-                # (`oauth-env`, `cli-subscription-cap`, the capacity retry)
-                # — that path is untouched, and this rung sits INSIDE the
-                # answer-present branch for exactly that reason. But when
-                # an answer IS in hand, the cut is the thing that decided
-                # WHICH answer: a stream killed while a SECOND result event
-                # was being written returned result #1 as `ok` on the
-                # permissive posture. The v2 path was covered by `admit()`'s
-                # framing rule (a line that does not decode to a JSON object
-                # makes the run unusable), so this states the same rule on
-                # EVERY posture and with the precise token.
-                #
-                # `truncated-answer` / EXIT_TERMINAL is the existing class
-                # for "everything this attempt produced came out of a
-                # PREFIX" — the same token the incomplete-capture rung
-                # above uses for the identical fact. TERMINAL: the LEADER
-                # re-dispatches (the contract's one retry); no answer rides
-                # out, a bounded copy goes to the run-log.
-                snippet = (answer if len(answer) <= 2000
-                           else answer[:2000] + " …[truncated]")
-                reason = ("the transcript was CUT mid-line (a trailing "
-                          "fragment), so the answer this attempt carries is "
-                          "whatever the cut left behind — a later result "
-                          "event may have been in flight; nothing is "
-                          "admitted out of a fragment. quarantined answer "
-                          f"({len(answer)} chars): {snippet}")
-                _common.log("the stream was cut mid-line and this attempt "
-                            "carries an answer — terminal, never retried")
-                return AgyResult(None, "truncated-answer",
-                                 _common.EXIT_TERMINAL,
-                                 rr.vendor_exit_code, stream_output=stream,
-                                 stderr=rr.stderr, read_audit=audit,
-                                 effective_cwd=rr.effective_cwd,
-                                 extraction_error=reason)
             if admission is not None:
                 # v2 ADMISSION (spec § Admission): judged by what the stream
                 # shows — framing, one result, allowlist census, errored steps
@@ -1687,21 +1096,12 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                     # stays `vendor-error`. Both surface-not-repair:
                     # deliberately absent from _common.CLASSIFICATION_TOKENS.
                     reason = adm.reason
-                    if adm.forbidden and not reason.startswith("tool(s) outside the allowlist"):
-                        # an early (framing / result-count) refusal still names
-                        # the forbidden tool(s) the census saw (gate r1 row 2);
-                        # the test is on the wrapper-authored PREFIX, never on
-                        # a substring a vendor stdout excerpt could spoof
-                        reason += ("; tool(s) outside the allowlist also appeared in the stream: "
-                                   + _forbidden_shown(adm.forbidden, adm.omitted))
                     _common.log(f"admission refused: {reason}")   # names are ASCII-escaped by admit()
                     snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
                     token = "admission-refused" if adm.forbidden else "vendor-error"
-                    return AgyResult(None, token, _common.EXIT_TERMINAL,
-                                     rr.vendor_exit_code, stream_output=stream,
-                                     stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
-                                     extraction_error=(f"admission refused: {reason}; "
-                                                       f"quarantined answer ({len(answer)} chars): {snippet}"))
+                    return _done(rr, token, _common.EXIT_TERMINAL, audit=audit,
+                                 err=f"admission refused: {reason}; "
+                                     f"quarantined answer ({len(answer)} chars): {snippet}"), argv
                 if adm.blocked:
                     # EFFECT-BASED Gate A (S2, 2026-09-17): denied before execution
                     # — by the round worktree's PreToolUse hook or the vendor's own
@@ -1736,23 +1136,17 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                 # the repair agent to patch, this is a real answer the caller
                 # should just see.
                 snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
-                return AgyResult(None, "vendor-error", _common.EXIT_TERMINAL,
-                                 rr.vendor_exit_code, stream_output=stream,
-                                 stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
-                                 extraction_error=(
-                                     f"vendor rc={rr.vendor_exit_code} "
-                                     f"status={status!r} returned a non-empty "
-                                     f"answer; surfaced as vendor-error. "
-                                     f"quarantined answer: {snippet}"))
+                return _done(rr, "vendor-error", _common.EXIT_TERMINAL, audit=audit,
+                             err=f"vendor rc={rr.vendor_exit_code} "
+                                 f"status={status!r} returned a non-empty "
+                                 f"answer; surfaced as vendor-error. "
+                                 f"quarantined answer: {snippet}"), argv
             if _AGY_TRUNCATION_MARKER_RE.search(answer):
                 snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
-                return AgyResult(None, "truncated-answer", _common.EXIT_TERMINAL,
-                                 rr.vendor_exit_code, stream_output=stream,
-                                 stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
-                                 extraction_error=(
-                                     "agy folded the answer mid-body "
-                                     "(own-line <truncated N bytes|lines> marker). "
-                                     f"quarantined answer: {snippet}"))
+                return _done(rr, "truncated-answer", _common.EXIT_TERMINAL, audit=audit,
+                             err="agy folded the answer mid-body "
+                                 "(own-line <truncated N bytes|lines> marker). "
+                                 f"quarantined answer: {snippet}"), argv
             if pydantic_cls is None:
                 # --json-schema-file (caller-owned producer schema): the
                 # SCHEMA-CONSTRAINED channel is the answer, exactly as on the
@@ -1766,77 +1160,23 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                 # This wrapper still validates nothing and retries nothing:
                 # it only picks the channel the vendor schema-checked.
                 #
-                # PRESENCE is decided by MEMBERSHIP, never by truthiness
-                # (gate-1 r3 row r3-3): `.get()` returns None both for a
-                # missing key and for `"structured_output": null`, so one JSON
-                # literal put an explicitly-null schema channel on the ABSENT
-                # branch and printed the response text at exit 0 — the very
-                # divergent answer the present-but-unusable arm below refuses.
-                # `structured_member` is computed ONCE, above the answer
-                # guard, because that guard now reads it too (row r4-10).
-                structured = (result.get("structured_output")
-                              if isinstance(result, dict) else None)
+                # `structured_member` (computed once above the answer guard)
+                # is the one membership test: a non-dict channel is absent.
                 if schema_file_mode:
-                    if isinstance(structured, dict):
-                        return AgyResult(answer, "ok", _common.EXIT_OK,
-                                         rr.vendor_exit_code, stream_output=stream,
-                                         stderr=rr.stderr, read_audit=audit,
-                                         effective_cwd=rr.effective_cwd,
-                                         validated=structured)
                     if structured_member:
-                        # PRESENT but not an object (gate-1 r2 row r2-2): the
-                        # schema-constrained channel EXISTS and is unusable, so
-                        # this dispatch has NO admissible answer. Falling
-                        # through to `response` here would hand the caller a
-                        # divergent answer the vendor never schema-checked —
-                        # exactly the fallback the pydantic arm suppresses
-                        # (`_validate_structured_with_trigger`). The response
-                        # text is quarantined in the reason, never on stdout.
-                        #
-                        # ONE CONDITION, ONE TOKEN (gate-1 r4 row r4-13): the
-                        # IDENTICAL vendor shape on the `--pydantic` arm is
-                        # the suppressed-raw-fallback failure and emits
-                        # `schema-fail` / EXIT_SCHEMA_FAIL. This arm emitted
-                        # `extraction-error` / EXIT_CLI_FAIL for the same
-                        # fact, and `extraction-error` MANDATES a repair-agent
-                        # dispatch (dispatch SKILL Hard rule 8) — with nothing
-                        # for that agent to patch, because the defect is the
-                        # vendor's channel, not this host's classifier. It is
-                        # NON-REPAIRABLE by construction here: this arm runs
-                        # only when `pydantic_cls is None`, so there is no
-                        # schema-repair loop to re-enter, and the return is
-                        # terminal. Reason text takes the pydantic arm's
-                        # wording so one grep finds both.
-                        snippet = (answer if len(answer) <= 2000
-                                   else answer[:2000] + " …[truncated]")
-                        return AgyResult(None, "schema-fail",
-                                         _common.EXIT_SCHEMA_FAIL,
-                                         rr.vendor_exit_code, stream_output=stream,
-                                         stderr=rr.stderr, read_audit=audit,
-                                         effective_cwd=rr.effective_cwd,
-                                         extraction_error=(
-                                             f"structured_output present but "
-                                             f"unusable "
-                                             f"({type(structured).__name__}); "
-                                             f"raw-response fallback "
-                                             f"suppressed: the "
-                                             f"schema-constrained channel is "
-                                             f"the only answer the vendor "
-                                             f"checked and the response text "
-                                             f"is not a substitute. "
-                                             f"quarantined answer: {snippet}"))
+                        return _done(rr, "ok", _common.EXIT_OK, audit=audit,
+                                     answer=answer,
+                                     validated=result["structured_output"]), argv
                     _common.log("json-schema-file: structured_output absent in "
                                 "the vendor result — printing the response text")
-                return AgyResult(answer, "ok", _common.EXIT_OK,
-                                 rr.vendor_exit_code, stream_output=stream,
-                                 stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd)
+                return _done(rr, "ok", _common.EXIT_OK, audit=audit,
+                             answer=answer), argv
             ok, payload, nonrepairable, trigger = _validate_structured_with_trigger(
                 result, answer, pydantic_cls)
             if ok:
-                return AgyResult(answer, "ok", _common.EXIT_OK,
-                                 rr.vendor_exit_code, stream_output=stream,
-                                 stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
-                                 validated=payload)
+                return _done(rr, "ok", _common.EXIT_OK, audit=audit,
+                             answer=answer,
+                             validated=payload), argv
             # Same non-repairable opt-out `_common.py`'s Layer 4 honours (see
             # `_common.NONREPAIRABLE_MARKER`): this driver is a SECOND copy of
             # the schema-repair loop, and it is the one the review legs
@@ -1852,7 +1192,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             # would steal its own repair turn. See
             # `_validate_structured_detail`.
             if not schema_repaired and not nonrepairable:
-                cmd = _repair_cmd(cmd, payload)
+                cmd = _repair_cmd(cmd, payload, web)
                 schema_repaired = True
                 continue
             if nonrepairable:
@@ -1877,36 +1217,29 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             #
             # Scope = exactly the two shapes where the stdout reply is NOT the
             # vendor's schema-checked channel: a MARKED arm (whatever payload
-            # carried it), or a SUPPRESSED raw fallback (structured_output
-            # present). A struct-ABSENT repairable failure keeps the
+            # carried it), or a dict `structured_output` (the raw fallback is
+            # suppressed). A struct-ABSENT repairable failure keeps the
             # pre-existing pass-through: there the failing text is the
             # vendor's only answer, with no second payload to diverge from,
             # and surfacing it stays a debugging aid.
             #
-            # PRESENCE is MEMBERSHIP here too (row r3-3b): this predicate has
-            # to agree with `_validate_structured_with_trigger`'s, or a null
-            # channel would be refused by the validator and then have its
-            # suppressed raw reply printed to stdout anyway.
-            structured_present = (isinstance(result, dict)
-                                  and "structured_output" in result)
-            if nonrepairable or structured_present:
+            # The same membership test as `_validate_structured_with_trigger`
+            # (`structured_member`, above): a dict channel was the one judged.
+            if nonrepairable or structured_member:
                 snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
-                return AgyResult(None, "schema-fail", _common.EXIT_SCHEMA_FAIL,
-                                 rr.vendor_exit_code, stream_output=stream,
-                                 stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
-                                 extraction_error=(f"schema: {payload} "
-                                                   f"quarantined answer: {snippet}"))
-            return AgyResult(answer, "schema-fail", _common.EXIT_SCHEMA_FAIL,
-                             rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
-                             extraction_error=f"schema: {payload}")
+                return _done(rr, "schema-fail", _common.EXIT_SCHEMA_FAIL, audit=audit,
+                             err=f"schema: {payload} "
+                                 f"quarantined answer: {snippet}"), argv
+            return _done(rr, "schema-fail", _common.EXIT_SCHEMA_FAIL, audit=audit,
+                         answer=answer,
+                         err=f"schema: {payload}"), argv
         # ── no usable answer from here ──
-        # Structural failure signals ONLY (typed tool errors / error_message
-        # steps). The raw stream is deliberately NOT part of either the
+        # The ONE measured carrier only (the result-level `error`). The raw
+        # stream is deliberately NOT part of either the
         # soft-deny match or the classify blob (r1/R2 + the adjudicated F2
         # structural fix): it carries the reviewed content, so quoted text
         # could steer a retry or a terminal classification.
-        signals = _common.agy_classify_signals(events, result)
+        signals = _common.agy_classify_signals(result)
         softdeny_blob = "\n".join([rr.stderr or "", *signals])
         # allow_skip_retry=False on the v2 read-only path: it carries NO danger
         # flag by design, so the soft-deny re-dispatch (which would insert it)
@@ -1939,70 +1272,19 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                 continue
             _common.log("headless soft-deny signature but the flag is already "
                         "present — skipping an identical re-run")
-        def _refuse_no_answer(vendor_class=None) -> AgyResult:
-            # gate r1 row 3 / r2 row 14 (2026-09-04/05): the model burned the
-            # turn on a forbidden tool (manage_task …) and returned NO answer —
-            # the allowlist class, not extraction-error / unknown (a repair
-            # dispatch with nothing to patch). Same token, no answer; the
-            # (+N more) counter carries the accumulated census overflow (row 19).
+        def _refuse_no_answer() -> _common.RunResult:
+            # The model burned the turn on a forbidden tool and returned NO
+            # answer: the allowlist class, whatever run-level signal rides
+            # along. The (+N more) counter carries the census overflow.
             shown = _forbidden_shown(forbidden_seen, forbidden_omitted_seen)
-            note = f"; vendor terminal signal also present: {vendor_class}" if vendor_class else ""
             _common.log(f"admission refused: tool(s) outside the allowlist appeared in the "
-                        f"stream: {shown} (empty answer){note}")
-            return AgyResult(None, "admission-refused", _common.EXIT_TERMINAL,
-                             rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
-                             extraction_error=(f"admission refused: tool(s) outside the allowlist "
-                                               f"appeared in the stream: {shown}; no answer{note}"))
+                        f"stream: {shown} (empty answer)")
+            return _done(rr, "admission-refused", _common.EXIT_TERMINAL, audit=audit,
+                         err=f"admission refused: tool(s) outside the allowlist "
+                             f"appeared in the stream: {shown}; no answer")
 
         if forbidden_seen and admission is not None:
-            # A forbidden-tool run with NO answer is decided HERE, before any
-            # retry loop or tool-signal classification (residual-slice r1):
-            # run-level evidence ONLY (stderr + vendor rc + the result status
-            # token) — a forbidden tool's own error text can ECHO model-authored
-            # arguments ("… model overloaded …"), so tool-step signals never
-            # decide a forbidden run's class.
-            # run-level signals = stderr + STANDALONE error_message steps +
-            # the result-level error (agy's own channel, but NOT auth carriers:
-            # R-CLASSIFY's closed carrier list for agy is `result.error` and a
-            # stderr line beginning with the banner, read by
-            # `_auth_carrier_stop` above). Any step carrying a `tool_info` dict is
-            # dropped WHATEVER its step_type or envelope (the signal harvester
-            # reads tool_info.error from every step, and a tool error can echo
-            # model-authored arguments — rs-r2/rs-r3, codex + claude). The
-            # result-level error is a vendor-typed carrier; it only ever
-            # ANNOTATES here (a result event forces the refusal below).
-            run_level_events = [ev for ev in (events or [])
-                                if not (isinstance(ev, dict)
-                                        and isinstance(ev.get("step_update"), dict)
-                                        and (ev["step_update"].get("step_type") == "tool"
-                                             or isinstance(ev["step_update"].get("tool_info"), dict)))]
-            run_level_signals = _common.agy_classify_signals(run_level_events, result)
-            run_level_cls, run_level_code = _classify_no_answer(rr.stderr, run_level_signals,
-                                                                rr.vendor_exit_code, status,
-                                                                stdout=rr.stdout)
-            if run_level_cls in ("unknown", "extraction-error"):
-                run_level_cls = None
-            if result is not None and status == "ERROR" and _is_vendor_turn_timeout(result):
-                # ADDITIVE: both remedies stay visible (rs-r3, claude F4/F5)
-                run_level_cls = f"{run_level_cls} + vendor-timeout" if run_level_cls else "vendor-timeout"
-            if result is not None or run_level_cls is None:
-                # a terminal result event, or no recognised vendor class → the
-                # allowlist token (Policy D's audited signal), annotated with
-                # any run-level vendor class seen (claude M7)
-                return _refuse_no_answer(vendor_class=run_level_cls)
-            # no result event + a recognised run-level TERMINAL vendor class:
-            # keep its attribution — but never a capacity RETRY here (a fresh
-            # dispatch by the CALLER is the contract's one retry; claude M4 /
-            # agy HS). The allowlist slip still reaches stderr (rs-r2).
-            _common.log(f"{run_level_cls} on a run that also called tool(s) outside the allowlist: "
-                        f"{_forbidden_shown(forbidden_seen, forbidden_omitted_seen)}")
-            return AgyResult(None, run_level_cls, run_level_code, rr.vendor_exit_code,
-                             stream_output=stream, stderr=rr.stderr,
-                             read_audit=audit, effective_cwd=rr.effective_cwd,
-                             extraction_error=(f"{run_level_cls} on a run that also called tool(s) "
-                                               f"outside the allowlist: "
-                                               f"{_forbidden_shown(forbidden_seen, forbidden_omitted_seen)}"))
+            return _refuse_no_answer(), argv
         if result is not None and status == "ERROR" and _is_vendor_turn_timeout(result):
             # gate r1 row 8 (2026-09-04): agy's OWN turn timeout fired before
             # the wrapper deadline (`result.error` = "timeout waiting for
@@ -2012,12 +1294,9 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             # surface-not-repair (the repair analyzer escalated exactly this:
             # no existing class fits; rc 1 is generic). Review-leg callers:
             # re-dispatch once with a narrower read scope, then missing.
-            return AgyResult(None, "vendor-timeout", _common.EXIT_TERMINAL,
-                             rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
-                             extraction_error=("vendor turn timeout: result.status=ERROR, "
-                                               f"error={str(result.get('error'))[:200]!r}, "
-                                               f"duration_seconds={_bounded_number(result.get('duration_seconds'))}"))
+            return _done(rr, "vendor-timeout", _common.EXIT_TERMINAL, audit=audit,
+                         err="vendor turn timeout: result.status=ERROR, "
+                             f"error={str(result.get('error'))[:200]!r}"), argv
         if result is not None and status == "SUCCESS":
             # SUCCESS + empty response (spike P2, rc=0): a failed task the
             # vendor reports as success. Never a silent empty ok.
@@ -2025,19 +1304,15 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             if bad_answer_type:
                 note += (f" (non-string response payload: "
                          f"{type(raw_answer).__name__})")
-            return AgyResult(None, "extraction-error", _common.EXIT_CLI_FAIL,
-                             rr.vendor_exit_code, stream_output=stream,
-                             stderr=rr.stderr, read_audit=audit, effective_cwd=rr.effective_cwd,
-                             extraction_error=note)
+            return _done(rr, "extraction-error", _common.EXIT_CLI_FAIL, audit=audit,
+                         err=note), argv
         cls, code = _classify_no_answer(rr.stderr, signals,
                                         rr.vendor_exit_code, status, stdout=rr.stdout)
         if cls == "server-capacity" and server_attempt < max_retries:
             _server_cap_backoff(server_attempt)
             server_attempt += 1
             continue
-        return AgyResult(None, cls, code, rr.vendor_exit_code,
-                         stream_output=stream, stderr=rr.stderr,
-                         read_audit=audit, effective_cwd=rr.effective_cwd)
+        return _done(rr, cls, code, audit=audit), argv
 
 
 def _server_cap_backoff(attempt: int) -> None:
@@ -2050,19 +1325,17 @@ def _server_cap_backoff(attempt: int) -> None:
 
 
 def _terminate_to_exit(signum, frame):
-    # The engine's handler (spec C1): during a pre-dispatch probe (`--version`,
-    # the catalog) and from the first dispatch on it only records the signal
-    # and the call ends through the terminal record; outside those windows
-    # before the first dispatch it raises SystemExit(128+signum); a
-    # permissive-baseline call then unwinds through its settings guard, which
-    # holds an empty deny list (lock + stale-`.agybak` heal, nothing to
-    # restore) and releases the lock. The read-only route enters no guard.
+    # The engine's handler (spec C1): from the first dispatch on it only records
+    # the signal and the call ends through the terminal record; before the first
+    # dispatch (the `--version` probe included) it raises SystemExit(128+signum).
+    # No route holds a settings lock or guard to unwind (DL-112).
     _common._terminal_signal_to_exit(signum, frame)
 
 
-def _dispatch(args, ver, pydantic_cls, agy_bin, readonly: bool,
-              settings_lock_timeout: float = 30.0) -> "AgyResult":
-    """Run the vendor call and return the AgyResult with `.elapsed` + `.cmd`.
+def _dispatch(args, ver, pydantic_cls, agy_bin,
+              readonly: bool) -> tuple[_common.RunResult, list]:
+    """Run the vendor call; return the driver's RunResult and the argv of the
+    last attempt that spawned (the vendor argv `main()` audits).
 
     READ-ONLY path (v2, spec docs/superpowers/specs/2026-08-22-agy-readonly-v2-spec.md):
     setup-once tools-allowlisted agent (`--agent`, review without web tools or
@@ -2073,10 +1346,10 @@ def _dispatch(args, ver, pydantic_cls, agy_bin, readonly: bool,
     without the danger flag (ladder round 2, K1/K5) and is rejected by the
     census.
 
-    PERMISSIVE baseline (`--sandbox` omitted, non-hardened): unchanged — the
-    exclusive settings guard (heals a stale `.agybak`) and the version-gated
-    danger flag, as before v2."""
-    start = time.monotonic()
+    PERMISSIVE baseline (`--sandbox` omitted, non-hardened): adds only the
+    version-gated danger flag — no guard, no lock, no settings read (DL-112);
+    an exception inside it reaches `_common._guarded_main` as on the
+    read-only route."""
     # agy --json-schema takes a schema STRING or a path to a schema file
     # (Tier 2: `agy --help`), so a caller-owned file rides the same argument
     # as the pydantic-derived string; --json-schema-file and --pydantic are
@@ -2103,88 +1376,34 @@ def _dispatch(args, ver, pydantic_cls, agy_bin, readonly: bool,
                    f"on this host (v2 setup step); if two wrapper builds share this "
                    f"directory, align their versions instead of re-running setup")
             _common.log(err)
-            r = AgyResult(None, "config-conflict", _common.EXIT_TERMINAL, -1,
-                          extraction_error=err)
-            r.elapsed = time.monotonic() - start
-            r.cmd = [agy_bin]   # no vendor process ran
-            return r
+            return (_common.RunResult(_common.EXIT_TERMINAL, "", "", 0.0,
+                                      classification="config-conflict",
+                                      extraction_error=err, spawned=False),
+                    [agy_bin])   # no vendor process ran
         cmd = _build_cmd(args.prompt, False, args.model, args.timeout,
                          json_schema=json_schema, skip_permissions=False,
                          effort=args.effort, agent=agent, add_dir=args.cwd)
         cmd[0] = agy_bin   # resolved/pinned path: a PATH shadow cannot win
-        cmd_box = [cmd]
-        rr_box = [None]
         # schema_file_mode is wired on the read-only route ONLY: main() refuses
         # --json-schema-file on every other posture, so the permissive call
         # below can never be in it.
-        r = _run_agy_with_retry(cmd, args.prompt, args.timeout, cwd=args.cwd,
-                                repair_mode=args.repair_mode,
-                                pydantic_cls=pydantic_cls,
-                                allow_skip_retry=False,
-                                admission=(allowlist, read_set), cmd_box=cmd_box,
-                                schema_file_mode=getattr(
-                                    args, "json_schema_file", None) is not None,
-                                rr_box=rr_box)
-        r.elapsed = time.monotonic() - start
-        r.cmd = cmd_box[0]   # the argv that actually ran last (a schema-repair retry rewrites -p)
-        # row r4-8: the engine's transport facts, or the AgyResult defaults
-        # when the engine was never reached (rr_box[0] is None).
-        if rr_box[0] is not None:
-            r.spawned = rr_box[0].spawned
-            r.orphans_reaped = rr_box[0].orphans_reaped
-            r.capture_complete = rr_box[0].capture_complete
-        return r
+        return _run_agy_with_retry(cmd, args.prompt, args.timeout, cwd=args.cwd,
+                                   repair_mode=args.repair_mode,
+                                   pydantic_cls=pydantic_cls,
+                                   allow_skip_retry=False,
+                                   admission=(allowlist, read_set),
+                                   schema_file_mode=getattr(
+                                       args, "json_schema_file", None) is not None,
+                                   web=args.web)
 
     cmd = _build_cmd(args.prompt, False, args.model, args.timeout,
                      json_schema=json_schema,
                      skip_permissions=_agy_needs_skip_permissions(ver),
                      effort=args.effort)
     cmd[0] = agy_bin
-    r: Optional[AgyResult] = None
-    cmd_box = [cmd]
-    rr_box = [None]
-    try:
-        with _agy_settings.agy_settings_guard([], lock_timeout=settings_lock_timeout):
-            r = _run_agy_with_retry(cmd, args.prompt, args.timeout, cwd=args.cwd,
-                                    repair_mode=args.repair_mode,
-                                    pydantic_cls=pydantic_cls, cmd_box=cmd_box,
-                                    rr_box=rr_box)
-        cmd = cmd_box[0]
-    except (TimeoutError, json.JSONDecodeError, ValueError, OSError) as e:
-        # Settings-transaction failure (lock timeout / corrupt settings.json /
-        # transient fs error) — surface as `config-conflict` (EXIT_TERMINAL),
-        # never a traceback. If the vendor run ALREADY completed and only the
-        # release failed, suppress the completed answer but keep the
-        # transcript for the run-log.
-        prior = r
-        cmd = cmd_box[0]   # the argv that actually ran (a repair retry rewrites -p) — also on a RELEASE failure (focused pass)
-        extraction_error = f"agy settings/config conflict: {e}"
-        _common.log(extraction_error)
-        if prior is not None:
-            extraction_error = (
-                f"{e}; completed vendor result suppressed because the agy "
-                f"settings transaction did not release cleanly"
-            )
-            if prior.extraction_error:
-                extraction_error += f" | prior: {prior.extraction_error}"
-        r = AgyResult(
-            None, "config-conflict", _common.EXIT_TERMINAL,
-            prior.vendor_exit_code if prior is not None else -1,
-            stream_output=prior.stream_output if prior is not None else "",
-            stderr=prior.stderr if prior is not None else "",
-            read_audit=prior.read_audit if prior is not None else None,
-            extraction_error=extraction_error,
-        )
-        if prior is None:
-            cmd = [agy_bin]   # transaction never opened: no vendor process ran
-    r.elapsed = time.monotonic() - start
-    r.cmd = cmd
-    # row r4-8, as on the read-only branch above.
-    if rr_box[0] is not None:
-        r.spawned = rr_box[0].spawned
-        r.orphans_reaped = rr_box[0].orphans_reaped
-        r.capture_complete = rr_box[0].capture_complete
-    return r
+    return _run_agy_with_retry(cmd, args.prompt, args.timeout, cwd=args.cwd,
+                               repair_mode=args.repair_mode,
+                               pydantic_cls=pydantic_cls)
 
 
 def main() -> int:
@@ -2196,10 +1415,7 @@ def _main(ctx: dict) -> int:
     # re-encoded (gate-1 r7 row r7-c2 — `_common` § payload vs diagnostic).
     _common._relax_diagnostic_stream()
     # SIGTERM/SIGHUP unwind instead of dying mid-call, so the vendor child
-    # kill and (permissive baseline only) the settings guard's lock release run
-    # on the way out; that guard holds an empty deny list, so it writes no
-    # snapshot and restores nothing. SIGKILL stays uncoverable by design — the
-    # kernel drops the lock and the next guard entry heals a stale `.agybak`.
+    # kill runs on the way out. No route holds a settings lock (DL-112).
     try:
         signal.signal(signal.SIGTERM, _terminate_to_exit)
         signal.signal(signal.SIGHUP, _terminate_to_exit)
@@ -2306,15 +1522,6 @@ def _main(ctx: dict) -> int:
         # copies is the path that exists.
         for path in written:
             _common._emit_payload(os.fsencode(path) + b"\n")
-        try:
-            # heal a stale `.agybak` a deny transaction left (the codex host's copy,
-            # which shares the settings file, or a pre-v2 build)
-            # (gate r1, claude): on a hardened host every dispatch is now read-only
-            # and never enters the guard, so setup is the remaining heal point
-            with _agy_settings.agy_settings_guard([], lock_timeout=30.0):
-                pass
-        except (TimeoutError, json.JSONDecodeError, ValueError, OSError) as e:
-            _common.log(f"--setup-agents: settings heal skipped: {e}")
         # Same channel, same rule (row r8-8): this line is operator-copied
         # text on the payload stream, so it goes out as UTF-8 bytes too.
         _common._emit_payload(
@@ -2375,12 +1582,17 @@ def _main(ctx: dict) -> int:
                     "pass --sandbox read-only (hardened installs do so by default)")
         return _common.EXIT_ARG_ERROR
 
+    clause_err = None
     if args.web:
         # C29: the web-evidence rule rides the END of the prompt on every research
         # dispatch (after the empty-prompt check — the clause never rescues an
         # empty dispatch). args.prompt is what audit/run-log record, so the
-        # record shows the prompt as sent.
-        args.prompt = args.prompt + "\n\n" + AGY_WEB_EVIDENCE_CLAUSE
+        # record shows the prompt as sent. The clause is rendered from the
+        # vendored spec (one source); a failure refuses below, before the spawn.
+        try:
+            args.prompt = args.prompt + "\n\n" + _common._investigation_clause("agy")
+        except RuntimeError as e:
+            clause_err = str(e)
         ctx["prompt"] = args.prompt
 
     if args.sandbox == "read-only" and not args.web and args.cwd is None:
@@ -2434,66 +1646,46 @@ def _main(ctx: dict) -> int:
     agy_bin = _common.require_binary("agy")
     ctx["cmd"] = [agy_bin]
 
-    r: Optional[AgyResult] = None
+    r: Optional[_common.RunResult] = None
     elapsed = 0.0
     cmd = [agy_bin]
 
-    # Probe is unconditional BY DESIGN: the stream-json floor gate below needs
+    # The probe runs on every dispatch that reaches it (only an unrenderable
+    # --web clause stops first) BY DESIGN: the stream-json floor gate below needs
     # the version read even when AGY_NO_HEADLESS_AUTOAPPROVE=1 is set — that
     # opt-out governs only the skip-permissions flag (_agy_needs_skip_permissions),
     # never the floor gate.
-    # The settings-lock knob is an ARGUMENT check, so it runs BEFORE the version
-    # probe (C65: a refusal after the probe would discard an observed version
-    # without a record). It belongs to the permissive baseline's guard; the
-    # read-only path v2 enters no transaction (gate r1, codex).
-    settings_lock_timeout = 30.0
-    if args.sandbox != "read-only":
-        raw_lt = os.environ.get("AGY_SETTINGS_LOCK_TIMEOUT", "30")
-        try:
-            float(raw_lt)
-        except ValueError:
-            _common.log("AGY_SETTINGS_LOCK_TIMEOUT must be a number")
-            return _common.EXIT_ARG_ERROR
-        settings_lock_timeout = _lock_wait_seconds(raw_lt)   # inf/nan/negative -> 30
-    # A pre-dispatch vendor probe runs in the record-only signal mode a dispatch
-    # uses (C1 / R-TERMINAL): a SIGTERM / SIGHUP during it ends through the
-    # interrupted-run record below — summary, audit row, run-log — never a bare
-    # 128 + signum exit (the bounded probe finishes first, at most 15 s).
-    prev_dispatch = _common._SIGNAL_STATE["dispatch"]
-    _common._SIGNAL_STATE["dispatch"] = True
-    try:
-        ver = _probe_agy_version(agy_bin)
-    finally:
-        # a signal recorded during the probe keeps the record-only mode on
-        # until its refusal is written (C1: a second signal never loses it)
-        if _common._SIGNAL_STATE["signum"] is None:
-            _common._SIGNAL_STATE["dispatch"] = prev_dispatch
-    probe_signum = None if prev_dispatch else _common._SIGNAL_STATE["signum"]
-    if probe_signum is not None:
-        _common._SIGNAL_STATE["signum"] = None
-        why = (f"wrapper interrupted ({signal.Signals(probe_signum).name}) during the "
-               f"`agy --version` probe — nothing was dispatched")
-        _common.log(why)
-        r = AgyResult(None, "unknown", _common.EXIT_CLI_FAIL, -1, extraction_error=why)
+    # The probe runs outside a dispatch (C1): a signal during it ends 128+signum
+    # with no record.
+    ver = None if clause_err else _probe_agy_version(agy_bin)
+    if clause_err is not None:
+        # The --web clause could not be rendered from the vendored spec: no
+        # vendor process runs (not even the version probe).
+        _common.log(clause_err)
+        r = _common.RunResult(_common.EXIT_TERMINAL, "", "", 0.0,
+                              classification="config-conflict", spawned=False,
+                              extraction_error=clause_err)
     elif ver is None or ver < _STREAM_JSON_FLOOR:
         # Fail-CLOSED floor: the stream-json transport is the only transport
         # (2026-07-31 migration). Surface as config-conflict (user runs
         # `agy update`), audited like every other terminal outcome.
         found = _ver_text(ver) if ver else "unprobeable"
-        r = AgyResult(None, "config-conflict", _common.EXIT_TERMINAL, -1,
-                      extraction_error=(
-                          f"agy {found} < 1.1.8 — the stream-json transport "
-                          f"requires agy >= 1.1.8; run `agy update`"))
+        r = _common.RunResult(_common.EXIT_TERMINAL, "", "", 0.0,
+                              classification="config-conflict", spawned=False,
+                              extraction_error=(
+                                  f"agy {found} < 1.1.8 — the stream-json transport "
+                                  f"requires agy >= 1.1.8; run `agy update`"))
     elif (args.model or args.effort) and ver < _MODEL_FLAG_FLOOR:
         # Fail-CLOSED pin floor (see _MODEL_FLAG_FLOOR): below 1.1.10 these
         # flags were silently IGNORED (default-model fallback) — dispatching
         # would void the requested tier with no error.
         found = _ver_text(ver)
-        r = AgyResult(None, "config-conflict", _common.EXIT_TERMINAL, -1,
-                      extraction_error=(
-                          f"agy {found} < 1.1.10 — --model/--effort were "
-                          f"silently ignored (default-model fallback) before "
-                          f"1.1.10; run `agy update` or drop the pin"))
+        r = _common.RunResult(_common.EXIT_TERMINAL, "", "", 0.0,
+                              classification="config-conflict", spawned=False,
+                              extraction_error=(
+                                  f"agy {found} < 1.1.10 — --model/--effort were "
+                                  f"silently ignored (default-model fallback) before "
+                                  f"1.1.10; run `agy update` or drop the pin"))
     elif args.sandbox == "read-only" and ver < AGY_V2_FLOOR:
         # Fail-CLOSED v2 floor: `--add-dir` read auto-allow and the allowlist
         # agent were measured on 1.1.18; there is no legacy path (v2).
@@ -2501,23 +1693,14 @@ def _main(ctx: dict) -> int:
         floor_err = (f"agy {found} < 1.1.18 — the read-only path needs agy >= "
                      f"1.1.18 (allowlist agent + --add-dir); run `agy update`")
         _common.log(floor_err)
-        r = AgyResult(None, "config-conflict", _common.EXIT_TERMINAL, -1,
-                      extraction_error=floor_err)
-    elif (args.sandbox == "read-only" and not args.web and args.model and
-          (catalog := _model_catalog_refusal(agy_bin, args.model))):
-        # C18: the review route (with or without --review-web) checks the
-        # requested model against the route's catalog BEFORE inference
-        # (R-MODEL); a raw call and a --web investigation keep caller
-        # passthrough.
-        _common.log(catalog[1])
-        r = AgyResult(None, catalog[0], _common.map_classification_to_exit(catalog[0]), -1,
-                      extraction_error=catalog[1])
+        r = _common.RunResult(_common.EXIT_TERMINAL, "", "", 0.0,
+                              classification="config-conflict", spawned=False,
+                              extraction_error=floor_err)
     else:
-        r = _dispatch(args, ver, pydantic_cls, agy_bin, args.sandbox == "read-only",
-                      settings_lock_timeout=settings_lock_timeout)
-        elapsed = r.elapsed if r.elapsed is not None else 0.0
-        if r.cmd:
-            cmd = r.cmd  # the REAL argv for the audit row + run-log
+        start = time.monotonic()
+        # `cmd` = the REAL argv for the audit row + run-log
+        r, cmd = _dispatch(args, ver, pydantic_cls, agy_bin, args.sandbox == "read-only")
+        elapsed = time.monotonic() - start
 
     # R-MODEL (owner ruling Q10-2): the digest reports, the wrapper decides.
     # The ADMITTED attempt is the last one (`attempts[-1]`, the attempt whose
@@ -2543,7 +1726,7 @@ def _main(ctx: dict) -> int:
                f"model {runtime_model!r} — answer refused; change the model in "
                f"the roster entry (or the --model value)")
         _common.log(msg)
-        r.final_answer, r.validated = None, None
+        r.final_answer, r.validated = "", None
         r.classification, r.exit_code = "config-conflict", _common.EXIT_TERMINAL
         r.extraction_error = msg
 
@@ -2553,7 +1736,7 @@ def _main(ctx: dict) -> int:
     # record claimed `ok`: an em-dash under a non-UTF-8 locale, and a
     # `structured_output` string carrying an escaped lone surrogate (which has
     # no UTF-8 encoding at ANY locale). The bytes are built HERE, above the
-    # `rr` rebuild, so a demotion reaches the audit row, the run-log, the
+    # record writes, so a demotion reaches the audit row, the run-log, the
     # canonical summary line and this function's exit code by construction;
     # `_common._emit_payload` at the tail only writes them.
     if r.validated is not None:
@@ -2566,33 +1749,13 @@ def _main(ctx: dict) -> int:
             _answer += "\n"
         _payload = _common._payload_or_demote("antigravity", r, _answer)
 
-    # Build a RunResult for the shared audit / run-log / debug helpers.
-    # vendor_version (agy telemetry slice, 2026-08-19): `ver` is the SAME
+    # The record fields only main() knows. vendor_version: `ver` is the SAME
     # _probe_agy_version() tuple the stream-json floor gate above already
-    # probed on every dispatch — no second probe call. None on a failed/
-    # unparseable probe (fail-safe path) leaves the field None, same as every
-    # other caller of `ver`.
-    rr = _common.RunResult(
-        exit_code=r.exit_code,
-        stdout=r.stream_output,
-        stderr=r.stderr,
-        elapsed_s=elapsed,
-        classification=r.classification,
-        mode="repair" if args.repair_mode else "normal",
-        final_answer=r.final_answer or "",
-        extraction_error=r.extraction_error,
-        vendor_exit_code=r.vendor_exit_code,
-        read_audit=r.read_audit,
-        vendor_version=_ver_text(ver) if ver is not None else None,
-        effective_cwd=r.effective_cwd,
-        # row r4-8: the ENGINE's transport facts, not this rebuild's defaults.
-        spawned=r.spawned,
-        orphans_reaped=r.orphans_reaped,
-        # row r5-2: the engine's reader outcome, so the receipt and the
-        # run-log say whether the transcript behind this record was whole.
-        capture_complete=r.capture_complete,
-    )
-    ctx.update(result=rr, cmd=cmd)
+    # probed — no second probe; None on a failed/unparseable probe.
+    r.vendor_version = _ver_text(ver) if ver is not None else None
+    r.elapsed_s = elapsed
+    r.mode = "repair" if args.repair_mode else "normal"
+    ctx.update(result=r, cmd=cmd)
 
     # Read-audit digest — emitted BEFORE the canonical summary line, on EVERY
     # completed vendor call (ok or not), so the review SKILL / leader can
@@ -2612,8 +1775,8 @@ def _main(ctx: dict) -> int:
         # consumer needs a durable, jq-only artifact that exists on the
         # SUCCESS path too (outside a review attempt emit_run_log only writes on
         # failure). Best-effort — an IO failure here never changes
-        # rr.exit_code/classification.
-        read_audit_path = _common.emit_read_audit("antigravity", rr)
+        # r.exit_code/classification.
+        read_audit_path = _common.emit_read_audit("antigravity", r)
         if read_audit_path is not None:
             # THE VALUE IS PERCENT-ESCAPED FILESYSTEM BYTES (gate-1 r13 row
             # r13-5). Written raw, a NEWLINE in the path split the line and
@@ -2628,16 +1791,16 @@ def _main(ctx: dict) -> int:
     # Record-only receipt inputs (C9/C10 + C28): the agy driver calls
     # _run_once with classify_and_log=False and emits its own summary below,
     # so the two fields are attached to the RunResult here instead.
-    rr.dispatch_attempt = args.attempt
-    rr.prompt_file_resolved = _prompt_file_resolved
+    r.dispatch_attempt = args.attempt
+    r.prompt_file_resolved = _prompt_file_resolved
     # C35 / DL-3 (gate-1 r13 row r13-4): the normalized model request rides
     # the same record — audit row and run-log, omit-when-None.
-    rr.requested_model = args.model
+    r.requested_model = args.model
     # C35 as amended: the requested effort tier rides the same record.
-    rr.requested_reasoning = args.effort
-    rr.runtime_model = runtime_model
+    r.requested_reasoning = args.effort
+    r.runtime_model = runtime_model
     # R-REVIEW-WEB (case C32): a review leg dispatched with web is recorded.
-    rr.review_web = args.review_web
+    r.review_web = args.review_web
 
     # Canonical 1-line summary — byte-match the format _run_once emits so the
     # dispatch SKILL grep + the parity test see the same shape.
@@ -2649,12 +1812,12 @@ def _main(ctx: dict) -> int:
                                 args.model, args.effort)
     )
 
-    _common.audit("antigravity", cmd, args.prompt, rr)
+    _common.audit("antigravity", cmd, args.prompt, r)
     ctx["recorded"] = True
     if args.debug:
-        _common.debug_log("antigravity", args.prompt, rr)
+        _common.debug_log("antigravity", args.prompt, r)
     run_log_path = _common.emit_run_log(
-        "antigravity", sys.argv, cmd, args.prompt, rr)
+        "antigravity", sys.argv, cmd, args.prompt, r)
     if run_log_path is not None:
         _common.log(f"run-log: {run_log_path}")
 

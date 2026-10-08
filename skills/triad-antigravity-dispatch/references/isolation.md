@@ -3,7 +3,7 @@
 Loaded on demand from `triad-antigravity-dispatch/SKILL.md` § Read-only path v2,
 § Headless soft-deny adaptation and § Isolation. Read this before changing a sandbox mode, auditing
 the deny surface, judging what an agy leg can reach, or diagnosing a
-settings-transaction failure.
+polluted agy settings file.
 
 ## Contents
 
@@ -13,11 +13,11 @@ settings-transaction failure.
 | Read-only path v2 | what the allowlist agents, `--add-dir` and the admission census do |
 | Headless soft-deny adaptation | asking why the PERMISSIVE baseline inserts `--dangerously-skip-permissions` |
 | Standing residuals | judging whether a deployment can accept the agy leg |
-| Deny transaction (permissive baseline) | diagnosing `config-conflict`, lock waits, or a polluted settings file on the permissive baseline |
+| The agy settings (no transaction on this host) | diagnosing a polluted settings file or a `read_url(*)` refusal of a web round |
 | Mode selection | choosing `--sandbox read-only` vs the permissive baseline |
 | Tool to permission-action map | auditing or extending the deny set |
 | Operational notes | interactive agy suddenly cannot write files |
-| Self-healing coverage | asking which layer heals a leaked deny transaction, and when |
+| Self-healing coverage | asking what reaps the vendor subtree, and who heals a stale `.agybak` |
 
 ## Containment posture (start here)
 
@@ -150,25 +150,27 @@ Still owed on current builds: an `execute_url(...)`, an `mcp(...)`, and an
 `unsandboxed(*)` attempt to confirm those three denies (the probe's
 `run_command` cannot show which of `command`/`unsandboxed` agy requested).
 
-## Deny transaction (PERMISSIVE baseline only since v2)
+## The agy settings — the claude host never writes or locks them
 
-The read-only path v2 enters NO settings transaction. The permissive baseline
-(`--sandbox` omitted, non-hardened) still brackets the call in the exclusive
-settings guard (`_agy_settings.agy_settings_guard` with empty deny rules:
-it takes the lock, heals a stale `.agybak`, and yields — no snapshot, no merge,
-no restore). The deny-merging read-only
-transaction below is kept in `_agy_settings.py` for codex-host, which still
-drives it; this host's wrapper no longer selects it.
+The claude host never writes, locks or heals `~/.gemini/antigravity-cli/*`
+(DL-112). The read-only path v2 touches no settings file; the permissive
+baseline (`--sandbox` omitted, non-hardened) adds only the version-gated danger
+flag — no guard, no lock, no settings read; `--setup-agents` writes the two
+agent files only. The one reader is the review lib's web-round check, which
+reads `permissions` from the settings file agy reads (`AGY_SETTINGS_PATH` when
+set, else `~/.gemini/antigravity-cli/settings.json`) and writes nothing.
 
-Identical **read-only** transactions (codex-host) SHARE the active deny lease
-through a holder registry (per-holder flock liveness files); the permissive (no
-`--sandbox`) baseline stays exclusive. Lease and lock
-waits are bounded by `AGY_SETTINGS_LOCK_TIMEOUT` (env, seconds, default 30). A
-settings transaction failure surfaces as `config-conflict` (exit 65). Engine
-detail: the plugin `README.md` § Settings transaction.
+The codex host still runs a per-call deny transaction on the same settings file
+(DL-107): it merges a deny set for the length of its read-only call and restores
+it after. While such a call is in progress, agy applies those denies to this
+host's calls too (deny outranks the danger flag, measured on agy 1.1.17), and
+the web-round check refuses a round whose `read_url(*)` the merge denies — run
+again after that call ends. Engine detail: the plugin `README.md`
+§ `antigravity_wrapper.py`.
 
 agy `--sandbox` alone is a shell/network OS-ring only — it does not block
-`write_file`. The deny transaction is what enforces fs isolation.
+`write_file`. On the read-only path the allowlist agent and agy's headless
+policy keep writes out (§ Read-only path v2).
 
 `toolPermission` presets are NOT exposed: they auto-proceed in headless (no TTY
 to prompt) and would imply a guarantee that does not exist.
@@ -178,9 +180,9 @@ to prompt) and would imply a guarantee that does not exist.
 - **`read-only`** — the v2 path (§ Read-only path v2): allowlist agent +
   `--add-dir`, no deny rules, no danger flag. The per-verb deny set
   (`write_file(*), command(*), unsandboxed(*), execute_url(*), mcp(*)`) lives on
-  in `_agy_settings.build_deny_rules` for codex-host only.
-- **omitted** — no deny transaction; the owner's permissive global baseline stays
-  intact (the call still acquires the lock and heals a stale `.agybak` first). A
+  in the codex host's per-call deny transaction only.
+- **omitted** — the danger flag only; the owner's permissive global baseline
+  stays intact (no lock, no settings read). A
   write-needing dispatch therefore runs with NO deny rules on any dispatchable agy
   build, and with `AGY_NO_HEADLESS_AUTOAPPROVE=1` set it also lacks the
   dangerous-path, `unsandboxed(*)`, `execute_url(*)` and `mcp(*)` denies the
@@ -192,8 +194,7 @@ to prompt) and would imply a guarantee that does not exist.
 
 `workspace-write` was REMOVED (owner directive) — it was never used in 616
 audited agy wrapper calls, so `--sandbox` now takes only `read-only`, and the
-write-mode deny set plus the app-level `--cwd` requirement went with it. The
-exclusive lock path is retained: it still brackets the permissive baseline.
+write-mode deny set plus the app-level `--cwd` requirement went with it.
 Upstream lock issues google-antigravity/antigravity-cli #573/#627 remain open.
 
 Reasoning tier = `--model` passthrough (no-pin default when omitted) — pass a
@@ -209,7 +210,7 @@ Re-confirm against your installed agy with
 | agy tool | permission action | notes |
 |---|---|---|
 | `view_file` / `list_dir` / `grep_search` | `read_file` | native reads (NOT shell) — auto-allowed in workspace |
-| `write_to_file` / `replace_file_content` / `multi_replace_file_content` | `write_file` | governed per-call by the deny transaction |
+| `write_to_file` / `replace_file_content` / `multi_replace_file_content` | `write_file` | absent from both v2 agents' allowlists; this host sets no deny for it (the codex host's per-call deny transaction does) |
 | `run_command` | `command` OR `unsandboxed` | both denied in read-only (`unsandboxed(*)` = OS-ring escape) |
 | `execute_url` (code-exec-from-URL) | `execute_url` | denied in read-only |
 | `mcp` (MCP server reach) | `mcp` | denied in read-only |
@@ -235,21 +236,14 @@ than `--cwd`, so hand it absolute paths.
 
 ## Self-healing coverage
 
-- **`.agybak` crash-recovery.** A stale `.agybak` crash sentinel is healed when
-  the next guard is entered: a permissive-baseline call or `--setup-agents`. A
-  read-only call enters no guard and heals nothing. SIGTERM/SIGHUP unwind
-  handlers (vendor child kill, guard lock release) plus a process-group kill on
-  abnormal unwind inside `_common._run_once` cover the vendor subtree.
+- **Vendor subtree.** SIGTERM/SIGHUP unwind handlers (vendor child kill) plus a
+  process-group kill on abnormal unwind inside `_common._run_once` cover the
+  vendor subtree. The claude host holds no settings lock and heals no `.agybak`.
 
 ## Operational notes
 
-- **Stale-sentinel recovery.** This host's wrapper never writes a deny set or a
-  `.agybak`: a read-only call enters no guard, and the permissive baseline's guard
-  has an empty deny list (it locks, heals and yields). A stale
-  `~/.gemini/antigravity-cli/.agybak` can only come from the codex host's copy,
-  which runs a deny transaction against the same settings file, or from a pre-v2
-  build. It holds the only snapshot the heal restores from, so never delete it:
-  if interactive `agy` suddenly cannot write files, run
-  `antigravity_wrapper.py --setup-agents` (or, on a non-hardened install, a
-  permissive call), which heals it.
-  Writes are atomic (temp + `os.replace`), so the file is never left half-written.
+- **Stale-sentinel recovery.** The claude host never writes, locks or heals the
+  agy settings (DL-112). A stale `~/.gemini/antigravity-cli/.agybak` comes from
+  the codex host's per-call deny transaction (or an older build of this host)
+  and is the codex host's to heal (DL-107). It holds the only snapshot that heal
+  restores from, so never delete it.

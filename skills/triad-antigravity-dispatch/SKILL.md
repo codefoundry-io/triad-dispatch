@@ -1,8 +1,11 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg; `triad-gemini-dispatch` exists for legacy compatibility with the older gemini CLI); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.16.10
+version: 0.16.13
 # changelog:
+#   0.16.13 (2026-10-09): doc — the web-evidence clause is read from the vendored spec (E5-20); no embedded constant.
+#   0.16.12 (2026-10-09): doc — an override call writes no default-dir copy and logs no `read-audit-copy:` line; `read-audit-file:` is the one custody line.
+#   0.16.11 (2026-10-08): doc — the claude host never writes, locks or heals the agy settings (DL-112); § Self-healing names one layer.
 #   0.16.10 (2026-10-08): doc — the daily drift check is removed (owner 2026-10-08 item 9); § Self-healing names two layers.
 #   0.16.9 (2026-10-03): doc — Step 4 `timeout` row names agy's own stderr
 #     line `[agy] print timeout after … returning partial output` (any vendor
@@ -28,7 +31,8 @@ version: 0.16.10
 #     (>= 1, default 1) is RECORDED on the transport receipt and the summary
 #     tail and never interpreted. Doc-only.
 #   0.16.4 (2026-09-19): research dispatches (`--web`) carry the wrapper's
-#     `AGY_WEB_EVIDENCE_CLAUSE` at the END of the prompt (spec case C29 /
+#     web-evidence clause (since 0.16.13 loaded from the vendored spec
+#     through `prompts_v2.py`) at the END of the prompt (spec case C29 /
 #     R-INVEST): a `search_web` result is a pointer, never a citation; every
 #     cited web fact comes from a `read_url_content` fetch with the page's own
 #     date or version; unfetched / placeholder URLs and bare years are
@@ -208,7 +212,7 @@ only when its column applies.
 | Reference | Open it when |
 |---|---|
 | `references/invocation.md` | building the call — what each wrapper flag does, and the stream-json transport note |
-| `references/isolation.md` | deciding what a `--sandbox read-only` call actually contains — the v2 read-only path, containment posture, standing residuals, the permissive baseline's settings guard, the tool→action map, `.agybak` recovery |
+| `references/isolation.md` | deciding what a `--sandbox read-only` call actually contains — the v2 read-only path, containment posture, standing residuals, the agy settings this host never writes, the tool→action map, who heals a stale `.agybak` |
 | `references/read-audit.md` | wiring a caller that consumes the read-audit digest — shape, caps, retry-merge, the durable file |
 | `references/repair-loop.md` | a dispatch routed to repair — Step 5a's run-log extraction and Step 5d's apply/verify branch |
 | `references/long-answer.md` | an answer may exceed ~3KB, or a call returned `truncated-answer` (65) |
@@ -233,8 +237,10 @@ the current vendor source instead of the leader answering from memory) and
 **context hygiene** (the raw page stays in the agy worker; the leader gets
 back the grounded answer). Research hosts need `read_url(*)` allowed in
 `~/.gemini/antigravity-cli/settings.json` (the `--setup-agents` hint). No
-model name is pinned. Since 0.16.4 the wrapper appends `AGY_WEB_EVIDENCE_CLAUSE`
-to the END of every `--web` prompt (spec case C29): a `search_web` result is a
+model name is pinned. The wrapper appends the `web-evidence` clause, loaded from
+the vendored spec through `prompts_v2.py` (`_common._investigation_clause("agy")`;
+an unreadable file → `config-conflict` 65 before the spawn; no embedded
+constant), to the END of every `--web` prompt (spec case C29): a `search_web` result is a
 pointer, never a citation; every cited web fact must come from a
 `read_url_content` fetch and carry that page's own date or version; unfetched
 or placeholder URLs and bare years are forbidden; the audit row and run-log
@@ -318,9 +324,9 @@ Mechanism, chronology and residuals: [references/isolation.md](references/isolat
   the vendor's own headless denial of anything else (no danger flag) + the
   wrapper's admission census. No settings transaction. Concurrent read-only
   dispatches never touch `settings.json`.
-- **Permissive baseline** (`--sandbox` omitted, non-hardened): the exclusive
-  settings guard (heals a stale `.agybak`, empty deny rules) + the version-gated
-  danger flag — unchanged by v2. On a HARDENED install
+- **Permissive baseline** (`--sandbox` omitted, non-hardened): the
+  version-gated danger flag only — no settings guard, no lock, no settings
+  read. On a HARDENED install
   (`TRIAD_WRAPPER_HARDENED=1`, the consumer default) omission auto-upgrades to
   `read-only`, so every consumer dispatch — research included — takes the v2
   path (research passes `--web`).
@@ -334,10 +340,7 @@ fail-closes a pinned dispatch below the floor as `config-conflict` (65).
 **Read-audit digest (REPORT-ONLY).** On every completed call the wrapper folds
 the stream's tool calls into a bounded digest, emits it on stderr before its
 canonical summary as `[wrapper] antigravity read-audit {compact json}`, then
-`read-audit-file: <absolute-path>` — immediately after when no
-`TRIAD_READ_AUDIT_FILE` copy fires; under the override, a `read-audit-copy:`
-line (see below) sits between them, since it is logged from inside
-`emit_read_audit` before `read-audit-file:` is emitted by the caller. The
+`read-audit-file: <absolute-path>` immediately after — the one custody line. The
 digest carries NO policy — it gates, denies and judges nothing by itself; the
 caller reads it and decides what a missing or unexpected packet-read means
 for that dispatch.
@@ -425,10 +428,9 @@ the value is passed as-is — no read, no re-serialization). TRANSPORT ONLY: no
 local validation and no repair re-run, the caller admits the answer with its
 own validator (the path `triad-cross-family-review`'s v2 rounds use for their
 per-attempt producer schema projection). The wrapper still picks the channel:
-the result's `structured_output` is printed when present and an object; a
-PRESENT but unusable channel (null / non-object) is `schema-fail` 66,
-non-repairable, on this arm exactly as on `--pydantic` (gate-1 r4-13); only an
-ABSENT key falls back to the response text (logged). It belongs to the READ-ONLY
+the result's `structured_output` is printed when it is an object; any other
+shape (absent, null, non-object) is treated as absent and falls back to the
+response text (logged), on this arm exactly as on `--pydantic`. It belongs to the READ-ONLY
 route only (`--sandbox read-only`) and is mutually exclusive with `--pydantic`. The
 path must name an existing file (a relative path is rebased on the wrapper's
 process-entry cwd, as `--prompt-file`); the check runs BEFORE any vendor work.
@@ -466,7 +468,7 @@ rule 7). What each flag actually does, and the wrapper-internal transport note:
 Wrapper stderr contains:
 - Timestamped wrapper log lines
 - 1-line summary: `[<timestamp>] [wrapper] antigravity <classification> exit=<int> vendor=<int> elapsed=<s>` followed by the recorded-facts tail ` attempt=<n>`, ` prompt_file=<abs>` when a `--prompt-file` was given, ` model=<slug>` when `--model` was requested and ` reasoning=<tier>` when `--effort` was requested (absent = the CLI's config default) (every wrapper log line, this one included, carries the leading timestamp bracket — the Step 3 grep anchors on it)
-- On every completed call: `[wrapper] antigravity read-audit {…}` (informational digest, § Isolation above), then `read-audit-file: <absolute-path>` (the durable file `emit_read_audit` just wrote — `$TRIAD_READ_AUDIT_FILE` if set, else the wrapper's own default location) — under the override, a `read-audit-copy: <absolute-path>` line sits between the two (§ Isolation above)
+- On every completed call: `[wrapper] antigravity read-audit {…}` (informational digest, § Isolation above), then `read-audit-file: <absolute-path>` (the durable file `emit_read_audit` just wrote — `$TRIAD_READ_AUDIT_FILE` if set, else the wrapper's own default location)
 - On failure: `run-log: <absolute-path>`
 
 Wrapper stdout = agy's final answer (the stream-json terminal `result` event's `response` field — no marker to strip, no ANSI scrub needed).
@@ -517,15 +519,11 @@ the shared engine classifies `unknown`, and since gate-1 r4 the agy driver
 CONFORMS every forwarded engine verdict through `map_classification_to_exit`,
 so that shape arrives as `unknown` / 1 and routes to the repair branch — it
 used to be forwarded verbatim as `unknown` at exit 3, a pairing the exit-token
-contract does not bind and this legend never carried. **`vendor-error` at 65 is
-the TRANSCRIPT refusal**, and since gate-1 r9 row r9-1 it covers two shapes: a
-`{`-prefixed stream line that could not be decoded (a HOLE), and a stream
-carrying MORE THAN ONE terminal `result` event (no unambiguous answer, so
-nothing is read out of it). Both are terminal and never retried by the wrapper
-— the LEADER re-dispatches once. A stream carrying ZERO result events is NOT
-this refusal: it stays the ordinary no-answer shape whose own diagnosis
-(`oauth-env`, `cli-subscription-cap`, the automatic capacity retry) is what the
-classifier exists for. Caveat: an ARGPARSE
+contract does not bind and this legend never carried. The stream is read like
+the codex host reads its own: a line that does not decode is skipped, two
+result events read the last one, and a stream cut mid-line is recorded
+(`truncated_tail`), never refused; on the read-only route the admission's own
+framing and one-result rules still refuse with `vendor-error` 65. Caveat: an ARGPARSE
 rejection also exits 2
 with NO `[wrapper]` summary line — an invocation error, not a timeout; fix the
 call, and never spawn the repair agent for it.
@@ -645,16 +643,14 @@ case block, and the branch-summary table:
 
 ## Self-healing
 
-Two layers keep the agy leg healthy; the leader drives only the first.
+One layer keeps the agy leg healthy, and the leader drives it: the
+**`agy-wrapper-repair` analyzer (reactive, per call)** — the Step 5 path:
+read-only proposal → deterministic apply → the same vendor error auto-routes
+next time. Dispatch frequency falls as the classifier matures.
 
-1. **`agy-wrapper-repair` analyzer (reactive, per call)** — the Step 5 path:
-   read-only proposal → deterministic apply → the same vendor error auto-routes
-   next time. Dispatch frequency falls as the classifier matures.
-2. **`.agybak` crash-recovery (reactive)** — a permissive-baseline call and
-   `--setup-agents` heal a stale settings backup before they run; a read-only
-   call enters no settings guard and heals nothing.
-
-Coverage of layer 2: [references/isolation.md](references/isolation.md) § Self-healing coverage.
+The wrapper never writes, locks or heals the agy settings; a stale `.agybak`
+is the codex host's to heal —
+[references/isolation.md](references/isolation.md) § Operational notes.
 
 ## Path scope
 

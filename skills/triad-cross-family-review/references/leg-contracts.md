@@ -235,28 +235,18 @@ not the bytes: each attempt already carries its own
 `schema.projected.json`.
 
 **The answer channel the producer schema selects.** On the agy route
-(`--json-schema-file`) presence of `structured_output` in the vendor result
-is decided by KEY MEMBERSHIP, never by truthiness: a dict is the answer;
-PRESENT-and-not-a-dict — an explicit `null` INCLUDED — is
-present-but-unusable and yields **`schema-fail` (exit 66), NON-REPAIRABLE**,
-because the schema-constrained channel exists and is unusable and the
-response text is not a substitute (it carries agy's own finish-tool metadata,
-which canonical admission then rejects as additional properties); only an
-ABSENT key falls back to the logged response text, which stays legitimate
-only because canonical admission gates whatever arrives. A `.get()` presence
-test would put an explicitly null channel on the ABSENT branch and print the
-divergent response text at exit 0 (`antigravity_wrapper._run_agy_with_retry`).
-The SAME membership rule AND the same token hold on the wrapper's other arm,
-`--pydantic`, where a present-but-unusable channel takes the
-suppressed-raw-fallback failure → `schema-fail` 66 after the one repair turn
-(`antigravity_wrapper._validate_structured_with_trigger`) — v2 review
-entries do not use that arm, but the rule is one rule. The shape is never
-`extraction-error` (exit 1) on either arm: `extraction-error` mandates a
-repair-agent dispatch (agy dispatch SKILL Hard rule 8) and there is nothing
-for that agent to patch when the defect is the vendor's channel. For a leg
-this means a 66 on the agy route can mean EITHER a duplicate JSON member (C14) or an unusable
-structured channel — the wrapper's stderr reason distinguishes them, and both
-are terminal for that attempt (`retry`, never a repair dispatch).
+(`--json-schema-file`) only the MEASURED dict `structured_output` is the
+answer (the response text carries agy's own finish-tool metadata, which
+canonical admission then rejects as additional properties, so the channel
+choice is load-bearing). Any other shape — the key ABSENT, or a present but
+non-object value, an explicit `null` included — is treated as absent: the
+logged response text is printed, which stays legitimate only because
+canonical admission gates whatever arrives. The SAME membership test holds on
+the wrapper's other arm, `--pydantic`
+(`antigravity_wrapper._validate_structured_with_trigger`) — v2 review entries
+do not use that arm, but the rule is one rule. For a leg a 66 on the agy
+schema-file route means a duplicate JSON member (C14) — terminal for that
+attempt (`retry`, never a repair dispatch).
 
 A result carrying a VALID structured channel is admitted even when `response`
 is EMPTY: the structured channel is evaluated BEFORE the empty-answer guard,
@@ -540,16 +530,11 @@ renderer's `agy-prompt-r<N>.txt` (pinned by `t4-prepare.sh`). A v2 round's
   "admission refused: tool(s) outside the allowlist … quarantined answer
   (N chars)". Standing handling keys on the token: ONE retry of the leg,
   a second `admission-refused` in the same round = terminally missing
-  (rule 13); never a repair-agent dispatch. BY DESIGN (owner ruling): a
-  forbidden run with NO terminal result event
-  whose RUN-LEVEL evidence (stderr / standalone error_message) names a
-  vendor terminal class — `cli-subscription-cap`, `oauth-env`,
-  `server-capacity`, `config-conflict` — returns THAT class after one
-  dispatch (the forbidden tool named on stderr and in the run-log), so the
-  cap / auth guidance is not lost; a forbidden run WITH a result event
-  stays `admission-refused`, annotated "vendor terminal signal also present:
-  <class>" (incl. `vendor-timeout`). Count both shapes as allowlist slips
-  in the round log. **Policy D (owner ruling):
+  (rule 13); never a repair-agent dispatch. A forbidden run is
+  `admission-refused` naming the tool whatever run-level signal rides along
+  (a capacity or cap sentence, agy's own turn timeout) — one dispatch, no
+  annotation; only agy's own auth carrier STOPs first as `oauth-env`. Count
+  it as an allowlist slip in the round log. **Policy D (owner ruling):
   a complete verdict whose only forbidden call was
   `manage_task` (no fs / network effect) stays REFUSED — fail-closed.**
   Basis: the instruction gap was the cause (3/3 measured live runs under the
@@ -653,63 +638,38 @@ renderer's `agy-prompt-r<N>.txt` (pinned by `t4-prepare.sh`). A v2 round's
     shapes fail CLOSED and are disclosed, not enumerated (owner rule: the
     vendor is a paid service; no vendor-exotica negatives).
   - **The hook LOAD CHECK — a REQUIRED mechanical check beside the read-audit
-    gate.** `python3 <skill>/lib/agy_hook.py check <abs-read-audit.json>
-    <abs-hook-log.jsonl> [<abs-sibling-read-audit.json> ...]` prints
+    gate, per attempt.** `python3 <skill>/lib/agy_hook.py check
+    <abs-read-audit.json> <abs-hook-log.jsonl>` — exactly the attempt's own
+    read audit and the round's hook log (any other argv is usage 64) — prints
     `HOOK_LOAD_<VERDICT> tool_steps=<n> invocations=<n> denied=<n>`, plus
     ` attributed=<hooked>/<must>` when more than one census row must be
-    attributed. **The sibling audits are REQUIRED, not optional**: they are
-    every OTHER allocated attempt's `read-audit.json` under every agy-route
-    entry (superseded attempts included), and `prepare`, `retry` and the
-    collector all pass the same set — a hand-run two-argument command reads a
-    PASS the collection refuses. It is a ROUND check: the worktree's one
-    `hooks.json` serves every agy leg and every retry, so the log is shared.
+    attributed. `prepare`, `retry` and the collector run the same two
+    arguments. The worktree's one `hooks.json` serves every agy leg and every
+    retry, so the log is shared; each attempt is judged on its own ids.
     **Attribution rule.** The wrapper records each vendor run's conversation
     ids on its census row (`digest.attempts[].conversation_ids`, from `init`
-    and every `step_update`); the hook logs the same id on every row. Every
-    row with `tool_steps > 0` must have at least one hook row under an id NO
-    OTHER census row recorded — one owner per id, counted over every row,
-    zero-step rows included; an id two rows share attributes neither.
-    Step-count equality is NOT required (a call the vendor rejects at argument
-    validation never reaches the hook). Zero-step rows impose nothing and
-    certify nothing; a hook row with no `conversation_id` attributes to no
-    attempt.
-    **Blind rule.** While ANY census row's id list is not provably whole —
-    `conversation_ids_omitted` present and non-zero, or an id-losing marker
-    (`capture_complete: false`, `truncated_tail`, `undecodable_lines`,
-    `interrupted`) — exclusive ownership cannot be established, so no stepped
-    row is attributed (`attributed=0/<must>`) and the round cannot PASS.
-    `steps_open` does NOT blind stepped rows (an open step loses no id); a
-    ZERO-step row whose transcript is incomplete (any of those markers, or
-    `steps_open` > 0) refuses the census.
-    **Verdicts, in order:** VOID (exit 3) — zero hook invocations while a
-    stepped row exists; INCONCLUSIVE (exit 4) — no tool call and no hook
-    invocation (nothing proves or disproves the hook); INCONCLUSIVE — an
-    unattributed row while the log holds anonymous rows; VOID — a stepped row
-    with a whole id list and no hook row under any of its ids (the check
-    NAMES the attempt; the round still falls together, every agy leg
-    unproven); INCONCLUSIVE — an unattributed row holding a logged id another
-    census row also recorded (every owner named); INCONCLUSIVE — the blind
-    rule; otherwise PASS (exit 0). ABSENT (exit 2) — no read audit; settle the
-    read-audit gate's ABSENT first.
-    **Broken evidence is INCONCLUSIVE, never a verdict:** a log line that is
-    not a hook row; an audit or hook log that is not a readable regular UTF-8
-    file, or exceeds the 64 MiB evidence cap (refused before a byte is read);
-    a census that is malformed, absent (`digest.attempts`), carries a
-    `refused_attempt` marker, omits rows at the writer's 10-row cap
-    (`attempts_omitted`), or has a stepped row with no recorded id; a sibling
-    attempt with NO audit whose `stderr.log` carries the engine's
-    `[<ts>] exec ` spawn line (dispatched, no audit) or cannot be read — a
-    sibling that never spawned is skipped. Every refusal names its actual
-    reason.
-    **Remedy.** Check `<worktree>/.agents/hooks.json` where the hook did not
-    load, then prepare a NEW round (a fresh hook log): a retry inside the
-    round only ADDS census rows and hook rows and deletes none, so it cannot
-    clear a non-PASS verdict. The collector runs this check itself before a
-    `retry` and refuses one on any non-PASS verdict except "no invocation and
-    no stepped row"; another entry's current attempt that was dispatched and
-    has no audit yet is a WAIT at `retry` time (it may still be running — wait,
-    then retry; a NEW round only if it returned without an audit) and the
-    permanent NEW-round refusal at `collect` time.
+    and every `step_update`); the hook logs the payload's `conversationId` on
+    every row. Every row of THIS audit with `tool_steps > 0` must have at
+    least one hook row under one of its own ids. Step-count equality is NOT
+    required (a call the vendor rejects at argument validation never reaches
+    the hook). Zero-step rows impose nothing and certify nothing; a hook row
+    with no `conversation_id` attributes to no attempt; rows under ids this
+    audit did not record belong to other attempts.
+    **Verdicts, in order:** ABSENT (exit 2) — no read audit; settle the
+    read-audit gate's ABSENT first. INCONCLUSIVE (exit 4) — broken evidence:
+    an audit or hook log that is not a readable regular UTF-8 file or exceeds
+    the 64 MiB evidence cap (refused before a byte is read), no
+    `digest.tool_steps`, no `digest.attempts` census, a malformed census, a
+    stepped row with no recorded id, or a log line that is not a hook row.
+    VOID (exit 3) — stepped rows and zero hook invocations. INCONCLUSIVE — no
+    stepped row and no invocation (nothing proves or disproves the hook).
+    VOID — a stepped row of this audit with no hook row under any of its own
+    ids (the check NAMES every such attempt). Otherwise PASS (exit 0). Every
+    refusal names its actual reason.
+    **Remedy.** `check hooks.json in the round worktree, then prepare a new
+    round` (a fresh hook log). A retry is the leader's decision: the check
+    reads only the attempt's own audit, so another entry's census never
+    blocks one.
     **Four-leg profile.** `references/review-legs.four-leg.example.json`
     carries THREE agy-route entries (`google-contracts`, `google-failures`,
     `google-state`); they share this one hook log and are told apart by
@@ -1024,19 +984,15 @@ renderer's `agy-prompt-r<N>.txt` (pinned by `t4-prepare.sh`). A v2 round's
 Apply this BEFORE weighing the verdict, and before any agy finding enters the
 residual table.
 
-The hook LOAD CHECK runs BESIDE it as a ROUND check:
+The hook LOAD CHECK runs BESIDE it, per attempt:
 `python3 <skill>/lib/agy_hook.py check <abs-read-audit.json>
-<abs-hook-log.jsonl> [<abs-sibling-read-audit.json> ...]` must print
-`HOOK_LOAD_PASS`, and the sibling audits (every other allocated attempt of
-every agy-route entry) are part of the command, not an extra. `HOOK_LOAD_VOID`
-— a stepped census row with no hook row under any of its own conversation
-ids, or zero hook invocations while a row has tool steps — means the
-enforcement layer did not load for a named attempt; the round shares one
-`hooks.json`, so EVERY agy leg of the round is INVALID, whatever this gate
-says. `HOOK_LOAD_INCONCLUSIVE` (anonymous rows, a shared logged id, a census
-whose id lists are not whole, broken evidence) certifies no agy leg either.
-The attribution rule, the blind rule and the remedies are in § agy leg, the
-hook bullet.
+<abs-hook-log.jsonl>` must print `HOOK_LOAD_PASS`. `HOOK_LOAD_VOID` — a
+stepped census row of the attempt with no hook row under any of its own
+conversation ids, or zero hook invocations while a row has tool steps —
+means the enforcement layer did not load for that attempt, so its leg is
+INVALID whatever this gate says. `HOOK_LOAD_INCONCLUSIVE` (broken evidence,
+or nothing ran and nothing was logged) certifies the leg neither. The
+attribution rule and the remedy are in § agy leg, the hook bullet.
 
 **Threat model (owner ruling — settled; do not re-open; recorded in
 `docs/reviews/2026-07-31-agy-stream-json-residuals.md`).** The gate is evidence
@@ -1112,31 +1068,25 @@ Then apply:
    capturing, not a coverage claim. (The attempt that CARRIES the flag is
    terminal for the wrapper — `truncated-answer` 65, never retried inside the
    driver — so a `false` row can only be an EARLIER attempt or the last one.)
-   The other omit-when-default row keys: `truncated_tail` (cut mid-line),
-   `undecodable_lines` (a hole), `interrupted` (`"timeout"` = killed at the
-   wrapper deadline, `"signal"` = the spawned child died on a signal),
-   `steps_open` (tool steps with an ACTIVE update and no DONE/ERROR under the
-   same `step_index`), `result_events` (a COUNT of result events — not an
-   incompleteness marker) and `conversation_ids_omitted` (ids dropped at the
-   cap). `conversation_ids` is ALWAYS present, possibly empty — the ids the
+   The other omit-when-default row keys: the capture markers `truncated_tail`
+   (cut mid-line) and `interrupted` (`"timeout"` = killed at the wrapper
+   deadline, `"signal"` = the spawned child died on a signal) — with
+   `capture_complete` the only three — and `conversation_ids_omitted` (ids
+   dropped at the cap). `conversation_ids` is ALWAYS present, possibly empty — the ids the
    hook load check attributes by. The run-log's
    `stdout` holds the raw NDJSON of the FINAL attempt only — an earlier
    attempt's raw stream is retained nowhere, so never plan to read it. If the
    census does not settle it, do not guess: on v1 re-dispatch with a narrower
    packet; on v2 a narrower packet is a NEW round. Only a failed match WITH
    `files_read_omitted == 0` is a confirmed VOID: treat it as leg-not-run. On
-   a v2 round a `retry` (the same frozen prompt) clears it when the read-blind
-   attempt wrote a readable census with its conversation ids; if that census
-   is missing or incomplete the hook check refuses and a NEW round is needed.
+   a v2 round a `retry` (the same frozen prompt) clears it: the new attempt
+   is judged on its own read audit and its own conversation ids.
    On a LEGACY v1 round re-dispatch ONCE (attempt K's files renamed first: `references/packet-lifecycle.md` § Round integrity) with the containment block above. A
    leg still VOID after that one re-dispatch is terminally missing this round
    (rule 13): on v2 the entry is missing and the round is `INCOMPLETE`, never
    agreed (SKILL rule 1); no second re-dispatch;
-2. surface `read_audit.digest.denied` / `read_audit.digest.writes` /
-   `read_audit.digest.read_attempts` entries in the round notes — e.g. a write
-   rerouted to agy's scratch dir shows up as a `writes` entry whose `TargetFile`
-   sits outside the packet dir (worth noting; on its own it does not void the
-   leg), and a **read-class** `read_attempts` entry naming a packet file is the
+2. surface `read_audit.digest.denied` / `read_audit.digest.read_attempts`
+   entries in the round notes — a **read-class** `read_attempts` entry naming a packet file is the
    diagnostic for a VOID verdict (the leg TRIED and was blocked, rather than
    never looking). `read_attempts` holds every unsuccessful tool, so filter on
    its `class` field (`read`/`write`/`command`/`web`/`other`): a blocked write or
@@ -1207,27 +1157,13 @@ stays the SPEC the helper implements. What each outcome means:
   attempt with no audit as INCONCLUSIVE), so prepare a NEW round — unless the
   attempt never spawned agy (no `exec` line in its `stderr.log`): the hook
   check skips it and a retry does clear it.
-- **Exit 3 VOID** — TWO causes, either one: (a) a confirmed miss
-  (`files_read_omitted == 0`); (b) a
-  **`refused_attempt` marker** on the digest — read at EITHER level
-  (`.refused_attempt` or `.digest.refused_attempt`), because the wrapper
-  writes the marker beside the merged digest and the two spellings are one
-  fact. The marker is what the duplicate-JSON-member refusal leaves behind
-  when it KEEPS the merged audit of the attempts digested so far (spec C14),
-  so the file is a KNOWINGLY INCOMPLETE transcript: an EARLIER
-  attempt's reads could satisfy a packet file the refused attempt never
-  read, which is coverage the leg did not demonstrate this round. VOID, not
-  INCONCLUSIVE — the evidence is intact and legible, it is knowingly
-  partial, and that is exactly the leg-not-proven state VOID already means.
-  This cause is decided BEFORE any packet file is evaluated: `checked=0` and
-  the summary line carries `refused_attempt=1`.
-  Either cause on v1: re-dispatch ONCE (attempt K's files renamed first: `references/packet-lifecycle.md` § Round integrity) with the containment block; still
+- **Exit 3 VOID** — a confirmed miss (`files_read_omitted == 0`). On v1:
+  re-dispatch ONCE (attempt K's files renamed first: `references/packet-lifecycle.md` § Round integrity) with the containment block; still
   VOID after that re-dispatch is terminally missing this round (rule 13, no
-  second re-dispatch).
-  On v2: cause (a) is cleared by a `retry` when the read-blind attempt wrote
-  a readable census with its conversation ids (if that census is missing or
-  incomplete the hook check refuses and a NEW round is needed); cause (b)
-  stays a SIBLING of every later attempt, so prepare a NEW round.
+  second re-dispatch). On v2: a `retry` clears it (the new attempt is judged
+  on its own audit). (A duplicate-JSON-member refusal, spec C14, is
+  schema-fail 66 with no answer, so its merged audit never reaches this gate:
+  the gate runs only after an admission succeeded.)
 - **Exit 4 INCONCLUSIVE** — never read as VOID and never as PASS. Five
   causes, each named on stderr: an OVERSIZED audit (over the 64 MiB evidence
   cap, measured with `wc -c` BEFORE jq reads it), a CAPPED digest (`files_read_omitted > 0` —
@@ -1260,7 +1196,7 @@ stays the SPEC the helper implements. What each outcome means:
   BROKEN evidence stops the loop — later files are never evaluated. The
   summary counters count EVALUATED files only, and whenever any argument
   was NOT evaluated (the broken-evidence stop; the ABSENT/symlink/oversized refusals
-  and the `refused_attempt` VOID evaluate none) the summary line appends
+  evaluate none) the summary line appends
   ` unevaluated=<n>` so the token and the counters cannot disagree
   silently.
 - **The verdict inputs are the jq gate's rc + `files_read_omitted` ONLY.**
@@ -1285,13 +1221,10 @@ stays the SPEC the helper implements. What each outcome means:
   none; the broken-evidence stop evaluates no later file), then the final
   greppable summary
   `READ_AUDIT_GATE_<PASS|VOID|INCONCLUSIVE|ABSENT> checked=<n> pass=<n>
-  void=<n> inconclusive=<n>[ unevaluated=<n>][ refused_attempt=1]` — the
+  void=<n> inconclusive=<n>[ unevaluated=<n>]` — the
   `unevaluated` field appears exactly when some argument was not evaluated
-  (ABSENT/symlink/oversized refusals, the refused_attempt VOID, the broken-evidence
-  stop), and the trailing `refused_attempt=1` marker appears only on the
-  `refused_attempt` VOID (`READ_AUDIT_GATE_VOID checked=0 pass=0 void=0
-  inconclusive=0 unevaluated=<n> refused_attempt=1`), so anchor on the
-  token, not on a four-field-only pattern.
+  (ABSENT/symlink/oversized refusals, the broken-evidence stop), so anchor on
+  the token, not on a four-field-only pattern.
 
 One shape to know: a digest file that is valid JSON but carries no `.digest`
 key yields jq rc 1, not rc>=2, so it lands in the coverage-miss branch and —
