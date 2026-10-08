@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.2.1530 — 2026-10-06
+## 0.2.1542 — 2026-10-08
+
+**The small review path is no longer shipped.** `skills/triad-cross-family-review/lib/review_small.py` and `small/`
+are gone; review rounds use `review_scratch.py prepare --v2`. Close any open small-path round with
+`review_small.py close <round directory>` BEFORE you update; a round left after the update stays and is yours.
+
+**The starter CLAUDE.md is no longer shipped.** `migration/CLAUDE.recommended.md` is gone from the plugin: it
+described an authentication form this toolkit never uses (the vendor CLIs sign in through their own browser login
+only). Anything you copied from it into your own `~/.claude/CLAUDE.md` stays yours.
 
 **codex `--task` mode removed.** `bin/codex_wrapper.py` no longer
 takes `--task` / `--fanout` / `--report-dir` (each is now an

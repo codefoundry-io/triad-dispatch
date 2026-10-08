@@ -445,7 +445,7 @@ and removes nothing there.
 | project | `.claude/settings.json` — `permissions.allow`, `sandbox.excludedCommands`, `env` (and the file itself when it was absent; `--install` and `--remove` also take out the `hooks.PreToolUse` entry an earlier version wrote and its record lists; `--remove` also takes out the containers the install created once they are empty, also when you removed the entries by hand (when the install record names its settings file; for a record that names none, see [Uninstall](#uninstall) step 2), and the file it created when nothing else is left in it; a hook group you emptied by hand is left) | `scripts/setup_permissions.py` | `setup_permissions.py --remove` with the same `--target` as the install |
 | project | `.claude/.triad-dispatch-managed.json` (the record of what the setup wrote, naming the one settings file it wrote; written before the settings file and completed after it, so a run that stops between the two is repaired by running the setup again; a run that changes only the record writes the record alone) | `scripts/setup_permissions.py` | `setup_permissions.py --remove` with the same `--target` as the install |
 | project | `.claude/.triad-dispatch.lock` | each `setup_permissions.py --install` (a `--dry-run` preview creates none); a `--remove` holds it while it runs | `setup_permissions.py --remove` with the same `--target` as the install |
-| project | `_runs/review/<date>-<slug>/` review packets and their per-round git worktrees; `_runs/review/<round name>/` rounds of the small review path, each with its git worktree | each `triad-cross-family-review` gate; for a round, `review_small.py prepare` | `review_scratch.py close <packet-dir>`; a stale packet is pruned by the next `open`; a round: `review_small.py close <round directory>`, and a round older than the review-small floor (the cleanup configuration; `TRIAD_REVIEW_SCRATCH_MAX_AGE_DAYS` may raise it) is removed by the next `prepare`; the empty `_runs/review/` directory stays |
+| project | `_runs/review/<date>-<slug>/` review packets and their per-round git worktrees | each `triad-cross-family-review` gate | `review_scratch.py close <packet-dir>`; a stale packet is pruned by the next `open`; the empty `_runs/review/` directory stays |
 | project | `_runs/worktrees/<name>/` git worktrees for codex write calls (`triad-codex-dispatch` § Write calls; keep `_runs/worktrees/` in the project's `.gitignore`, so a commit never stages a tree as an embedded repository) | the leader, per that paragraph; the codex wrapper removes an empty leftover folder there at the start of a call | `python3 <plugin-dir>/bin/cleanup.py remove code-worktrees _runs/worktrees/<name>` from the project's top level, after everything in the tree is committed to its branch (a tree with uncommitted or untracked changes is refused) |
 | machine | `~/.config/triad-dispatch/classifier-patches.json` and `classifier-patches.json.lock` | when a repair proposal is applied | `setup_permissions.py --uninstall-machine` |
 | machine | `~/.gemini/config/agents/triad-readonly-review.md` and `triad-readonly-research.md` | `bin/antigravity_wrapper.py --setup-agents` | `setup_permissions.py --uninstall-machine` |
@@ -491,9 +491,8 @@ Run these steps in this order. When the host's plugin uninstall ran first and
 the paths in [Files this plugin writes](#files-this-plugin-writes): they stay, and
 they are yours.
 
-1. **Close any open review packet and any open round of the small review path**:
-   `python3 <plugin-dir>/skills/triad-cross-family-review/lib/review_scratch.py close <packet-dir>`;
-   `python3 <plugin-dir>/skills/triad-cross-family-review/lib/review_small.py close <round directory>`.
+1. **Close any open review packet**:
+   `python3 <plugin-dir>/skills/triad-cross-family-review/lib/review_scratch.py close <packet-dir>`.
 2. **In EACH project where you ran the setup**:
    `python3 <plugin-dir>/scripts/setup_permissions.py --remove` with the SAME
    `--target` you gave `--install` (none, when you ran the setup from the project
@@ -546,8 +545,7 @@ they are yours.
    also uninstalls every plugin installed from it.
 6. **What stays — yours**: the `_runs/review/` and `_runs/worktrees/` lines in `.gitignore`; roster files
    (`.claude/triad-review-legs.json`, `~/.config/triad/review-legs.json`); review
-   ledgers under `docs/reviews/`; anything you added to `~/.claude/CLAUDE.md` from
-   `migration/CLAUDE.recommended.md`.
+   ledgers under `docs/reviews/`.
 
 ## What's inside
 
@@ -565,6 +563,3 @@ they are yours.
   python3 tests/test_log_cleanup.py      # 2 checks — log prune + audit rotation
   ```
 
-- **migration**: `CLAUDE.recommended.md` — a starter CLAUDE.md encoding the
-  working practices this toolkit assumes (pre-execution discipline,
-  cross-family review, artifact portability).

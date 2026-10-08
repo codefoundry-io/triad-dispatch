@@ -437,7 +437,7 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
 | 프로젝트 | `.claude/settings.json` — `permissions.allow`, `sandbox.excludedCommands`, `env` (파일이 없었다면 파일 자체도; `--install` 과 `--remove` 는 이전 버전이 쓰고 그 기록에 담긴 `hooks.PreToolUse` 항목도 지움; `--remove` 는 설치가 만든 컨테이너가 비면 항목을 직접 지운 경우에도 함께 지우고(설치 기록이 설정 파일을 명시할 때; 명시하지 않는 기록은 [제거](#제거-uninstall) 2단계 참고), 설치가 만든 파일에 남은 것이 없으면 그 파일도 지움; 직접 비운 hook 그룹은 남음) | `scripts/setup_permissions.py` | 설치 때와 같은 `--target` 으로 `setup_permissions.py --remove` |
 | 프로젝트 | `.claude/.triad-dispatch-managed.json` (설정 스크립트가 쓴 내용의 기록; 설치가 쓴 설정 파일 하나의 이름을 담음; 설정 파일보다 먼저 쓰고 설정 파일을 쓴 뒤 마무리하므로, 두 쓰기 사이에서 멈춘 실행은 설정 스크립트를 다시 실행하면 복구됨; 기록만 바꾸는 실행은 기록만 씀) | `scripts/setup_permissions.py` | 설치 때와 같은 `--target` 으로 `setup_permissions.py --remove` |
 | 프로젝트 | `.claude/.triad-dispatch.lock` | `setup_permissions.py --install` 을 실행할 때마다 (`--dry-run` 미리 보기는 만들지 않음); `--remove` 는 실행되는 동안 이 파일을 잡고 있음 | 설치 때와 같은 `--target` 으로 `setup_permissions.py --remove` |
-| 프로젝트 | `_runs/review/<date>-<slug>/` 리뷰 packet 과 라운드별 git worktree; 작은 리뷰 경로(small review path)의 `_runs/review/<round name>/` 라운드와 그 git worktree | `triad-cross-family-review` gate 마다; 라운드는 `review_small.py prepare` 가 만듦 | `review_scratch.py close <packet-dir>`; 오래된 packet 은 다음 `open` 이 정리; 라운드는 `review_small.py close <round directory>` 로 지우며, review-small floor(정리 설정; `TRIAD_REVIEW_SCRATCH_MAX_AGE_DAYS` 로 올릴 수만 있음)보다 오래된 라운드는 다음 `prepare` 가 지움; 비어 있는 `_runs/review/` 디렉터리는 남음 |
+| 프로젝트 | `_runs/review/<date>-<slug>/` 리뷰 packet 과 라운드별 git worktree | `triad-cross-family-review` gate 마다 | `review_scratch.py close <packet-dir>`; 오래된 packet 은 다음 `open` 이 정리; 비어 있는 `_runs/review/` 디렉터리는 남음 |
 | 프로젝트 | codex write 호출용 `_runs/worktrees/<name>/` git worktree (`triad-codex-dispatch` § Write calls; `_runs/worktrees/` 를 프로젝트 `.gitignore` 에 두어 커밋이 트리를 embedded repository 로 담지 않게 함) | 그 문단대로 leader 가 만듦; 비어 있는 남은 폴더는 codex wrapper 가 호출을 시작할 때 지움 | 트리의 모든 작업을 그 브랜치에 커밋한 뒤 프로젝트 최상위에서 `python3 <plugin-dir>/bin/cleanup.py remove code-worktrees _runs/worktrees/<name>` (커밋되지 않았거나 추적되지 않는 변경이 있는 트리는 거부됨) |
 | 머신 | `~/.config/triad-dispatch/classifier-patches.json` 과 `classifier-patches.json.lock` | repair 제안이 적용될 때 | `setup_permissions.py --uninstall-machine` |
 | 머신 | `~/.gemini/config/agents/triad-readonly-review.md` 와 `triad-readonly-research.md` | `bin/antigravity_wrapper.py --setup-agents` | `setup_permissions.py --uninstall-machine` |
@@ -478,9 +478,8 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
 `scripts/setup_permissions.py` 가 없어졌다면, 위 '이 플러그인이 쓰는 파일' 표의
 경로를 지울 플러그인 코드가 남아 있지 않습니다: 그 경로들은 남고, 사용자의 것입니다.
 
-1. **열린 리뷰 packet 과 작은 리뷰 경로의 열린 라운드 닫기**:
-   `python3 <plugin-dir>/skills/triad-cross-family-review/lib/review_scratch.py close <packet-dir>`;
-   `python3 <plugin-dir>/skills/triad-cross-family-review/lib/review_small.py close <round directory>`.
+1. **열린 리뷰 packet 닫기**:
+   `python3 <plugin-dir>/skills/triad-cross-family-review/lib/review_scratch.py close <packet-dir>`.
 2. **설정 스크립트를 실행했던 프로젝트마다**:
    `--install` 때 준 것과 **같은** `--target` 으로
    `python3 <plugin-dir>/scripts/setup_permissions.py --remove` (프로젝트 루트에서
@@ -527,8 +526,7 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
    마지막 플러그인이었다면 `~/.claude/plugins/cache/triad-dispatch/` 는
    남습니다. marketplace 를 제거하면 거기서 설치한 플러그인도 모두 제거됩니다.
 6. **남는 것 — 사용자의 것**: `.gitignore` 의 `_runs/review/` 와 `_runs/worktrees/` 줄; roster 파일 (`.claude/triad-review-legs.json`,
-   `~/.config/triad/review-legs.json`); `docs/reviews/` 아래 리뷰 ledger;
-   `migration/CLAUDE.recommended.md` 에서 `~/.claude/CLAUDE.md` 로 옮겨 적은 내용.
+   `~/.config/triad/review-legs.json`); `docs/reviews/` 아래 리뷰 ledger.
 
 ## 구성 (What's inside)
 
@@ -546,6 +544,3 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
   python3 tests/test_log_cleanup.py      # 2 checks — log prune + audit rotation
   ```
 
-- **migration**: `CLAUDE.recommended.md` — 이 toolkit 이 전제하는 작업 관행
-  (pre-execution discipline, cross-family review, artifact 이식성) 을 담은
-  starter CLAUDE.md.

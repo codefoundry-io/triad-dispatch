@@ -4875,6 +4875,7 @@ def apply_classifier_patch(cli: str, proposal: dict) -> str:
     Semantic validation (all BEFORE any file write; ValueError on violation):
       - classification ∈ REPAIR_CLASSIFICATION_TOKENS (ok/unknown rejected — ok
         would suppress real failures, unknown is the default bucket).
+      - classification `oauth-env` is never a repair proposal (R-AUTH: escalate).
       - vendor_exit_code must be an int bounded to the application-specific
         range [3, 125] ({0,1,2}=generic, {126,127}=shell, >=128=signal-death/
         reserved are too broad to auto-route — the L1 analog of the L2 length
@@ -4913,6 +4914,12 @@ def apply_classifier_patch(cli: str, proposal: dict) -> str:
             f"apply_classifier_patch: invalid classification "
             f"{classification!r} (not in REPAIR_CLASSIFICATION_TOKENS; "
             f"ok/unknown are not valid patch targets)"
+        )
+    # R-AUTH: authentication is the user's to fix — refuse every oauth-env
+    # proposal (exit-code entry or pattern append) before any file is touched.
+    if classification == "oauth-env":
+        raise ValueError(
+            "apply_classifier_patch: classification 'oauth-env' is never a repair proposal — authentication is the user's to fix through the vendor CLI's own login (R-AUTH); escalate"
         )
 
     vendor_exit_code = proposal.get("vendor_exit_code")

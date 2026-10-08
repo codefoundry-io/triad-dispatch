@@ -595,7 +595,7 @@ Input:
 }
 
 Example responses (return ONE of these shapes as your entire chat reply):
-{"outcome": "propose", "reason": "agy emitted a new re-login banner the seed list missed — improves oauth-env routing only", "proposal": {"classification": "oauth-env", "reason": "re-login banner at the start of an agy stderr line; auth stays user-managed", "pattern_list": "AGY_AUTH_BANNER_PATTERNS", "substring": "<opening words of the new re-login banner line a capture shows, lowercased>"}}
+{"outcome": "propose", "reason": "agy printed a capacity sentence the seed list missed", "proposal": {"classification": "server-capacity", "reason": "the measured agy capacity sentence from this run-log", "pattern_list": "SERVER_CAPACITY_PATTERNS", "substring": "<the distinctive part of the measured agy sentence, lowercased>"}}
 {"outcome": "escalate", "reason": "novel error with no existing classification to extend, or a true extraction bug rather than a classifier gap — recommend manual triage", "proposal": null}
 
 Now do the analysis and return the inline JSON.
