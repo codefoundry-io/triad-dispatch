@@ -61,10 +61,10 @@ exported installs.
   `prepare` / `capture` / `verify` / `retry` / `collect` / native admission
   inside the floor, so an ACTIVE loop's heartbeat outlives it. `prepare`,
   `capture` and `verify` refresh it when they succeed (a refusal or failure
-  never refreshes it) after checking the provenance marker; `retry` and its
-  adoption (each round-record write), `collect` (after its record) and the
-  native `--admit … --admitted-out` (after it writes the admitted result or a
-  refused reply's seal) refresh it best-effort: a `utime` of an existing
+  never refreshes it) after checking the provenance marker; `retry` (its
+  round-record write), `collect` (after its record) and the
+  native `--admit … --admitted-out` (after it writes an admitted result and
+  its seal; a refused reply writes nothing) refresh it best-effort: a `utime` of an existing
   regular `.active`, no provenance check, never minting it, never following
   a link, never failing their command. A gate
   resumed close to the floor runs `touch` first: a sibling `open` / `close`
@@ -131,7 +131,7 @@ first (`references/triage.md` § Residual table).
 
 ### Per-entry results tree (v2)
 
-`prepare … --v2` gives every enabled non-skipped roster entry its own
+`prepare` gives every enabled non-skipped roster entry its own
 immutable custody under the packet dir:
 
 ```
@@ -185,86 +185,45 @@ does not carry, apply it before `prepare` (it reads the LIVE checkout; the
 round record freezes the resolved roster) and restore that file to `HEAD` after
 `collect` — never between `prepare` and the round's final `verify`.
 
-**An ORPHAN `attempt-K+1/` is ADOPTED, not skipped.**
-`retry` allocates first and diagnoses second, so a failed diagnosis/record
-write leaves attempt K+1 on disk while `.roster-r<N>.json` still says K. The
-next `retry` adopts that directory when its own `binding.json` binds THIS
-entry at THAT attempt — ALL SIX derived values, through the one
-`_expected_binding` derivation admission uses — AND its `dispatch.json`
-equals the round's own re-render on `kind`, the whole `native` block and the
-six wrapper members, AND the two files the invocation FEEDS THE VENDOR are
-PROVEN: `prompt.txt` byte-for-byte against a pure re-render whose clause
-manifest matched the frozen `prompt_manifests[<name>]` first, and
-`schema.projected.json` against the frozen `projection_digest` (a record
-carrying no frozen manifest or digest cannot prove the basis and is
-refused), AND the frozen `prompt_spec_dir` is REQUIRED and COMPARED, exactly
-as the normal `retry` does it (digests alone do not say WHERE the clause
-bytes came from), with both byte reads going through the helper's hardened
-`_read_regular_file` (`lstat` → `O_NOFOLLOW|O_NONBLOCK` → `fstat` S_ISREG)
-instead of `Path.read_bytes()`, which FOLLOWS a symlink planted at either
-name, and an unreadable CLAUSE file refusing in one line at both layers
-rather than as a traceback. Only then does it re-print the frozen
-`dispatch.json`, and it re-renders NOTHING INTO the attempt — every
-re-render above is a discarded comparison basis; a directory whose records
-are unreadable, whose `binding.json` or `dispatch.json` is a non-object, or
-whose binding names something else, is refused BY NAME and left in place —
-the packet dir is helper-owned, so the tool deletes nothing it did not
-write. Further conditions gate the adoption, each refusing by name and
-deleting nothing: the allocation must have FINISHED — every file the writer
-produces for that route, the producer projection included, since it is
-written LAST and its absence ships an argv pointing at a file nobody wrote;
-`dispatch.json` is TYPE-checked on EVERY member the print reads — `kind`,
-the identifying member for that kind (`native.subagent_type` a non-empty
-string / `argv` a non-empty list OF strings), `stdout_path` /
-`stderr_path`, `env` as a string→string mapping, `read_audit_path` — the KEY
-required on EVERY wrapper route, `null` where the route takes none — and
-`schema_file` when named; the record is then COMPARED against a fresh
-RE-RENDER of the same attempt from the round's own frozen roster entry, and
-adoption is refused when `kind`, the `native` block or any of `argv` / `env`
-/ `stdout_path` / `stderr_path` / `read_audit_path` / `schema_file` differs —
-the adopted record is what the operator RUNS, so it is proven to be this
-round's invocation rather than read back verbatim (on equality the ON-DISK
-bytes are adopted and nothing is re-rendered INTO the attempt); a gap of
-MORE than one attempt is refused naming both numbers, because only the
-one-step orphan has an attempt this tool can honestly call "the one that
-failed"; and attempt K's `retry-diagnosis.txt` is RETAINED when it is a
-regular NON-BLANK file (under the distinct `existing diagnosis retained …
-the typed text was NOT stored` line), REPLACED when it is a regular but
-EMPTY file — what an interrupted write leaves behind — with the print saying
-so, and REFUSED when it is a symlink or any other non-regular path; any
-write `OSError` surfaces as a one-line refusal.
+**An `attempt-K+1/` above the recorded attempt refuses `retry`.**
+`retry` allocates first and diagnoses second, so a retry stopped in between
+(a failed diagnosis or record write, an interrupted process) leaves attempt
+K+1 on disk while `.roster-r<N>.json` still says K. That attempt already
+exists, so the next `retry` refuses before it writes or allocates anything,
+naming the on-disk attempt and the remedy — prepare a new round — and
+`collect` names the same remedy. Every gap width refuses the same way;
+nothing is adopted, and the packet dir is helper-owned, so nothing is
+deleted. A `retry-diagnosis.txt` already at attempt K's path (a symlink
+included) refuses the retry as well, and nothing is written through it.
 
-**The NON-ADOPT `retry`'s diagnosis write is guarded too.** An `OSError` —
-an unwritable attempt directory, a full disk — AFTER `v2_write_attempt` has
-allocated attempt K+1 is a one-line refusal naming the allocated directory
-and stating that the round record still names attempt K, so the allocated
-attempt is ADOPTED on the next `retry` rather than re-allocated — the same
-rule the adoption path applies.
+**`retry`'s diagnosis write is guarded.** An `OSError` — an unwritable
+attempt directory, a full disk — AFTER `v2_write_attempt` has allocated
+attempt K+1 is a one-line refusal naming the allocated directory and stating
+that the round record still names attempt K, so the next `retry` refuses on
+the allocated attempt: prepare a new round.
 
-**Adoption's write order**: validate everything → write the diagnosis →
-print the dispatch block → bump `.roster-r<N>.json` LAST, so a refused print
-never leaves the record bumped over an attempt nobody dispatched. A
-wrapper entry's printed `--expected-*` flags come from the DERIVED binding,
-never read back from the attempt's own `binding.json` (the native `--admit`
-line types none and reads that record itself), and every interpolated value
-is `shlex.quote`d.
+**`retry`'s write order**: validate everything → record the replaced
+attempt (its seal) → allocate attempt K+1 → write the diagnosis → bump
+`.roster-r<N>.json` → print the dispatch block. A wrapper entry's printed
+`--expected-*` flags come from the DERIVED binding, never read back from the
+attempt's own `binding.json` (the native `--admit` line types none and reads
+that record itself), and every interpolated value is `shlex.quote`d.
 
 **THE ROUND RECORD NAMES THE ATTEMPT THAT IS EVALUATED.** Allocation is the
 RECORD's act — `prepare` writes attempt 1, `retry` bumps the entry
-(allocating or ADOPTING) before it returns — so an on-disk attempt ABOVE the
+(allocating) before it returns — so an on-disk attempt ABOVE the
 record's is one this round never dispatched, and a planted or restored
 `attempt-N/` whose binding satisfies the derivation and whose verdict is a
 schema-valid SAFE could otherwise supersede the recorded attempt's BLOCKING
-verdict. It is that ENTRY's `invalid`, named (`<dir> is an attempt this
-round never allocated: the round record names attempt <K> for this entry
-…`), nothing is deleted, every other entry still collects and the round
+verdict. It is that ENTRY's `invalid`, named with `retry`'s own refusal
+(`<dir> already exists while the round record names attempt <K> (an
+interrupted retry) — nothing is allocated; prepare a new round`), nothing is
+deleted, every other entry still collects and the round
 lands on INCOMPLETE — but only when the recorded attempt did not itself
 return a valid verdict (a completed review is never vetoed by an
 unallocated directory). Exactly `attempt-<record.attempt>/` is evaluated: a
 RECORDED attempt missing from disk is that entry's `invalid`, and `retry`
-refuses it before allocating (prepare a new round). The
-ADOPTION path recovers only the one-step orphan, whose recorded attempt is
-on disk.
+refuses it before allocating (prepare a new round).
 
 **THE ROUND RECORD'S SHAPE IS CHECKED BEFORE ANYTHING WALKS IT.**
 `_check_record_shape` refuses with exit 2 NAMING THE FIELD, for the members
@@ -317,8 +276,8 @@ canonical number, so two directories would claim one allocation — and an
 same scan itself and refuses too. Admission of an attempt's result never
 trusts the attempt's own `binding.json` either: the six expected values are
 DERIVED from the round record, the frozen roster entry and the directory
-name, and the binding must EQUAL them (ONE derivation serves admission AND
-adoption; a non-object `binding.json` invalidates that ONE entry;
+name, and the binding must EQUAL them (ONE derivation serves every reader;
+a non-object `binding.json` invalidates that ONE entry;
 `references/triage.md` § Collect outcomes). `retry` also refuses outright
 when the round's frozen `prompt_manifests` do not match the clause bytes a
 re-render produces — and equally when the record carries NO frozen manifest
@@ -343,8 +302,7 @@ including each attempt's `binding.json` / `prompt.txt` / `dispatch.json` /
 `schema.projected.json`, which are leg INPUTS. Everything that lands under
 `results-r<N>/` AFTER capture is leg OUTPUT by rule: the exemption is the
 TOP-LEVEL DIRECTORY (`results-r<N>` as the first path component), not a
-basename glob, because the v2 artifacts sit in subdirectories while every v1
-output shape lives directly in the packet dir. `collect-r<N>.json` is leg
+basename glob, because the artifacts sit in subdirectories. `collect-r<N>.json` is leg
 output too — a collection is re-runnable by design, so censusing it would
 make a second `collect` report a mutation. Three dot-records are EXCLUDED
 from the census entirely: `.snapshot-<label>.json` (the census itself),
@@ -417,7 +375,7 @@ Canonical for EVERY leg, inline or file:
    `review_id`/`family`/`content_digest` verbatim in its LegVerdict
    (`references/leg-contracts.md` § Verdict binding), and admission
    recomputes the digest FROM the packet file
-   (`validate_verdict.py --expected-packet`) — the leader never compares
+   (`verdict_v2.py --expected-packet`) — the leader never compares
    two hand-carried strings, which is what keeps the field a content
    binding (cross-round comparable) rather than a nonce.
 1. a **deployment-context block** first — platforms, trust boundaries,
@@ -450,16 +408,16 @@ and containment needs the same protection.
 `lib/review_scratch.py prepare` is the NORMAL path for building a round
 (owner directive): the leader authors ONE brief and names the
 evidence; everything else — the delivered artifacts, the delivery and
-digest records, and the leg prompts (on a `--v2` round one `prompt.txt` per
-enabled non-skipped roster entry under § Per-entry results tree; on a
-LEGACY v1 round the three fixed leg bodies) — is rendered by code. Hand
+digest records, and the leg prompts (one `prompt.txt` per enabled
+non-skipped roster entry under § Per-entry results tree) — is rendered by
+code. Hand
 assembly remains a legitimate fallback (e.g. a data block `prepare` cannot
 express), but a hand-built round still owes every § Round integrity
 obligation below by hand.
 
 ```bash
 python3 <skill>/lib/review_scratch.py prepare <abs-packet-dir> \
-  <abs-source-repo> r<N> --v2 \
+  <abs-source-repo> r<N> \
   --brief /abs/brief.md \
   --diff <git-range> [--diff-path <repo-relative-path>]... \
   [--tests-path <repo-relative-path>]... \
@@ -468,14 +426,10 @@ python3 <skill>/lib/review_scratch.py prepare <abs-packet-dir> \
   [--review-kind formal-plan|pre-merge|implementation-review]
 ```
 
-`--v2` is the STANDARD path: it keeps this whole packet
-pipeline and replaces only the leg-facing half — instead of three fixed
-`*-r<N>.txt` bodies and the X-leg renders it resolves the NAMED ROSTER and
-allocates § Per-entry results tree. `--v2` is mutually exclusive with
-`--x-leg` / `--no-x-leg` / a set `$TRIAD_REVIEW_X_LEGS` (exit 2), and
-`--prior-residual` and `--review-kind` belong to the v2 path only.
-`--review-kind` (omitted = `pre-merge`; an empty, `null` or unknown value is
-refused before the round exists) selects `plan-purpose` for `formal-plan` and
+`prepare` resolves the NAMED ROSTER and allocates § Per-entry results tree;
+`--v2` is accepted and changes nothing (the legacy v1 round is retired, and
+`--x-leg` / `--no-x-leg` are unknown options). `--review-kind` (omitted =
+`pre-merge`; an empty, `null` or unknown value is refused before the round exists) selects `plan-purpose` for `formal-plan` and
 `code-purpose` otherwise in every attempt prompt. `prepare` also binds
 `review_web_authorized` — true for every round under the owner's standing
 authorization (R-REVIEW-WEB; a caller's `--review-web-authorized false` is
@@ -483,11 +437,11 @@ ignored with a NOTE, a non-boolean is refused) — and the round's UTC date
 (`review_date`). The stage, the web condition, the date, the entry selection
 and the roster-configuration digest are BOUND into the round's `Review
 metadata:` line, so they are inside the content digest (identical bytes under
-another condition bind another digest). `collect`, a retry and an orphan
-adoption re-hash `delivery-r<N>.md` against the recorded digest and compare the
-record's selection, configuration digest, web condition and date with the bound
-values (`collect_v2._bound_metadata`); a retry and an adoption also compare the
-stage (`_bound_conditions`), which `collect` does not re-check. The copies in
+another condition bind another digest). `collect` and a retry re-hash
+`delivery-r<N>.md` against the recorded digest and compare the record's
+selection, configuration digest, web condition and date with the bound values
+(`collect_v2._bound_metadata`); a retry also compares the stage
+(`_bound_conditions`), which `collect` does not re-check. The copies in
 `.roster-r<N>.json` are only copies; a mismatch is refused as a new round. The policy clause each prompt rendered
 (`review-web-permission` or `review-no-web`) is recorded in its prompt
 manifest.
@@ -528,7 +482,7 @@ basis.
 **Operator note — rounds prepared before the binding.** A v2 round prepared
 before the stage, selection and roster-configuration binding (commits
 `6c5364d`, `b7c32f3`, `436dd5f`) or before the review-web condition and date
-binding (`b53409b`) cannot be retried or adopted, and a round without the
+binding (`b53409b`) cannot be retried, and a round without the
 selection or configuration binding cannot be collected either: prepare a new
 round. A round prepared before a host update — here the executed-command
 receipt binding (`a9f78bc`, sealed by `2bda56f`) — is the operator's to replace:
@@ -550,7 +504,7 @@ both paths unless it names one.
   **The brief's home is OUTSIDE the packet dir** (leader scratch space) —
   `prepare` embeds its parts into the packet, so the brief file itself is
   not round evidence; a brief placed INSIDE the packet dir under a fixed
-  name becomes a censused round-invariant INPUT, and editing it for the
+  name becomes a censused INPUT, and editing it for the
   next round while legs are still out fires a false "round evidence
   changed". If it must live inside, round-suffix it
   (`brief-r<N>.md`).
@@ -576,9 +530,8 @@ both paths unless it names one.
 - **Rendered outputs are ROUND-SUFFIXED** (`delivery-r<N>.md` — the record
   listing the delivered artifacts with their sha256s, which is what the
   verdict binding hashes, since there is no assembled packet —
-  `digest-r<N>.txt`, and on a LEGACY v1 round only `codex-body-r<N>.txt`,
-  `agy-prompt-r<N>.txt`, `claude-prompt-r<N>.txt`; a `--v2` round writes
-  `.roster-r<N>.json` and the per-entry attempt records instead) and written
+  `digest-r<N>.txt`, `.roster-r<N>.json` and the per-entry attempt records)
+  and written
   exclusive-create — a duplicate round fails loud. The four DELIVERED artifacts (`brief.md`,
   `diff.prod.patch`, `diff.tests.patch`, `history.txt`) live in the round
   worktree at `<packet-dir>/wt-r<N>` (the round is in the NAME), NOT in the packet dir; `verify` re-checks
@@ -593,25 +546,19 @@ both paths unless it names one.
   material (`references/leg-contracts.md` § agy leg, the hook bullet). A
   reviewed tree that TRACKS `.agents/hooks.json` is refused before the
   worktree exists; a reviewed repo that gitignores `.agents/` hides the file
-  from the fingerprint's untracked arm (disclosed). The LEGACY v1 leg bodies carry the binding values, the per-leg
-  READ-GRANT blocks, the reviewer-side severity instruction, and the
-  verdict-selection rule (`references/triage.md` § Reviewer-side
-  instruction — the doc text stays the SoT; a doc-side revision updates
-  the templates in the same change); a v2 round's `prompt.txt` carries the
-  vendored shared clauses instead (`spec/prompts/`).
+  from the fingerprint's untracked arm (disclosed). Each attempt's
+  `prompt.txt` carries the vendored shared clauses (`spec/prompts/`) and its
+  binding values.
 - **Pre-mutation boundary: everything that can refuse DETERMINISTICALLY runs
-  before the first byte moves.** The order is `_precheck_packet_dir` → (v2)
-  the PURE render of every enabled non-skipped roster entry → (v2) the
+  before the first byte moves.** The order is `_precheck_packet_dir` →
+  the PURE render of every enabled non-skipped roster entry → the
   two SPEC-BASIS DIGESTS (`projection_digest` + `contract_digest`) →
-  `_round_invariant_moves` (every refusal of the preserve-and-clear step) →
-  `_preserve_round_invariants` (the moves; a failed link refuses there) →
   `_worktree_remove` of the outgoing tree →
   `_worktree_add` → the WRITES (`v2_write_attempt`, the delivery record, the
   four artifacts, `.agents/hooks.json`) → `capture` (its success refreshes
-  the heartbeat). The v2 render is PURE —
+  the heartbeat). The render is PURE —
   it creates no attempt directory and no file — and it belongs on the
-  pre-mutation side for the same reason v1 renders its three leg bodies
-  there: the refusals only a render can surface (an unrenderable clause set,
+  pre-mutation side: the refusals only a render can surface (an unrenderable clause set,
   an unresolvable wrapper layout, a non-absolute path token) are
   DETERMINISTIC properties of the install and the roster, not of the tree.
   Run there, a clause-file or layout refusal leaves round N-1's DELIVERED
@@ -652,16 +599,12 @@ both paths unless it names one.
   path in a command the operator copies would dispatch against a different
   file (`references/triage.md` § Collect outcomes,
   the plugin `README.md` § Payload vs diagnostic streams).
-- **`prepare` ends by running `capture` for the same label**, after
-  auto-preserving round-invariant leg outputs — so the census freezes
-  exactly the bytes the legs are handed, by construction.
-- Dispatch transports: on a `--v2` round run the dispatch block
-  `prepare` / `retry` print for each entry — a wrapper entry's
-  `--prompt-file` is its `results-r<N>/<name>/attempt-K/prompt.txt`, a
-  claude entry is a native `Agent` spawn of the named `subagent_type`. On a
-  LEGACY v1 round codex takes `--prompt-file <abs codex-body-r<N>.txt>`, agy
-  takes `--prompt-file <abs agy-prompt-r<N>.txt>`, and the claude `Agent`
-  prompt is the rendered `claude-prompt-r<N>.txt` content. Per-leg flags:
+- **`prepare` ends by running `capture` for the same label** — so the
+  census freezes exactly the bytes the legs are handed, by construction.
+- Dispatch transports: run the dispatch block `prepare` / `retry` print for
+  each entry — a wrapper entry's `--prompt-file` is its
+  `results-r<N>/<name>/attempt-K/prompt.txt`, a claude entry is a native
+  `Agent` spawn of the named `subagent_type`. Per-leg flags:
   `references/leg-contracts.md`.
 
 ## Round integrity — capture / verify
@@ -717,45 +660,25 @@ macOS, not yet on Ubuntu 24.04):
   intent-not-enforcement residual): mutation detection, not a sandbox
   claim alone, decides admission.
 - Leg INPUT files must ALL exist before capture — the delivery record,
-  the round's digest record, and every per-leg input (on a `--v2` round
-  each attempt's `binding.json` / `prompt.txt` / `dispatch.json` /
-  `schema.projected.json`; on a LEGACY v1 round `codex-body-r<N>.txt`,
-  `agy-prompt-r<N>.txt`, `claude-prompt-r<N>.txt`): the bytes a leg actually reviews must sit
+  the round's digest record, and every per-leg input (each attempt's
+  `binding.json` / `prompt.txt` / `dispatch.json` /
+  `schema.projected.json`): the bytes a leg actually reviews must sit
   inside the census. The `prepare`
   subcommand (§ Deterministic round preparation) guarantees this by
   construction — it writes every input and THEN captures; a hand-built
   round owes the same order manually. `verify` mechanically FAILS on any
   uncovered non-output regular file in the packet dir.
-- **Leg OUTPUT files must match the declared exemption globs AT DISPATCH
-  TIME** — `verify` exempts (as outputs a round legitimately creates
-  after capture) ONLY names matching `_LEG_OUTPUT_GLOBS`
-  (review_scratch.py): `*.out`, `*.err`, `*-read-audit.json`,
-  `claude-r*.json`, `*-verdict.json` — plus, on a v2 round, everything under
-  the `results-r<N>/` TOP-LEVEL DIRECTORY and the basename `collect-r<N>.json`
-  (§ Per-entry results tree), plus, for the v1 fourth leg, the
-  explicit shape rule `_is_x_leg_output`, and the agy hook log
-  `agy-hook-r<N>.jsonl` (`_is_hook_log_output`: the hook appends to it while an
-  agy-family leg runs; same basename rule — `agy-hook-r1/notes.jsonl` and
-  `agy-hook-r1.txt` stay uncovered). That rule is a REGEX on the
-  basename, not a glob: the globs are `fnmatchcase`d
-  against the whole POSIX RELPATH, where `*` also spans `/`, so an X glob such
-  as `x-*-r[0-9]*-raw.json` would exempt `x-fixtures-r1/notes-raw.json` and
-  `x-c-r1-notes-raw.json`. An X output must therefore contain NO `/` (it lives
-  directly in the packet dir) and its basename must fullmatch
-  `x-<lowercase-alnum>[-part]…-r<N>[-attempt<K>]` followed by
-  `-raw.json` / `-verdict.json` / `-read-audit.json` / `.err`.
-  Route every leg's redirected
-  stdout/stderr and verdict to those shapes when BUILDING the dispatch
-  command — e.g. `codex-r<N>-verdict.json` + `codex-r<N>.err`, never
-  `codex-stderr-r<N>.txt` (a stderr redirect named outside the globs makes
-  `verify` report an uncovered non-output file; naming outputs correctly at
-  dispatch time avoids touching the packet dir after capture at all). The globs are SUFFIX matches — a verdict name must
-  END in `-verdict.json`, so the round goes BEFORE `-verdict`
-  (`<leg>-r<N>-verdict.json`). The plausible inversion
-  `<leg>-verdict-r<N>.json` carries the round yet matches NO glob and
-  fails `verify` the same way.
-- The round-invariant rule covers INPUTS too: a
-  censused file that CHANGES per round must carry the round in its
+- **Leg OUTPUT files must match the declared exemption shapes** — `verify`
+  exempts (as outputs a round legitimately creates after capture) ONLY
+  everything under the `results-r<N>/` TOP-LEVEL DIRECTORY, the basename
+  `collect-r<N>.json` (§ Per-entry results tree) and the agy hook log
+  `agy-hook-r<N>.jsonl` (`_is_hook_log_output`: the hook appends to it while
+  an agy-family leg runs; a basename rule — `agy-hook-r1/notes.jsonl` and
+  `agy-hook-r1.txt` stay uncovered). The printed dispatch lines route every
+  leg's stdout, stderr and verdict into the attempt dir, so nothing a leg
+  writes lands beside them; anything else appearing post-capture fails
+  `verify` as an uncovered file.
+- A censused INPUT that CHANGES per round must carry the round in its
   NAME — the digest record is `digest-r<N>.txt`, one per round, written
   pre-capture and immutable after. An APPENDED round-invariant file
   (a single shared `digest.txt`) silently breaks RE-verification of
@@ -775,76 +698,14 @@ macOS, not yet on Ubuntu 24.04):
   record).
 - Leg OUTPUT files landing in the packet dir after capture are BY DESIGN
   outside the snapshot census — integrity binds the round's evidence
-  set, not the dir's later accumulation. "Output" is a NARROW allowlist
-  (`*.out`, `*.err`, `*-read-audit.json`, `claude-r*.json`,
-  `*-verdict.json`, the X shape, `agy-hook-r<N>.jsonl`); anything
-  else appearing post-capture fails `verify` as an uncovered file. The
-  claude leg's still-escaped RAW reply is not covered by those globs: on a
-  v1 round it is staged in the session scratchpad under a GATE-SLUG-scoped
-  name, never in the packet dir; on a v2 round it is `raw.json` inside the
-  entry's attempt dir, which the `results-r<N>/` directory rule already
-  exempts (`references/leg-contracts.md` § claude leg, RAW-STAGING RULE
-  + its v2 raw-path note).
-- (LEGACY v1 rounds.) A leg OUTPUT whose NAME is round-invariant — the v1 agy read-audit
-  literal `agy-read-audit.json` — must be PRESERVED-AND-CLEARED to its
-  round-suffixed name BEFORE the next round's capture
-  (`references/leg-contracts.md` § agy leg, Read-audit binding): a
-  censused copy that a later dispatch rewrites is a guaranteed false
-  "round evidence changed" on an unmutated tree. Both `prepare` and `capture`
-  auto-rename it to the suffix of the round that PRODUCED it — the
-  latest captured `.snapshot-r<M>.json`, never label-minus-one, so an
-  operator label skip cannot stamp false provenance, whatever the label — and
-  fail loud on a leftover with no captured round to attribute it to, a
-  rename-target collision with a different file, or an output that is a
-  symbolic link (in each case the round then goes to a new packet dir, `open`
-  with a new slug); a move stopped between its link and its unlink is
-  finished by the next `prepare` / `capture`; a hand-built round runs `capture`
-  too, so no round renames it by hand between rounds. Per-leg
-  consolidation artifacts avoid the same trap by
-  carrying the round in their name (`<leg>-r<N>-verdict.json`,
-  `references/triage.md`).
-- **(LEGACY v1 rounds only — a `--v2` `retry` allocates attempt K+1 under
-  `results-r<N>/` and its artifacts are never renamed or moved.)** **A
-  RE-DISPATCHED leg's earlier attempt is renamed into the allowlist,
-  never left under a free-form name**. Before the
-  retry, rename attempt K's artifacts to `<leg>-r<N>-attempt<K>.err`,
-  `<leg>-r<N>-attempt<K>-read-audit.json`, and
-  `<leg>-r<N>-attempt<K>-verdict.json` (a claude X leg's staged reply:
-  `x-<name>-r<N>-attempt<K>-raw.json`) — every one of those matches
-  `_LEG_OUTPUT_GLOBS` (`*.err`, `*-read-audit.json`, `*-verdict.json`) or the
-  X shape rule above (which carries the optional `-attempt<K>` segment), so
-  the round's evidence keeps both attempts without tripping the
-  uncovered-file refusal. For the agy leg this rename moves
-  `agy-read-audit.json` to `agy-r<N>-attempt<K>-read-audit.json`: it is the
-  one hand move of the read-audit file a v1 round makes (between rounds
-  `prepare` / `capture` rename it to `agy-read-audit-r<M>.json`, M = the latest
-  captured round), it preserves attempt K's audit
-  (nothing is deleted), and it leaves the literal path ABSENT, so a misbound
-  re-dispatch reads as ABSENT, never as attempt K's audit. Run it as its own
-  step — never CHAIN it before the dispatch (`mv … && … wrapper`): when the
-  chained move fails first, the dispatch never launches.
-- **Otherwise never hand-move `agy-read-audit.json`** (v1) — between rounds
-  `prepare` and `capture` auto-rename it to its producing round's suffix, so
-  a manual `cp`/`mv` there is at best redundant and at worst destructive. The
-  helper owns the packet dir. The same rule covers the X-leg artifacts: `<name>-prompt-r<N>.txt` /
-  `<name>-body-r<N>.txt` and `.x-legs-r<N>.json` are ROUND EVIDENCE (written
-  before capture, censused with the standing inputs) — never hand-remove them,
-  even for an X leg that was abandoned; record that leg MISSING in the round
-  log and leave its artifacts in place.
-- **Fourth-leg (X-leg) names — LEGACY v1 only (SKILL.md § Legacy v1 rounds).** An X leg's
-  INPUT (`<x-name>-prompt-r<N>.txt`, or `<x-name>-body-r<N>.txt` on the
-  codex vendor) and the machine record `.x-legs-r<N>.json` are written by
-  `prepare` BEFORE the round's capture, so they are censused leg inputs
-  like the standing five. The record is written on EVERY round — with
-  `legs: []` and the `x_source` that explains why when the round carried no
-  fourth leg — so its presence never implies a fourth leg ran. Its OUTPUTS carry the round from the start —
-  `<x-name>-r<N>-verdict.json`, `<x-name>-r<N>.err`,
-  `<x-name>-r<N>-read-audit.json`, and `<x-name>-r<N>-raw.json` (the claude
-  vendor's verbatim reply, the one kind the standing globs do not already
-  cover) — so no X output is round-invariant and none owes a
-  preserve-and-clear. Anything else an X leg leaves in the packet dir
-  (scratch notes, a stray `.txt`) fails `verify` as an uncovered file, by
-  design.
+  set, not the dir's later accumulation. "Output" is the NARROW set above;
+  anything else appearing post-capture fails `verify` as an uncovered file.
+  The claude leg's still-escaped RAW reply is `raw.json` inside the entry's
+  attempt dir, which the `results-r<N>/` directory rule already exempts
+  (`references/leg-contracts.md` § claude leg, Raw path). A `retry`
+  allocates attempt K+1 under `results-r<N>/`; an earlier attempt's
+  artifacts are never renamed or moved, and nothing under `results-r<N>/`
+  is hand-removed.
 - The reviewed tree stays FROZEN for the round's duration: fixes for
   returned findings are STAGED and applied only after the last leg
   returns and `verify` passes. An edit adopted while closing a

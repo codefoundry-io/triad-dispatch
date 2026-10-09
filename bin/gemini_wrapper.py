@@ -75,27 +75,31 @@ SANDBOX_CHOICES = ("read-only", "workspace-write")
 # (individual-tier gemini auth is deprecated) — see the policy file header.
 _READONLY_POLICY = Path(__file__).resolve().parent / "policies" / "gemini-readonly.toml"
 
-# ── REVIEW-route preflight (spec case C16, rules R-CONTAIN + R-NOCOST) ─────
-# Three provider-free checks run BEFORE the review dispatch, because each of
-# them decides whether the run can be trusted at all:
-#   * VERSION FLOOR — "Gemini formal review requires CLI >= 0.34.0 (PR #20639
-#     lands the headless policy-allow fix)" (R-NOCOST). Below the floor the
-#     `--policy` allow rows do not take effect headlessly, so the read-only
-#     posture would be a claim, not a control.
+# ── Gemini preflight (spec case C16, rules R-CONTAIN + R-NOCOST) ──────────
+# Provider-free checks run BEFORE the dispatch, because each of them decides
+# whether the run can be trusted at all:
+#   * VERSION FLOOR — one route floor, independent of the requested model
+#     (owner decision D-GEMINI-FLOOR-20261009): every gemini route needs CLI
+#     >= _GEMINI_VERSION_FLOOR; a pre-release of the floor version is below it,
+#     build metadata does not change precedence, and no model list or catalog
+#     probe is consulted. (The older review-only floor was the release carrying
+#     the headless policy-allow fix, PR #20639; the route floor is above it.)
 #   * CAPABILITY — the wrapper's read-only argv needs `--policy`,
 #     `--approval-mode` and `--output-format`; a CLI that does not advertise
 #     one of them would either ignore the flag or die mid-dispatch.
 #   * AUTH CLASS — R-NOCOST: CLI subscriptions only, login is the user's own
 #     OAuth login. An api-key / Vertex / ADC selection changes the BILLING
 #     route, so the review leg refuses rather than spending on it.
-# SCOPE: the REVIEW route (`--sandbox read-only`, including the hardened
-# default) — both spec sentences scope these to the formal review route, and
-# `--policy` (what the floor is about) is attached only there. An investigation
-# or write dispatch keeps its single spawn and is not probed.
+# SCOPE: the version floor runs on EVERY route (raw, write, `--web`, review)
+# before its single vendor spawn, and every route records the observed
+# `cli_version`; passing it infers no runtime identity. The capability check
+# stays on the REVIEW route (`--sandbox read-only`, including the hardened
+# default), where the `--policy` argv it proves is attached; the auth class is
+# gated on every posture (`_auth_refusal`, C37).
 # NOT RUN LIVE on this host; every check here is
 # deterministic and provider-free (t57). The runtime effect of the policy and
 # the real principal stay owner-briefing items (R-GOOGLE).
-_GEMINI_VERSION_FLOOR = (0, 34, 0)
+_GEMINI_VERSION_FLOOR = (0, 63, 0)
 _VERSION_RE = re.compile(
     r"(?<![0-9.])(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?(?![0-9])")
 _PREFLIGHT_TIMEOUT_S = 10
@@ -149,7 +153,7 @@ def _parse_version(text: str) -> Optional[tuple]:
 
     Deliberately NOT a lenient "find any number" read: an unparsable version is
     refused by the caller, never assumed current (R-NOCOST — an unrun check is
-    unverified, never green). A pre-release (`0.34.0-rc.1`) sorts BELOW its
+    unverified, never green). A pre-release (`0.63.0-rc.1`) sorts BELOW its
     release, so a pre-release of a floor version is below that floor (spec
     R-NOCOST; the other host's rule, bin/google_preflight_v2.py:22-23): its
     patch reads as patch - 0.5. `_version_text` gives the printed form."""
@@ -240,27 +244,36 @@ def _auth_refusal(cwd: Optional[str]) -> Optional[str]:
     return None
 
 
-def _review_preflight(gemini_bin: str,
-                      cwd: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """(refusal reason or None, observed CLI version or None) for the review route.
+def _version_floor(gemini_bin: str) -> Tuple[Optional[str], Optional[str]]:
+    """(refusal reason or None, observed CLI version or None) — the route floor
+    every gemini route runs before its single spawn (D-GEMINI-FLOOR-20261009).
 
     The observed version rides EVERY return made after it was observed — a
     refusal included (spec C65: "Record the version actually observed")."""
+    floor = ".".join(map(str, _GEMINI_VERSION_FLOOR))
     rc, out = _probe(gemini_bin, ["--version"])
     if rc != 0:
         return (f"`gemini --version` probe failed (rc={rc}): {out.strip()[:200]}"), None
     version = _parse_version(out)
     if version is None:
         return (f"`gemini --version` output is not a version: {out.strip()[:200]!r} — "
-                f"the review route needs a proven CLI >= "
-                f"{'.'.join(map(str, _GEMINI_VERSION_FLOOR))}"), None
+                f"every gemini route needs a proven CLI >= {floor}"), None
     version_str = _version_text(out)
     if version < _GEMINI_VERSION_FLOOR:
-        return (f"gemini {version_str} < 0.34.0 — the formal review route needs "
-                f"CLI >= 0.34.0 (the headless policy-allow fix, PR #20639); below "
-                f"it the --policy read-only rows do not take effect headlessly. "
-                f"Update the gemini CLI or run this dispatch without "
-                f"--sandbox read-only"), version_str
+        return (f"gemini {version_str} < {floor} — every gemini route needs CLI "
+                f">= {floor} (owner decision D-GEMINI-FLOOR-20261009: one route "
+                f"floor, independent of the requested model). Update the gemini "
+                f"CLI"), version_str
+    return None, version_str
+
+
+def _review_preflight(gemini_bin: str,
+                      cwd: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """(refusal reason or None, observed CLI version or None) for the review
+    route: the route floor, then the `--help` capability check."""
+    refusal, version_str = _version_floor(gemini_bin)
+    if refusal is not None:
+        return refusal, version_str
     rc, help_text = _probe(gemini_bin, ["--help"])
     if rc != 0:
         return (f"`gemini --help` probe failed (rc={rc}): "
@@ -281,7 +294,7 @@ def _main(ctx: dict) -> int:
     # The DIAGNOSTIC stream survives any locale; the PAYLOAD stream is never
     # re-encoded (gate-1 r7 row r7-c2 — `_common` § payload vs diagnostic).
     _relax_diagnostic_stream()
-    # SIGTERM/SIGHUP: during the review preflight probe (a plain
+    # SIGTERM/SIGHUP: during the preflight probes (a plain
     # subprocess.run, no process group) the handler only records the signal and
     # the run ends as the interrupted-run refusal (`unknown` / 1), written while
     # the mode is still on. From the first dispatch on it only records too:
@@ -438,15 +451,6 @@ def _main(ctx: dict) -> int:
                 f"{args.approval_mode} (the research policy denies the write "
                 f"tools an auto-approving mode exists for)")
             return EXIT_ARG_ERROR
-        if args.pydantic and args.pydantic.split(":")[0].endswith("verdict_schema"):
-            # R-INVEST: an investigation returns free-form or a CUSTOM schema,
-            # "never a review verdict (owner Q-D)". A verdict shape produced by
-            # a web-reading leg would enter the round as if it had been
-            # reviewed under the contained review profile.
-            log("--web cannot request a review-verdict schema "
-                f"({args.pydantic}): an investigation returns research, never a "
-                "leg verdict (R-INVEST). Run the review route for a verdict.")
-            return EXIT_ARG_ERROR
         if not _RESEARCH_POLICY.is_file():
             log(f"research policy file missing: {_RESEARCH_POLICY}")
             return EXIT_ARG_ERROR
@@ -532,47 +536,52 @@ def _main(ctx: dict) -> int:
         log(auth_refusal)
         return _refuse("oauth-env", auth_refusal, None)
 
-    # Review-route preflight — refuses BEFORE any vendor dispatch (C16).
-    probed_version = None
-    if args.sandbox == "read-only":
-        # The pre-dispatch vendor probes run in the record-only signal mode a
-        # dispatch uses (C1 / R-TERMINAL): a SIGTERM / SIGHUP during them ends
-        # through the interrupted-run record, never a bare 128 + signum exit.
-        prev_dispatch = _SIGNAL_STATE["dispatch"]
-        _SIGNAL_STATE["dispatch"] = True
-        try:
+    # Preflight — refuses BEFORE any vendor dispatch (C16): the route floor on
+    # every route (D-GEMINI-FLOOR-20261009), plus the capability check on the
+    # review route.
+    review_route = args.sandbox == "read-only"
+    # The pre-dispatch vendor probes run in the record-only signal mode a
+    # dispatch uses (C1 / R-TERMINAL): a SIGTERM / SIGHUP during them ends
+    # through the interrupted-run record, never a bare 128 + signum exit.
+    prev_dispatch = _SIGNAL_STATE["dispatch"]
+    _SIGNAL_STATE["dispatch"] = True
+    try:
+        if review_route:
             refusal, probed_version = _review_preflight(gemini_bin, args.cwd)
-        finally:
-            # a signal recorded during the probe keeps the record-only mode on
-            # until its refusal is written (C1: a second signal never loses it)
-            if _SIGNAL_STATE["signum"] is None:
-                _SIGNAL_STATE["dispatch"] = prev_dispatch
-        probe_signum = None if prev_dispatch else _SIGNAL_STATE["signum"]
-        if probe_signum is not None:
-            _SIGNAL_STATE["signum"] = None
-            why = (f"wrapper interrupted ({signal.Signals(probe_signum).name}) during "
-                   f"the review preflight probe — nothing was dispatched")
-            log(why)
-            return _refuse("unknown", why, probed_version)
-        if refusal is not None:
-            log(refusal)
-            # The canonical one-line summary the dispatch SKILLs grep, with the
-            # classification token the refusal maps to. `config-conflict` is a
-            # terminal class (EXIT_TERMINAL 65): the operator changes the
-            # install or the posture — a retry would fail identically.
-            #
-            # THE TAIL COMES FROM THE SHARED FORMATTER (gate-1 r10 row
-            # r10-11). This line was hand-built and carried `attempt=` only,
-            # so it dropped the C28 `prompt_file=` field although the
-            # resolved absolute path was already in hand — and this refusal
-            # is PRE-SPAWN, so its own records are the only ones the dispatch
-            # writes (`_refuse` writes this line, an audit row and the failure
-            # run-log), and this line is the one the dispatch SKILLs read. The
-            # one question C28 exists to answer went unrecorded on the line
-            # where the caller looks. `_summary_tail` also owns the redaction
-            # rule and the free-text escaping (row r9-3), so building the tail
-            # by hand here silently opted out of both.
-            return _refuse("config-conflict", refusal, probed_version)
+        else:
+            refusal, probed_version = _version_floor(gemini_bin)
+    finally:
+        # a signal recorded during the probe keeps the record-only mode on
+        # until its refusal is written (C1: a second signal never loses it)
+        if _SIGNAL_STATE["signum"] is None:
+            _SIGNAL_STATE["dispatch"] = prev_dispatch
+    probe_signum = None if prev_dispatch else _SIGNAL_STATE["signum"]
+    if probe_signum is not None:
+        _SIGNAL_STATE["signum"] = None
+        why = (f"wrapper interrupted ({signal.Signals(probe_signum).name}) during "
+               f"the {'review' if review_route else 'version'} preflight probe "
+               f"— nothing was dispatched")
+        log(why)
+        return _refuse("unknown", why, probed_version)
+    if refusal is not None:
+        log(refusal)
+        # The canonical one-line summary the dispatch SKILLs grep, with the
+        # classification token the refusal maps to. `config-conflict` is a
+        # terminal class (EXIT_TERMINAL 65): the operator changes the
+        # install or the posture — a retry would fail identically.
+        #
+        # THE TAIL COMES FROM THE SHARED FORMATTER (gate-1 r10 row
+        # r10-11). This line was hand-built and carried `attempt=` only,
+        # so it dropped the C28 `prompt_file=` field although the
+        # resolved absolute path was already in hand — and this refusal
+        # is PRE-SPAWN, so its own records are the only ones the dispatch
+        # writes (`_refuse` writes this line, an audit row and the failure
+        # run-log), and this line is the one the dispatch SKILLs read. The
+        # one question C28 exists to answer went unrecorded on the line
+        # where the caller looks. `_summary_tail` also owns the redaction
+        # rule and the free-text escaping (row r9-3), so building the tail
+        # by hand here silently opted out of both.
+        return _refuse("config-conflict", refusal, probed_version)
 
     # The engine gets the caller's text alone; build_cmd appends the clause
     # LAST after whatever the engine adds (schema instruction, repair notice),
@@ -613,7 +622,8 @@ def _main(ctx: dict) -> int:
             "--output-format", "json",
         ]
         if args.model:
-            cmd += ["-m", args.model]
+            # ONE token (M-1): a value shaped like an option stays the value
+            cmd.append(f"--model={args.model}")
         if args.skip_trust:
             cmd.append("--skip-trust")
         if args.sandbox == "read-only":
@@ -639,10 +649,9 @@ def _main(ctx: dict) -> int:
     )
     ctx["result"] = result
 
-    # The OBSERVED CLI version for the transport receipt (C9/C16): probed from
-    # the SAME resolved binary the dispatch then executed, moments earlier — an
-    # observation of the binary, never of the request. Only the review route
-    # probes, so other postures keep `cli_version: null` (= not observed).
+    # The OBSERVED CLI version for the transport receipt (C9/C16/C65): probed
+    # from the SAME resolved binary the dispatch then executed, moments earlier
+    # — an observation of the binary, never of the request (every route).
     if probed_version:
         result.vendor_version = probed_version
 

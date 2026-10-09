@@ -61,15 +61,15 @@ Four steps get you a working install. Everything past this section is optional.
      **enterprise** Gemini tier stays in use.
 
    You also need **`python3 >= 3.12`** on PATH (the wrappers run via
-   `#!/usr/bin/env python3`), **pydantic 2.x** (`'pydantic>=2,<3'`) importable by that same
-   `python3` (the cross-family-review legs dispatch `--pydantic
-   verdict_schema:LegVerdict`, and the schema uses v2-only APIs), the
+   `#!/usr/bin/env python3`), the
    cross-family review's **jsonschema** (Draft 2020-12;
    Mac `pip3 install jsonschema`, Ubuntu 24.04 `apt install python3-jsonschema`) — without
    it the review helper stops with exit 64 and that install hint — and a
    **recent Claude Code** — new enough for plugin marketplaces and namespaced
    plugin skills. The claude review leg is an in-session `Agent`, so it needs
-   no separate login.
+   no separate login. **pydantic 2.x** (`'pydantic>=2,<3'`), importable by that
+   same `python3`, is needed only by a caller who passes a wrapper
+   `--pydantic module:Class` (the schema check uses v2-only APIs).
 
    > **Ubuntu 24.04 note.** `apt install python3-pydantic` gives **1.10**, which
    > does NOT work, and PEP 668 marks the system interpreter externally-managed
@@ -138,7 +138,7 @@ only when its "do this ONLY if…" line applies to you.
 of one worker + the claude leg). Install and log in to the other CLIs the same way
 as step 1: `codex login`; `agy` OAuth sign-in; or `gemini` org sign-in
 (enterprise / organization accounts only). `triad-cross-family-review` resolves
-its Google-family leg at runtime (`TRIAD_GOOGLE_REVIEW_CLI`, else agy, else gemini)
+its Google-family leg at runtime (the entry's `google.route` pin, else its single route block, else agy, else gemini)
 and runs claude (`Agent`) + codex + that leg.
 
 ### Choose the claude review leg's model and effort

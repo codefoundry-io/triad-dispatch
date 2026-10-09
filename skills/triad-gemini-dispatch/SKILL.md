@@ -1,8 +1,11 @@
 ---
 name: triad-gemini-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Gemini CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 gemini_wrapper.py` raw; the user asks to call gemini once, have gemini handle a task, or run a one-shot gemini analysis; a higher-level orchestration SKILL needs the Gemini leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Codex (`triad-codex-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.6.4
+version: 0.6.5
 # changelog:
+#   0.6.5 (2026-10-09): doc — one Gemini CLI floor `>= 0.63.0` on EVERY route
+#     (raw, write, `--web`, review; owner decision D-GEMINI-FLOOR-20261009),
+#     `cli_version` recorded on every route; `--help` stays review-route only.
 #   0.6.4 (2026-10-03): doc — `--review-web` (a review round's leg with web,
 #     R-REVIEW-WEB / C32: the complete review web profile, no investigation
 #     clause) beside `--web`; the summary tail names ` model=`.
@@ -11,7 +14,7 @@ version: 0.6.4
 #     LAST; refused with `--sandbox`, with `auto_edit`, and with a
 #     verdict-schema `--pydantic`) and `--attempt <int>` (recorded on the
 #     transport receipt, never interpreted) — plus the C16 review-route
-#     preflight (version floor >= 0.34.0, `--help` capability probe, auth
+#     preflight (version floor, `--help` capability probe, auth
 #     class) as pre-spawn refusals. NOT RUN live: gemini is not in service at
 #     the leaders' site, so these are implementation facts (t57/t58), not
 #     measured runtime behaviour. Doc-only.
@@ -121,10 +124,9 @@ web-evidence clause LAST — a search result is a POINTER, a cited web fact
 comes from a `web_fetch` of the page with that page's own date or version,
 and an unfetched or placeholder URL is not evidence. It is REFUSED with
 `--sandbox` (a review's web is `--review-web` below, never the research
-profile; a write posture contradicts the research profile's own denies), with
-`--approval-mode auto_edit`, and with a `verdict_schema` `--pydantic` class
-(an investigation returns research, never a leg verdict). Each refusal is an
-arg error before any spawn.
+profile; a write posture contradicts the research profile's own denies) and
+with `--approval-mode auto_edit`. Each refusal is an arg error before any
+spawn.
 
 **`--review-web` = a REVIEW leg with web (spec C32 / R-REVIEW-WEB).** The
 review leg of a round that binds `review_web_authorized` true
@@ -147,15 +149,17 @@ choose Login with Google) — never a flag change, never a retry. `oauth-persona
 is the approved subscription login; an unexposed or unknown class is reported
 on stderr and allowed to run.
 
-**Review-route preflight (spec C16) — two provider-free checks run BEFORE
-any vendor call** whenever `--sandbox read-only` is in effect (including the
-hardened-install default), after the effective posture is computed: a VERSION
-FLOOR (`gemini >= 0.34.0`, the release carrying the headless policy-allow fix
-PR #20639 — below it the `--policy` rows do not take effect headlessly, so
-the posture is a claim rather than a control); a CAPABILITY probe (`--help`
-must advertise `--policy`, `--approval-mode`, `--output-format`), each a
-`config-conflict` (65) refusal that records the version it observed. An
-investigation or write dispatch keeps its single spawn and is not probed.
+**Preflight (spec C16) — provider-free checks run BEFORE any vendor call.**
+On EVERY route (raw, write, `--web`, review) a VERSION FLOOR: `gemini >=
+0.63.0`, one route floor independent of the requested model (owner decision
+D-GEMINI-FLOOR-20261009); a pre-release of 0.63.0 is below it, build metadata
+is ignored, no model list or catalog probe is consulted, and the observed
+`cli_version` is recorded on every route. When `--sandbox read-only` is in
+effect (including the hardened-install default), after the effective posture
+is computed, a CAPABILITY probe follows (`--help` must advertise `--policy`,
+`--approval-mode`, `--output-format`). Each is a `config-conflict` (65)
+refusal with 0 vendor calls that records the version it observed; the remedy
+for the floor is updating the gemini CLI.
 **NOT RUN live** on this host: these are
 deterministic implementation facts (`tests/unit/wrappers/t57`), not measured
 runtime behaviour.

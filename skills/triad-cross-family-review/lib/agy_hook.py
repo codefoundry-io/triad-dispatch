@@ -6,9 +6,9 @@
 Two modes, one file, python3 stdlib only, no AI:
 
   hook mode    agy_hook.py --log <abs-jsonl> [--web]
-      (--web: a round with review web — a small-path round the owner asked
-      web for, or a v2 round whose bound review_web_authorized is true;
-      WEB_TOOLS join the allow set, everything else below is unchanged)
+      (--web: a round with review web — a v2 round whose bound
+      review_web_authorized is true; WEB_TOOLS join the allow set,
+      everything else below is unchanged)
       agy runs this on EVERY tool call of a review leg (the round worktree's
       `.agents/hooks.json`, written by `review_scratch.py prepare`, matcher
       "*"). stdin: the vendor's PreToolUse payload (`toolCall.name`,
@@ -90,9 +90,9 @@ from pathlib import Path
 # (antigravity.google/docs/hooks, accessed 2026-09-18), so a config-level
 # allow-list could not fail closed; the policy lives here behind `*`.
 ALLOW_TOOLS = frozenset({"view_file", "grep_search", "list_dir", "find_by_name", "finish"})
-# A round with review web (`--log <file> --web`: the small review path, or a v2
-# round binding review_web_authorized true) also allows these two; t9 pins them
-# equal to the wrapper's AGY_WEB_TOOLS_ADMIT.
+# A round with review web (`--log <file> --web`: a v2 round binding
+# review_web_authorized true) also allows these two; t9 pins them equal to the
+# wrapper's AGY_WEB_TOOLS_ADMIT.
 WEB_TOOLS = frozenset({"read_url_content", "search_web"})
 
 _POLICY = "blocked by triad cross-family review policy"
@@ -101,31 +101,9 @@ _REPORT_CAP = 40   # denied rows printed by `check` — the digest's list cap
 # log comes only with a new round, after the round worktree's hooks.json is
 # checked.
 _REMEDY = "check hooks.json in the round worktree, then prepare a new round"
-# THE EVIDENCE SIZE CAP (gate-1 r19 row r19-2). `_read_regular` accumulated a
-# file of any size, then decoded and parsed it, so a misfiled multi-GB file at
-# an audit / hook-log / stderr.log name exhausted memory — and a MemoryError is
-# no refusal, it aborts the check (and the collector's in-process retry guard)
-# instead of failing one piece of evidence. The largest real read audit seen
-# is a few KB and a round's hook log a few hundred rows, so 64 MiB is far
-# above any genuine file: a larger one is unreadable evidence, refused BEFORE
-# it is read (and the read stops at the cap if it grows meanwhile).
-# ONE value, spelled in three modules (this one stays stdlib-only):
-# `collect_v2._EVIDENCE_MAX_BYTES` and `verdict_v2._EVIDENCE_MAX_BYTES` (gate-1
-# r20 row r20-2) — a change touches all three; t11 axis 27 pins them equal.
-_EVIDENCE_MAX_BYTES = 64 * 1024 * 1024
-_EVIDENCE_CAP_TEXT = "64 MiB"
 # WHY A FILE COULD NOT BE READ, named by the ACTUAL reason (gate-1 r20 row
-# r20-6). One parenthetical naming the cap used to ride on EVERY unreadable
-# refusal, so an operator saw the cap clause on a merely malformed audit and
-# a test grepping for it passed with the cap removed. `_read_regular` returns
-# one of these; each follows "<the path> " in a refusal.
-_WHY_OVERSIZED = (f"exceeds the {_EVIDENCE_CAP_TEXT} evidence cap (refused "
-                  f"before a byte is read)")
-# the read LOOP's own reason (gate-1 r21 row r21-6): the fstat size was within
-# the cap and the file grew past it while being read — bytes WERE read, so
-# `_WHY_OVERSIZED`'s "before a byte is read" would be false here
-_WHY_OVERSIZED_GREW = (f"grew past the {_EVIDENCE_CAP_TEXT} evidence cap "
-                       f"while being read")
+# r20-6). `_read_regular` returns one of these; each follows "<the path> " in
+# a refusal.
 _WHY_NOT_REGULAR = ("is not a readable regular UTF-8 file: not a regular file "
                     "(a symlink, a FIFO or a directory is refused before it "
                     "is opened)")
@@ -253,11 +231,10 @@ def _census_rows(digest):
 
 
 def _read_regular(path: Path) -> tuple:
-    """(text, None) for a plain REGULAR UTF-8 file within the cap, else
-    (None, why) — `why` names the ACTUAL reason (`_WHY_OVERSIZED`,
-    `_WHY_OVERSIZED_GREW`, `_WHY_NOT_REGULAR`, `_WHY_UNDECODABLE`,
-    `_WHY_UNREADABLE`; gate-1 r20 row r20-6, r21 row r21-6), so every
-    refusal built on it says which one fired.
+    """(text, None) for a plain REGULAR UTF-8 file, else (None, why) — `why`
+    names the ACTUAL reason (`_WHY_NOT_REGULAR`, `_WHY_UNDECODABLE`,
+    `_WHY_UNREADABLE`; gate-1 r20 row r20-6), so every refusal built on it
+    says which one fired.
 
     HARDENED (gate-1 r11 row r11-7): `_audit` read every audit — including
     the SIBLING audits the round check takes as arguments — with
@@ -270,10 +247,7 @@ def _read_regular(path: Path) -> tuple:
     the open (so a FIFO cannot block), `O_NONBLOCK` closes the window where
     one appears in between, `O_NOFOLLOW` covers a symlink swapped in after
     the lstat, and the descriptor's own `fstat` re-checks S_ISREG before a
-    byte is read. BOUNDED (gate-1 r19 row r19-2): a file whose size exceeds
-    `_EVIDENCE_MAX_BYTES` is refused on that `fstat`, before a byte is read,
-    and the read loop stops at the cap should the file grow meanwhile (its
-    own reason, `_WHY_OVERSIZED_GREW`).
+    byte is read.
     """
     try:
         st = os.lstat(path)
@@ -289,17 +263,11 @@ def _read_regular(path: Path) -> tuple:
         fst = os.fstat(fd)
         if not stat.S_ISREG(fst.st_mode):
             return (None, _WHY_NOT_REGULAR)
-        if fst.st_size > _EVIDENCE_MAX_BYTES:
-            return (None, _WHY_OVERSIZED)
         chunks = []
-        total = 0
         while True:
             block = os.read(fd, 1 << 20)
             if not block:
                 break
-            total += len(block)
-            if total > _EVIDENCE_MAX_BYTES:
-                return (None, _WHY_OVERSIZED_GREW)
             chunks.append(block)
     except OSError:
         return (None, _WHY_UNREADABLE)

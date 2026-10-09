@@ -12,25 +12,18 @@
 # invocation (this comment deliberately does not, or the grep would
 # double-match).
 #
-#   usage: read_audit_gate.sh [--audit-file <abs-path>] <abs-packet-dir> <abs-packet-file> [<abs-packet-file>...]
+#   usage: read_audit_gate.sh --audit-file <abs-path> <abs-packet-dir> <abs-packet-file> [<abs-packet-file>...]
 #
-# The digest path is DERIVED from <abs-packet-dir> as the shared literal
-# "$PACKET_DIR/agy-read-audit.json" — no env fallback (leg-contracts J1
-# anti-drift: an ambient TRIAD_READ_AUDIT_FILE some other shell context
-# left exported can never redirect this gate). The optional LEADING
-# `--audit-file <abs-path>` (CFR 0.29.2) is the ONE explicit override: an
-# the standing fourth leg (rule 1(d)) writes its own round-suffixed
-# `<x-name>-r<N>-read-audit.json`, and the gate reads THAT instead. Still
-# argv-only, and narrow: the value must be ABSOLUTE, live inside
-# <abs-packet-dir> (no symlink resolution), and match one of exactly TWO
-# shapes — DIRECTLY in the packet dir with basename
-# `x-<name>-r<N>-read-audit.json` (v1 X leg), or the v2 per-attempt path
-# `results-r<N>/<name>/attempt-<K>/read-audit.json`. The STANDING
-# agy-read-audit.json is never a legal override. Anything else is a usage
-# error (64).
+# `--audit-file` is REQUIRED and LEADING: the read audit of ONE agy attempt,
+# `<abs-packet-dir>/results-r<N>/<name>/attempt-<K>/read-audit.json` — the
+# only legal shape. No env fallback (leg-contracts J1 anti-drift: an ambient
+# TRIAD_READ_AUDIT_FILE some other shell context left exported can never
+# redirect this gate), no default path. The value must be ABSOLUTE and live
+# inside <abs-packet-dir> (no symlink resolution); anything else, and a
+# missing flag, is a usage error (64).
 #
 # stdout: one "[gate] <VERDICT> <file>" line per EVALUATED packet file
-#   (the ABSENT/symlink/oversized refusals evaluate none; the broken-evidence
+#   (the ABSENT/symlink refusals evaluate none; the broken-evidence
 #   stop evaluates no later file), then
 #   the final greppable summary
 #   "READ_AUDIT_GATE_<VERDICT> checked=<n> pass=<n> void=<n>
@@ -42,10 +35,8 @@
 #        2 ABSENT       (no digest file — check the dispatch env FIRST)
 #        3 VOID         (>=1 confirmed miss with files_read_omitted == 0)
 #        4 INCONCLUSIVE (broken evidence, capped digest, symlinked digest,
-#                        an audit over the 64 MiB evidence cap — refused
-#                        before jq reads it, gate-1 r21 row r21-2 — or an
-#                        at-or-over-cap packet path — a prefix identity the
-#                        digest cannot confirm)
+#                        or an at-or-over-cap packet path — a prefix
+#                        identity the digest cannot confirm)
 #       64 usage        (bad argv — incl. a nonexistent packet file: a stale
 #                        or mistyped packet name would false-VOID a
 #                        compliant leg, so it fails loud here instead)
@@ -77,23 +68,19 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
 fi
 
 usage_die() {
-  echo "usage: read_audit_gate.sh [--audit-file <abs-path>] <abs-packet-dir> <abs-packet-file> [<abs-packet-file>...]" >&2
+  echo "usage: read_audit_gate.sh --audit-file <abs-path> <abs-packet-dir> <abs-packet-file> [<abs-packet-file>...]" >&2
   echo "error: $*" >&2
   exit 64
 }
 
-# Optional LEADING `--audit-file <abs-path>` (CFR 0.29.2): the standing fourth
-# leg (rule 1(d)) writes its OWN round-suffixed read audit
-# (`<x-name>-r<N>-read-audit.json`), so the gate must be retargetable. Still
-# EXPLICIT and still no env fallback (leg-contracts J1 anti-drift): the value
-# comes from argv or the shared literal below, never from the environment.
-AUDIT_FILE_OVERRIDE=""
-if [ "${1:-}" = "--audit-file" ]; then
-  [ "$#" -ge 2 ] || usage_die "--audit-file requires an absolute path"
-  AUDIT_FILE_OVERRIDE="$2"
-  shift 2
-  case "$AUDIT_FILE_OVERRIDE" in /*) : ;; *) usage_die "--audit-file must be an absolute path: $AUDIT_FILE_OVERRIDE" ;; esac
-fi
+# REQUIRED LEADING `--audit-file <abs-path>`: the attempt's own read audit.
+# EXPLICIT and no env fallback (leg-contracts J1 anti-drift): the value comes
+# from argv, never from the environment, and there is no default path.
+[ "${1:-}" = "--audit-file" ] || usage_die "--audit-file <abs results-r<N>/<name>/attempt-<K>/read-audit.json> is required"
+[ "$#" -ge 2 ] || usage_die "--audit-file requires an absolute path"
+AUDIT_FILE_OVERRIDE="$2"
+shift 2
+case "$AUDIT_FILE_OVERRIDE" in /*) : ;; *) usage_die "--audit-file must be an absolute path: $AUDIT_FILE_OVERRIDE" ;; esac
 
 [ "$#" -ge 2 ] || usage_die "need an absolute packet dir and at least one absolute packet file"
 PACKET_DIR="$1"
@@ -101,59 +88,28 @@ shift
 case "$PACKET_DIR" in /*) : ;; *) usage_die "packet dir must be an absolute path: $PACKET_DIR" ;; esac
 [ -d "$PACKET_DIR" ] || usage_die "packet dir not found: $PACKET_DIR"
 
-# Override CONTAINMENT + SHAPE (CFR 0.29.2 gate r1): checked here because both
-# rules are relative to the now-validated PACKET_DIR.
-#   containment — the override must live DIRECTLY in the packet dir (no
-#     subdirectory, no path outside it, no symlink resolution): the round's
-#     evidence is exactly the census'd packet dir, and an audit read from
-#     anywhere else was never frozen by `capture`.
-#   X shape — the basename must be an X leg's own round-suffixed audit
-#     (`x-<name>-r<N>-read-audit.json`). Containment ALONE cannot tell the
-#     STANDING `agy-read-audit.json` from an X audit, so without this the
-#     standing Pro-leg evidence could be passed as an X leg's override and
-#     produce a false PASS for a leg that read nothing.
-#   v2 attempt shape (S4) — the ONE nested form allowed: a v2 round gives every
-#     roster entry its own immutable `results-r<N>/<name>/attempt-<K>/`, and the
-#     agy entry's read audit lives there. It is still inside the census'd packet
-#     dir; the exact four-component shape is what keeps "inside the packet dir"
-#     from degenerating into "anywhere below it".
-# _V2_ATTEMPT=1 only for the v2 per-attempt audit shape (gate-1 r16 row
-# r16-4): there an attempt stays a SIBLING of every later attempt of the round
-# and the remedies below say NEW round; the v1 shapes (the standing
-# agy-read-audit.json, an X leg's x-<name>-r<N>-read-audit.json) have no
-# sibling set, and before a v1 re-dispatch the leader renames attempt K's audit
-# aside (packet-lifecycle.md § Round integrity), so they keep "re-dispatch once".
-_V2_ATTEMPT=0
-if [ -n "$AUDIT_FILE_OVERRIDE" ]; then
-  _pkt_norm="${PACKET_DIR%/}"
-  case "$AUDIT_FILE_OVERRIDE" in
-    "$_pkt_norm"/*) : ;;
-    *) usage_die "--audit-file must live inside the packet dir $_pkt_norm (got $AUDIT_FILE_OVERRIDE) — an audit outside the census'd round dir is not this round's evidence" ;;
-  esac
-  _audit_rel="${AUDIT_FILE_OVERRIDE#"$_pkt_norm"/}"
-  if [ "${AUDIT_FILE_OVERRIDE%/*}" = "$_pkt_norm" ]; then
-    # v1: an X leg's own round-suffixed audit, DIRECTLY in the packet dir.
-    case "$_audit_rel" in
-      x-*-r[0-9]*-read-audit.json) : ;;
-      *) usage_die "--audit-file must name an X leg's own round-suffixed audit (x-<name>-r<N>-read-audit.json), got ${AUDIT_FILE_OVERRIDE##*/} — the STANDING agy-read-audit.json is never a legal override (gating an X leg on the standing leg's evidence is a false PASS)" ;;
-    esac
-  elif [[ "$_audit_rel" =~ ^results-r[1-9][0-9]*/[A-Za-z0-9][A-Za-z0-9._-]*/attempt-[1-9][0-9]*/read-audit\.json$ ]]; then
-    _V2_ATTEMPT=1
-  else
-    usage_die "--audit-file must sit DIRECTLY in the packet dir (v1: x-<name>-r<N>-read-audit.json) or be a v2 attempt audit (results-r<N>/<name>/attempt-<K>/read-audit.json): $AUDIT_FILE_OVERRIDE"
-  fi
+# CONTAINMENT + SHAPE: checked here because both rules are relative to the
+# now-validated PACKET_DIR. A round gives every roster entry its own
+# immutable `results-r<N>/<name>/attempt-<K>/`, and the agy entry's read audit
+# lives there. It is inside the census'd packet dir; the exact four-component
+# shape is what keeps "inside the packet dir" from degenerating into
+# "anywhere below it" — an audit anywhere else (the packet dir itself, a
+# foreign subdirectory, outside it) was never this attempt's evidence. The
+# attempt stays a SIBLING of every later attempt of the round, so the remedies
+# below say which cases a retry clears and which need a NEW round.
+_pkt_norm="${PACKET_DIR%/}"
+case "$AUDIT_FILE_OVERRIDE" in
+  "$_pkt_norm"/*) : ;;
+  *) usage_die "--audit-file must live inside the packet dir $_pkt_norm (got $AUDIT_FILE_OVERRIDE) — an audit outside the census'd round dir is not this round's evidence" ;;
+esac
+_audit_rel="${AUDIT_FILE_OVERRIDE#"$_pkt_norm"/}"
+if ! [[ "$_audit_rel" =~ ^results-r[1-9][0-9]*/[A-Za-z0-9][A-Za-z0-9._-]*/attempt-[1-9][0-9]*/read-audit\.json$ ]]; then
+  usage_die "--audit-file must be an attempt's read audit (results-r<N>/<name>/attempt-<K>/read-audit.json): $AUDIT_FILE_OVERRIDE"
 fi
 for f in "$@"; do
   case "$f" in /*) : ;; *) usage_die "packet file must be an absolute path: $f" ;; esac
   [ -f "$f" ] || usage_die "packet file not found: $f (for a prepare-built round the packet IS the round worktree, so these are its artifacts — <packet-dir>/wt-r<N>/brief.md and <packet-dir>/wt-r<N>/diff.prod.patch; a stale round number or a path from a prior round would false-VOID a compliant leg)"
 done
-
-# _EVIDENCE_MAX_BYTES = the 64 MiB evidence cap, the SAME value as the three
-# Python readers' `_EVIDENCE_MAX_BYTES` (agy_hook.py, collect_v2.py,
-# verdict_v2.py; gate-1 r19 row r19-2) — the gate's ONE copy of it. This
-# gate runs BEFORE agy_hook's capped reader sees the audit, so it has to
-# refuse an oversized audit itself before jq parses it whole (row r21-2).
-_EVIDENCE_MAX_BYTES=$((64 * 1024 * 1024))
 
 # _CAP = _common.py's _AGY_DIGEST_VALUE_CAP (the digest's own params-value
 # truncation) — the helper's ONE cap literal, coupled to that constant; a
@@ -162,15 +118,13 @@ _EVIDENCE_MAX_BYTES=$((64 * 1024 * 1024))
 # the one-literal property).
 _CAP=200
 
-# ONE literal across all THREE sites (leg-contracts J1): the dispatch
-# binding, the renames that clear it (prepare / capture; the v1 in-round
-# re-dispatch rename) and this gate all read/write the SAME
-# "$PACKET_DIR/agy-read-audit.json" — byte-identical, no env-var fallback.
-AGY_READ_AUDIT_FILE="${AUDIT_FILE_OVERRIDE:-$PACKET_DIR/agy-read-audit.json}"
+# The dispatch binding (env TRIAD_READ_AUDIT_FILE on the agy dispatch line)
+# and this gate name the SAME per-attempt path — no env-var fallback.
+AGY_READ_AUDIT_FILE="$AUDIT_FILE_OVERRIDE"
 
 if [ -h "$AGY_READ_AUDIT_FILE" ]; then
-  # Check-then-open symlink refusal — deliberately WEAKER than
-  # validate_verdict.py's O_NOFOLLOW read (recorded residual r2-2):
+  # Check-then-open symlink refusal — deliberately WEAKER than an
+  # O_NOFOLLOW read (recorded residual r2-2):
   # acceptable because the gate runs strictly after the agy child is
   # reaped and no other round participant writes this path. A symlink
   # here is a redirect nobody's dispatch bound — refuse it, never follow.
@@ -184,35 +138,14 @@ if [ ! -f "$AGY_READ_AUDIT_FILE" ]; then
   # unset/misbound at dispatch time is empty in exactly the same way as a
   # call that never completed. Check the dispatch env FIRST; only once that
   # is sound does an absent file mean the leg did not run.
-  # v2 per-attempt shape: the remedy is a NEW round, never a re-dispatch
-  # inside it (gate-1 r15 row r15-2): the attempt stays a sibling of every
-  # later attempt of the round, and the hook load check reads a DISPATCHED
-  # attempt with no audit as INCONCLUSIVE — one that never spawned agy is
-  # skipped, so a retry does clear that case (row r16-4). v1: re-dispatch once.
-  if [ "$_V2_ATTEMPT" -eq 1 ]; then
-    echo "[review] agy leg read-audit ABSENT — no digest file at $AGY_READ_AUDIT_FILE. Cause is EITHER a vendor call that never completed OR TRIAD_READ_AUDIT_FILE was never set at dispatch time. Verify the dispatch env; only once it is sound does this mean the leg did not run — then treat as VOID (leg-not-run). The attempt stays a SIBLING of every later attempt of this round (a dispatched attempt with no read audit is INCONCLUSIVE in the hook load check, which reads every attempt and deletes none), so a re-dispatch inside the round cannot clear it: prepare a NEW round (a fresh hook log) (if the attempt never spawned agy — no \`exec\` line in its stderr.log — the hook check skips it and a retry does clear it)." >&2
-  else
-    echo "[review] agy leg read-audit ABSENT — no digest file at $AGY_READ_AUDIT_FILE. Cause is EITHER a vendor call that never completed OR TRIAD_READ_AUDIT_FILE was never set at dispatch time. Verify the dispatch env; only once it is sound does this mean the leg did not run — then treat as VOID (leg-not-run) and re-dispatch once, as its own step after renaming attempt K's .err and -verdict.json aside (there is no audit to rename — references/packet-lifecycle.md § Round integrity)." >&2
-  fi
+  # The remedy is a NEW round, never a re-dispatch inside it (gate-1 r15 row
+  # r15-2): the attempt stays a sibling of every later attempt of the round,
+  # and the hook load check reads a DISPATCHED attempt with no audit as
+  # INCONCLUSIVE — one that never spawned agy is skipped, so a retry does
+  # clear that case (row r16-4).
+  echo "[review] agy leg read-audit ABSENT — no digest file at $AGY_READ_AUDIT_FILE. Cause is EITHER a vendor call that never completed OR TRIAD_READ_AUDIT_FILE was never set at dispatch time. Verify the dispatch env; only once it is sound does this mean the leg did not run — then treat as VOID (leg-not-run). The attempt stays a SIBLING of every later attempt of this round (a dispatched attempt with no read audit is INCONCLUSIVE in the hook load check, which reads every attempt and deletes none), so a re-dispatch inside the round cannot clear it: prepare a NEW round (a fresh hook log) (if the attempt never spawned agy — no \`exec\` line in its stderr.log — the hook check skips it and a retry does clear it)." >&2
   echo "READ_AUDIT_GATE_ABSENT checked=0 pass=0 void=0 inconclusive=0 unevaluated=$#"
   exit 2
-fi
-
-# OVERSIZED AUDIT (gate-1 r21 row r21-2): refused BEFORE any jq reads it —
-# the same refusal shape as the unreadable-audit arm (INCONCLUSIVE: broken
-# evidence, never VOID or PASS) and the same v1/v2 remedy split. The size
-# comes from `wc -c <` (portable: no `stat -f` / `stat -c` divergence); a
-# file wc cannot read yields no number and falls through to the jq arms,
-# which already refuse an unreadable audit.
-_audit_bytes="$(wc -c < "$AGY_READ_AUDIT_FILE" 2>/dev/null | tr -d '[:space:]')" || _audit_bytes=""
-if [[ "$_audit_bytes" =~ ^[0-9]+$ ]] && [ "$_audit_bytes" -gt "$_EVIDENCE_MAX_BYTES" ]; then
-  if [ "$_V2_ATTEMPT" -eq 1 ]; then
-    echo "[review] agy leg read-audit INCONCLUSIVE — $AGY_READ_AUDIT_FILE ($_audit_bytes bytes) exceeds the 64 MiB evidence cap (refused before jq reads it). Do NOT read this as VOID and do NOT read it as PASS: inspect the file directly. The oversized audit stays a SIBLING of every later attempt of this round (the hook load check refuses it as broken evidence — INCONCLUSIVE — and deletes none), so a re-dispatch inside the round cannot clear it: prepare a NEW round (a fresh hook log)." >&2
-  else
-    echo "[review] agy leg read-audit INCONCLUSIVE — $AGY_READ_AUDIT_FILE ($_audit_bytes bytes) exceeds the 64 MiB evidence cap (refused before jq reads it). Do NOT read this as VOID and do NOT read it as PASS: inspect the file directly, then re-dispatch once (rename attempt K's audit aside first — references/packet-lifecycle.md § Round integrity)." >&2
-  fi
-  echo "READ_AUDIT_GATE_INCONCLUSIVE checked=0 pass=0 void=0 inconclusive=0 unevaluated=$#"
-  exit 4
 fi
 
 n_args=$#
@@ -253,14 +186,9 @@ for PACKET_ABS_PATH in "$@"; do
     # jq could not produce a usable answer — a BROKEN reading of the
     # evidence, not evidence. Never silently VOID (or PASS) on it. rc>=2
     # covers every jq failure mode: read, parse, program, or runtime error.
-    # v2 per-attempt shape: the remedy is a NEW round (gate-1 r15 row
-    # r15-2) — the unreadable audit stays a sibling of every later attempt,
-    # INCONCLUSIVE in the hook check. v1: re-dispatch once (row r16-4).
-    if [ "$_V2_ATTEMPT" -eq 1 ]; then
-      echo "[review] agy leg read-audit INCONCLUSIVE — jq could not produce a usable answer from $AGY_READ_AUDIT_FILE (rc=$jq_rc: read, parse, program, or runtime error). Do NOT read this as VOID and do NOT read it as PASS: inspect the file directly. The unreadable audit stays a SIBLING of every later attempt of this round (the hook load check reads it as broken evidence — INCONCLUSIVE — and deletes none), so a re-dispatch inside the round cannot clear it: prepare a NEW round (a fresh hook log)." >&2
-    else
-      echo "[review] agy leg read-audit INCONCLUSIVE — jq could not produce a usable answer from $AGY_READ_AUDIT_FILE (rc=$jq_rc: read, parse, program, or runtime error). Do NOT read this as VOID and do NOT read it as PASS: inspect the file directly, then re-dispatch once (rename attempt K's audit aside first — references/packet-lifecycle.md § Round integrity)." >&2
-    fi
+    # The remedy is a NEW round (gate-1 r15 row r15-2) — the unreadable audit
+    # stays a sibling of every later attempt, INCONCLUSIVE in the hook check.
+    echo "[review] agy leg read-audit INCONCLUSIVE — jq could not produce a usable answer from $AGY_READ_AUDIT_FILE (rc=$jq_rc: read, parse, program, or runtime error). Do NOT read this as VOID and do NOT read it as PASS: inspect the file directly. The unreadable audit stays a SIBLING of every later attempt of this round (the hook load check reads it as broken evidence — INCONCLUSIVE — and deletes none), so a re-dispatch inside the round cannot clear it: prepare a NEW round (a fresh hook log)." >&2
     echo "[gate] INCONCLUSIVE $PACKET_ABS_PATH"
     n_inconclusive=$((n_inconclusive + 1))
     # Parse state is digest-global — further files would fail identically.
@@ -282,7 +210,7 @@ for PACKET_ABS_PATH in "$@"; do
        | "[review] agy leg ATTEMPTED but failed to read the packet: \(join(", "))"' \
       "$AGY_READ_AUDIT_FILE" >&2 || true
     if [ "${omitted:-0}" -gt 0 ]; then
-      echo "[review] agy leg read-audit INCONCLUSIVE ($omitted files_read entries capped) — weigh read_audit.digest.attempts[] (per-attempt totals) + read_audit.digest.read_attempts[] before voiding; there is no fuller digest and only the FINAL attempt's raw stream is retained, so if the census does not settle it: on v2 a narrower packet is a NEW round (a retry re-renders the frozen prompt); on v1 re-dispatch with a narrower packet" >&2
+      echo "[review] agy leg read-audit INCONCLUSIVE ($omitted files_read entries capped) — weigh read_audit.digest.attempts[] (per-attempt totals) + read_audit.digest.read_attempts[] before voiding; there is no fuller digest and only the FINAL attempt's raw stream is retained, so if the census does not settle it, a narrower packet is a NEW round (a retry re-renders the frozen prompt)" >&2
       echo "[gate] INCONCLUSIVE $PACKET_ABS_PATH"
       n_inconclusive=$((n_inconclusive + 1))
     else
@@ -293,15 +221,8 @@ for PACKET_ABS_PATH in "$@"; do
       # it — a re-dispatch inside the round CAN clear this one. The message
       # names that CONDITION (gate-1 r16 row r16-8): a census that is missing
       # or incomplete is refused by the hook check, and then only a NEW round
-      # clears it. That condition is a v2 fact (gate-1 r17 row r17-3): the v1
-      # shapes have no sibling set and their re-dispatch first renames attempt
-      # K's audit aside, so they keep the plain "re-dispatch once" wording — the same
-      # `_V2_ATTEMPT` branch r16-4 gave the other arms.
-      if [ "$_V2_ATTEMPT" -eq 1 ]; then
-        echo "[review] agy leg VOID — packet path not in read_audit.digest.files_read ($PACKET_ABS_PATH); retry the entry once on the unchanged basis — a retry inside the round clears this because the read-blind attempt wrote a readable census with its conversation ids and is attributed like any other attempt; if that census is missing or incomplete the hook check refuses and a NEW round is needed; still VOID after that retry is a missing result and the round stays INCOMPLETE (R-AGREE — no second re-dispatch)" >&2
-      else
-        echo "[review] agy leg VOID — packet path not in read_audit.digest.files_read ($PACKET_ABS_PATH); re-dispatch once (rename attempt K's audit aside first — references/packet-lifecycle.md § Round integrity) with the containment block; still VOID after that re-dispatch is terminally missing this round (2-family + owner decision, rule 1 degraded mode — no second re-dispatch)" >&2
-      fi
+      # clears it.
+      echo "[review] agy leg VOID — packet path not in read_audit.digest.files_read ($PACKET_ABS_PATH); retry the entry once on the unchanged basis — a retry inside the round clears this because the read-blind attempt wrote a readable census with its conversation ids and is attributed like any other attempt; if that census is missing or incomplete the hook check refuses and a NEW round is needed; still VOID after that retry is a missing result and the round stays INCOMPLETE (R-AGREE — no second re-dispatch)" >&2
       echo "[gate] VOID $PACKET_ABS_PATH"
       n_void=$((n_void + 1))
     fi

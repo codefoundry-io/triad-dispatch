@@ -27,15 +27,16 @@ POLICY = BIN / "policies" / "gemini-readonly.toml"
 
 
 def _fake_gemini_dir(tmp_path: Path) -> str:
-    # The fake answers `--version` and `--help` because the real CLI does and
-    # the read-only (review) route now probes both before dispatching
-    # (spec case C16 — version floor >= 0.34.0 + capability preflight).
+    # The fake answers `--version` and `--help` because the real CLI does:
+    # every route probes `--version` (the 0.63.0 route floor, owner decision
+    # D-GEMINI-FLOOR-20261009) and the read-only (review) route also probes
+    # `--help` (spec case C16 capability preflight).
     fixture = tmp_path / "fake_gemini.py"
     fixture.write_text(
         "import json, os, sys\n"
         "argv = sys.argv[1:]\n"
         "if '--version' in argv:\n"
-        "    print('0.60.0'); raise SystemExit(0)\n"
+        "    print('0.63.0'); raise SystemExit(0)\n"
         "if '--help' in argv:\n"
         "    print('Options:\\n  --approval-mode\\n  --policy\\n"
         "  -o, --output-format\\n'); raise SystemExit(0)\n"

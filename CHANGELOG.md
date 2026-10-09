@@ -1,6 +1,29 @@
 # Changelog
 
-## 0.2.1570 — 2026-10-09
+## 0.2.1586 — 2026-10-09
+
+**The model pin travels as one option token.** A review line passes `--model=<v>` (agy also `--effort=<v>`),
+and the gemini and agy wrappers hand the CLI `--model=<v>` / `--effort=<v>`, so a model value shaped like an
+option reaches the CLI as the value. Nothing to do on update.
+
+**Cross-family review — a refused native reply is no longer sealed.** The admission seals only an admitted
+reply; a refused one collects as not admitted and `retry` records it when it replaces the attempt. The 64 MiB
+evidence cap is gone.
+
+**Gemini CLI floor 0.63.0 on every route.** The gemini wrapper refuses a CLI below 0.63.0 (prereleases of
+0.63.0 included) before any vendor call on the raw, write, `--web` and review routes alike and records the
+observed `cli_version` on every route (owner decision D-GEMINI-FLOOR-20261009, one route floor independent of
+the model; no model list or catalog probe). Update the gemini CLI.
+
+**Cross-family review — `retry` no longer adopts an interrupted retry's attempt.** An `attempt-<K+1>/` left
+beside a round record naming K makes `retry` refuse before it writes anything; prepare a new round.
+
+**Cross-family review — the legacy v1 round is retired.** `review_scratch.py prepare` always prepares the
+named-roster round; `--v2` is still accepted and changes nothing. `--x-leg`, `--no-x-leg`, `$TRIAD_REVIEW_X_LEGS`,
+the user file `~/.config/triad/review-legs.json`, `lib/validate_verdict.py` and
+`references/review-legs.example.json` are gone; a v1 project roster file (`schema: triad-review-legs.v1`) is
+refused by the roster schema. A packet prepared by an earlier version: close it with `review_scratch.py close`
+and prepare a new round.
 
 **The daily drift checks are removed.** `bin/agy-daily-check.sh` and
 `bin/gemini-daily-check.sh` no longer ship; remove a cron or launchd entry you made for them. Run

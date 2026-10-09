@@ -2,13 +2,10 @@
 """verdict_v2.py - deterministic (no AI) admission helper for the CANONICAL
 v2 LegVerdict, host A side.
 
-This is the OPT-IN v2 path. The legacy v1 validator (`validate_verdict.py`,
-pydantic `verdict_schema.LegVerdict`) is untouched and stays the gate for
-existing v1 rounds; nothing here imports it and nothing there imports this.
-The two shapes are mutually rejecting on purpose (v2 adds
-`schema_version`/`leg_name`/`attempt`/`route` and renames a finding's `file`
-to `path`), so a reply produced for one path can never be silently admitted
-by the other.
+This is the review round's ONE verdict admission. The canonical shape
+carries `schema_version`/`leg_name`/`attempt`/`route` and names a finding's
+location `path` (the retired pre-v2 shape named it `file`), so a reply
+produced for the retired shape is never silently admitted here.
 
 Authority: the vendored canonical contract
 `<skill-root>/spec/contracts/leg-verdict.schema.json` (JSON Schema Draft
@@ -64,8 +61,7 @@ return an `Admission`. A consumer that loads this file BY PATH rather than
 by a normal import must register the module in `sys.modules` before
 `exec_module` - `from __future__ import annotations` makes `Admission`'s
 field annotations strings, and `dataclasses` resolves them through
-`sys.modules[cls.__module__]` (the same registration gotcha the v1 module
-documents for its pydantic schema loader).
+`sys.modules[cls.__module__]`.
 
 ADMIT mode (`--admit <raw-reply.txt>`) exists for the NATIVE claude leg,
 whose reply is raw text terminated by a marker line rather than a
@@ -138,15 +134,6 @@ EXIT_INVALID = 1
 EXIT_UNPARSEABLE = 2
 EXIT_MARKER_ABSENT = 3
 EXIT_USAGE = 64
-
-# THE EVIDENCE SIZE CAP (gate-1 r20 row r20-2) — ONE value, spelled in three
-# modules: `agy_hook._EVIDENCE_MAX_BYTES` (stdlib-only, importable on its
-# own), `collect_v2._EVIDENCE_MAX_BYTES`, and this one (this module imports
-# neither sibling). A change touches all three; t11 axis 27 pins them equal.
-# Every genuine reply is a few KB, so a file above the cap is misfiled or
-# corrupt, refused on the descriptor's fstat BEFORE a byte is read.
-_EVIDENCE_MAX_BYTES = 64 * 1024 * 1024
-_EVIDENCE_CAP_TEXT = "64 MiB"
 
 # THE SEAL OF A RECORDED ATTEMPT (R-BIND, case C66) — the same name as
 # `collect_v2._SEAL_NAME`, spelled here because this module imports no
@@ -463,26 +450,15 @@ def _read_regular_file_no_symlink(path: Path) -> tuple[bytes | None, str | None]
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as e:
         return None, f"cannot read {path}: {e}"
-    too_big = (f"{path} exceeds the {_EVIDENCE_CAP_TEXT} evidence cap, "
-               f"refusing to read (no genuine reply is anywhere near that "
-               f"size: misfiled or corrupt)")
     try:
         fst = os.fstat(fd)
         if not stat.S_ISREG(fst.st_mode):
             return None, f"{path} is not a regular file"
-        # BOUNDED (gate-1 r20 row r20-2): refused on the fstat before a byte
-        # is read, and the loop stops at the cap should the file grow.
-        if fst.st_size > _EVIDENCE_MAX_BYTES:
-            return None, too_big
         chunks: list[bytes] = []
-        total = 0
         while True:
             chunk = os.read(fd, 1024 * 1024)
             if not chunk:
                 break
-            total += len(chunk)
-            if total > _EVIDENCE_MAX_BYTES:
-                return None, too_big
             chunks.append(chunk)
         return b"".join(chunks), None
     # THE DESCRIPTOR PHASE ANSWERS IN THE SAME SHAPE (gate-1 r10 row r10-8).
@@ -578,9 +554,8 @@ def _extract_object_text(text: str, end_marker: str) -> tuple[str | None, str | 
     function sees an escaped-transport reply the marker is literal again
     (gate 1 r3 row r3-8). The earlier form accepted `html.escape(end_marker)`
     HERE, which admitted the RAW body of a transport that had escaped the
-    angle brackets but not the quotes - entities left inside the strings,
-    and a different object from the one the legacy validator derives from
-    the same bytes."""
+    angle brackets but not the quotes - entities left inside the strings.
+    """
     lines = text.split("\n")
     last = None
     for index in range(len(lines) - 1, -1, -1):
@@ -628,11 +603,9 @@ def _admit_raw_with_text(
     admitted, and it is the only thing that decides it.
 
     ESCAPED TRANSPORT (the marker itself came through escaped): the whole
-    reply is unescaped ONCE and admitted from that - the legacy
-    `validate_verdict.py` pass-2 semantics, on the same bytes. Admitting the
-    raw body of such a reply is what let `&lt;`/`&gt;` survive inside the
-    admitted strings when the transport escaped angle brackets but not
-    quotes, so the two validators derived DIFFERENT objects from one reply
+    reply is unescaped ONCE and admitted from that. Admitting the raw body of
+    such a reply is what let `&lt;`/`&gt;` survive inside the admitted
+    strings when the transport escaped angle brackets but not quotes
     (gate 1 r3 row r3-8).
 
     LITERAL MARKER: RAW FIRST, unchanged. An already-valid reply - including
@@ -778,45 +751,23 @@ def _write_admitted_out(target: Path, payload: str) -> str | None:
 
 
 def _write_admission_seal(target: Path, receipt: Path, receipt_sha: str,
-                          payload: str | None, expected: dict) -> str | None:
+                          payload: str, expected: dict) -> str | None:
     """None on success, else a one-line reason. THE NATIVE ADMISSION IS A
     RECORD STEP (R-BIND, case C66): right after `--admitted-out` is linked
-    into place, the attempt is sealed beside it with the digests of the
-    bytes this admission JUDGED - the admitted object (result) and the raw
-    reply it was cut from (receipt; no read evidence on this route) - in the
-    shape `collect_v2` re-checks. A reply that FAILS admission (`payload`
-    None) is sealed too, `invalid` with no result, so a second reply saved
-    over it is never admitted into the same attempt (C66 limit 5; a retry
-    stays open for it, R-RETRY). `receipt_sha` is the sha256 of the raw
+    into place, the attempt is sealed `valid` beside it with the digests of
+    the bytes this admission JUDGED - the admitted object (result) and the
+    raw reply it was cut from (receipt; no read evidence on this route) - in
+    the shape `collect_v2` re-checks. Only an ADMITTED reply is sealed: a
+    refused one stays unsealed, collects as not admitted and `retry` records
+    it when it replaces the attempt. `receipt_sha` is the sha256 of the raw
     reply as read. Exclusive: an existing seal is never replaced."""
     doc = {"schema_version": 1, "leg_name": expected["leg_name"],
-           "attempt": expected["attempt"],
-           "state": "invalid" if payload is None else "valid",
-           "files": {"result": [target.name, None if payload is None
-                                else hashlib.sha256(
-                                    payload.encode("utf-8")).hexdigest()],
+           "attempt": expected["attempt"], "state": "valid",
+           "files": {"result": [target.name, hashlib.sha256(
+                         payload.encode("utf-8")).hexdigest()],
                      "receipt": [receipt.name, receipt_sha],
                      "read_evidence": None}}
     seal = target.parent / _SEAL_NAME
-    if payload is None:
-        # FAIL CLOSED (M2): a refused reply's seal is created at its final
-        # name, so a write cut short (a full disk, a stop) still closes the
-        # attempt to a second reply; `collect` reports it, `retry` is open.
-        try:
-            fd = os.open(seal, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                         | getattr(os, "O_NOFOLLOW", 0), 0o644)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
-                fh.flush()
-                os.fsync(fh.fileno())
-        except OSError as e:
-            return (f"--admitted-out: the reply was refused but its seal "
-                    f"could not be written in full ({e}) - if {seal} exists "
-                    f"the attempt is closed to any other reply (collect "
-                    f"reports it INVALID, retry stays open); if not, free "
-                    f"the cause and run this same admit line again; save no other "
-                    f"reply there")
-        return None
     tmp = target.with_name(f".tmp-seal-{os.getpid()}-{_SEAL_NAME}")
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -1039,19 +990,8 @@ def main(argv: list[str]) -> int:
         print(_flatten(why), file=sys.stderr)
         return EXIT_USAGE
     data, err = _read_regular_file_no_symlink(raw_path)
-    receipt_sha = None
     if err is not None:
         admission = _fail(EXIT_INVALID, err)
-        try:
-            # A REGULAR reply refused for its size was still judged: digest
-            # it streaming (a link, a directory or an unreadable path is not).
-            if stat.S_ISREG(raw_path.lstat().st_mode):
-                fd = os.open(raw_path, os.O_RDONLY | os.O_NOFOLLOW
-                             | os.O_NONBLOCK)
-                with os.fdopen(fd, "rb") as fh:
-                    receipt_sha = hashlib.file_digest(fh, "sha256").hexdigest()
-        except OSError:
-            receipt_sha = None
     else:
         receipt_sha = hashlib.sha256(data).hexdigest()
         try:
@@ -1063,22 +1003,9 @@ def main(argv: list[str]) -> int:
             admission, obj_text = _admit_raw_with_text(text, expected,
                                                        parsed["end_marker"])
     if not admission.ok:
+        # A refused reply is not sealed (R-BIND): `collect` reports the
+        # attempt as not admitted and `retry` records it when it replaces it.
         print(admission.reason, file=sys.stderr)
-        out = parsed["admitted_out"]
-        # The reply was JUDGED and refused: record it (C66 limit 5) - unless
-        # the attempt is sealed, or already holds an admitted result whose
-        # seal is missing (the next collection judges and seals that one).
-        if (out is not None and admission.exit_code != EXIT_USAGE
-                and receipt_sha is not None
-                and not os.path.lexists(Path(out).parent / _SEAL_NAME)
-                and not os.path.lexists(Path(out))):
-            seal_err = _write_admission_seal(
-                Path(out), raw_path, receipt_sha, None, expected)
-            if seal_err is not None:
-                # HOST fault: an unsealed refusal would let a second reply in.
-                print(seal_err, file=sys.stderr)
-                return EXIT_USAGE
-            _heartbeat(Path(out))
         return admission.exit_code
     if parsed["admitted_out"] is not None:
         write_err = _write_admitted_out(Path(parsed["admitted_out"]), obj_text or "")

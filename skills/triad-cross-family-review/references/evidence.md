@@ -103,15 +103,12 @@ Two consequences the admission rule is built on:
   (`&#60;END-VERDICT&#62;`) alike. The earlier code matched one escaper
   spelling only, so a numeric-entity marker was not recognised at all and a
   valid reply died at exit 3.
-- **Both validators must derive the SAME object from the same bytes.** The
-  legacy `validate_verdict.py` finds only the LITERAL marker on its pass 1 and
-  unescapes the WHOLE text on its pass 2; when `verdict_v2` recognised an
-  escaped marker inside its RAW pass, a transport that escaped angle brackets
-  but not quotes left `&lt;` / `&gt;` entities intact inside the admitted
-  strings while the legacy validator on the same reply produced clean ones.
-  The admission rule (marker literal → raw-first; marker only
-  unescapes-to-literal → whole-text unescape + NOTICE) makes the two agree by
-  construction (cross-checked on the measured bytes).
+- **An escaped transport is unescaped WHOLE.** When `verdict_v2` recognised
+  an escaped marker inside its RAW pass, a transport that escaped angle
+  brackets but not quotes left `&lt;` / `&gt;` entities intact inside the
+  admitted strings. The admission rule (marker literal → raw-first; marker
+  only unescapes-to-literal → whole-text unescape + NOTICE) admits the clean
+  object (cross-checked on the measured bytes).
 
 ## Measured timeouts
 
@@ -151,10 +148,9 @@ carried the no-exec directive. That is the origin of Hard rule 7, and of the
 pairing rule: the no-exec directive AND a generous timeout, not either alone.
 
 A live-run finding can still be valid — it surfaces real robustness gaps — so
-capture the gap and verify it like any finding (SKILL rule 4). On v2 a valid
+capture the gap and verify it like any finding (SKILL rule 4). A valid
 answer is never re-dispatched (R-RETRY): only an entry that failed to run gets
-`retry`, and another answer comes from a new round. On a LEGACY v1 round,
-capture the gap, then re-dispatch read-only.
+`retry`, and another answer comes from a new round.
 
 ## Budget note
 
@@ -170,13 +166,12 @@ accepted for the pre-merge gate; cost is never a reason to skip a leg.
 
 ## Max-thinking directive — provenance
 
-The v2 claude leg carries no max-thinking (intensity) request — neither in its
+The claude leg carries no max-thinking (intensity) request — neither in its
 prompt (the shared spec's clauses give every leg the same prompt, R-PROMPT) nor
 in any reviewer agent body, the three base presets and the three `-web` twins
 alike; its depth lever is the preset's frontmatter effort (SKILL rules 10 and
 15). The earlier directive rested on a lab observation with no measurement
-behind it; only the LEGACY v1 claude prompt (`_render_claude_prompt` in
-`lib/review_scratch.py`) still carries it.
+behind it; the retired v1 claude prompt was its last carrier.
 
 ## Why the cross-family gate exists
 

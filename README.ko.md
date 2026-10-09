@@ -60,13 +60,14 @@ Claude 가 `triad-codex-dispatch` skill 을 실행하고, codex wrapper 를 호�
      사용됩니다.
 
    또한 PATH 에 **`python3 >= 3.12`** (wrapper 는 `#!/usr/bin/env python3` 로
-   실행)와, 그 `python3` 로 import 가능한 **pydantic 2.x** (`'pydantic>=2,<3'`) (cross-family-review
-   leg 이 `--pydantic verdict_schema:LegVerdict` 로 디스패치하고, 스키마가 v2 전용
-   API 를 씁니다), cross-family review 의 **jsonschema** (Draft 2020-12;
+   실행)와, cross-family review 의 **jsonschema** (Draft 2020-12;
    Mac `pip3 install jsonschema`, Ubuntu 24.04 `apt install python3-jsonschema`) — 없으면
    review helper 가 exit 64 와 그 설치 안내로 멈춥니다 — 그리고 플러그인 마켓플레이스 + 네임스페이스 플러그인 skill 을
    지원할 만큼 **최신 Claude Code** 가 필요합니다. claude 리뷰 leg 는 세션 내
-   `Agent` 이므로 별도 로그인이 필요 없습니다.
+   `Agent` 이므로 별도 로그인이 필요 없습니다. **pydantic 2.x**
+   (`'pydantic>=2,<3'`, 그 `python3` 로 import 가능) 는 wrapper 에
+   `--pydantic module:Class` 를 넘기는 호출자에게만 필요합니다 (스키마 검사가 v2
+   전용 API 를 씁니다).
 
    > **Ubuntu 24.04 주의.** `apt install python3-pydantic` 은 **1.10** 이라 동작하지
    > 않고, PEP 668 로 시스템 인터프리터가 externally-managed 이므로 `pip3 install
@@ -135,7 +136,7 @@ Claude 가 `triad-codex-dispatch` skill 을 실행하고, codex wrapper 를 호�
 step 1 과 같은 방식으로 다른 CLI 를 설치 + 로그인합니다: `codex login`; `agy`
 OAuth 로그인; 또는 `gemini` 조직 로그인(엔터프라이즈 / 조직 계정 전용).
 `triad-cross-family-review` 가 Google-family leg 를 런타임 해소
-(`TRIAD_GOOGLE_REVIEW_CLI`, 없으면 agy, 없으면 gemini)하고 claude(`Agent`) +
+(항목의 `google.route` 고정, 없으면 그 항목에 하나뿐인 route 블록, 없으면 agy, 없으면 gemini)하고 claude(`Agent`) +
 codex + 그 leg 를 실행합니다.
 
 ### claude 리뷰 leg 의 모델과 effort 고르기

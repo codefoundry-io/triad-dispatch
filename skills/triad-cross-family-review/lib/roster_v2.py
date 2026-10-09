@@ -37,10 +37,8 @@ Rules this file implements (shared spec `reference/review-rules.md`):
 Model slugs and effort tiers live in the DATA files, never here
 (`~/.claude/CLAUDE.md` § Web search rules — no vendor model IDs in code).
 
-Scope (R-ROSTER, PRD): v2 resolves the SHIPPED defaults plus the PROJECT
-override, and nothing else. A user-scope roster file (`$XDG_CONFIG_HOME/triad/
-review-legs.json`, the v1 X-leg location) is never read; when one exists the
-resolver says so once on stderr so its owner is not left believing it applies.
+Scope (R-ROSTER, PRD): the resolver reads the SHIPPED defaults plus the
+PROJECT override, and nothing else.
 
 CLI:
     python3 roster_v2.py resolve <abs-worktree>
@@ -81,9 +79,7 @@ SCHEMA_PATH = SPEC_DIR / "contracts" / "review-legs.schema.json"
 VERDICT_SCHEMA_PATH = SPEC_DIR / "contracts" / "leg-verdict.schema.json"
 
 SCHEMA_ID_V2 = "triad-review-legs.v2"
-SCHEMA_ID_V1 = "triad-review-legs.v1"
 PROJECT_OVERRIDE_REL = (".claude", "triad-review-legs.json")
-USER_SCOPE_REL = ("triad", "review-legs.json")
 
 # The PRODUCER schema projection (PRD: "the projection aids generation; it
 # never admits"). Every transform below was forced by a LIVE vendor probe
@@ -416,32 +412,6 @@ def _override_present(path: Path) -> bool:
     return True
 
 
-def _user_scope_path() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME")
-    root = Path(base) if base else Path.home() / ".config"
-    return root.joinpath(*USER_SCOPE_REL)
-
-
-def _note_user_scope_file() -> None:
-    """v2 = defaults + project override (R-ROSTER / PRD). A user-scope roster
-    file is INERT here; say so once rather than leaving its owner to believe
-    a stale file still configures their legs."""
-    try:
-        present = _user_scope_path().exists()
-    except (OSError, RuntimeError):
-        # OSError = an unreadable config root, not this tool's problem.
-        # RuntimeError = what `Path.home()` raises when the home directory
-        # cannot be determined at all (no $HOME, no usable passwd entry) —
-        # NOT an OSError, so it escaped as a traceback and took the whole
-        # resolve with it, over an advisory NOTE about a file v2 never reads
-        # (gate-1 r3 row r3-14).
-        return
-    if present:
-        print(f"NOTE: roster_v2: user-scope roster file ignored under v2 "
-              f"(project override only — R-ROSTER): {_user_scope_path()}",
-              file=sys.stderr)
-
-
 # ---------------------------------------------------------------------------
 # merge + capability refusals
 # ---------------------------------------------------------------------------
@@ -542,8 +512,8 @@ def _claude_preset(named: str, web: bool) -> dict:
 def _check_capabilities(leg: dict) -> None:
     """Refusals EVERY entry must pass — enabled or not.
 
-    v1 validated every configured leg, and that is the rule kept here: a
-    disabled entry is a leg the operator intends to switch on later, so
+    Every configured leg is validated, enabled or not: a disabled entry is a
+    leg the operator intends to switch on later, so
     letting its slug rot unnoticed only moves the failure to the round that
     finally enables it (gate 1, row 17).
 
@@ -723,17 +693,10 @@ def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
     known = {leg["name"] for leg in legs}
     source = "defaults"
 
-    _note_user_scope_file()
     shipped = {leg["name"]: dict(leg) for leg in legs}
     path = project_override_path(worktree)
     if _override_present(path):
         over = _read_json(path, "project override")
-        declared = over.get("schema")
-        if declared == SCHEMA_ID_V1 or "x_legs" in over:
-            raise RosterError(
-                f"{path} is a v1 X-leg file (schema {SCHEMA_ID_V1}) — use the "
-                f"legacy `prepare` without --v2, or migrate it to "
-                f"{SCHEMA_ID_V2}")
         _validate(over, schema, f"project override {path}")
         seen = set()
         for leg in over["legs"]:
@@ -949,9 +912,9 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
     schema projection travels as `Dispatch.schema_text` (bytes) plus
     `Dispatch.schema_file` (the path the argv points at); the caller writes
     it after its own pre-mutation boundary. Writing it from here made
-    `prepare --v2` allocate attempt directories BEFORE `_precheck_packet_dir`
-    / `_preserve_round_invariants` / `_worktree_add`, so a refusal at any of
-    those burned the round label (gate 1 r2 row r2-1).
+    `prepare` allocate attempt directories BEFORE `_precheck_packet_dir` /
+    `_worktree_add`, so a refusal at any of those burned the round label
+    (gate 1 r2 row r2-1).
     """
     if entry.skipped_reason:
         raise RosterError(f"roster entry '{entry.name}' is not startable: "
@@ -989,6 +952,11 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
 
     def review_env() -> dict:
         return {"TRIAD_REVIEW_LOG_DIR": logs_dir}
+
+    def pin(flag: str, value, what: str) -> str:
+        # ONE option token (M-1): `--model=<v>` keeps a value shaped like an
+        # option (`--help`, `-x`) out of the wrapper parser's option scan.
+        return f"{flag}={_token(value, what)}"
     common_tail = ["--prompt-file",
                    _token(ctx.prompt_file, "prompt file", absolute=True),
                    "--cwd", _token(ctx.worktree, "worktree", absolute=True),
@@ -1011,7 +979,7 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
         if block.get("reasoning"):
             argv += ["--reasoning", _token(block["reasoning"], "codex reasoning")]
         if block.get("model"):
-            argv += ["--model", _token(block["model"], "codex model")]
+            argv.append(pin("--model", block["model"], "codex model"))
         schema_file = ctx.attempt_dir / PROJECTED_SCHEMA_NAME
         argv += ["--output-schema-file",
                  _token(schema_file, "producer schema projection", absolute=True)]
@@ -1033,9 +1001,9 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
             # investigation clause (R-REVIEW-WEB); never `--web` (R-INVEST).
             argv.append("--review-web")
         if block.get("model"):
-            argv += ["--model", _token(block["model"], "agy model")]
+            argv.append(pin("--model", block["model"], "agy model"))
         if block.get("effort"):
-            argv += ["--effort", _token(block["effort"], "agy effort")]
+            argv.append(pin("--effort", block["effort"], "agy effort"))
         schema_file = ctx.attempt_dir / PROJECTED_SCHEMA_NAME
         argv += ["--json-schema-file",
                  _token(schema_file, "producer schema projection", absolute=True)]
@@ -1059,7 +1027,7 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
             # The complete web profile, never an overlay (R-REVIEW-WEB).
             argv.append("--review-web")
         if block.get("model"):
-            argv += ["--model", _token(block["model"], "gemini model")]
+            argv.append(pin("--model", block["model"], "gemini model"))
         # No effort flag on this route, ever (PRD: never translate an agy effort
         # into an unsupported Gemini argument).
         return Dispatch(kind="wrapper", argv=argv + common_tail,
