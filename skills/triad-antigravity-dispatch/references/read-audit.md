@@ -21,32 +21,25 @@ the repair-agent's input artifact.
 ## Binding the file
 
 Set `TRIAD_READ_AUDIT_FILE=<absolute-path>` in the wrapper invocation's
-environment. The wrapper writes the digest to exactly that path — parent dirs
-created, existing content overwritten. This **override path stays the
-BINDING artifact** a consuming gate should read — the only file an override
-call writes (mode `0600`, published atomically; a symlink already at the path
-is replaced, its target untouched). Unset, the wrapper writes ONLY to its own
-default location (`_logs/antigravity/read-audit/<UTC-ts>-<pid>-<uuid8>.json`,
-self-pruned like run-logs) as an operator convenience; no caller reads that
-default today. Writing is best-effort throughout: an IO failure leaves the
-exit code and classification unchanged, and the `read-audit-file:` line is
-simply omitted.
+environment, AT DISPATCH TIME — the evidence cannot be created afterwards. The
+wrapper then writes only that path (the engine side — atomic publish, mode,
+the unset default location and its prune: the plugin `README.md`
+§ Read-audit digest file). Writing is best-effort: an IO failure leaves the
+exit code and classification unchanged and omits the `read-audit-file:` line.
 
 ## Notes for a consuming gate
 
-- Bind the env var AT DISPATCH TIME. The evidence cannot be created afterwards.
-- Read the FILE with `jq`, re-rooted at `.digest`. The wrapper mirrors the
-  vendor's stderr verbatim, so a forged digest LINE on stderr is possible; the
-  file is a channel the vendor process never touches.
-- The digest carries the lists `files_read`, `web`, `denied` and `read_attempts`
-  (each with `<list>_omitted`), the counters `event_count` / `tool_steps` /
-  `error_steps`, `conversation_ids`, `runtime_models`, and the per-attempt
-  `attempts[]` rows (each with its own `status`).
-- A hit in `files_read` means the tool call SUCCEEDED; a failed or denied attempt
-  lands in `read_attempts` with an `outcome` and a `class`, and does not prove a
-  read. Across retries the per-attempt digests are MERGED, so a retry cannot
-  conceal an earlier attempt's reads.
+- Read the FILE with `jq`, re-rooted at `.digest` — never the stderr digest
+  line: the wrapper mirrors the vendor's stderr verbatim, so a forged LINE is
+  possible; the file is a channel the vendor process never touches.
+- The digest's keys, the success-only `files_read` rule, the per-attempt
+  `attempts[]` rows and the retry merge are the wrapper's
+  (the plugin `README.md` § `antigravity_wrapper.py`, the
+  read-audit digest paragraphs).
 - The `params`-value truncation (`_AGY_DIGEST_VALUE_CAP`, 200 chars) and the
-  40-entry list caps are coupling points: a consumer matching a path truncates
-  its own copy the same way, and a wrapper-side cap change has to reach the
-  consumer too.
+  40-entry list caps are coupling points: a consumer matching a path
+  truncates its own copy the same way, and a wrapper-side cap change has to
+  reach the consumer too.
+- The review skill's gate over this file — its inputs, verdicts and remedies —
+  is `triad-cross-family-review` `references/leg-contracts.md` § agy
+  read-audit gate.

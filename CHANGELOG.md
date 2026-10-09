@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.2.1586 — 2026-10-09
+## 0.2.1611 — 2026-10-10
+
+**Cross-family review — one round per packet dir.** `prepare` refuses a packet dir that already holds a round
+and never re-pins it: open a new packet dir for every round, and close each one after the next round is
+prepared.
 
 **The model pin travels as one option token.** A review line passes `--model=<v>` (agy also `--effort=<v>`),
 and the gemini and agy wrappers hand the CLI `--model=<v>` / `--effort=<v>`, so a model value shaped like an

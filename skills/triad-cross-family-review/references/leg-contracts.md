@@ -2,7 +2,8 @@
 
 Loaded on demand from `triad-cross-family-review/SKILL.md`. Read this when
 dispatching a round's legs (Flow step 2), and again when an agy leg returns —
-its verdict may be weighed only after the read-audit gate below passes.
+its verdict may be weighed only after the read-audit gate and the hook load
+check below pass.
 
 ## Contents
 
@@ -10,9 +11,9 @@ its verdict may be weighed only after the read-audit gate below passes.
 |---|---|
 | v2 dispatch shapes | reading or sanity-checking the argv `prepare` printed for an entry |
 | Producer schema projection | asking what schema the vendor received, or why it differs from the canonical one |
-| Verdict binding — all legs | dispatching any leg, or admitting a returned verdict |
+| Verdict binding — all legs | dispatching any leg, or admitting a returned verdict; the attempt seal |
 | Google-family leg selection | resolving a google entry's route (agy; gemini = legacy compatibility) |
-| agy leg | dispatching agy — model selector, read-audit binding, containment block |
+| agy leg | dispatching agy — model selector, read-audit binding, containment block, the hook load check |
 | agy read-audit gate | an agy leg returned and you are about to weigh it |
 | agy standing residuals | deciding whether this deployment can run the agy leg at all |
 | gemini leg | a google entry resolved to the gemini route (legacy compatibility) |
@@ -46,14 +47,8 @@ ran without its env) or any differing element — a removed `--search` /
 `--review-web`, a changed `--model` — makes the entry INVALID ("the leg ran
 with a command other than the recorded one"), sealed so; `retry` it and run its
 printed line verbatim; the entry's line shows the answer the leg gave beside
-that reason. The run-log directory joins the attempt's seal (role `run_log`,
-digested over its `*.json` run-logs only — exactly the files the receipt reader
-reads, so an OS side file there changes nothing), so a later change, removal or
-unreadable run-log of a SEALED attempt is an integrity failure whose remedy is a
-new round (`retry` refuses an attempt whose sealed files changed); an unsealed
-attempt's unreadable run-log names `retry`. An attempt sealed with a valid
-answer is never re-judged by the argv comparison (C66). A seal written before
-this binding (no `run_log` role) names a new round. The wrapper entry's early `admit:` line
+that reason. The run-log directory is one of the attempt's sealed files
+(§ Attempt seal). The wrapper entry's early `admit:` line
 admits the answer alone and says so on stderr; the receipt is `collect`'s.
 The native claude spawn has no wrapper and so no receipt (DL-18).
 The model pin and the agy effort ride as ONE option token each (`--model=<v>`,
@@ -184,18 +179,11 @@ FIELD ONLY (a round record that counts warnings must not read one move as two
 changes); an `enabled: false -> true` move, which has no dedicated line,
 still gets the generic `old->new`.
 
-**A DUPLICATE entry name is refused over the MERGED roster, BEFORE any
-mutation — both the EXACT and the CASE-FOLDED reading**. An entry name is the merge key AND becomes a
-DIRECTORY name (`results-r<N>/<name>/`), so two entries sharing one name
-survive the pure render and the SECOND `mkdir` then fails — on a
-case-insensitive volume (the macOS default) for `codex` vs `Codex`, and
-unconditionally for an exact repeat — AFTER `prepare` has already re-pinned
-the round: a mutation made, then a refusal. Both readings run over `legs`
-AFTER the defaults+override merge (`roster_v2._resolve`) — a repeat inside
-the SHIPPED `review-legs.default.json` included — naming the offending
-entries and the document(s) they came from. The override-side duplicate check still fires
-FIRST for an override duplicate, so its message (the merge key must be unique)
-is unchanged.
+A duplicate entry name in the override document — exact or differing only in
+case (`codex` / `Codex`; the name becomes a directory name and the macOS
+default volume folds case) — is refused before anything is created. An
+override name equal to a shipped entry's name under case folding is refused
+the same way; one spelled exactly like the shipped entry merges into it.
 
 ## Producer schema projection
 
@@ -222,17 +210,15 @@ boundary; a refused prepare leaves no attempt directory behind. There is no
 second writer inside `roster_v2` — `v2_write_attempt` is the only writer of
 these bytes.
 
-**The projection is a ROUND BASIS, so the round record freezes its digest.**
-Because the projection is re-derived from the vendored
-contract on EVERY render — a `retry`'s render included — a spec re-vendoring
-between `prepare` and `retry` would hand attempt K+1 a DIFFERENT producer
-schema while the round record still claimed an unchanged basis. `prepare`
-therefore stores `projection_digest` (sha256 of the projected schema
-bytes) in `.roster-r<N>.json`, and `retry` re-derives and compares it before
-allocating; a MISMATCH — or a record carrying NO frozen digest — refuses with
-"prepare a new round" (`references/triage.md` § Collect outcomes). The digest,
-not the bytes: each attempt already carries its own
-`schema.projected.json`.
+**The projection's sources are in the round's toolkit map.** Because the
+projection is re-derived from the vendored contract on EVERY render — a
+`retry`'s render included — a spec re-vendoring between `prepare` and `retry`
+would hand attempt K+1 a DIFFERENT producer schema. The contract and the
+`lib/` files that project it are files of the `toolkit_map` `prepare` records in
+`.roster-r<N>.json`, and `retry` compares that map with the installed files
+before allocating; a changed file — or a record carrying NO map — refuses with
+"prepare a new round" (`references/triage.md` § Collect outcomes). Each
+attempt carries its own `schema.projected.json`.
 
 **The answer channel the producer schema selects.** On the agy route
 (`--json-schema-file`) only the MEASURED dict `structured_output` is the
@@ -253,12 +239,6 @@ is EMPTY: the structured channel is evaluated BEFORE the empty-answer guard,
 so an agy entry whose verdict rides only in `structured_output` never loses
 its answer to an `extraction-error` / `empty-answer-body` discard.
 
-**Test seams are gated.** `TRIAD_ROSTER_WHICH` (the roster's binary probe)
-and the prompt renderer's spec-dir seam are honored ONLY when
-`TRIAD_TEST_SEAMS=1` is set beside them, and each announces itself once on
-stderr. Production can never have its binary probe or its clause source
-redirected by a stray environment variable.
-
 ## Verdict binding — all legs
 
 `LegVerdict` carries six REQUIRED binding fields — `review_id`, `family`
@@ -274,6 +254,22 @@ leg mixups). The leader's obligations, every round, every entry:
    the claude fresh-eye leg echoes `"claude"`, the codex leg `"codex"`, and
    the Google-family leg — WHICHEVER CLI resolved, agy or gemini — echoes
    `"google"` (the token names the model family, not the CLI).
+   **The EXPECTED values are DERIVED, never read back**
+   (`collect_v2._expected_binding`, the ONE derivation every reader calls):
+   `review_id` and `content_digest` from the ROUND RECORD, `family` /
+   `leg_name` / `route` from the round's FROZEN ROSTER ENTRY, and `attempt`
+   from the attempt DIRECTORY NAME. `binding.json` must EQUAL all six before
+   admission runs — a binding and a result that only validate each other would
+   let a pair copied out of one entry's attempt be credited to another. A
+   disagreeing binding is `invalid` with the offending FIELD named; a
+   non-object `binding.json` (`null`, `[]`) invalidates that ONE entry
+   (`binding record is not an object (<type>): <path>`) and every other entry
+   still collects. A wrapper entry's printed `--expected-*` flags come from
+   the same derived values, each `shlex.quote`d
+   (`review_scratch._v2_expected_flags`); the native `--admit` line types
+   none — it reads the six from the attempt's `binding.json`, a typed flag
+   that disagrees is exit 64, and `collect` still re-judges the admitted
+   result against the derived values.
 2. Admission is MECHANICAL: the printed `admit:` line runs `lib/verdict_v2.py`
    with all six `--expected-*` flags (`--expected-packet
    <packet-dir>/delivery-r<N>.md` derives the digest from the record's own
@@ -317,15 +313,47 @@ leg mixups). The leader's obligations, every round, every entry:
    Every one of them says the same thing — this host cannot
    judge any reply — so the collection STOPS and writes no per-entry state
    (`references/triage.md` § Collect outcomes).
-6. **A prompt the host cannot encode is a one-line refusal, never a
-   traceback**. `prompts_v2._emit_payload` refuses a
-   render carrying a value this host cannot represent as UTF-8 — a binding
-   value with surrogateescape bytes, an argv token decoded under an ASCII
-   locale — and the command exits **2** with the named reason, the same rule
-   `review_scratch._emit_payload` applies to the dispatch lines. The clause
-   bytes are what the round record's manifest digests and
-   what the leg receives, so they are never escaped or partially written:
-   rename the offending path or render under a UTF-8 locale.
+6. **A dispatch line the host cannot encode is a one-line refusal, never a
+   traceback**. `review_scratch._emit_payload` refuses a dispatch line
+   carrying a path this host cannot represent as UTF-8 (surrogateescape
+   bytes, a token decoded under an ASCII locale) and the command exits
+   **2** with the named reason. `prompts_v2` is a library and prints
+   nothing: the rendered prompt is written to the attempt's `prompt.txt`,
+   the bytes the round record's manifest digests and the leg receives.
+
+### Attempt seal
+
+A recorded attempt is SEALED (R-BIND, case C66): `seal.json` beside it binds
+the sha256 of the attempt's result, its receipt (the wrapper run-log
+directory, role `run_log`, digested over its `*.json` run-logs only) and its
+read evidence, and the state they were recorded in; `collect-r<N>.json` keeps
+every seal's digest.
+
+- **Who seals.** The native admission (`verdict_v2.py --admit …
+  --admitted-out`) seals an ADMITTED claude reply; a refused reply is not
+  sealed, collects as not admitted (`MISSING — no result file at
+  <attempt>/admitted.json`) and stays open to `retry`. On a wrapper route the
+  first `collect` that judges an answer — valid or not — seals the attempt
+  over the bytes it judged. `retry` seals the attempt it replaces
+  (`failed-to-run`, or `invalid` over an inadmissible answer, a refused native
+  `raw.json` included) before it allocates the next one.
+- **No re-answer.** The printed `guard:` line and the guard inside each wrapper
+  line refuse a re-run into a sealed attempt, and the native `--admit …
+  --admitted-out` is refused on it (exit 64; a wrapper entry's `admit:` line
+  only re-validates, read-only). A new answer needs `retry` (an attempt sealed
+  `invalid` or `failed-to-run`, never one sealed valid) or a new round. An
+  attempt sealed with a valid answer is never re-judged by the argv
+  comparison.
+- **Integrity.** Every `collect` re-checks the sealed files of every attempt,
+  digesting each file once. A sealed file or the seal itself that changed, was
+  removed or was replaced — a late answer into a replaced attempt included —
+  is that entry's integrity failure: `INCOMPLETE`, a reason ending "prepare a
+  new round", and `retry` refuses it. A sealed-role file that cannot be read,
+  an unsealed attempt's unreadable run-log (`retry` cannot record an attempt
+  it cannot read) and a seal with no `run_log` role (written before the
+  receipt binding) each name a new round. When a retried leg may still be
+  running, collect once more before using an AGREED: a late answer is caught
+  only by the next `collect`.
 
 ## Google-family leg selection
 
@@ -463,7 +491,7 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
   - `prepare` writes `<worktree>/.agents/hooks.json` (one named hook,
     `enabled`, matcher `*`, handler `python3 <skill>/lib/agy_hook.py --log
     <packet-dir>/agy-hook-r<N>.jsonl`, timeout 10 s) after the four artifacts
-    and before the untracked walk and capture. The handler (`lib/agy_hook.py`,
+    and before capture. The handler (`lib/agy_hook.py`,
     stdlib, no AI) denies a FIXED set — filesystem mutation (`write_to_file`,
     `replace_file_content`, `multi_replace_file_content`, `sed_file`,
     `notebook_*`, `delete_knowledge`), commands (`run_command`,
@@ -514,43 +542,8 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
     quotes a phrase mid-message is an ordinary error (the call ran). Unknown
     shapes fail CLOSED and are disclosed, not enumerated (owner rule: the
     vendor is a paid service; no vendor-exotica negatives).
-  - **The hook LOAD CHECK — a REQUIRED mechanical check beside the read-audit
-    gate, per attempt.** `python3 <skill>/lib/agy_hook.py check
-    <abs-read-audit.json> <abs-hook-log.jsonl>` — exactly the attempt's own
-    read audit and the round's hook log (any other argv is usage 64) — prints
-    `HOOK_LOAD_<VERDICT> tool_steps=<n> invocations=<n> denied=<n>`, plus
-    ` attributed=<hooked>/<must>` when more than one census row must be
-    attributed. `prepare`, `retry` and the collector run the same two
-    arguments. The worktree's one `hooks.json` serves every agy leg and every
-    retry, so the log is shared; each attempt is judged on its own ids.
-    **Attribution rule.** The wrapper records each vendor run's conversation
-    ids on its census row (`digest.attempts[].conversation_ids`, from `init`
-    and every `step_update`); the hook logs the payload's `conversationId` on
-    every row. Every row of THIS audit with `tool_steps > 0` must have at
-    least one hook row under one of its own ids. Step-count equality is NOT
-    required (a call the vendor rejects at argument validation never reaches
-    the hook). Zero-step rows impose nothing and certify nothing; a hook row
-    with no `conversation_id` attributes to no attempt; rows under ids this
-    audit did not record belong to other attempts.
-    **Verdicts, in order:** ABSENT (exit 2) — no read audit; settle the
-    read-audit gate's ABSENT first. INCONCLUSIVE (exit 4) — broken evidence:
-    an audit or hook log that is not a readable regular UTF-8 file, no
-    `digest.tool_steps`, no `digest.attempts` census, a malformed census, a
-    stepped row with no recorded id, or a log line that is not a hook row.
-    VOID (exit 3) — stepped rows and zero hook invocations. INCONCLUSIVE — no
-    stepped row and no invocation (nothing proves or disproves the hook).
-    VOID — a stepped row of this audit with no hook row under any of its own
-    ids (the check NAMES every such attempt). Otherwise PASS (exit 0). Every
-    refusal names its actual reason.
-    **Remedy.** `check hooks.json in the round worktree, then prepare a new
-    round` (a fresh hook log). A retry is the leader's decision: the check
-    reads only the attempt's own audit, so another entry's census never
-    blocks one.
-    **Four-leg profile.** `references/review-legs.four-leg.example.json`
-    carries THREE agy-route entries (`google-contracts`, `google-failures`,
-    `google-state`); they share this one hook log and are told apart by
-    conversation id. Dispatch the Google entries SEQUENTIALLY — three
-    concurrent Google calls are not verified.
+  - **The hook LOAD CHECK** proves, per attempt, that this hook loaded —
+    § agy hook load check below.
   - **Files.** `agy-hook-r<N>.jsonl` is a leg OUTPUT for `verify`
     (basename rule, no `/`, like the X shape); `.agents/hooks.json` is OWNED
     by cleanup like the four artifacts and censused by the worktree
@@ -566,8 +559,10 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
     exact-name lookup would let the checkout materialise them and wedge the
     round after the artifacts exist; compared with `casefold()` over raw
     `-z` names, never whitespace-stripped), is
-    refused before the worktree exists on every platform, and cleanup
-    refuses before any unlink when `.agents` is not a real directory;
+    refused before the worktree exists on every platform, and `close`
+    refuses, deleting nothing, when `.agents` is not a real directory (its
+    tree check reads it as content this helper did not create — while the
+    reviewed repo does not ignore `.agents`; an ignored path is not judged);
     the hook is an ALLOW-LIST: `ALLOW_TOOLS` = the census's five
     review tools (t9 pins them equal to the wrapper's `AGY_REVIEW_TOOLS`), and
     EVERY other name — the permission-prompt tools, the waits, a tool agy
@@ -578,9 +573,7 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
     its web mode (`agy_hook.py --log <file> --web`), which also allows
     `read_url_content` / `search_web`; every other control stays. The
     operator's user-level agy settings allow `read_url(*)` once at
-    installation (the `--setup-agents` hint names it). The load
-    check counts only hook-shaped rows (`decision` allow|deny + `tool`) and
-    attributes them by conversation id (the bullet above).
+    installation (the `--setup-agents` hint names it).
   - **The prompt states the same rule** (the vendored `google-read-grant`
     clause, and the agent body written by `--setup-agents`): any tool outside the
     allow set is BLOCKED before it runs (the agent body says "mutating
@@ -602,26 +595,23 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
   there, see the pin-floor note above): treat that exit as leg-not-run and
   surface "run `agy update`", never re-dispatch pinless to squeeze a verdict
   out of the shallow default.
-- **Read-audit binding.** The SAME dispatch sets `TRIAD_READ_AUDIT_FILE` in the
-  wrapper invocation's environment. That value is the entry's
-  PER-ATTEMPT path `<attempt>/read-audit.json` (`prepare` renders it into
-  the printed `env …` prefix), so two agy entries — or two attempts of one
-  entry — can never collide. **Custody (v2):** the attempt's own `stderr.log`
-  must carry the WHOLE line `read-audit-file: <that absolute path>` (the
-  wrapper's timestamp prefix, the path percent-escaped from its filesystem
-  bytes); the collector refuses an audit no dispatch of that attempt named.
-  A misfiled or foreign audit stays a SIBLING of every later attempt and is
-  never hand-removed, so the remedy is a NEW round; only a genuine audit
-  whose stderr lost its line clears on a retry. The wrapper publishes the
-  audit ATOMICALLY (a same-directory temp file, fsync, `os.replace`; a
-  symlink at the named path is refused), so a reader never sees a partial
-  audit. The wrapper writes the read-audit digest to exactly that path on
-  every completed call, success or failure (`emit_read_audit`), and that
-  durable file is the gate's only evidence source. Bind it AT DISPATCH TIME:
-  the evidence cannot be created after the fact. The leader never removes
-  or renames it. Never a bare `$AGY_READ_AUDIT_FILE` (a GATE-local name,
-  unset at dispatch time) and never a `${TRIAD_READ_AUDIT_FILE:-...}`
-  fallback (it could name a leftover some other shell left set).
+- **Read-audit binding.** The agy dispatch line binds the attempt's own audit
+  path: `prepare` / `retry` render `env
+  TRIAD_READ_AUDIT_FILE=<attempt>/read-audit.json` into it, so no two entries
+  or attempts share a path. The wrapper writes the digest to exactly that path
+  on every completed call, success or failure (engine side:
+  the plugin `README.md` § Read-audit digest file); that file is the
+  read-audit gate's only evidence source and cannot be created after the
+  fact. **Custody:** the attempt's own `stderr.log` must carry the WHOLE line
+  `read-audit-file: <that absolute path>` (the wrapper's timestamp prefix, the
+  path percent-escaped from its filesystem bytes); `collect` checks it before
+  the gate. An audit no dispatch of that attempt named (misfiled or foreign),
+  and a dispatched attempt that wrote no audit, are refused with the remedy
+  "prepare a NEW round"; only a genuine audit whose `stderr.log` lost its line
+  is cleared by a `retry`. The leader never removes, renames or moves an
+  audit. Never a bare `$AGY_READ_AUDIT_FILE` (a gate-local name, unset at
+  dispatch time) and never a `${TRIAD_READ_AUDIT_FILE:-...}` fallback (it could
+  name a leftover another shell left set).
 - **Prompt body.** It is `<attempt>/prompt.txt` (rendered from the vendored
   clause bytes by `lib/prompts_v2.py`): the round worktree path and its
   `brief.md` entry point, the vendored `google-read-grant` clause, the
@@ -663,242 +653,119 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
   Widening the sandbox to let the leg write a long verdict forfeits rule 7's
   mechanical containment on the leg that ingests untrusted input, so it is out.
 
+### agy hook load check
+
+A REQUIRED per-attempt check beside the read-audit gate: it proves the round's
+PreToolUse hook loaded for this attempt's run. agy's `--agent` fails OPEN
+silently, so an attempt whose hook layer is not proven has unverified
+containment and does not count (measurements: `references/evidence.md`
+§ agy hook load check — measurements). Run the printed `hook:` line:
+
+```bash
+python3 <skill>/lib/agy_hook.py check <abs attempt read-audit.json> <abs packet-dir>/agy-hook-r<N>.jsonl
+```
+
+Exactly these two arguments — the attempt's own read audit and the round's
+hook log; any other argv is usage 64, which `collect` treats as a HOST FAULT.
+Output: `HOOK_LOAD_<VERDICT> tool_steps=<n> invocations=<n> denied=<n>`, plus
+` attributed=<hooked>/<must>` when more than one census row must be
+attributed. `collect` records a nonzero result as the entry's reason `hook
+load check failed (HOOK_LOAD_<X>, rc=<n>) — agy's --agent fails OPEN, …`.
+
+**Attribution.** The wrapper records each vendor run's conversation ids on its
+census row (`digest.attempts[].conversation_ids`); the hook logs each call's
+`conversationId`. Every row of THIS audit with `tool_steps > 0` needs at least
+one hook row under one of its own ids. Step counts need not match (a call the
+vendor rejects at argument validation never reaches the hook); a zero-step row
+certifies nothing; a hook row with no id attributes to no attempt; rows under
+other ids belong to other attempts. Only hook-shaped rows (`decision`
+allow|deny + `tool`) count. One hook log serves every agy entry and every
+retry of the round, and another entry's census never blocks this one.
+
+**Verdicts, in order, and their remedies.**
+
+| Verdict (exit) | Meaning | Remedy |
+|---|---|---|
+| `ABSENT` (2) | no read audit | settle the read-audit gate's ABSENT first |
+| `INCONCLUSIVE` (4) | broken evidence — an audit or hook log that is not a readable regular UTF-8 file, no `digest.tool_steps`, no or a malformed `digest.attempts` census, a stepped row with no recorded id, a log line that is not a hook row | check `hooks.json` in the round worktree, then prepare a new round |
+| `VOID` (3) | stepped rows and zero hook invocations, or a stepped row with no hook row under any of its own ids (the check names each such attempt) | check `hooks.json` in the round worktree, then prepare a new round (a fresh hook log) |
+| `INCONCLUSIVE` (4) | no stepped row and no invocation — nothing proves or disproves the hook | none here: the read-audit gate voids a read-blind leg on its own |
+| `PASS` (0) | every stepped row is attributed | none |
+
+**Four-leg profile.** `references/review-legs.four-leg.example.json` carries
+THREE agy-route entries (`google-contracts`, `google-failures`,
+`google-state`); they share the one hook log and are told apart by
+conversation id. Dispatch the Google entries SEQUENTIALLY — three concurrent
+Google calls are not verified.
+
 ## agy read-audit gate
 
-Apply this BEFORE weighing the verdict, and before any agy finding enters the
-residual table.
+The gate decides whether an agy attempt did the reading work. Run it BEFORE
+the attempt's verdict is weighed and before any of its findings enters the
+residual table; the hook load check runs beside it on the same attempt
+(§ agy hook load check), and both must pass. It is a mechanical
+anti-shallow-review check, not an authenticated channel: the digest is folded
+from vendor stream events, so a hostile vendor process could forge its content
+(owner ruling, settled — `docs/reviews/2026-07-31-agy-stream-json-residuals.md`).
+The digest's shape, caps and per-attempt rows are the wrapper's
+(the plugin `README.md` § Read-audit digest file); how the audit is
+bound to the attempt is § agy leg, the Read-audit binding bullet.
 
-The hook LOAD CHECK runs BESIDE it, per attempt:
-`python3 <skill>/lib/agy_hook.py check <abs-read-audit.json>
-<abs-hook-log.jsonl>` must print `HOOK_LOAD_PASS`. `HOOK_LOAD_VOID` — a
-stepped census row of the attempt with no hook row under any of its own
-conversation ids, or zero hook invocations while a row has tool steps —
-means the enforcement layer did not load for that attempt, so its leg is
-INVALID whatever this gate says. `HOOK_LOAD_INCONCLUSIVE` (broken evidence,
-or nothing ran and nothing was logged) certifies the leg neither. The
-attribution rule and the remedy are in § agy leg, the hook bullet.
+**Inputs.** Run the `gate:` line `prepare` / `retry` printed, verbatim, once
+per agy attempt:
 
-**Threat model (owner ruling — settled; do not re-open; recorded in
-`docs/reviews/2026-07-31-agy-stream-json-residuals.md`).** The gate is evidence
-that the leg DID THE READING WORK, a mechanical anti-shallow-review check. It is
-not an authenticated channel: the digest's content is folded from
-vendor-supplied stream events, so a hostile vendor process could fabricate a read
-event however the digest reaches the leader. What the dedicated file DOES close
-is the transport vector — the wrapper writes the digest once, to a file it alone
-owns, strictly after the vendor subprocess is reaped, so no shared stream
-survives for a stray grandchild to append to. That retires the late-append /
-first-match-forgery / anchored-extraction class of findings the stderr-based gate
-carried. The content-forgery question stays open by design.
+```bash
+bash <skill>/lib/read_audit_gate.sh --audit-file <abs results-r<N>/<name>/attempt-<K>/read-audit.json> "$PACKET_DIR" "$PACKET_DIR/wt-r<N>/brief.md" "$PACKET_DIR/wt-r<N>/diff.prod.patch"
+```
 
-The wrapper writes the digest to `TRIAD_READ_AUDIT_FILE` on every completed call,
-success or failure — ONE artifact: extract it with `jq`, never grep/sed. (The
-run-log's `read_audit` key exists, but the gate does not read it; the run-log
-is the repair-agent's input artifact.)
+- `--audit-file` comes first and is required: an absolute path inside the
+  packet dir of exactly the shape `results-r<N>/<name>/attempt-<K>/read-audit.json`.
+  There is no environment fallback and no default path.
+- The required reads are the worktree brief AND the gated patch (the brief
+  alone carries framing, not the code under review). The packet dir and every
+  file are absolute paths that exist.
+- An argv fault is exit 64 (usage), never a verdict; `collect` treats a 64 as
+  a HOST FAULT (`references/triage.md` § Collect outcomes).
 
-Then apply:
+**The match.** A required file counts as read when its absolute path equals
+the `AbsolutePath` param of a `view_file` entry in `digest.files_read` (a
+`grep_search` that merely names the path does not count). `files_read` holds
+only calls that succeeded; a failed or denied attempt sits in
+`digest.read_attempts` and proves nothing. Every params value is truncated at
+200 characters (the gate's `_CAP`, coupled to `bin/_common.py`'s
+`_AGY_DIGEST_VALUE_CAP`; t5 drift-guards the pair), so a required path of 200
+characters or more cannot be confirmed. The verdict is decided by jq's rc and
+`files_read_omitted` only. Recorded limits: the `AbsolutePath` key is a vendor
+coupling (a rename fails toward VOID / INCONCLUSIVE, never PASS), and a
+range-limited view would satisfy the match on a partial read (no range params
+have been observed in real digests).
 
-1. each of the round's REQUIRED-READ files — the worktree brief AND the
-   gated patch (`<packet-dir>/wt-r<N>/brief.md`,
-   `<packet-dir>/wt-r<N>/diff.prod.patch`), which the gate takes as
-   ARGUMENTS. The brief alone is not enough: it
-   carries framing and a manifest, so a leg could pass while never opening
-   the code under review — must appear as the `AbsolutePath` param
-   of a `read_audit.digest.files_read[*]` entry (`read_audit` here names the
-   loaded `{meta, digest}` object). The match is KEY-RESTRICTED
-   (live-corroborated by a real `grep_search {Query, SearchPath}` digest
-   entry): `files_read` holds every
-   successful READ-CLASS call, so a `grep_search` whose `Query` VALUE equals
-   that path is tool traffic that merely REFERENCED it — only
-   the file-view tool's `AbsolutePath` param evidences a read of the file
-   itself. The key name is a VENDOR coupling (disclosed): empirically pinned
-   from real digests + the t41/f9/t5 fixtures; an agy param rename fails
-   toward VOID/INCONCLUSIVE (loud, conservative), never a silent PASS.
-   `files_read` records only tool calls that SUCCEEDED (terminal DONE with
-   no `tool_info.error`), so a hit is real proof the leg's view_file call on
-   the packet succeeded (one disclosed limit: a RANGE-limited view — if the
-   dispatched build ever emits range params — would satisfy this on a
-   partial read; no range params have been observed in real digests — a
-   recorded residual);
-   an ERRORED or permission-DENIED read attempt appears instead under
-   `read_audit.digest.read_attempts[*]` with an `outcome` of `error`/`denied`
-   and does not satisfy this gate. The digest is CAPPED (every `params` value
-   truncated at 200 chars; `files_read` itself capped at the first 40 entries,
-   with `files_read_omitted` counting the rest). WITHIN the cap the stored
-   value IS the full path, so equality is exact; a packet path AT OR BEYOND
-   the cap (an exactly-cap stored value could equally be a LONGER path's
-   truncation) is a PREFIX-identity the digest cannot tell apart from
-   any same-prefix file (a sibling argument, a digest-side file that was
-   never an argument, or a stale `packet-r<N-1>.md` whose round-suffix the
-   cap erases) — the helper refuses such arguments INCONCLUSIVE outright
-   instead of over-claiming a match, and
-   this refusal also subsumes the arg-side collision case (two DISTINCT
-   within-cap arguments can never share a capped identity). If a within-cap
-   match fails AND
-   `files_read_omitted > 0`, the result is INCONCLUSIVE rather than VOID. The
-   digest is the merged aggregate over every retry attempt — there is no bigger
-   digest to open. Recoverable evidence is the per-attempt census
-   (`read_audit.digest.attempts[]` — one row per attempt with `attempt` /
-   `status` / `tool_steps` / `error_steps`, plus ONE NUMBER per list key that
-   already folds that attempt's own entries AND its own omitted overflow
-   together; a row carries no separate `_omitted` fields, so the number is a
-   pre-dedupe TOTAL) and `read_audit.digest.read_attempts[]`. A row ALSO
-   carries **`capture_complete`** under the
-   omit-when-DEFAULT rule — present only as `capture_complete: false`, which
-   says THAT attempt's transcript was a PREFIX (a wrapper reader thread failed
-   or did not join). The merge unions every attempt's reads, so without the
-   per-attempt flag a merged audit would present a knowingly incomplete
-   earlier attempt as ordinary evidence. Read it before you weigh a census row: a
-   `false` row's read counts are a lower bound on a stream nobody finished
-   capturing, not a coverage claim. (The attempt that CARRIES the flag is
-   terminal for the wrapper — `truncated-answer` 65, never retried inside the
-   driver — so a `false` row can only be an EARLIER attempt or the last one.)
-   The other omit-when-default row keys: the capture markers `truncated_tail`
-   (cut mid-line) and `interrupted` (`"timeout"` = killed at the wrapper
-   deadline, `"signal"` = the spawned child died on a signal) — with
-   `capture_complete` the only three — and `conversation_ids_omitted` (ids
-   dropped at the cap). `conversation_ids` is ALWAYS present, possibly empty — the ids the
-   hook load check attributes by. The run-log's
-   `stdout` holds the raw NDJSON of the FINAL attempt only — an earlier
-   attempt's raw stream is retained nowhere, so never plan to read it. If the
-   census does not settle it, do not guess: a narrower packet is a NEW round.
-   Only a failed match WITH `files_read_omitted == 0` is a confirmed VOID:
-   treat it as leg-not-run. A `retry` (the same frozen prompt) clears it: the
-   new attempt is judged on its own read audit and its own conversation ids.
-   An entry still VOID after that one retry is missing this round (rule 13):
-   the round is `INCOMPLETE`, never agreed (SKILL rule 1); no second
-   re-dispatch;
-2. surface `read_audit.digest.denied` / `read_audit.digest.read_attempts`
-   entries in the round notes — a **read-class** `read_attempts` entry naming a packet file is the
-   diagnostic for a VOID verdict (the leg TRIED and was blocked, rather than
-   never looking). `read_attempts` holds every unsuccessful tool, so filter on
-   its `class` field (`read`/`write`/`command`/`web`/`other`): a blocked write or
-   `run_command` that merely NAMED the packet is not a failed read and must not
-   be reported as one;
-3. the latency signal (rule 11: under 60s on a packet of 100KB or more implies a
-   shallow pass) is a SECONDARY signal here — the read-audit is the primary,
-   deterministic evidence.
+**The four verdicts and their remedies.** With several files, any
+INCONCLUSIVE → INCONCLUSIVE, else any VOID → VOID, else PASS. Take the remedy
+the row names; never delete, move or rename anything under `results-r<N>/`
+by hand — a failed attempt stays on disk beside the next one.
 
-agy verdict weight is unchanged (rule 1).
-MECHANICAL means extract-and-gate deterministically, with no AI judgment. Run
-the skill's own helper — ONE call per round covers several required-read files
-(every file must pass):
+| Verdict (exit) | Meaning | Remedy |
+|---|---|---|
+| `PASS` (0) | every required file matched | weigh the verdict; verify each surviving agy cite against the round worktree first (§ agy leg, Cites) |
+| `ABSENT` (2) | no audit file at the path | check the dispatch line's `env TRIAD_READ_AUDIT_FILE=…` member first — an unbound env looks exactly like a call that never completed. Then prepare a NEW round; only an attempt that never spawned agy (no `exec` line in its `stderr.log`) is cleared by `retry` |
+| `VOID` (3) | a confirmed miss: a required file is not in `files_read` and `files_read_omitted` is 0 (a valid-JSON audit with no `.digest` lands here too); the answer is UNVERIFIED and is not read | `retry <packet-dir> r<N> <name> --diagnosis "<why>"` once on the unchanged basis (SKILL Flow 4) and run the lines it prints; the new attempt is judged on its own audit. Still VOID after that retry: the entry is missing (rule 13) and the round `INCOMPLETE` — no second re-dispatch; a new answer comes only from a NEW round |
+| `INCONCLUSIVE` (4) | never PASS and never VOID; stderr names the cause | a CAPPED digest (`files_read_omitted > 0`): weigh `digest.attempts[]` and `digest.read_attempts[]`; if they do not settle it, a narrower packet is a NEW round. BROKEN evidence (jq could not read the file): inspect it, then prepare a NEW round. A required path of 200 characters or more: shorten the packet path and run the gate again |
 
-     ```bash
-     bash <skill>/lib/read_audit_gate.sh --audit-file <abs results-r<N>/<name>/attempt-<K>/read-audit.json> "$PACKET_DIR" "$PACKET_DIR/wt-r<N>/brief.md" "$PACKET_DIR/wt-r<N>/diff.prod.patch" [<more-abs-files>...]
-     ```
+**Output.** One `[gate] <VERDICT> <file>` line per evaluated file, then the
+summary `READ_AUDIT_GATE_<PASS|VOID|INCONCLUSIVE|ABSENT> checked=<n> pass=<n>
+void=<n> inconclusive=<n>[ unevaluated=<n>]` (`unevaluated` appears when
+ABSENT or broken evidence stopped the evaluation, so anchor on the token).
+`collect` runs the same line and records a nonzero result as the entry's
+reason `read-audit gate failed (READ_AUDIT_GATE_<X>, rc=<n>) — an ungated agy
+answer is UNVERIFIED, never agreement`; the remedy is the row above for that
+token.
 
-The helper is the gate's single EXECUTABLE form: the canonical jq invocation
-LIVES in `lib/read_audit_gate.sh`, where the t41/f9 self-tests lift it
-verbatim and `t5-read-audit-gate.sh` owns the CLI contract. This section
-stays the SPEC the helper implements. What each outcome means:
-
-- **The audit is NAMED, never derived**: the REQUIRED leading
-  `--audit-file <abs>` flag (argv-only, no env fallback, no default path — an
-  ambient `TRIAD_READ_AUDIT_FILE` some OTHER shell context left exported can
-  never make the gate open a file nobody bound for THIS attempt). The value
-  must be ABSOLUTE, live inside `$PACKET_DIR` (no symlink resolution: an
-  audit outside the census'd round dir is not this round's evidence), and
-  match exactly ONE shape — the per-attempt audit
-  `results-r<N>/<name>/attempt-<K>/read-audit.json`. `prepare` binds
-  `TRIAD_READ_AUDIT_FILE` to that path on the agy entry's argv and PRINTS the
-  matching `gate:` line; run it verbatim, once per agy attempt. Any other
-  path (the packet dir itself, a foreign subdirectory, outside the packet
-  dir) and a missing flag are a LOUD usage exit 64, never a verdict — gating
-  one entry on another's evidence would be a false PASS. The wrapper writes
-  the audit on EVERY completed call, ok or not — no stderr capture, no
-  grep/sed extraction (`triad-antigravity-dispatch` § Isolation).
-- **The required-read args are the worktree BRIEF and the GATED PATCH** (for a
-  `prepare`-built round: `<packet-dir>/wt-r<N>/brief.md` and
-  `<packet-dir>/wt-r<N>/diff.prod.patch` — never the packet DIR itself). `prepare`
-  prints the exact command; keep it and the READ-GRANT in step, since a
-  required read the leg is not instructed to make VOIDs a compliant leg.
-  Argv discipline is LOUD (exit 64), never a verdict: the packet dir
-  and EVERY file argument must be absolute paths, the dir must exist, and
-  every named file must exist — a stale generic `packet.md`, or a prior
-  round's entry file, would otherwise false-VOID a compliant leg.
-- **Exit 0 PASS** — every packet file's absolute path matched the
-  `AbsolutePath` of a successful `view_file` entry in `files_read` (the
-  rule-1 tool+key restriction; arguments that survive to this comparison
-  are within the cap, so the stored value is the FULL path and equality is
-  exact — no truncation is applied to a surviving argument). Proceed to
-  weigh the verdict.
-- **Exit 2 ABSENT** — no digest file. NOT proof the vendor call failed:
-  `TRIAD_READ_AUDIT_FILE` unset/misbound at dispatch time is empty in
-  exactly the same way as a call that never completed. Check the dispatch
-  env FIRST; only once it is sound, treat as VOID (leg-not-run). The attempt
-  stays a SIBLING of
-  every later attempt of the round (the hook load check reads a dispatched
-  attempt with no audit as INCONCLUSIVE), so prepare a NEW round — unless the
-  attempt never spawned agy (no `exec` line in its `stderr.log`): the hook
-  check skips it and a retry does clear it.
-- **Exit 3 VOID** — a confirmed miss (`files_read_omitted == 0`). A `retry`
-  clears it (the new attempt is judged on its own audit); still VOID after
-  that retry is missing this round (rule 13, no second re-dispatch). (A duplicate-JSON-member refusal, spec C14, is
-  schema-fail 66 with no answer, so its merged audit never reaches this gate:
-  the gate runs only after an admission succeeded.)
-- **Exit 4 INCONCLUSIVE** — never read as VOID and never as PASS. Four
-  causes, each named on stderr: a CAPPED digest (`files_read_omitted > 0` —
-  weigh `digest.attempts[]` per-attempt totals + `digest.read_attempts[]`,
-  and, if the census does not settle it, use a narrower packet — a NEW
-  round (a retry re-renders the frozen prompt); there is no fuller digest, and only the FINAL attempt's raw stream is
-  retained anywhere), BROKEN evidence (jq could not produce a usable
-  answer — read, parse, program, or runtime error: inspect the file
-  directly), a SYMLINKED digest file (refused,
-  never followed — the wrapper writes a regular file it alone owns, so a
-  symlink at that path is a redirect nobody's dispatch bound; note this is
-  a check-then-open guard, WEAKER than an O_NOFOLLOW read — acceptable here because the gate runs strictly after
-  the agy child is reaped and no other round participant writes that path),
-  or an at-or-over-cap packet path (200 characters or longer — stored in
-  the digest as a PREFIX-identity that cannot be told apart from any
-  same-prefix file, an exactly-cap value being possibly a longer path's
-  truncation, so the gate refuses to over-claim; shorten the packet path
-  and re-run; this refusal subsumes the arg-side collision case, and the
-  same argument passed twice remains ONE identity, legitimately
-  confirmable). Remedy for the BROKEN case: the audit stays a
-  SIBLING of every later attempt (the hook load check refuses it as broken
-  evidence), so prepare a NEW round.
-- **Multi-file aggregation is pinned and LOAD-BEARING**: any INCONCLUSIVE
-  file → exit 4; else any VOID file → exit 3; else exit 0. The per-ARGUMENT
-  over-cap refusal CAN mix with a digest-side VOID in a single run (only
-  the capped/broken digest states are digest-global), so the precedence is
-  what keeps a mixed round deterministic — never remove it as dead logic.
-  BROKEN evidence stops the loop — later files are never evaluated. The
-  summary counters count EVALUATED files only, and whenever any argument
-  was NOT evaluated (the broken-evidence stop; the ABSENT/symlink refusals
-  evaluate none) the summary line appends
-  ` unevaluated=<n>` so the token and the counters cannot disagree
-  silently.
-- **The verdict inputs are the jq gate's rc + `files_read_omitted` ONLY.**
-  The stderr `ATTEMPTED but failed to read the packet` line — a read-class
-  `read_attempts` entry naming a packet file, i.e. the leg TRIED and was
-  blocked — is diagnostic text for the round notes, never a verdict input
-  (`read_attempts` also carries failed writes/run_commands/web fetches; one
-  of those merely NAMING the packet is not a failed read, which is why the
-  helper scopes the note with the SAME tool+key restriction as the verdict
-  jq — `.class == "read" and .tool == "view_file"`, AbsolutePath-only value
-  scan; the trade — a rename-induced VOID loses the "it tried" note too — is
-  a recorded residual).
-- **The 200-char cap is COUPLED to `bin/_common.py`'s `_AGY_DIGEST_VALUE_CAP`**
-  (t5 drift-guards the pair and the helper's one-literal property). Within
-  the cap the stored value is the FULL path, so equality is exact; over-cap
-  arguments are refused INCONCLUSIVE (rule 1 above) — which also settles
-  the locale-unit question by refusal (a length that units could
-  disagree about is over-cap in at least one unit and lands in the refusal,
-  conservative in both directions).
-- **The stdout contract** for round notes: one `[gate] <VERDICT> <file>`
-  line per EVALUATED packet file (the ABSENT/symlink refusals evaluate
-  none; the broken-evidence stop evaluates no later file), then the final
-  greppable summary
-  `READ_AUDIT_GATE_<PASS|VOID|INCONCLUSIVE|ABSENT> checked=<n> pass=<n>
-  void=<n> inconclusive=<n>[ unevaluated=<n>]` — the
-  `unevaluated` field appears exactly when some argument was not evaluated
-  (ABSENT/symlink refusals, the broken-evidence stop), so anchor on
-  the token, not on a four-field-only pattern.
-
-One shape to know: a digest file that is valid JSON but carries no `.digest`
-key yields jq rc 1, not rc>=2, so it lands in the coverage-miss branch and —
-with `omitted` 0 — reads as a confirmed VOID (exit 3). That is intended: a
-digest-less file is a leg that produced no read evidence.
+**Round notes.** Record `digest.denied` and the `read`-class entries of
+`digest.read_attempts`: a read-class attempt naming a required file explains a
+VOID (the leg tried and was blocked); a blocked write or command that merely
+named the file is not a failed read. Latency (rule 11) is a secondary signal
+behind this gate.
 
 ## agy standing residuals
 
@@ -916,7 +783,7 @@ Two live claims govern whether a deployment can run this leg at all:
   hook denies every tool outside the five-name allow set (mutating / command / network / subagent / planner tools included)
   whatever agent resolved — the backstop for `--agent` failing OPEN — and
   admission is EFFECT-based: a BLOCKED call is logged, an EXECUTED off-list
-  call voids; the hook LOAD CHECK proves the layer loaded (§ agy leg).
+  call voids; the hook LOAD CHECK proves the layer loaded (§ agy hook load check).
 - **Other disclosed v2 residuals:** a fallback that calls nothing forbidden is
   indistinguishable and accepted (side-effect-free); two agent files outside
   the repo per host (`--setup-agents`); a vendor rename of an allowlisted
@@ -1129,9 +996,8 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   `prompt.txt` already carries the verdict shape (the vendored
   `claude-verdict-shape` clause) and the leader appends nothing (SKILL rule
   10). The reply admits ONLY through the printed `verdict_v2.py --admit` line
-  (SKILL Flow 3, rule 4) — no repair path; only an admitted reply is sealed: a
-  reply that fails admission is not sealed, collects as not admitted, and a
-  new answer needs `retry` (it seals that attempt `invalid`) or a new round. A
+  (SKILL Flow 3, rule 4) — no repair path; only an admitted reply is sealed
+  (§ Attempt seal). A
   leader-completed, leader-repaired, or leader-reconstructed reply is NEVER
   admissible.
 - **Reply transcription.** The leader dispatches the `Agent` with the

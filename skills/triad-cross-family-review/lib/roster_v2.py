@@ -46,21 +46,18 @@ CLI:
            families, legs, warnings}
         -> exit 0 resolved / 2 refused (one stderr line) / 64 jsonschema missing
 
-Test seam: `TRIAD_ROSTER_WHICH` — a comma-separated list of binary names to treat
-as installed, replacing the `shutil.which` probe (set-but-empty = none installed).
-It exists so the Google chain is deterministic under test, and is honored ONLY
-when `TRIAD_TEST_SEAMS=1` is set beside it (announced once on stderr): production
-must never have its binary probe redirected by a stray environment variable.
+The Google chain probes the real PATH (`shutil.which`); a test controls which
+CLIs are installed through PATH alone.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import shutil
-import stat
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -166,8 +163,6 @@ _PRESET_PIN_RE = re.compile(r"^(model|effort): (\S+)$", re.M)
 # This install's own layout root (the dev tree's `.claude/`, a plugin's root):
 # its `agents/` holds the presets the install ships.
 _LAYOUT_ROOT = Path(__file__).resolve().parents[3]
-WHICH_ENV = "TRIAD_ROSTER_WHICH"
-TEST_SEAMS_ENV = "TRIAD_TEST_SEAMS"
 # TOP-LEVEL fields of a SHIPPED default entry whose override drift is
 # announced. `name` is the merge key. `note` is operator prose. `vendor` is
 # NOT here and never was announceable: re-vendoring a shipped entry is
@@ -296,40 +291,37 @@ def _flat(text: str) -> str:
 def _read_regular_file(path: Path, label: str) -> bytes:
     """The bytes of a plain regular file, or a RosterError naming it.
 
-    `lstat` decides (a symlink at a config path is refused outright, dangling
-    or not — a dangling one must never look like "no override"), `O_NOFOLLOW`
-    covers a swap between the lstat and the open, `O_NONBLOCK` keeps a FIFO
-    planted at that path from blocking the open forever, and the descriptor's
-    own `fstat` re-checks S_ISREG. EVERY OSError — including EACCES on the
-    parent directory — becomes this one-line refusal, never a traceback.
+    The read is `verdict_v2._read_regular_file_no_symlink`, the review libs'
+    one hardened reader, imported from this file's directory (the
+    `collect_v2._load_sibling` rule: an already-loaded `verdict_v2` is
+    reused). A symlink at a config path is refused outright, dangling or not
+    — a dangling one must never look like "no override" — and EVERY OSError,
+    including EACCES on the parent directory, becomes this one-line refusal,
+    never a traceback.
     """
-    try:
-        st = os.lstat(path)
-    except OSError as exc:
-        raise RosterError(f"{label} {path} is unreadable: {exc}") from exc
-    if stat.S_ISLNK(st.st_mode):
+    verdict_v2 = sys.modules.get("verdict_v2")
+    if verdict_v2 is None:
+        spec = importlib.util.spec_from_file_location(
+            "verdict_v2", Path(__file__).resolve().parent / "verdict_v2.py")
+        verdict_v2 = importlib.util.module_from_spec(spec)
+        sys.modules["verdict_v2"] = verdict_v2
+        try:
+            spec.loader.exec_module(verdict_v2)
+        except BaseException:
+            sys.modules.pop("verdict_v2", None)
+            raise
+    path = Path(path)
+    data, reason = verdict_v2._read_regular_file_no_symlink(path)
+    if reason is None:
+        return data
+    unreadable = f"cannot read {path}: "
+    if reason.startswith(unreadable):
+        raise RosterError(
+            f"{label} {path} is unreadable: {reason[len(unreadable):]}")
+    if reason == f"{path} is a symlink, refusing to read":
         raise RosterError(f"{label} {path} is a symlink — symlinked roster "
                           f"refused (the target is not the configured file)")
-    if not stat.S_ISREG(st.st_mode):
-        raise RosterError(f"{label} {path} is not a regular file — refused")
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError as exc:
-        raise RosterError(f"{label} {path} is unreadable: {exc}") from exc
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise RosterError(f"{label} {path} is not a regular file — refused")
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(fd, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-    except OSError as exc:
-        raise RosterError(f"{label} {path} is unreadable: {exc}") from exc
-    finally:
-        os.close(fd)
-    return b"".join(chunks)
+    raise RosterError(f"{label} {path} is not a regular file — refused")
 
 
 def _read_json(path: Path, label: str) -> dict:
@@ -486,8 +478,8 @@ def _claude_preset(named: str, web: bool) -> dict:
     """`{agent, file_sha256, model, effort}` of the shipped preset a claude
     entry spawns (`_claude_web_twin`), read from this install's own
     `agents/<agent>.md` — or a RosterError (R-ROSTER, cases C12 / C19 / C33).
-    `prepare` binds it into the round record; `collect` and `retry` re-read
-    it and compare the digest, which covers model, effort and body alike.
+    `prepare` binds it into the round record; the file's bytes are also in
+    the toolkit map (`_toolkit_map`) that `collect` and `retry` compare.
     `model` and `effort` come from the same bytes, for the record and the
     roster preview."""
     agent = _claude_web_twin(named, web)
@@ -507,6 +499,36 @@ def _claude_preset(named: str, web: bool) -> dict:
                           f"this host")
     return {"agent": agent, "file_sha256": hashlib.sha256(data).hexdigest(),
             "model": pins["model"], "effort": pins["effort"]}
+
+
+def _toolkit_map() -> dict[str, str]:
+    """`{relpath: sha256}` of this install's review toolkit — every regular
+    file directly under `lib/` (`.py` and `.sh`), the vendored `spec/**` and
+    the six shipped reviewer presets — relpaths relative to `_LAYOUT_ROOT`,
+    keys sorted, `__pycache__` / `*.pyc` skipped, or a RosterError naming an
+    unreadable file (R-PREPARE, R-RETRY; case C19). `prepare` records it;
+    `collect` and `retry` compare it with this one."""
+    skill = Path(__file__).resolve().parents[1]
+    files = [*(p for p in skill.joinpath("lib").iterdir()
+               if p.is_file() and p.suffix != ".pyc"),
+             *(p for p in skill.joinpath("spec").rglob("*")
+               if p.is_file() and "__pycache__" not in p.parts
+               and p.suffix != ".pyc"),
+             *(_LAYOUT_ROOT / "agents" / f"{agent}.md"
+               for pair in CLAUDE_WEB_TWINS.items() for agent in pair)]
+    found = {}
+    for path in files:
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            continue  # an absent file is absent from the map, so it compares
+        except OSError as exc:
+            raise RosterError(f"the installed toolkit file {path} cannot be "
+                              f"read ({exc.strerror or exc}) — reinstall "
+                              f"this host") from exc
+        found[path.relative_to(_LAYOUT_ROOT).as_posix()] = \
+            hashlib.sha256(data).hexdigest()
+    return dict(sorted(found.items()))
 
 
 def _check_capabilities(leg: dict) -> None:
@@ -698,13 +720,26 @@ def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
     if _override_present(path):
         over = _read_json(path, "project override")
         _validate(over, schema, f"project override {path}")
+        # An entry name becomes a DIRECTORY name (`results-r<N>/<name>/`) and
+        # the macOS default volume folds case, so a repeat that differs only
+        # in case would fail partway through `prepare`: refused here, once,
+        # over the override document, before anything is created. The walk
+        # knows the shipped names: an override spelled exactly like a shipped
+        # entry merges into it, one differing only in case is refused.
+        shipped_folded = {name.casefold(): name for name in shipped}
         seen = set()
         for leg in over["legs"]:
-            if leg["name"] in seen:
+            name = leg["name"]
+            folded = name.casefold()
+            clash = shipped_folded.get(folded, name)
+            if folded in seen or clash != name:
+                where = (f"; clashes with the shipped entry '{clash}'"
+                         if clash != name and folded not in seen else "")
                 raise RosterError(f"project override {path} has duplicate leg "
-                                  f"name '{leg['name']}' — the merge key must "
-                                  f"be unique")
-            seen.add(leg["name"])
+                                  f"name '{name}' (case-folded{where}) — the "
+                                  f"merge key and the results directory name "
+                                  f"must be unique")
+            seen.add(folded)
         by_name = {leg["name"]: i for i, leg in enumerate(legs)}
         for leg in over["legs"]:
             if leg["name"] in by_name:
@@ -713,49 +748,6 @@ def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
             else:
                 legs.append(dict(leg))
         source = f"defaults+project:{path}"
-
-    # Entry names become DIRECTORY names (`results-r<N>/<name>/`) and are
-    # allocated one per entry. Comparing them case-SENSITIVELY let `codex` and
-    # `Codex` both survive the pure render, and on a case-insensitive volume
-    # (the macOS default) the SECOND mkdir then failed AFTER `prepare` had
-    # already re-pinned the round — a mutation made, then a refusal (gate-1 r4
-    # row r4-7). Refused HERE, before any mutation, naming both entries.
-    #
-    # BOTH READINGS, OVER THE MERGED ROSTER (gate-1 r7 row r7-c1). The exact
-    # check one block up walks the OVERRIDE document only, and this fold used
-    # to SKIP an exact repeat (`folded_names[folded] != name`) on the reading
-    # that the override check had already caught it — so the SHIPPED defaults
-    # were walked by NEITHER, and two identically named entries in
-    # `review-legs.default.json` survived resolution to collide at
-    # `v2_write_attempt`'s exclusive mkdir, i.e. the r4-7 failure reached
-    # through the defaults instead of the case. The exact reading now runs
-    # here too, over `legs` AFTER the merge, naming the entries and the
-    # document(s) they came from. The override-side check above still fires
-    # first for an override duplicate, so its message (the merge key) is
-    # unchanged.
-    seen_exact: set = set()
-    folded_names: dict = {}
-    for leg in legs:
-        name = leg.get("name")
-        if not isinstance(name, str):
-            continue
-        if name in seen_exact:
-            raise RosterError(
-                f"the resolved roster carries two entries named '{name}' "
-                f"(merged from {source}) — an entry name is the merge key AND "
-                f"the results directory name (results-r<N>/<name>/), so the "
-                f"second allocation would fail after the round is already "
-                f"pinned; rename or remove one of them")
-        seen_exact.add(name)
-        folded = name.casefold()
-        if folded in folded_names and folded_names[folded] != name:
-            raise RosterError(
-                f"roster entries '{folded_names[folded]}' and '{name}' collide "
-                f"under case folding — an entry name becomes a DIRECTORY name "
-                f"(results-r<N>/<name>/), so on a case-insensitive filesystem "
-                f"the second allocation would fail after the round is already "
-                f"pinned; rename one of them")
-        folded_names.setdefault(folded, name)
 
     for leg in legs:
         _check_required(leg, known)
@@ -788,18 +780,9 @@ def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
                            f"selected route must carry its own adapter block")
             if skipped:
                 warnings.append(f"leg '{leg['name']}': {skipped}")
-        # jsonschema's `integer` accepts an INTEGRAL FLOAT (`900.0`, `9e2`) —
-        # JSON Schema defines the type by value, not by spelling — and the
-        # rendered token then reads `--timeout 900.0`, which every wrapper's
-        # `type=int` argparse rejects AFTER the round is already prepared
-        # (gate-1 r3 row r3-5). A NON-integral float is already refused by
-        # the contract, so this only normalizes the spelling.
-        timeout_s = leg["timeout_s"]
-        if isinstance(timeout_s, float) and timeout_s.is_integer():
-            timeout_s = int(timeout_s)
         entries.append(Entry(
             name=leg["name"], vendor=leg["vendor"], enabled=leg["enabled"],
-            acceptance=leg["acceptance"], timeout_s=timeout_s,
+            acceptance=leg["acceptance"], timeout_s=leg["timeout_s"],
             note=leg.get("note"), claude=leg.get("claude"),
             codex=leg.get("codex"), google=leg.get("google"),
             agy=leg.get("agy"), gemini=leg.get("gemini"),
@@ -911,10 +894,7 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
     PURE: nothing is created, opened for writing or removed. The producer
     schema projection travels as `Dispatch.schema_text` (bytes) plus
     `Dispatch.schema_file` (the path the argv points at); the caller writes
-    it after its own pre-mutation boundary. Writing it from here made
-    `prepare` allocate attempt directories BEFORE `_precheck_packet_dir` /
-    `_worktree_add`, so a refusal at any of those burned the round label
-    (gate 1 r2 row r2-1).
+    it after its own pre-mutation boundary.
     """
     if entry.skipped_reason:
         raise RosterError(f"roster entry '{entry.name}' is not startable: "
@@ -1042,22 +1022,6 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-def _which_from_env():
-    """The binary probe: the real PATH one unless the GATED test seam is set.
-
-    `TRIAD_ROSTER_WHICH` alone does nothing — only with `TRIAD_TEST_SEAMS=1`
-    beside it does a stray environment variable get to decide which Google CLI
-    this host is deemed to have. When it applies, it says so once on stderr.
-    """
-    raw = os.environ.get(WHICH_ENV)
-    if raw is None or os.environ.get(TEST_SEAMS_ENV) != "1":
-        return shutil.which
-    present = {name.strip() for name in raw.split(",") if name.strip()}
-    print(f"NOTE: roster_v2: TEST SEAM active — binaries: "
-          f"{', '.join(sorted(present)) or '(none)'}", file=sys.stderr)
-    return lambda binary: f"<{WHICH_ENV}>/{binary}" if binary in present else None
-
-
 def _entry_json(entry: Entry) -> dict:
     return {"name": entry.name, "vendor": entry.vendor, "enabled": entry.enabled,
             "acceptance": entry.acceptance, "timeout_s": entry.timeout_s,
@@ -1066,26 +1030,7 @@ def _entry_json(entry: Entry) -> dict:
             "google": entry.google, "agy": entry.agy, "gemini": entry.gemini}
 
 
-def _relax_std_stream_errors() -> None:
-    """NEVER DIE ON AN ENCODER (gate-1 r6 row r6-16). Entry-point only.
-
-    Operator text here is em-dash-bearing English and `sys.stdout`'s error
-    handler is STRICT, so under a non-UTF-8 locale the first such line raised
-    UnicodeEncodeError and took the command down instead of printing its
-    outcome. Only the ERROR HANDLER changes (the encoding is untouched), and
-    a stream that cannot be reconfigured is left alone. Full rationale:
-    `review_scratch.py::_relax_std_stream_errors` — each v2 lib is separately
-    executable and separately vendored, so the call is repeated at each entry
-    rather than imported across them."""
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(errors="backslashreplace")
-        except (AttributeError, ValueError):
-            pass
-
-
 def main(argv: list | None = None) -> int:
-    _relax_std_stream_errors()
     parser = argparse.ArgumentParser(
         prog="roster_v2.py", allow_abbrev=False,
         description="Resolve the v2 review roster (defaults + project override)")
@@ -1095,7 +1040,7 @@ def main(argv: list | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        resolved = resolve_roster(Path(args.worktree), which=_which_from_env())
+        resolved = resolve_roster(Path(args.worktree), which=shutil.which)
     except RosterError as exc:
         print(f"roster_v2: refused: {_flat(exc)}", file=sys.stderr)
         return EXIT_REFUSE

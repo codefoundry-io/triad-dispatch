@@ -95,103 +95,57 @@ the recorded attempt did not return a valid verdict, below), admits it through
 |---|---|---|
 | 0 | `AGREED` | the selected roster is nonempty and EVERY selected entry returned a valid, explicit `SAFE TO MERGE` with no blocking finding and no open question. Leg count and family coverage are reported, never a threshold (a one-leg or one-family roster agrees by the same rule). This is the collector's agreement on the reviewed bytes — it does not by itself authorise merge, install or release (SKILL Flow 5 owns that). |
 | 4 | `BLOCKED` | a VALID entry's verdict is not `SAFE TO MERGE` — a Minor-only negative included (below) — or it carries a Critical / must-fix finding or an unresolved OPEN QUESTION. `acceptance` grants no exemption — an `informational` entry blocks like a `required` one. Verify each finding (§ Dispositions), triage it, and take the fixes to a NEW round. |
-| 5 | `INCOMPLETE` | some enabled entry is missing (a SKIPPED entry included), unreadable, or failed admission. NOT agreement and never a silent pass. Diagnose why that entry failed to RUN, then `retry <packet-dir> r<N> <name> --diagnosis "<why>"`; a valid NEGATIVE verdict is completed work and is never a retry case. A claude reply the admission refused is not sealed and collects as not admitted (`MISSING — no result file at <attempt>/admitted.json`); `retry` is open for it and seals it `invalid` when it replaces the attempt. `retry` refuses — and the remedy is a NEW round — for a SKIPPED entry (`it never ran, so there is no attempt to retry`). |
-| 2 | refusal | no or unreadable round record, a round record whose SHAPE is unwalkable (below), a record whose selection or configuration differs from the round's bound basis (`delivery-r<N>.md`), an unknown or non-dispatched entry name, an empty `--diagnosis`, or a retry on a completed review. **Also the INTEGRITY refusal**: before `collect` reports `AGREED` it runs the round integrity check (`review_scratch.py verify`) itself (R-AGREE: no integrity failure), so a skipped or too-early `verify` never yields `AGREED`; when that check fails, `collect` refuses with verify's own reason, leaves the previous collection record untouched and names the remedy by cause: a changed tree or evidence, or a packet file the host did not write → a NEW round; the host's own `.tmp-<pid>-…` staging leftover → a NEW round (the host's deletion command removes a whole packet dir only); a second round tree you made → a NEW round in a new packet dir (`open` with a new slug); a later round prepared over this one → it is superseded, collect that round; a host fault (git unavailable, the verification record unwritable, a check that could not be launched or ended with any exit but its own refusal's 2 — a traceback, a signal) → exit 64, repair the host and collect again. **Also the SPEC-BASIS refusal**: the round record freezes `contract_digest` (sha256 of the canonical ADMISSION schema `verdict_v2` judges every reply against) beside `projection_digest`, and `collect` / `retry` refuse here — `the ADMISSION contract basis changed since this round was prepared (frozen … vs … ) — … prepare a new round (R-REREVIEW)` — on a MISMATCH or on ABSENCE of the frozen value. The contract is the one basis no leg artifact evidences: an admitted `verdict.json` carries no trace of the schema that let it through. A CHANGED basis is a new ROUND, never a re-collection. |
-| 64 | HOST FAULT | **THIS HOST cannot admit any reply (or could not RUN the round's evidence tools), so nothing about ANY leg is known.** `verdict_v2` reserves exit 64 for the admission it could not RUN at all — `jsonschema` absent, the vendored contract unreadable / invalid UTF-8 / non-JSON / nested past the interpreter's limit / not Draft 2020-12 (EVERY load-failure class takes this exit). `collect` (and `retry`) STOP at the first such admission with `collect_v2: HOST FAULT: this host cannot admit any reply: <reason> (reached while admitting <path>)` and write NO per-entry state — recording it as the ENTRY's `invalid` would fold the round to `INCOMPLETE` and send the leader to re-dispatch PAID legs over a broken install. **The agy entry's two EVIDENCE TOOLS take the same exit**: `read_audit_gate.sh` and `agy_hook.py check` both reserve rc 64 for "this invocation could not RUN at all" — a required file the round named is gone, a re-pinned worktree, an absent `hook_log`, an unusable argv — and that is a `_HostFault` too, never that leg's `invalid`. **ORDER against the exit-2 basis refusal**: the HOST question comes first — a contract this host cannot even LOAD is 64, and only a contract that loads and DIFFERS is the exit-2 "basis changed — new round". Repair the host and collect AGAIN — the legs' own outputs are untouched and nothing needs re-dispatching. |
+| 5 | `INCOMPLETE` | some enabled entry is missing (a SKIPPED entry included), unreadable, or failed admission. NOT agreement and never a silent pass. Diagnose why that entry failed to RUN, then `retry <packet-dir> r<N> <name> --diagnosis "<why>"`; a valid NEGATIVE verdict is completed work and is never a retry case. A claude reply the admission refused collects as not admitted (`MISSING — no result file at <attempt>/admitted.json`) and stays open to `retry` (`references/leg-contracts.md` § Attempt seal). `retry` refuses — and the remedy is a NEW round — for a SKIPPED entry (`it never ran, so there is no attempt to retry`). |
+| 2 | refusal | no or unreadable round record, a round record with no `entries`, a record whose selection or configuration differs from the round's bound basis (`delivery-r<N>.md`), an unknown or non-dispatched entry name, an empty `--diagnosis`, or a retry on a completed review. **Also the INTEGRITY refusal**: before `collect` reports `AGREED` it runs the round integrity check (`review_scratch.py verify`) itself (R-AGREE: no integrity failure), so a skipped or too-early `verify` never yields `AGREED`; when that check fails, `collect` gives ONE refusal — ``every entry agreed, but the round integrity check (`review_scratch.py verify`) failed: <verify's reason> — the round is INVALID; prepare a new round`` — and leaves the previous collection record untouched. A check that could not be launched, or ended with any exit but its own refusal's 2 (a traceback, a signal), is a host fault: exit 64, repair the host and collect again. **Also the TOOLKIT refusal**: a changed, added or missing toolkit file, or a round record with no toolkit map — prepare a new round (the TOOLKIT MAP paragraph below). |
+| 64 | HOST FAULT | **THIS HOST cannot admit any reply (or could not RUN the round's evidence tools), so nothing about ANY leg is known.** `verdict_v2` reserves exit 64 for the admission it could not RUN at all — `jsonschema` absent, the vendored contract unreadable / invalid UTF-8 / non-JSON / nested past the interpreter's limit / not Draft 2020-12 (EVERY load-failure class takes this exit). `collect` (and `retry`) STOP at the first such admission with `collect_v2: HOST FAULT: this host cannot admit any reply: <reason> (reached while admitting <path>)` and write NO per-entry state — recording it as the ENTRY's `invalid` would fold the round to `INCOMPLETE` and send the leader to re-dispatch PAID legs over a broken install. **The agy entry's two EVIDENCE TOOLS take the same exit**: `read_audit_gate.sh` and `agy_hook.py check` both reserve rc 64 for "this invocation could not RUN at all" — a required file the round named is gone, a removed worktree, an absent `hook_log`, an unusable argv — and that is a `_HostFault` too, never that leg's `invalid`. **ORDER against the exit-2 toolkit refusal**: the HOST question comes first — a contract this host cannot even LOAD is 64, and only a contract that loads and DIFFERS is the exit-2 "the installed toolkit changed — new round". An installed toolkit file this host cannot READ is 64 too. Repair the host and collect AGAIN — the legs' own outputs are untouched and nothing needs re-dispatching. |
 
-**The EXPECTED binding is DERIVED, never read back** (`collect_v2._evaluate`).
-The six values an attempt's `binding.json` is checked against come from
-OUTSIDE that attempt directory: `review_id` and `content_digest` from the
-ROUND RECORD, `family` / `leg_name` / `route` from the round's FROZEN ROSTER
-ENTRY, and `attempt` from the DIRECTORY NAME the scan parsed. `binding.json`
-must EQUAL that derivation before admission runs at all — a binding and a
-result that only validate EACH OTHER would let a pair copied out of one
-entry's attempt be credited to another entry. A disagreeing binding is
-`invalid` with the offending FIELD named — not a leg that answered wrong, an
-attempt directory that does not belong to this entry.
+**The binding is DERIVED, never read back.** `collect` checks each attempt's
+`binding.json` against the six values it derives from the round record, the
+frozen roster entry and the directory name — `references/leg-contracts.md`
+§ Verdict binding — all legs, item 1.
 
-**THE ROUND RECORD DECIDES WHICH ATTEMPT IS EVALUATED** (`collect_v2._evaluate`).
-Allocation is the RECORD's act: `prepare` writes attempt 1 and `retry` bumps
-the entry (allocating) before it returns, so an on-disk attempt
-ABOVE the record's is one this round never dispatched — restored from a
-backup or planted by hand, and able, with a binding that satisfies the
-derivation above and a schema-valid SAFE verdict, to supersede the recorded
-attempt's BLOCKING verdict. It is refused BY NAME for THAT ENTRY with
-`retry`'s own refusal, its cause and remedy — `<dir>/attempt-<N> already
-exists while the round record names attempt <K> (an interrupted retry) —
-nothing is allocated; prepare a new round`, or an earlier refusal of
-`retry`'s (the `admit:` line, or a new round) — followed by `(also: <dir> is
-an attempt this round never allocated; the recorded attempt <K> is <state>)`:
-the recorded attempt's own remedy is not printed, nothing is deleted, every
-other entry still collects and the round lands on INCOMPLETE. That refusal
-fires only when the RECORDED attempt did not itself return a valid verdict:
-a completed review is never vetoed by an unallocated directory, which is
-then simply not read. Exactly `attempt-<record.attempt>/` is evaluated, so a
-RECORDED attempt the tree does not hold is that entry's `invalid` (`…
-attempt-<K> is not on disk …`), and `retry` refuses it BEFORE allocating
-anything (`… — prepare a new round`).
+**THE ROUND RECORD DECIDES WHICH ATTEMPT IS EVALUATED — an attempt above the
+record's is refused, not adopted** (`collect_v2._evaluate`, `retry`).
+Allocation is the RECORD's act: `prepare` writes attempt 1 and `retry`
+allocates first, then writes the diagnosis and bumps the record. A retry that
+stopped in between (a failed diagnosis or record write, an interrupted
+process) leaves `attempt-K+1/` on disk while the record still says K; an
+attempt above the record's may also be restored from a backup or planted by
+hand, and with a binding that satisfies the derivation and a schema-valid SAFE
+verdict it could otherwise supersede the recorded attempt's BLOCKING verdict.
+So it is never taken over:
+- `retry` refuses before it writes or allocates anything, at every gap width:
+  `<dir>/attempt-<N> already exists while the round record names attempt <K>
+  (an interrupted retry) — nothing is allocated; prepare a new round`.
+- `collect` makes THAT ENTRY `invalid` with the same refusal (or an earlier
+  refusal of `retry`'s — the `admit:` line, or a new round) followed by
+  `(also: <dir> is an attempt this round never allocated; the recorded attempt
+  <K> is <state>)`; every other entry still collects and the round lands on
+  INCOMPLETE. It fires only when the RECORDED attempt did not return a valid
+  verdict: a completed review is never vetoed by an unallocated directory,
+  which is then simply not read.
+- Nothing is deleted: the packet dir is helper-owned, and nothing under
+  `results-r<N>/` is removed by hand. Remedy: prepare a new round.
+Exactly `attempt-<record.attempt>/` is evaluated, so a RECORDED attempt the
+tree does not hold is that entry's `invalid` (`… attempt-<K> is not on disk
+…`), and `retry` refuses it BEFORE allocating anything (`… — prepare a new
+round`).
 
-**THE ROUND RECORD'S SHAPE IS CHECKED BEFORE ANYTHING WALKS IT**
-(`collect_v2._check_record_shape`). Unchecked, `"entries": null` or
-`"entries": [null]` would meet the iteration as a traceback, a record missing
-`results_dir` would crash inside `_evaluate`, and one missing `review_id` /
-`content_digest` / `worktree` would degrade SILENTLY (a derived binding of
-None mismatches every entry, so a tampered record would read as "every leg
-answered wrong"). The check is a SHAPE check, not a contract: only the members
-this file dereferences are named, and each refusal (exit 2) NAMES THE FIELD —
-`entries` as a list, each `entries[i]` an object with a usable `name` and a
-`leg` object and an `attempt` that is a positive int when present, then
-`review_id` / `content_digest` / `worktree` / `results_dir` as non-empty
-strings. Members with their own dedicated refusal downstream —
-`projection_digest`, `contract_digest`, `prompt_spec_dir`, `hook_log` — are
-only TYPE-checked when present, so a record that OMITS one still reaches the
-refusal that explains what it is for.
+**THE ROUND RECORD is read, not shape-checked** (`collect_v2._read_record`).
+An absent record refuses (`no round record at <path> — this round was not
+prepared …`), and so does one with no `entries` (exit 2). The record is this
+helper's own: a hand-corrupted one is tampering (R-THREAT), and a stop
+mid-write is covered by the temp file + `os.replace` writer below.
 
-**ONE derivation serves every reader** (`collect_v2._expected_binding`).
-Every reader calls the same helper and compares ALL SIX values, so they
-cannot drift. The printed `--expected-*`
-flags of a wrapper entry's `admit:` line come from that DERIVED dict too, never
-read back out of the attempt's own `binding.json`: the values the operator runs
-are the round record, the frozen roster entry and the directory name, exactly
-as admission's are. The native `--admit` line types none (R-BIND): it takes the
-six from the attempt's `binding.json`, a typed flag that disagrees is exit 64
-and seals nothing, and `collect` still re-judges the admitted result against
-the derived dict.
-Every interpolated value is `shlex.quote`d
-(`review_scratch._v2_expected_flags`) — the flags land in a command line the
-operator copies into a shell, where an unquoted space or metacharacter would
-split an argument, or run. Quoting is the second half of the
-derive-never-read-back rule, not a substitute for it.
-
-**A non-object `binding.json` invalidates ONE entry.** `null` and `[]` parse
-cleanly but are not the object `binding.get(...)` expects; unscoped, the
-resulting error would abort the WHOLE collection and throw away every other
-entry's verdict. That entry is `invalid` (reason: `binding record is not an
-object (<type>): <path>`), and every other entry still collects.
-
-**An unusable attempt DIRECTORY invalidates ONLY its own entry.** An
-`attempt-<non-decimal>` name is REFUSED rather than skipped (skipping would
-make the collector read a LOWER attempt than the tree holds), and the refusal
-is scoped: the entry goes `invalid` with the directory named, every OTHER
-entry still collects, and the round lands on `INCOMPLETE`. A `retry` of THAT
-entry runs the same scan itself and refuses with the same reason.
-
-**ONE NUMBER, ONE SPELLING — and a real DIRECTORY.** `int()` is not injective
-over the names `isdecimal()` admits, so `attempt-01`, `attempt-001` and every
-non-ASCII decimal spelling map to the same number as the canonical
-`attempt-1`: two directories would claim one allocation, FILESYSTEM ORDER
-would decide which one's verdict is credited, and a copy dropped in under a
-second spelling would admit cleanly, because the derived binding names the
-NUMBER, which both spellings satisfy. Only `attempt-<N>` in the canonical
-spelling the writer produces (ASCII digits, no leading zero) is usable; any
-other is refused by name. A SYMLINKED `attempt-K`, or one that is not a
-directory, is refused too — skipping it would read a LOWER attempt than the
-tree holds, the same failure the non-decimal refusal exists to prevent,
-reached through a link instead of a spelling. A name this helper owns is a
-real directory or it is refused; nothing is followed and nothing is deleted.
-All three refusals are per-ENTRY inside `collect`: that entry goes `invalid`
-with the directory named, every other entry still collects, the round lands
-on `INCOMPLETE`, and a `retry` of that entry refuses with the same sentence.
+**An attempt directory is `attempt-<N>` (N ≥ 1, ASCII digits, no leading
+zero) and a real directory.** Any other name starting `attempt-` — a
+non-decimal suffix, `attempt-01`, a symlinked or non-directory `attempt-K` —
+is refused by name, never skipped (skipping would read a LOWER attempt than
+the tree holds): `<path> is not an attempt directory this helper allocates
+(attempt-<N>, N ≥ 1, no leading zero) — prepare a new round`. Inside
+`collect` the refusal is scoped to that ENTRY (it goes `invalid`, every other
+entry still collects, the round lands on `INCOMPLETE`), and a `retry` of that
+entry refuses with the same sentence. Nothing is followed or deleted.
 
 **Precedence when several conditions hold at once** (`collect_v2._outcome`): `INCOMPLETE` wins over `BLOCKED`, and `AGREED` only when neither applies — an invalid entry is reported before a blocking finding on another entry. Family coverage never enters the outcome.
 
@@ -209,50 +163,17 @@ a one-line refusal naming the allocated directory and stating that the round
 record still names attempt K, so the next `retry` refuses on the allocated
 attempt: prepare a new round.
 
-**An attempt that already exists above the recorded one REFUSES `retry`.**
-The other side of allocate-then-diagnose is an allocation that SUCCEEDED
-while the diagnosis or the record write failed (or the process stopped):
-`attempt-K+1/` is on disk and the round record still says K. Rendering K+2
-over it would write a diagnosis into an attempt nobody recorded and let the
-numbering run away from the record; taking it over would trust records
-nobody recorded. So `retry` refuses before it writes or allocates anything,
-at EVERY gap width, naming the on-disk attempt and the remedy (`… already
-exists while the round record names attempt <K> (an interrupted retry) —
-nothing is allocated; prepare a new round`). The directory is NOT deleted:
-the packet dir is helper-owned, so the tool never removes a directory it did
-not write, and nothing under `results-r<N>/` is removed by hand. A stop
-mid-retry is an ordinary failure with a named recovery. The ordinary `retry`
-also refuses outright on any existing `retry-diagnosis.txt` in attempt K —
-`attempt K has already been diagnosed and retried` — a symlink included, and
-nothing is written through it.
+**An attempt above the recorded one refuses `retry`** — the ROUND RECORD
+paragraph above. The ordinary `retry` also refuses outright on any existing
+`retry-diagnosis.txt` in attempt K — `attempt K has already been diagnosed and
+retried` — a symlink included, and nothing is written through it.
 
-An `attempt-<suffix>` whose suffix is not a DECIMAL number is likewise
-refused with one line rather than skipped or crashed — `str.isdigit()` is
-true for characters `int()` refuses, and silently ignoring such a name would
-make the collector read a LOWER attempt than the tree holds; inside `collect`
-that refusal is scoped to the offending ENTRY (above). The same one-line,
-per-entry refusal covers a NON-CANONICAL decimal spelling (`attempt-01`,
-non-ASCII digits) and an `attempt-*` entry that is a symlink or not a
-directory at all.
-
-**BOTH records this helper writes go through ONE lstat-refusing writer**
-(`collect_v2._write_json`). `collect-r<N>.json` and the round record
-(`.roster-r<N>.json`) share one writer: the target is `lstat`ed first and a
-NON-REGULAR path is refused BY NAME (`… is not a regular file (a symlink or
-another special path)` — inspect it, then prepare the round in a NEW packet dir,
-since a later capture in this one refuses it too), then the bytes go to a pid-suffixed temp file and `os.replace`. A
-plain `write_text` would FOLLOW a symlink planted at the target and put the
-round's collected state wherever it pointed. The replace idiom itself never
-writes THROUGH a link; the `lstat` is what turns a planted path into a NAMED
-refusal instead of a silently replaced one, and it keeps the rule identical
-for both records. **The TEMP file is exclusive-created too, and unlinked when
-the staging does not consume it**: the temp is opened
-`O_CREAT|O_EXCL|O_NOFOLLOW` (the rule both sibling writers —
-`verdict_v2._write_admitted_out` and `review_scratch._write_new_file` —
-apply), so a symlink planted at the predictable `.tmp-<pid>-<name>` is never
-written through; a pre-existing name of any kind is refused BY NAME, and a
-`finally` removes a temp that was never replaced, so a refused write leaves
-no `.tmp-…` residue for `verify` to report as an uncovered packet file.
+**BOTH records this helper writes go through ONE writer**
+(`collect_v2._write_json`): `collect-r<N>.json` and the round record
+(`.roster-r<N>.json`) are written to a pid-suffixed temp file and
+`os.replace`d, so a reader sees the old record or the new one, never half of
+one, and a link at the target is replaced, never written through. A write
+that fails is one refusal naming the record, and the temp is removed.
 
 **Every record load tolerates a RECURSIVE document.** `json.loads` raises
 more than `ValueError`: a document nested past the interpreter's recursion
@@ -264,79 +185,58 @@ reports the offending file by name; `roster_v2._read_json` catches
 nested past the limit is a one-line refusal at exit 2 like every other
 loader failure.
 
-**Subprocess output is decoded UTF-8, and the collector's own streams never
-raise.** `collect_v2._run` — the helper that shells out to the agy
+**Subprocess output is decoded UTF-8, and under the C locale the collector's
+own streams print UTF-8.** `collect_v2._run` — the helper that shells out to the agy
 read-audit gate and the hook check — pins `encoding="utf-8",
 errors="replace"`, the same pin the wrappers apply to every vendor pipe:
 `text=True` alone decodes with `locale.getpreferredencoding()`, and under an
 ASCII locale the gate's own em-dash diagnostics would raise
 `UnicodeDecodeError` where the agy entry owes a one-line reason. On the
-OUTPUT side, every CFR lib's `main()` reconfigures its DIAGNOSTIC stream with
-`errors="backslashreplace"`, so a refusal sentence carrying a path or a
-vendor token the locale codec cannot encode is printed escaped instead of
-raising `UnicodeEncodeError` — a host under a non-UTF-8 locale cannot turn a
-one-line refusal into a traceback.
+OUTPUT side the review libs relax nothing: under the C locale Python 3.12
+runs in UTF-8 mode (measured on macOS and Ubuntu 24.04), so a refusal
+sentence carrying an em-dash, a path or a vendor token prints as UTF-8. A
+recorded limit, no code: under a UTF-8 locale that is not the C locale, UTF-8
+mode is off and stdout is strict, so a surrogate-escaped path could still
+raise on stdout.
 
-**…but `stdout` is the PAYLOAD stream and is NEVER re-encoded.**
-`_relax_std_stream_errors` is **stderr-only**: relaxing `stdout` would be
-right for operator prose and wrong for the two things on this stream that a
-machine or an operator CONSUMES — `prompts_v2`'s rendered prompt / manifest
-/ investigation clause, and `review_scratch`'s six dispatch lines.
-`backslashreplace` would silently REWRITE them (a rendered prompt's
-em-dashes; a dispatch line's non-ASCII path token printed as `caf\xe9` under
+**…and `stdout` is the PAYLOAD stream and is NEVER re-encoded.**
+An error handler such as `backslashreplace` on `stdout` would be
+right for operator prose and wrong for what a machine or an operator
+CONSUMES on this stream — `review_scratch`'s six dispatch lines (`prompts_v2`
+is a library and prints nothing). `backslashreplace` would silently REWRITE
+them (a dispatch line's non-ASCII path token printed as `caf\xe9` under
 `LC_ALL=C`, i.e. a path that does not exist, handed to an operator with no
-warning). Both printers encode ONCE as UTF-8 and write to `sys.stdout.buffer`
-(`_emit_payload`), so the locale gets no vote; every token in a dispatch line
+warning). The printer encodes ONCE as UTF-8 and writes to `sys.stdout.buffer`
+(`review_scratch._emit_payload`), so the locale gets no vote; every token in a dispatch line
 is already `shlex.quote`d by the caller. A text this host cannot represent as
 UTF-8 — a path decoded with `surrogateescape` — is **REFUSED BY NAME** rather
 than escaped (`a dispatch line carries a path this host cannot represent as
-UTF-8 … rename the offending path or prepare this round under a UTF-8
-locale`), because a mangled path in a command the operator RUNS is the
-failure the emitter exists to stop. **The no-`.buffer` FALLBACK takes the
-same refusal.** Both emitters fall back to `sys.stdout.write(text)` when
-`sys.stdout` exposes no `.buffer` — an in-process harness, or a stream
-replaced under a non-UTF-8 locale. The payload is never rewritten to get past
-it (`backslashreplace` here would silently change the clause bytes the round
-record's manifest digests, or mangle a path in a command the operator RUNS),
-so the fallback raises the SAME refusal the encode step above uses:
-`prompts_v2` a `PromptSpecError` ("render to a binary stream or under a UTF-8
-locale"), `review_scratch` its one-line `review_scratch:` failure.
+UTF-8 … rename the offending path`), because a mangled path in a command the
+operator RUNS is the failure the emitter exists to stop.
 Wrapper-side counterpart: the plugin `README.md` § Payload vs
 diagnostic streams.
 
-**`retry` compares the PROMPT BASIS against the round's frozen manifest.**
-R-RETRY re-renders from the round's own frozen roster entry, so the leg
-CONFIG cannot move — but the CLAUSES are re-read from the live
-`spec/prompts/*.md` on every render, and a spec re-vendored between `prepare`
-and `retry` would silently change the instructions the leg receives while the
-round record still claimed an unchanged basis. `retry` compares the rendered
-clause DIGESTS plus the clause DIRECTORY with the `prompt_manifests` frozen
-at prepare, BEFORE `v2_write_attempt`, so a refusal leaves nothing behind: a
-mismatch refuses with "the prompt basis changed since this round was
-prepared … prepare a new round" (R-REREVIEW: every entry reviews the new
-basis again). A changed basis is a NEW ROUND, never a quiet re-render. A
-MISSING frozen manifest for that entry **or** a missing frozen
-`prompt_spec_dir` refuses the same way: without the directory, a retry could
-re-render out of a DIFFERENT clause directory as long as the digests lined
-up. Both halves are required, neither is inferred.
-
-**`retry` compares the PRODUCER SCHEMA BASIS too — `projection_digest`.** The
-clause check above pins the PROMPT basis, but `roster_v2.render_dispatch`
-re-derives `schema.projected.json` from the vendored
-`spec/contracts/leg-verdict.schema.json` LIVE on EVERY render, including the
-one a `retry` runs for attempt K+1 — so a spec re-vendoring between `prepare`
-and `retry` would hand the new attempt a DIFFERENT producer schema while the
-round record still claimed an unchanged basis. `prepare` therefore
-freezes `projection_digest` — the sha256 of the PROJECTED schema bytes — in
-`.roster-r<N>.json`, and `retry` re-derives and compares it BEFORE
-`v2_write_attempt`, so a refusal leaves nothing behind. It is a DIGEST, not
-the bytes, because the bytes already live in each attempt's own
-`schema.projected.json`. **Absence refuses exactly like a mismatch**: a
-record carrying no frozen digest cannot PROVE the basis either (`the round
-record carries no frozen producer-schema projection digest … prepare a new
-round`) — re-prepare it. A host where the projection cannot be derived at
-all (an unreadable or non-conforming vendored contract) refuses with that
-reason instead of guessing.
+**`collect` and `retry` compare the round's TOOLKIT MAP with the installed
+files.** R-RETRY re-renders from the round's own frozen roster entry, so the
+leg CONFIG cannot move — but the CLAUSES are re-read from the live
+`spec/prompts/*.md`, `roster_v2.render_dispatch` re-derives
+`schema.projected.json` from the vendored
+`spec/contracts/leg-verdict.schema.json`, `verdict_v2` judges every reply
+against that same contract, and a claude entry spawns a shipped preset file.
+`prepare` records `toolkit_map` in `.roster-r<N>.json` — every file directly under `lib/`,
+every file of the vendored `spec/` and the six shipped reviewer presets, each
+with its sha256 — and `collect` (before any entry is judged) and `retry`
+(before `v2_write_attempt`, so a refusal leaves nothing behind) compare it
+with the installed files. Any changed, added or missing file refuses: `the
+installed toolkit changed since this round was prepared: <files> — prepare a
+new round (R-REREVIEW)`, every entry reviewing the new basis again. A changed
+toolkit is a NEW ROUND, never a quiet re-render or a re-collection. The
+admission contract is the one basis no leg artifact evidences: an admitted
+`verdict.json` carries no trace of the schema that let it through. A record
+with no map refuses the same way — `this round was prepared before the host
+recorded its toolkit map — prepare a new round`: a toolkit that cannot be
+proven is never inferred. The `prompt_manifests` member stays recorded as
+evidence of each entry's clauses; it is not compared.
 
 **Minor-only NEGATIVE verdict = `BLOCKED` + a deviation record.** An entry
 that returns `MERGE WITH FIXES` or `DO NOT MERGE` with ZERO blocking findings
@@ -348,14 +248,11 @@ already carries the verdict-selection rule, so the round agrees only when a
 later round's entries each return SAFE TO MERGE on their own basis.
 
 On an agy route the CUSTODY check, the per-attempt READ-AUDIT GATE and the
-HOOK LOAD CHECK are part of the result, not optional extras: an ungated agy
-answer is UNVERIFIED and the collector treats that entry as invalid. CUSTODY
-runs first: the attempt's own `stderr.log` must carry the whole line
-`read-audit-file: <that absolute path>` (timestamp prefix, percent-escaped
-filesystem bytes), or the audit beside it is not this attempt's evidence. The
-hook load check is per attempt: hook rows are attributed to the attempt by the
-`conversation_id`s its own census rows recorded, and a verdict other than PASS
-falls on that leg only (`references/failure-modes.md`).
+HOOK LOAD CHECK are part of the result: an entry that fails one is `invalid`,
+its reason naming the check (an ungated agy answer is UNVERIFIED, never
+agreement). Each check's contract and remedy: `references/leg-contracts.md`
+§ agy leg (the Read-audit binding bullet), § agy hook load check and § agy
+read-audit gate.
 
 ## A non-SAFE verdict at the merge gate
 
@@ -388,9 +285,11 @@ consolidation (the deterministic probe doubles as the occurrence check):
 - **SPECULATIVE** — cannot occur in this deployment (other platform, inside the
   trust boundary, vendor-guaranteed, absent threat model; for a TRIAD host's own
   code, a trigger R-THREAT rules out — deliberate tampering with the host's own
-  files or a concurrent operation; a stop at any point (a token or usage limit
-  included) and an odd layout of files the leader creates by hand are not among
-  them: they are ordinary failures, in scope at full severity). → **no code.**
+  files or a second operation inside one working folder; a stop at any point (a
+  token or usage limit included) and an odd layout of files the leader creates
+  by hand are not among them: they are ordinary failures, in scope at full
+  severity; a vendor shape no run has shown is a recorded limit
+  (HARDENING-SUGGESTION)). → **no code.**
   Record it with the classification rationale;
   the next round's current residual carries the disclosure, and a re-raise
   without new evidence is not progress (R-STOP).
@@ -525,8 +424,10 @@ CONVERGENCE floor.
 
 ## Residual table
 
-The gate's ledger record — `<packet-dir>/residuals.md` while the round is open,
-one row per finding: finding / raising leg / round / class / leg severity +
+The gate's ledger record — kept OUTSIDE every packet dir while the gate runs
+(the session scratchpad, beside the brief drafts: a file written into a packet
+dir after its capture is one `verify` refuses as uncovered, and a refused
+packet dir is left exactly as it is), one row per finding: finding / raising leg / round / class / leg severity +
 verdict / probe, repro or counterevidence / rationale / disposition
 (§ Dispositions). A fix that is applied stays open until a later round's
 `collect` covers its bytes — never closed on a leader assertion. An owner
@@ -548,8 +449,8 @@ refused. For an owner-call section use the same data fence: finding, evidence
 and rationale cells carry vendor-authored text, a declared untrusted input,
 which must never sit among the leader-authored questions.
 
-Before `close`-ing the packet dir, copy the residual table WITH dispositions to a
-durable record: the COMPLETE table (every row and disposition, not a summary) at
+At gate end, before the last `close`, copy the residual table WITH dispositions
+to a durable record: the COMPLETE table (every row and disposition, not a summary) at
 `docs/reviews/<UTC-date>-<slug>-residuals.md`, with the commit body carrying a
 pointer to it plus the load-bearing rows. Packet close deletes the dir.
 
@@ -587,8 +488,10 @@ still requires verifying an agy cite before it enters the table (its cites
 were fabricated in most traced runs even inside a schema-shaped reply).
 
 **Fallback (stated, not hypothetical).** An entry with no admitted object —
-its reply failed admission (not sealed; `retry` seals it invalid when it
-replaces the attempt), or it never answered — keeps the round `INCOMPLETE` (§ Collect outcomes); its prose
+its reply failed admission (not sealed — `references/leg-contracts.md`
+§ Attempt seal), or it never answered — keeps the round `INCOMPLETE` (§ Collect outcomes); its prose
 findings may still be read by hand and triaged as leader-probed evidence
-(direction asymmetry: findings only add work). One entry's admitted object and
+(direction asymmetry: findings only add work) — except an agy entry the
+read-audit gate or the hook load check refused: its answer is UNVERIFIED and is
+not read this way (`references/leg-contracts.md` § agy read-audit gate). One entry's admitted object and
 another entry's prose can both feed the SAME residual table in the SAME round.

@@ -1,29 +1,11 @@
 #!/usr/bin/env bash
-# read_audit_gate.sh — the agy read-audit MECHANICAL gate as ONE executable
-# helper (triad-cross-family-review; owner approval 2026-08-13, backlog
-# record 2026-08-07: the leader re-typed this block inline once per round).
-#
-# SPEC lives in references/leg-contracts.md § agy read-audit gate (threat
-# model, the three semantic rules, the INCONCLUSIVE/VOID release paths).
-# This file is the gate's single executable form: the source repo's
-# self-tests lift the 3-line jq invocation below VERBATIM with a
-# fixed-string grep -A2 on its first line — keep that block's shape and
-# variable names stable, and keep it the ONLY site spelling that
-# invocation (this comment deliberately does not, or the grep would
-# double-match).
+# read_audit_gate.sh — the agy read-audit MECHANICAL gate (spec:
+# references/leg-contracts.md § agy read-audit gate).
 #
 #   usage: read_audit_gate.sh --audit-file <abs-path> <abs-packet-dir> <abs-packet-file> [<abs-packet-file>...]
 #
-# `--audit-file` is REQUIRED and LEADING: the read audit of ONE agy attempt,
-# `<abs-packet-dir>/results-r<N>/<name>/attempt-<K>/read-audit.json` — the
-# only legal shape. No env fallback (leg-contracts J1 anti-drift: an ambient
-# TRIAD_READ_AUDIT_FILE some other shell context left exported can never
-# redirect this gate), no default path. The value must be ABSOLUTE and live
-# inside <abs-packet-dir> (no symlink resolution); anything else, and a
-# missing flag, is a usage error (64).
-#
 # stdout: one "[gate] <VERDICT> <file>" line per EVALUATED packet file
-#   (the ABSENT/symlink refusals evaluate none; the broken-evidence
+#   (the ABSENT refusal evaluates none; the broken-evidence
 #   stop evaluates no later file), then
 #   the final greppable summary
 #   "READ_AUDIT_GATE_<VERDICT> checked=<n> pass=<n> void=<n>
@@ -34,38 +16,24 @@
 # exit:  0 PASS (every file matched)
 #        2 ABSENT       (no digest file — check the dispatch env FIRST)
 #        3 VOID         (>=1 confirmed miss with files_read_omitted == 0)
-#        4 INCONCLUSIVE (broken evidence, capped digest, symlinked digest,
-#                        or an at-or-over-cap packet path — a prefix
-#                        identity the digest cannot confirm)
+#        4 INCONCLUSIVE (broken evidence, capped digest, or an
+#                        at-or-over-cap packet path — a prefix identity
+#                        the digest cannot confirm)
 #       64 usage        (bad argv — incl. a nonexistent packet file: a stale
 #                        or mistyped packet name would false-VOID a
 #                        compliant leg, so it fails loud here instead)
 #
-# The verdict is decided by jq_rc + files_read_omitted ONLY; the
-# read_attempts diagnostic below is explanatory text, never an input.
+# The verdict is decided by jq_rc + files_read_omitted ONLY.
 # Aggregate precedence INCONCLUSIVE > VOID > PASS is LOAD-BEARING: the
 # per-ARGUMENT over-cap refusal can mix with a digest-side VOID in one run
 # (only the capped/broken digest states are digest-global).
 
-# Interpreter floor (review r5): under `sh` (dash), `set -o pipefail`
-# below dies with status 2 — ALIASING the ABSENT exit — before the
-# bash-version guard can run. This line parses in any POSIX shell and
-# routes the wrong-interpreter case to the LOUD usage code instead.
+# Interpreter floor: under `sh` (dash), `set -o pipefail` below dies with
+# status 2 — ALIASING the ABSENT exit. This POSIX `BASH_VERSION` guard runs
+# first, parses in any POSIX shell and routes the wrong-interpreter case to
+# the LOUD usage code instead.
 [ -n "${BASH_VERSION:-}" ] || { echo "read_audit_gate.sh: must be run with bash (documented invocation: bash <skill>/lib/read_audit_gate.sh ...)" >&2; exit 64; }
 set -euo pipefail
-
-# bash-4+ floor — a POLICY floor, not a live-construct guard (review r2
-# claude HS, rationale corrected r3 after wave 2 deleted the last bash-4
-# construct): the artifact standard is bash 5.x (macOS brew bash ∩
-# Ubuntu 24.04 stock), and the r2 hazard class this
-# protects against is a future 4+ construct dying mid-run under set -e
-# with a status that ALIASES a verdict exit (a bare status-2 death reads
-# as ABSENT). Enforce the floor up front on the LOUD usage code instead —
-# do not remove this as vestigial when no 4+ construct is present.
-if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
-  echo "read_audit_gate.sh: bash >= 4 required (artifact standard is bash 5.x; found ${BASH_VERSION:-unknown})" >&2
-  exit 64
-fi
 
 usage_die() {
   echo "usage: read_audit_gate.sh --audit-file <abs-path> <abs-packet-dir> <abs-packet-file> [<abs-packet-file>...]" >&2
@@ -121,17 +89,6 @@ _CAP=200
 # The dispatch binding (env TRIAD_READ_AUDIT_FILE on the agy dispatch line)
 # and this gate name the SAME per-attempt path — no env-var fallback.
 AGY_READ_AUDIT_FILE="$AUDIT_FILE_OVERRIDE"
-
-if [ -h "$AGY_READ_AUDIT_FILE" ]; then
-  # Check-then-open symlink refusal — deliberately WEAKER than an
-  # O_NOFOLLOW read (recorded residual r2-2):
-  # acceptable because the gate runs strictly after the agy child is
-  # reaped and no other round participant writes this path. A symlink
-  # here is a redirect nobody's dispatch bound — refuse it, never follow.
-  echo "[review] agy leg read-audit REFUSED — $AGY_READ_AUDIT_FILE is a symlink (the wrapper writes a regular file; a symlink here redirects the gate to bytes nobody bound for this round). Inspect the packet dir; do NOT read this as VOID or PASS." >&2
-  echo "READ_AUDIT_GATE_INCONCLUSIVE checked=0 pass=0 void=0 inconclusive=0 unevaluated=$#"
-  exit 4
-fi
 
 if [ ! -f "$AGY_READ_AUDIT_FILE" ]; then
   # ABSENT is NOT proof the vendor call failed — TRIAD_READ_AUDIT_FILE
@@ -195,20 +152,6 @@ for PACKET_ABS_PATH in "$@"; do
     break
   elif [ "$jq_rc" -eq 1 ]; then
     omitted="$(jq -r '.digest.files_read_omitted // 0' "$AGY_READ_AUDIT_FILE" 2>/dev/null)" || omitted=0
-    # Diagnostic ONLY: a BLOCKED read lives in read_attempts, not
-    # files_read — say whether the leg TRIED. Same tool+key scope as the
-    # verdict jq (review r4): a blocked write/run_command — or a blocked
-    # read-class grep_search whose Query merely NAMED the packet — is not
-    # a failed read of the packet. The VOID/PASS decision is jq_rc +
-    # omitted above, never this line — a miss costs explanatory text,
-    # never a verdict.
-    jq -r --arg p "$p_trunc" \
-      '[.digest.read_attempts[]? | select(.class == "read" and .tool == "view_file")
-       | select(([.params // {} | objects | .AbsolutePath? // empty
-         | select(type == "string")] | any(. == $p)))
-       | "\(.tool):\(.outcome)"] | select(length > 0)
-       | "[review] agy leg ATTEMPTED but failed to read the packet: \(join(", "))"' \
-      "$AGY_READ_AUDIT_FILE" >&2 || true
     if [ "${omitted:-0}" -gt 0 ]; then
       echo "[review] agy leg read-audit INCONCLUSIVE ($omitted files_read entries capped) — weigh read_audit.digest.attempts[] (per-attempt totals) + read_audit.digest.read_attempts[] before voiding; there is no fuller digest and only the FINAL attempt's raw stream is retained, so if the census does not settle it, a narrower packet is a NEW round (a retry re-renders the frozen prompt)" >&2
       echo "[gate] INCONCLUSIVE $PACKET_ABS_PATH"
@@ -233,8 +176,8 @@ for PACKET_ABS_PATH in "$@"; do
 done
 
 # Counters count EVALUATED files. Whenever any argument was NOT evaluated
-# (the broken-evidence break stops the loop; the ABSENT/symlink refusals
-# above evaluate none), the summary appends unevaluated=<n> so the token
+# (the broken-evidence break stops the loop; the ABSENT refusal above
+# evaluates none), the summary appends unevaluated=<n> so the token
 # and the counters can never disagree silently (review r1, claude Minor 3).
 _suffix=""
 if [ "$checked" -lt "$n_args" ]; then

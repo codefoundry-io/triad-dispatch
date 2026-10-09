@@ -68,7 +68,8 @@ command every other round operation already goes through.)
 Exit codes:
     0   AGREED
     2   refusal — no/unreadable round record, a record whose selection or
-        configuration differs from the round's bound basis, unknown or
+        configuration differs from the round's bound basis, an installed
+        toolkit that differs from the round's recorded map, unknown or
         non-dispatched entry, an empty diagnosis, or a retry on a completed
         review
     4   BLOCKED                  a valid entry's verdict is not SAFE TO MERGE,
@@ -146,13 +147,9 @@ _RECEIPT_REMEDY = ("the leg ran with a command other than the recorded one — "
 # THE SEAL OF A RECORDED ATTEMPT (R-BIND, case C66). The native admission,
 # or on a wrapper route the first collection that judges an answer, writes
 # this file into the attempt's own directory, binding the digests of its
-# result, receipt and read evidence; every later collection re-checks them. `verdict_v2._SEAL_NAME` spells the
-# same name (that module imports no sibling) to refuse a re-admission into a
-# sealed attempt; t15 axis 81 pins the two equal.
-_SEAL_NAME = "seal.json"
-# A file a `failed-to-run` seal found unreadable is sealed as found: a
-# later re-check that can read it calls it changed.
-_UNREADABLE = "unreadable"
+# result, receipt and read evidence; every later collection re-checks them. The name is
+# `verdict_v2._SEAL_NAME` (read below, after `_load_sibling`), which refuses a
+# re-admission into a sealed attempt.
 _SEAL_REMEDY = ("a recorded attempt is sealed (R-BIND, case C66): a new answer "
                 "from this entry needs a new attempt, allowed only after a "
                 "failure to run (R-RETRY), or a new round (R-REREVIEW) — "
@@ -203,6 +200,9 @@ def _load_sibling(name: str):
         sys.modules.pop(name, None)
         raise
     return mod
+
+
+_SEAL_NAME = _load_sibling("verdict_v2")._SEAL_NAME
 
 
 @dataclass(frozen=True)
@@ -270,14 +270,9 @@ def record_path(packet_dir: Path, label: str) -> Path:
 
 def _read_record(packet_dir: Path, label: str) -> dict:
     path = record_path(packet_dir, label)
-    # HARDENED, like every other helper-owned read (gate-1 r10 row r10-7,
-    # extended by the x leg). This is the r9-2 AUTHORITY — the file that
-    # names WHICH attempt each entry is evaluated at — and it was read with
-    # `read_text()`, which FOLLOWS a symlink and blocks forever on a FIFO,
-    # inside a directory this helper owns. `_read_regular_file` refuses a
-    # non-regular path BY NAME before a byte is read; FileNotFoundError
-    # keeps its own "this label was not prepared" reason below, so the
-    # missing-record diagnosis is unchanged.
+    # Read through the one hardened reader: the record names WHICH attempt
+    # each entry is evaluated at. An absent record keeps its own "this label
+    # was not prepared" reason.
     try:
         os.lstat(path)
     except FileNotFoundError:
@@ -293,146 +288,13 @@ def _read_record(packet_dir: Path, label: str) -> dict:
         raise CollectError(f"{exc} — prepare a new round") from exc
     try:
         doc = json.loads(data.decode("utf-8"))
-    # EVERY WAY A RECORD LOAD CAN FAIL (gate-1 r7 row r7-k3). `json.loads`
-    # raises more than OSError/ValueError: a document nested past the
-    # interpreter's recursion limit raises RecursionError, which is NOT a
-    # ValueError, so it escaped this catch as a traceback. UnicodeDecodeError
-    # IS a ValueError and is named anyway — the tuple is the rule, not a
-    # reader's memory of the class hierarchy. Same tuple at every record load
-    # in this file (round record, binding, dispatch).
+    # Every way a record load can fail: RecursionError is not a ValueError.
     except (OSError, ValueError, RecursionError, UnicodeDecodeError) as exc:
         raise CollectError(f"the round record {path} is unreadable: "
                            f"{' '.join(str(exc).split())}") from exc
     if not isinstance(doc, dict) or "entries" not in doc:
         raise CollectError(f"the round record {path} is malformed (no entries)")
-    _check_record_shape(doc, path)
     return doc
-
-
-def _check_record_shape(doc: dict, path: Path) -> None:
-    """The record is walkable, or it is refused BY FIELD (gate-1 r9 row r9-6).
-
-    `_read_record` probed the PRESENCE of `entries` and nothing else, so
-    `"entries": null` and `"entries": [null]` both loaded cleanly and then
-    met `_dispatched`'s iteration and `entry.get(...)` — a TypeError /
-    AttributeError traceback out of a tool whose every other failure is one
-    refusal line. The same held for every scalar the collector dereferences
-    with `record[...]`: a record missing `results_dir` crashed inside
-    `_evaluate`, and one missing `review_id` / `content_digest` / `worktree`
-    degraded SILENTLY (a derived binding of None mismatched every entry, so
-    a tampered record read as "every leg answered wrong").
-
-    This is a SHAPE check, not a contract: only the members this file
-    dereferences are named, each with its own field in the refusal. Members
-    with their own dedicated refusal downstream (`projection_digest`,
-    `contract_digest`, `prompt_spec_dir`, `hook_log`) keep it — they are
-    only TYPE-checked here when present, so a record that omits one still
-    reaches the refusal that explains what it was for.
-    """
-    entries = doc.get("entries")
-    if not isinstance(entries, list):
-        raise CollectError(
-            f"the round record {path} is malformed: `entries` is "
-            f"{type(entries).__name__}, not a list")
-    for idx, entry in enumerate(entries):
-        where = f"`entries[{idx}]`"
-        if not isinstance(entry, dict):
-            raise CollectError(
-                f"the round record {path} is malformed: {where} is "
-                f"{type(entry).__name__}, not an object")
-        name = entry.get("name")
-        if not isinstance(name, str) or not name:
-            raise CollectError(
-                f"the round record {path} is malformed: {where} has no "
-                f"usable `name` ({type(name).__name__})")
-        where = f"entry {name!r}"
-        if not isinstance(entry.get("leg"), dict):
-            raise CollectError(
-                f"the round record {path} is malformed: {where} has no "
-                f"`leg` object ({type(entry.get('leg')).__name__}) — a retry "
-                f"re-renders from the round's OWN frozen roster entry")
-        # `vendor` IS CONSUMED, SO IT IS CHECKED (gate-1 r10 row r10-6).
-        # `_evaluate` and `_expected_binding` both read it as the EAGER
-        # default of a `get` — `entry.get("family", entry["vendor"])` — so a
-        # record without the key raised a KeyError out of a tool whose every
-        # other failure is one refusal line, and it raised it even when
-        # `family` was present. The writer emits it on every entry.
-        if not isinstance(entry.get("vendor"), str) or not entry["vendor"]:
-            raise CollectError(
-                f"the round record {path} is malformed: {where} has no "
-                f"usable `vendor` ({type(entry.get('vendor')).__name__}) — "
-                f"it is the family this entry's result is admitted under")
-        # A DISPATCHED ENTRY NAMES ITS ATTEMPT (gate-1 r10 row r10-2). The
-        # type check below ran only on a PRESENT non-null value, so a
-        # dispatched entry carrying `"attempt": null` (or no key at all)
-        # reached `_evaluate` as None — and `_evaluate` now evaluates
-        # EXACTLY the attempt the record names, so a record that names none
-        # cannot be walked at all. `prepare` allocates one for every
-        # dispatched entry and `retry` bumps it; null stays legal on the
-        # entries that were never dispatched (disabled / skipped), which is
-        # exactly what the writer emits for them.
-        attempt = entry.get("attempt")
-        dispatched = bool(entry.get("enabled")) and not entry.get(
-            "skipped_reason")
-        if attempt is None and dispatched:
-            raise CollectError(
-                f"the round record {path} is malformed: {where} is "
-                f"dispatched but names no `attempt` — the attempt this round "
-                f"allocated is what the collector evaluates")
-        if attempt is not None and (isinstance(attempt, bool)
-                                    or not isinstance(attempt, int)
-                                    or attempt < 1):
-            raise CollectError(
-                f"the round record {path} is malformed: {where} has a "
-                f"non-numeric `attempt` ({attempt!r}) — the attempt this "
-                f"round allocated is what the collector evaluates")
-    for key in ("review_id", "content_digest", "worktree", "results_dir"):
-        value = doc.get(key)
-        if not isinstance(value, str) or not value:
-            raise CollectError(
-                f"the round record {path} is malformed: `{key}` is "
-                f"{type(value).__name__}, not a non-empty string")
-    for key in ("projection_digest", "contract_digest", "prompt_spec_dir",
-                "hook_log"):
-        if key in doc and doc[key] is not None \
-                and not isinstance(doc[key], str):
-            raise CollectError(
-                f"the round record {path} is malformed: `{key}` is "
-                f"{type(doc[key]).__name__}, not a string")
-    # THE TWO CONTAINERS THIS FILE WALKS (gate-1 r10 row r10-6). Both are
-    # read with a `.get` default, which covers ABSENCE and nothing else:
-    # `gate_files: null` met the agy gate's argv build as an iteration
-    # (TypeError), a non-string member reached `read_audit_gate.sh` as an
-    # argv token and came back as an exit-64 HOST FAULT that named the
-    # script instead of the record, and a LIST `prompt_manifests` met
-    # `(… or {}).get(name)` as an AttributeError. Type-checked here, by
-    # field, before any of them is dereferenced.
-    #
-    # `null` IS REFUSED, not tolerated: `.get(key, default)` answers the
-    # default for an ABSENT key only, so an explicit null is exactly the
-    # value that reached the dereference. A record this helper wrote always
-    # carries both keys. Absence is not refused HERE: a record old enough to
-    # lack them binds no stage, selection or configuration either, so
-    # `_bound_metadata` refuses it anyway ("prepare a new round").
-    gate_files = doc.get("gate_files")
-    if "gate_files" in doc and not (
-            isinstance(gate_files, list)
-            and all(isinstance(f, str) and f for f in gate_files)):
-        raise CollectError(
-            f"the round record {path} is malformed: `gate_files` is not a "
-            f"list of non-empty strings — it is the required-read set the "
-            f"agy read-audit gate is run with")
-    manifests = doc.get("prompt_manifests")
-    if "prompt_manifests" in doc and not (
-            isinstance(manifests, dict)
-            and all(isinstance(k, str) for k in manifests)
-            and all(isinstance(v, list)
-                    and all(isinstance(pair, list) for pair in v)
-                    for v in manifests.values())):
-        raise CollectError(
-            f"the round record {path} is malformed: `prompt_manifests` is "
-            f"not a mapping of leg name to a list of clause digest pairs — "
-            f"it is the frozen prompt basis a retry proves unchanged")
 
 
 def _bound_metadata(packet_dir: Path, label: str, record: dict,
@@ -581,141 +443,46 @@ def _bound_conditions(packet_dir: Path, label: str, record: dict,
 
 
 def _read_regular_file(path: Path, label: str) -> bytes:
-    """The bytes of a plain REGULAR file, or a `CollectError` naming it
-    (gate-1 r9 row r9-11).
+    """The bytes of a plain REGULAR file, or a `CollectError` naming it.
 
     `Path.read_bytes()` FOLLOWS a symlink, so every helper-owned read in
-    this file goes through here and refuses a non-regular path BY NAME: a
-    link planted at a name this helper allocated would otherwise be read as
-    if it were the file.
-
-    Same shape as `verdict_v2._read_regular_file_no_symlink` and
-    `roster_v2._read_regular_file`: `lstat` decides for every non-regular
-    type BEFORE the open (a FIFO would otherwise block it forever),
-    `O_NONBLOCK` closes the window where one appears in between,
-    `O_NOFOLLOW` covers a symlink swapped in after the lstat, and the
-    descriptor's own `fstat` re-checks S_ISREG before a byte is read. All
-    POSIX — no platform branch.
-
-    The text names the CAUSE only; each caller names the remedy that works
-    where it reads (R1: under `results-r<N>/` nothing is removed by hand).
+    this file goes through `verdict_v2._read_regular_file_no_symlink`, the
+    review libs' one hardened reader, and refuses a non-regular path BY NAME:
+    a link planted at a name this helper allocated would otherwise be read as
+    if it were the file. The text names the CAUSE only; each caller names the
+    remedy that works where it reads (R1: under `results-r<N>/` nothing is
+    removed by hand).
     """
-    try:
-        st = os.lstat(path)
-    except OSError as exc:
-        raise CollectError(f"{label} {path} is unreadable "
-                           f"({' '.join(str(exc).split())})") from exc
-    if stat.S_ISLNK(st.st_mode):
+    path = Path(path)
+    data, reason = _load_sibling("verdict_v2")._read_regular_file_no_symlink(path)
+    if reason is None:
+        return data
+    unreadable = f"cannot read {path}: "
+    if reason.startswith(unreadable):
+        cause = " ".join(reason[len(unreadable):].split())
+        raise CollectError(f"{label} {path} is unreadable ({cause})")
+    if reason == f"{path} is a symlink, refusing to read":
         raise CollectError(
             f"{label} {path} is a symlink — this helper reads the bytes it "
             f"allocated, never a link to somewhere else")
-    if not stat.S_ISREG(st.st_mode):
-        raise CollectError(
-            f"{label} {path} is not a regular file — this helper reads the "
-            f"bytes it allocated, never a special path somebody planted")
-    try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                     | getattr(os, "O_NONBLOCK", 0))
-    except OSError as exc:
-        raise CollectError(f"{label} {path} is unreadable "
-                           f"({' '.join(str(exc).split())})") from exc
-    try:
-        fst = os.fstat(fd)
-        if not stat.S_ISREG(fst.st_mode):
-            raise CollectError(f"{label} {path} is not a regular file")
-        chunks: list = []
-        while True:
-            chunk = os.read(fd, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-    except OSError as exc:
-        raise CollectError(f"{label} {path} is unreadable "
-                           f"({' '.join(str(exc).split())})") from exc
-    finally:
-        os.close(fd)
-    return b"".join(chunks)
+    raise CollectError(
+        f"{label} {path} is not a regular file — this helper reads the "
+        f"bytes it allocated, never a special path somebody planted")
 
 
 def _write_json(path: Path, doc: dict) -> None:
-    """Write one of this helper's OWN records: temp file + `os.replace`.
-
-    A NON-REGULAR target is refused BY NAME first (gate-1 r6 row r6-11).
-    `collect` used a plain `write_text` for `collect-r<N>.json`, which FOLLOWS
-    a symlink — a link planted at that path put the round's collected state
-    wherever it pointed. The replace idiom itself never writes THROUGH a link
-    (it swaps the name), but the lstat is what turns a planted path into a
-    named refusal instead of a silently replaced one, and it keeps the rule
-    identical for both records this file writes."""
-    try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        raise CollectError(f"{path} cannot be inspected "
-                           f"({' '.join(str(exc).split())}) — this helper "
-                           f"writes its own records only where it can prove "
-                           f"what is already there") from exc
-    else:
-        if not stat.S_ISREG(st.st_mode):
-            raise CollectError(
-                f"{path} is not a regular file (a symlink or another special "
-                f"path) — this helper never writes a round record through a "
-                f"path somebody else planted, and a later capture in this "
-                f"packet dir refuses it too; inspect it, then prepare the round "
-                f"in a new packet dir (`review_scratch.py open` with a new slug)")
-    # THE TEMP FILE IS EXCLUSIVE-CREATED TOO (gate-1 r7 rows r7-x3 / r7-k2).
-    # The lstat above refuses a planted TARGET, but the staging used
-    # `write_text`, which FOLLOWS a symlink planted at this predictable
-    # `.tmp-<pid>-<name>` — so the round's collected state was written
-    # wherever that link pointed, in a directory this helper owns. Both
-    # sibling writers (`verdict_v2._write_admitted_out`,
-    # `review_scratch._write_new_file`) have always opened theirs with
-    # O_CREAT|O_EXCL; this is the same rule, one file over. `O_EXCL` refuses
-    # any pre-existing name (a symlink included, dangling or not) and
-    # `O_NOFOLLOW` states the intent at the syscall. The `finally` removes a
-    # temp the staging did not consume, so a refused write leaves no
-    # `.tmp-…` residue for `verify` to report as an uncovered packet file.
+    """Write one of this helper's own records: temp file + `os.replace`, so a
+    reader sees the old record or the new one, never a half-written one."""
     tmp = path.with_name(f".tmp-{os.getpid()}-{path.name}")
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                     | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    except OSError as exc:
-        raise CollectError(
-            f"{tmp} cannot be exclusive-created "
-            f"({' '.join(str(exc).split())}) — this helper stages its own "
-            f"records through a temp file it creates itself and never "
-            f"writes through a name somebody else planted; inspect it, then "
-            f"prepare the round in a new packet dir (`review_scratch.py open` "
-            f"with a new slug)") from exc
-    replaced = False
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+        tmp.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n",
+                       encoding="utf-8")
         os.replace(tmp, path)
-        replaced = True
     except OSError as exc:
-        raise CollectError(f"{path} could not be written through its staging "
-                           f"file {tmp} "
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise CollectError(f"{path} could not be written "
                            f"({' '.join(str(exc).split())})") from exc
-    finally:
-        if not replaced:
-            try:
-                os.unlink(tmp)
-            except OSError as cleanup_exc:
-                # THE RESIDUE IS DISCLOSED, NEVER SWALLOWED (gate-1 r8 row
-                # r8-6). The refusal already in flight is the reported error
-                # — re-raising from a `finally` would REPLACE it with a
-                # cleanup detail — but a `.tmp-…` this helper could not
-                # remove stays in a directory it owns, where `verify` reports
-                # it as an uncovered packet file and the operator has been
-                # told nothing about it. One line naming the path, on the
-                # diagnostic stream, beside the refusal.
-                print(f"collect_v2: NOTE: the staging file {tmp} could not "
-                      f"be removed ({' '.join(str(cleanup_exc).split())}) — "
-                      f"it is residue of the refused write above, which "
-                      f"`verify` reports as an uncovered packet file; prepare "
-                      f"a new round", file=sys.stderr)
 
 
 def _write_record(packet_dir: Path, label: str, doc: dict) -> None:
@@ -739,84 +506,29 @@ def _heartbeat(packet_dir: Path) -> None:
         pass
 
 
-def _dispatched(record: dict) -> list:
-    """The entries a round actually dispatched: enabled and not skipped —
-    the ones that have an attempt directory to evaluate.
-
-    NOT the entries the COLLECTION reports (gate-1 r11 row r11-9). A skipped
-    entry is still ENABLED, so `collect` counts and names it as a missing
-    result; this helper answers the narrower question "whose attempt is on
-    disk", which is what the per-attempt readers need."""
-    return [e for e in record["entries"]
-            if e.get("enabled") and not e.get("skipped_reason")]
+_ATTEMPT_NAME = re.compile(r"attempt-([1-9][0-9]*)")
 
 
 def _attempts(entry_dir: Path) -> list:
+    """`[(number, path)]` of the entry's `attempt-<N>` directories, in number
+    order. A name starting `attempt-` that is not `attempt-<N>` (N >= 1, no
+    leading zero), or such a name that is not a real directory, is refused."""
     found = []
     try:
         entries = list(os.scandir(entry_dir))
     except OSError:
         return []
     for item in entries:
-        head, _, tail = item.name.partition("-")
-        if head != "attempt" or not tail:
+        if not item.name.startswith("attempt-"):
             continue
-        # A NAME THIS HELPER OWNS IS A REAL DIRECTORY OR IT IS REFUSED
-        # (gate-1 r6 row r6-10). The `is_dir(follow_symlinks=False)` test used
-        # to run BEFORE the name check and `continue` on a false, so a
-        # SYMLINKED `attempt-3` was silently skipped and the collector read a
-        # LOWER attempt than the tree holds — the same failure the
-        # non-decimal refusal below exists to prevent, reached through a link
-        # instead of a spelling. Nothing is deleted or followed; the entry is
-        # named and refused.
-        if not item.is_dir(follow_symlinks=False):
+        m = _ATTEMPT_NAME.fullmatch(item.name)
+        if m is None or not item.is_dir(follow_symlinks=False):
             raise CollectError(
-                f"{item.path} is not a usable attempt directory: it is a "
-                f"symlink or not a directory — an attempt directory is one "
-                f"this helper allocated, never a link to somewhere else; "
-                f"prepare a new round")
-        # `str.isdigit()` is TRUE for characters `int()` refuses — U+00B2 and
-        # the other superscripts among them — so the guard admitted a name the
-        # very next line crashed on, and the ValueError escaped as a traceback
-        # instead of the one-line refusal this tool promises (gate-1 r4 row
-        # r4-15, the r2-20 class one file over). `isdecimal()` is the narrower
-        # predicate and `int()` is wrapped anyway: the parse decides, never the
-        # predicate alone. A name that looks like an attempt directory but
-        # carries no decimal number is REFUSED, not skipped — silently
-        # ignoring it would make the collector read a LOWER attempt than the
-        # tree holds, inside a directory this helper owns.
-        if not tail.isdecimal():
-            raise CollectError(
-                f"{item.path} is not a usable attempt directory: the suffix "
-                f"{tail!r} is not a decimal attempt number — one entry + one "
-                f"attempt number = one allocation; prepare a new round")
-        try:
-            number = int(tail)
-        except ValueError:
-            raise CollectError(
-                f"{item.path} is not a usable attempt directory: the suffix "
-                f"{tail!r} is not a decimal attempt number — one entry + one "
-                f"attempt number = one allocation; prepare a new round")
-        # ONE NUMBER, ONE SPELLING (gate-1 r6 row r6-9). `int()` is not
-        # injective over the names `isdecimal()` admits: `attempt-01`,
-        # `attempt-001` and every non-ASCII decimal spelling map to the same
-        # number as the canonical `attempt-1`. The sort below is stable, so
-        # FILESYSTEM ORDER decided which of two directories claiming the same
-        # attempt had its verdict credited to the entry — and a copy dropped
-        # in under a second spelling admits cleanly, because the derived
-        # binding (row r5-1) names the NUMBER, which both spellings satisfy.
-        # The writer only ever produces the canonical form.
-        if item.name != f"attempt-{number}":
-            raise CollectError(
-                f"{item.path} is not a usable attempt directory: "
-                f"{item.name!r} is not the canonical spelling "
-                f"'attempt-{number}' (ASCII digits, no leading zero) — one "
-                f"entry + one attempt number = one allocation, and two "
-                f"spellings of one number are two directories for it; "
-                f"prepare a new round")
-        if number >= 1:
-            found.append((number, Path(item.path)))
-    return [pair for pair in sorted(found, key=lambda p: p[0])]
+                f"{item.path} is not an attempt directory this helper "
+                f"allocates (attempt-<N>, N ≥ 1, no leading zero) — prepare a "
+                f"new round")
+        found.append((int(m.group(1)), Path(item.path)))
+    return sorted(found, key=lambda p: p[0])
 
 
 # ---------------------------------------------------------------------------
@@ -842,95 +554,12 @@ def _run(cmd: list) -> subprocess.CompletedProcess:
 
 
 def _token(text: str, prefix: str) -> str:
+    """The evidence tool's summary token (`<prefix><STATE>`) from its last
+    summary line."""
     for line in reversed(text.splitlines()):
         if line.startswith(prefix):
-            return line.strip()
+            return line.split()[0]
     return f"{prefix}<no summary line>"
-
-
-# The evidence tools' guidance tail on an entry reason (gate-1 r15 row r15-2).
-# 500, not 300 (gate-1 r16 row r16-2): with the remedy starting at the
-# hooks.json step it is ~200-290 characters on its own, and 300 left the WHY
-# too little room to name the attempt it is about.
-_GUIDANCE_CAP = 500
-_GUIDANCE_HEAD = re.compile(r"^\[review\] [^\n]{0,80}? — ")
-# matched case-insensitively: the hook check says "prepare a new round", the
-# read-audit gate "prepare a NEW round"
-_GUIDANCE_REMEDY = re.compile(r"prepare a NEW round", re.IGNORECASE)
-# The step the hook check puts BEFORE the new-round clause ("check hooks.json
-# in the round worktree, then prepare a new round"): when the text before the
-# remedy ends with it, the remedy starts at it (row r16-2).
-_GUIDANCE_CHECK = re.compile(
-    r"check \S*hooks\.json(?: in the round worktree)?, then\s*$")
-_SENTENCE_END = re.compile(r"\.\s")
-# An absolute path, kept as its last THREE components when the WHY must
-# shrink, so `<name>/attempt-K/read-audit.json` keeps the entry name (row
-# r16-2; two components dropped it).
-_GUIDANCE_PATH = re.compile(
-    r"/[^\s\"'()]*/([^/\s\"'()]+/[^/\s\"'()]+/[^/\s\"'()]+)")
-
-
-def _elide(text: str, budget: int, keep: int = 0) -> str:
-    """`text` shortened to `budget` characters by eliding its MIDDLE (the
-    head names the subject, the tail carries the finding). `keep` is a head
-    length to preserve — the end of the first shortened path, i.e. the
-    attempt the WHY is about — when it leaves room for a tail."""
-    if len(text) <= budget:
-        return text
-    if budget < 2:
-        return ""
-    head = keep if 0 < keep <= budget * 3 // 4 else min(40, budget // 4)
-    return text[:head] + "…" + text[len(text) - (budget - head - 1):]
-
-
-def _guidance(stderr) -> str:
-    """` — <WHY>[; <REMEDY>]` from the LAST `[review] …` line an evidence
-    tool wrote to stderr, or "" when it wrote none.
-
-    The entry reason used to carry only the tool's summary token, so the WHY
-    and the remedy (often: prepare a NEW round) never reached the collect
-    report. The tool's own header (`[review] agy hook load check VOID — `)
-    repeats the token and is dropped; the rest is whitespace-collapsed to
-    ONE line. WHY = its first sentence; REMEDY = the clause starting at
-    "prepare a NEW round" (any case), up to its end of sentence, when the
-    line has one — or at the "check hooks.json in the round worktree, then"
-    step directly before it (the hook check's remedy, row r16-2) — and a clause
-    starting inside the first sentence ends the WHY there. The two are
-    joined with "; " and capped at `_GUIDANCE_CAP` characters (a vendor id
-    or a long path cannot grow the report). When the join is over the cap
-    the WHY shrinks FIRST so the remedy survives — its absolute paths down
-    to their last three components (`<name>/attempt-K/read-audit.json`),
-    then its middle elided, keeping the head through the first path."""
-    lines = [ln for ln in (stderr or "").splitlines()
-             if ln.startswith("[review] ")]
-    if not lines:
-        return ""
-    text = " ".join(lines[-1].split())
-    head = _GUIDANCE_HEAD.match(text)
-    text = text[head.end():] if head else text[len("[review] "):]
-    end = _SENTENCE_END.search(text)
-    why = text[:end.start() + 1] if end else text
-    remedy = ""
-    found = _GUIDANCE_REMEDY.search(text)
-    at = found.start() if found else -1
-    if at >= 0:
-        step = _GUIDANCE_CHECK.search(text, 0, at)
-        if step:
-            at = step.start()
-        stop = _SENTENCE_END.search(text, at)
-        remedy = text[at:stop.start() + 1] if stop else text[at:]
-        if at < len(why):
-            why = text[:at].rstrip(" ;,:—")
-    joined = "; ".join(part for part in (why, remedy) if part)
-    if len(joined) > _GUIDANCE_CAP and remedy:
-        why = _GUIDANCE_PATH.sub(r"…/\1", why)
-        first = re.search(r"…/\S+", why)
-        why = _elide(why, _GUIDANCE_CAP - len(remedy) - 2,
-                     first.end() if first else 0)
-        joined = "; ".join(part for part in (why, remedy) if part)
-    if len(joined) > _GUIDANCE_CAP:
-        joined = joined[:_GUIDANCE_CAP - 1] + "…"
-    return f" — {joined}" if joined else ""
 
 
 def _agy_custody_reason(attempt_dir: Path, audit: Path) -> str | None:
@@ -1026,13 +655,10 @@ def _agy_evidence_reason(packet_dir: Path, record: dict,
     printed them — same audit file, same required-read set, same hook log.
 
     A `_EVIDENCE_TOOL_HOST_RC` from EITHER tool is a `_HostFault`, never this
-    entry's `invalid` (gate-1 r8 row r8-9). Both reserve that code for "this
-    invocation could not RUN at all" — a required file the round named is
-    gone (a worktree re-pinned between prepare and collect), an absent
-    `hook_log`, an unusable argv. Recording it per-entry folded the round to
-    INCOMPLETE, which is the leader's instruction to RE-DISPATCH THE PAID
-    LEGS over a fault that says nothing about any leg: the r7-7 / r7-c4 class
-    reached through the other two evidence tools."""
+    entry's `invalid`. Both reserve that code for "this invocation could not
+    RUN at all" — a required file the round named is gone (a round tree
+    removed between prepare and collect), an absent `hook_log`, an unusable
+    argv — a fault that says nothing about any leg."""
     audit = attempt_dir / "read-audit.json"
     custody = _agy_custody_reason(attempt_dir, audit)
     if custody is not None:
@@ -1046,14 +672,14 @@ def _agy_evidence_reason(packet_dir: Path, record: dict,
             f"({_token(gate.stdout, 'READ_AUDIT_GATE_')}; "
             f"{' '.join((gate.stderr or '').split())[:200]}) — that is a "
             f"USAGE/HOST fault (a required file the round named is gone, a "
-            f"re-pinned worktree, an unusable argv), not a verdict about "
+            f"round tree removed between prepare and collect, an unusable "
+            f"argv), not a verdict about "
             f"this leg; the collection is STOPPED and no per-entry state was "
             f"written, so repair the host and collect again rather than "
             f"re-dispatching the legs")
     if gate.returncode != 0:
         return (f"read-audit gate failed "
                 f"({_token(gate.stdout, 'READ_AUDIT_GATE_')}, rc={gate.returncode})"
-                f"{_guidance(gate.stderr)}"
                 f" — an ungated agy answer is UNVERIFIED, never agreement")
     hook = _run(["python3", str(LIB_DIR / "agy_hook.py"), "check",
                  str(audit), str(record.get("hook_log", ""))])
@@ -1070,7 +696,6 @@ def _agy_evidence_reason(packet_dir: Path, record: dict,
     if hook.returncode != 0:
         return (f"hook load check failed "
                 f"({_token(hook.stdout, 'HOOK_LOAD_')}, rc={hook.returncode})"
-                f"{_guidance(hook.stderr)}"
                 f" — agy's --agent fails OPEN, so an unproven hook layer "
                 f"leaves this leg's containment unverified")
     return None
@@ -1119,15 +744,21 @@ def _seal_digest(path: Path) -> str | None:
     if not os.path.lexists(path):
         return None
     try:  # STREAMED, never capped: a seal binds every byte it judged (M6)
-        if not stat.S_ISREG(os.lstat(path).st_mode):
-            _read_regular_file(path, "the sealed file")  # raises, naming it
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
                      | getattr(os, "O_NONBLOCK", 0))
-        with os.fdopen(fd, "rb") as fh:
-            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise OSError("not a regular file")
+            fh = os.fdopen(fd, "rb")
+        except BaseException:
+            os.close(fd)
+            raise
+        with fh:
             return hashlib.file_digest(fh, "sha256").hexdigest()
     except OSError as exc:
+        # the one reader names the cause (a symlink, a special file, an OS
+        # error); the line below answers a path that has changed since
+        _read_regular_file(path, "the sealed file")
         raise CollectError(f"the sealed file {path} is unreadable "
                            f"({' '.join(str(exc).split())})") from exc
 
@@ -1149,19 +780,11 @@ def _bound_digest(role: str, path: Path) -> str | None:
                            f"({' '.join(str(exc).split())})") from exc
 
 
-def _seal_files(attempt_dir: Path, entry: dict,
-                as_found: bool = False) -> dict:
+def _seal_files(attempt_dir: Path, entry: dict) -> dict:
     """`{role: None | [file name, sha256 | None]}` for the files a seal binds,
-    as they are NOW (a `CollectError` names one that cannot be read; with
-    `as_found`, retry's record of a replaced attempt, it is `_UNREADABLE`)."""
-    def digest(role, path):
-        try:
-            return _bound_digest(role, path)
-        except CollectError:
-            if not as_found:
-                raise
-            return _UNREADABLE
-    return {role: (None if path is None else [path.name, digest(role, path)])
+    as they are NOW (a `CollectError` names one that cannot be read)."""
+    return {role: (None if path is None
+                   else [path.name, _bound_digest(role, path)])
             for role, path in _sealed_paths(attempt_dir, entry).items()}
 
 
@@ -1201,19 +824,14 @@ def _seal_replaced(attempt_dir: Path, entry: dict, attempt: int,
                    found: dict, state: str) -> None:
     """RECORD the attempt a retry replaces (R-BIND, case C66; host B's
     FAILED_TO_RUN / INVALID terminals): seal it in the `state` retry's
-    judgement gave over `found`, the as-found digests taken BEFORE that
-    judgement (V1) — an empty or absent result included, and a refused
-    native reply's raw.json — so a late write into it is an integrity
-    failure, never an unjudged answer. A write that landed while retry
-    judged it refuses the retry. An existing seal of any kind is kept as it
-    is. Runs before the next attempt is allocated; a refusal allocates
+    judgement gave over `found`, the digests retry took once before that
+    judgement — an empty or absent result included, and a refused native
+    reply's raw.json — so a later write into it is an integrity failure,
+    never an unjudged answer. An existing seal of any kind is kept as it is.
+    Runs before the next attempt is allocated; a refusal allocates
     nothing."""
     if os.path.lexists(attempt_dir / _SEAL_NAME):
         return
-    if _seal_files(attempt_dir, entry, as_found=True) != found:
-        raise CollectError(f"attempt {attempt} changed while retry judged it "
-                           f"(a leg still running wrote into it) — nothing "
-                           f"was sealed or allocated; collect again")
     try:
         _write_seal(attempt_dir, entry, attempt, found, state)
     except CollectError as exc:
@@ -1307,7 +925,7 @@ def _seal_reason(attempt_dir: Path, entry: dict, attempt: int,
     replacement of its result, receipt, read evidence or seal after the
     record is refused, never re-admitted — the entry is INVALID, so the round
     can never be AGREED on it. `recorded_sha` is the seal digest the round's
-    collection record holds for this attempt (K2). An unreadable seal is an
+    collection record holds for this attempt. An unreadable seal is an
     integrity failure like any other."""
     seal = attempt_dir / _SEAL_NAME
     head = f"integrity failure: attempt {attempt} is sealed but"
@@ -1352,8 +970,6 @@ def _seal_reason(attempt_dir: Path, entry: dict, attempt: int,
         try:
             now = _bound_digest(role, path)
         except CollectError as exc:
-            if sealed == _UNREADABLE:
-                continue  # still unreadable, as retry found it
             broken.append(f"its {role.replace('_', ' ')} "
                           f"{' '.join(str(exc).split())}")
             continue
@@ -1450,22 +1066,13 @@ def _evaluate(packet_dir: Path, record: dict, entry: dict,
     place `collect` and `retry` both read, so the two can never disagree
     about whether a leg returned a verdict.
 
-    THE RECORD NAMES THE ATTEMPT, IN BOTH DIRECTIONS (gate-1 r10 row r10-2,
-    completing r9-2). The r9-2 gate read `attempts[-1]` and refused only a
-    HIGHER on-disk directory, so the ROLLBACK direction stayed open: with
-    the record naming attempt 2 and only `attempt-1/` surviving, the
-    SUPERSEDED attempt's verdict decided the entry — a SAFE attempt 1 behind
-    a failed, then removed, attempt 2 collected as AGREEMENT. Allocation is
-    the record's act, so exactly `attempt-<record.attempt>/` is evaluated
-    and a recorded attempt the tree does not hold is this entry's `invalid`.
-
-    The r9-2 DISCLOSURE survives on top of it: an attempt numbered above the
-    record's is one this round never allocated, and it is still refused BY
-    NAME — but only when the recorded attempt did not itself return a valid
-    verdict. A completed review is the strongest evidence this entry has and
-    an unallocated directory can no longer displace it (it is never read),
-    so refusing there would only let a planted directory VETO the verdict
-    (row r10-1). Nothing is deleted on either arm."""
+    THE RECORD NAMES THE ATTEMPT. Allocation is the record's act, so exactly
+    `attempt-<record.attempt>/` is evaluated and a recorded attempt the tree
+    does not hold is this entry's `invalid`. An attempt numbered above the
+    record's is one this round never allocated: it is named in the entry's
+    reason only when the recorded attempt did not itself return a valid
+    verdict (it is never read, so it never displaces a completed review).
+    Nothing is deleted on either arm."""
     name = entry["name"]
     base = EntryResult(name=name, family=entry.get("family", entry["vendor"]),
                        route=entry.get("route"),
@@ -1477,8 +1084,7 @@ def _evaluate(packet_dir: Path, record: dict, entry: dict,
     except CollectError as exc:
         return EntryResult(**{**base.__dict__, "state": "invalid",
                               "reason": " ".join(str(exc).split())})
-    # A positive int on every DISPATCHED entry, proven by `_check_record_shape`
-    # (row r10-2) — and `_dispatched` / `retry` are the only two callers.
+    # The attempt the round record allocated for this dispatched entry.
     record_attempt = entry["attempt"]
     base = EntryResult(**{**base.__dict__, "attempt": record_attempt})
     by_number = dict(attempts)
@@ -1546,9 +1152,9 @@ def _evaluate(packet_dir: Path, record: dict, entry: dict,
                               own, result)
                if result.state != "valid" and unallocated else None)
     if blocked is not None:
-        # V2 / W1: retry's refusal (its cause and remedy) is the line; the
-        # recorded attempt contributes its state only, never a remedy of
-        # its own that the refused retry would contradict.
+        # Retry's refusal (its cause and remedy) is the line; the recorded
+        # attempt contributes its state only, never a remedy of its own that
+        # the refused retry would contradict.
         kind, _, refusal = blocked
         tail = ("" if kind == "admit"
                 or "prepare a new round" in refusal.lower()
@@ -1670,12 +1276,12 @@ def _evaluate_unsealed(packet_dir: Path, record: dict, entry: dict,
                        result_path: str) -> EntryResult:
     """`_evaluate_recorded` for an attempt no collection or admission has
     sealed yet, carrying the digests of the bytes it JUDGED when the attempt
-    holds an answer, so `collect` seals exactly those (case C66, K7/K8).
+    holds an answer, so `collect` seals exactly those (case C66).
 
-    The digests are taken BEFORE the admission (and the agy gate and hook
-    subprocesses) and again after; a difference is this entry's INVALID —
-    the bytes moved while they were judged. A file that cannot be digested
-    is this entry's INVALID too, never a collection-wide refusal (r5-11)."""
+    The digests are taken once, BEFORE the admission (and the agy gate and
+    hook subprocesses). A file that cannot be digested is this entry's
+    INVALID, never a collection-wide refusal; `retry` cannot record such an
+    attempt either, so the remedy is a new round."""
     try:
         before = _seal_files(attempt_dir, entry)
     except CollectError as exc:
@@ -1683,21 +1289,11 @@ def _evaluate_unsealed(packet_dir: Path, record: dict, entry: dict,
                               "reason": f"this attempt cannot be sealed: "
                                         f"{' '.join(str(exc).split())} — a "
                                         f"result is recorded only together "
-                                        f"with its seal; retry this entry",
+                                        f"with its seal, and `retry` cannot "
+                                        f"record it either; prepare a new "
+                                        f"round",
                               "result_path": result_path})
     result = _evaluate_recorded(packet_dir, record, entry, attempt_dir, base)
-    try:
-        after = _seal_files(attempt_dir, entry)
-    except CollectError as exc:
-        after = f"unreadable ({' '.join(str(exc).split())})"
-    if after != before:
-        return EntryResult(**{**base.__dict__, "state": "invalid",
-                              "reason": f"integrity failure: the result, "
-                                        f"receipt or read evidence of attempt "
-                                        f"{base.attempt} changed while this "
-                                        f"collection judged it — "
-                                        f"{_SEAL_REMEDY}",
-                              "result_path": result_path})
     if before["result"][1] is not None and result.state != "missing":
         return EntryResult(**{**result.__dict__, "seal_files": before})
     return result
@@ -1871,171 +1467,46 @@ def _report(collection: Collection, label: str) -> None:
           f"open_questions={collection.open_questions}")
 
 
-def _check_contract_basis(record: dict, what: str) -> None:
-    """Refuse unless the ADMISSION contract is the one this round froze
-    (gate-1 r8 row r8-10).
+def _check_toolkit(record: dict, what: str) -> None:
+    """Refuse unless the installed review toolkit is the one this round
+    recorded (R-PREPARE, R-RETRY, R-REREVIEW; cases C13 / C19 / C20; spec
+    DL-41, DL-49) — run by `collect` and by `retry` before anything is judged
+    or allocated.
 
-    The prompt clauses, the clause directory and the producer projection are
-    all frozen at prepare and re-derived before a retry and a collection
-    (`_check_installed_basis`); the contract
-    `verdict_v2` judges every reply against was re-read LIVE here, so a
-    re-vendoring between dispatch and collect judged the round's replies
-    against a DIFFERENT contract while the record still claimed an unchanged
-    basis — and unlike every other basis, no leg artifact carries a trace of
-    it (an admitted `verdict.json` says nothing about the schema that let it
-    through). Same shape as the `projection_digest` refusal in `retry`: a
-    mismatch is a NEW ROUND, and a record that carries no digest cannot
-    PROVE the basis either, so it is refused rather than guessed at.
-
-    ORDER: the HOST question comes first. `_get_validator` reserves its
-    reason for "this install cannot admit ANY reply" (absent jsonschema, an
-    unreadable / corrupt / non-Draft-2020-12 contract), which is a
-    `_HostFault` at exit 64 — never this round's exit-2 basis refusal,
-    because a file this host cannot even load is not evidence that the SPEC
-    moved."""
+    The HOST question comes first: `_get_validator` reserves its reason for
+    "this install cannot admit ANY reply" (absent jsonschema, an unreadable /
+    corrupt / non-Draft-2020-12 contract), a `_HostFault` at exit 64, never
+    this round's exit-2 refusal. Then the round record's `toolkit_map`
+    (`roster_v2._toolkit_map` at prepare: every file under `lib/`, the
+    vendored `spec/**` and the six shipped presets, each file's sha256) is
+    compared with the installed files; every changed, added or missing file is named, and a
+    record without a map cannot prove the toolkit, so it is refused."""
     verdict_v2 = _load_sibling("verdict_v2")
     validator, why = verdict_v2._get_validator()
     if validator is None:
         raise _HostFault(
-            f"this host cannot admit any reply: {why} (reached while proving "
-            f"the admission-contract basis of this round) — the {what} is "
+            f"this host cannot admit any reply: {why} — the {what} is "
             f"STOPPED and no per-entry state was written; nothing about the "
             f"legs is known, so repair the install and run it again rather "
             f"than re-dispatching them")
-    frozen = record.get("contract_digest")
-    if not isinstance(frozen, str) or not frozen:
+    frozen = record.get("toolkit_map")
+    if not isinstance(frozen, dict):
         raise CollectError(
-            f"the round record carries no frozen ADMISSION contract digest, "
-            f"so this {what} cannot prove the replies are judged against the "
-            f"contract the round was prepared with — prepare a new round")
-    path = verdict_v2._schema_path()
-    try:
-        live = hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError as exc:
-        raise _HostFault(
-            f"this host cannot read the admission contract {path} "
-            f"({' '.join(str(exc).split())}), so no reply can be judged — "
-            f"the {what} is STOPPED and no per-entry state was written") \
-            from exc
-    if live != frozen:
-        raise CollectError(
-            f"the ADMISSION contract basis changed since this round was "
-            f"prepared (frozen {frozen} vs {path} {live}) — every reply "
-            f"would be judged against a contract this round never agreed to, "
-            f"so prepare a new round (R-REREVIEW: every entry reviews the "
-            f"new basis again)")
-
-
-def _check_installed_basis(packet_dir: Path, label: str, record: dict,
-                           what: str) -> None:
-    """Refuse unless the round's basis members recorded at prepare still
-    equal what the INSTALLED files derive (R-PREPARE, R-RETRY; cases C13 /
-    C19 / C20 / C33; spec DL-41, DL-49) — run by `collect` and by `retry`
-    before anything is judged or allocated.
-
-    Three members a leg's result carries no trace of are recorded in the
-    mutable `.roster-r<N>.json`, not in the digest-covered delivery record:
-    each dispatched entry's clause manifest and the clause directory
-    (`prompt_manifests`, `prompt_spec_dir`), the producer schema projection
-    (`projection_digest`), and a claude entry's spawned shipped preset with
-    its file digest and the model and effort it pins (`preset`, bound
-    through the configuration digest). Each is RE-DERIVED here from the
-    installed files — the pure prompt render `prepare` itself uses, the
-    projection `roster_v2` renders, the shipped preset
-    `roster_v2._claude_preset` reads, re-derived from the BARE name the
-    roster gave (the bound `preset.agent` is the layout-qualified spawn id)
-    and compared by its digest alone, which covers model, effort and body.
-    A changed member is a changed basis: a new round, never a re-render, a
-    collection or a retry on it (R-REREVIEW). A record that carries no
-    member cannot prove it, so it is refused rather than guessed at."""
-    review_scratch = _load_sibling("review_scratch")
+            "this round was prepared before the host recorded its toolkit "
+            "map — prepare a new round")
     roster = _load_sibling("roster_v2")
-    prompts = _load_sibling("prompts_v2")
-    manifests = record.get("prompt_manifests") or {}
-    frozen_dir = record.get("prompt_spec_dir")
-    for entry in _dispatched(record):
-        name = entry["name"]
-        conditions = _bound_conditions(packet_dir, label, record, name)
-        frozen = manifests.get(name)
-        if frozen is None:
-            raise CollectError(
-                f"the round record carries no frozen prompt manifest for "
-                f"{name!r}, so {what} cannot prove the clause basis is "
-                f"unchanged — prepare a new round")
-        if frozen_dir is None:
-            raise CollectError(
-                f"the round record carries no frozen prompt clause directory, "
-                f"so {what} of {name!r} cannot prove the clause basis is "
-                f"unchanged — prepare a new round")
-        try:
-            _text, manifest, spec_dir, _seam = review_scratch._v2_render_prompt(
-                Path(record["worktree"]), record["review_id"],
-                record["content_digest"], roster.Entry(**entry["leg"]),
-                entry["attempt"], conditions)
-        except (roster.RosterError, prompts.PromptSpecError, OSError,
-                KeyError, TypeError, ValueError, SystemExit) as exc:
-            raise CollectError(
-                f"the prompt for {name!r} cannot be re-rendered on this host "
-                f"({' '.join(str(exc).split())}), so {what} cannot prove the "
-                f"clause basis is unchanged — prepare a new round") from exc
-        if ([list(pair) for pair in frozen]
-                != [list(pair) for pair in manifest]
-                or str(spec_dir) != str(frozen_dir)):
-            raise CollectError(
-                f"roster entry {name!r}: the prompt basis changed since this "
-                f"round was prepared (clause digests or clause directory "
-                f"differ: frozen {frozen_dir!r} vs rendered "
-                f"{str(spec_dir)!r}) — {what} is refused on a changed basis, "
-                f"so prepare a new round (R-REREVIEW: every entry reviews the "
-                f"new basis again)")
-        if entry.get("family", entry["vendor"]) != "claude":
-            continue
-        bound = entry.get("preset")
-        if not (isinstance(bound, dict)
-                and isinstance(bound.get("file_sha256"), str)):
-            raise CollectError(
-                f"roster entry {name!r}: the round record binds no claude "
-                f"preset (spawned agent, file digest), so {what} cannot prove "
-                f"the preset is unchanged — prepare a new round")
-        try:
-            installed = roster._claude_preset(
-                (entry["leg"].get("claude") or {}).get("agent") or "",
-                conditions["review_web_authorized"])
-        except roster.RosterError as exc:
-            installed = f"missing ({' '.join(str(exc).split())})"
-        if (not isinstance(installed, dict)
-                or installed["file_sha256"] != bound["file_sha256"]):
-            keys = ("agent", "model", "effort", "file_sha256")
-            if isinstance(installed, dict):
-                installed = {key: installed.get(key) for key in keys}
-            raise CollectError(
-                f"roster entry {name!r}: the claude preset the leg spawns "
-                f"changed since this round was prepared (bound "
-                f"{ {key: bound.get(key) for key in keys}!r} vs installed "
-                f"{installed}) — its model and effort are controls of the "
-                f"bound basis, so {what} is refused; prepare a new round "
-                f"(R-RETRY, R-REREVIEW)")
-    frozen_projection = record.get("projection_digest")
-    if not isinstance(frozen_projection, str) or not frozen_projection:
-        raise CollectError(
-            f"the round record carries no frozen producer-schema projection "
-            f"digest, so {what} cannot prove the PRODUCER SCHEMA basis is "
-            f"unchanged — prepare a new round")
     try:
-        projection = hashlib.sha256(
-            roster.projected_schema_text().encode("utf-8")).hexdigest()
+        live = roster._toolkit_map()
     except roster.RosterError as exc:
+        raise _HostFault(
+            f"{' '.join(str(exc).split())} — the {what} is STOPPED and no "
+            f"per-entry state was written") from exc
+    changed = {rel for rel in frozen.keys() | live.keys()
+               if frozen.get(rel) != live.get(rel)}
+    if changed:
         raise CollectError(
-            f"the producer schema projection cannot be derived on this host "
-            f"({' '.join(str(exc).split())}), so {what} cannot prove the "
-            f"basis is unchanged") from exc
-    if projection != frozen_projection:
-        raise CollectError(
-            f"the PRODUCER SCHEMA basis changed since this round was prepared "
-            f"(projection digest frozen {frozen_projection} vs rendered "
-            f"{projection}) — {what} is refused on a changed basis, so "
-            f"prepare a new round (R-REREVIEW: every entry reviews the new "
-            f"basis again)")
+            f"the installed toolkit changed since this round was prepared: "
+            f"{', '.join(sorted(changed))} — prepare a new round (R-REREVIEW)")
 
 
 def collect(packet_dir, label: str) -> Collection:
@@ -2046,31 +1517,19 @@ def collect(packet_dir, label: str) -> Collection:
     packet path is made absolute once (its own `verify` takes no other)."""
     packet_dir = Path(os.path.abspath(packet_dir))
     record = _read_record(packet_dir, label)
-    # BEFORE any entry is judged (row r8-10): the contract that judges them
-    # has to be the one this round froze, and a refusal must leave the
-    # previous collection record untouched.
-    _check_contract_basis(record, "collection")
-    # EVERY ENABLED ENTRY IS COUNTED AND NAMED (gate-1 r11 row r11-9). A
-    # SKIPPED entry was dropped from the collection outright, so it left no
-    # trace in the outcome at all: with three same-family entries a skipped
-    # sibling still left that family COVERED, and a round in which a leg
-    # never ran reported AGREED — a result nobody produced counted as
-    # agreement, which R-AGREE already forbids ("a missing result is not
-    # agreement"). Host B is right here and its shape is ported:
-    # `bin/review_round_v2.py:505-530` iterates every enabled entry and
-    # sends any without a COMPLETE terminal to `missing`. The SKIP itself is
-    # untouched (R-GOOGLE still skips at prepare, and `prepare`/`roster_v2`
-    # decide it); only the OUTCOME accounting moves, and a `missing` entry
-    # makes the round INCOMPLETE no matter what its siblings cover.
+    # BEFORE any entry is judged: the toolkit that judges them (the admission
+    # contract among it) has to be the one this round recorded, and a refusal
+    # must leave the previous collection record untouched.
+    _check_toolkit(record, "collection")
+    # EVERY ENABLED ENTRY IS COUNTED AND NAMED: a SKIPPED entry is a
+    # `missing` result, so it makes the round INCOMPLETE no matter what its
+    # siblings cover (R-AGREE: a missing result is not agreement).
     # The selection and configuration must be the ones bound into the
     # round's basis (cases C19 / C33): an entry turned off or re-configured
     # after prepare is refused BY NAME as a change. Prepare refuses an empty
     # selection (R-AGREE: a nonempty roster), so a bound selection is never
     # empty and an empty record can only be a changed one.
     _bound_metadata(packet_dir, label, record, "the collection")
-    # The basis members only the installed files can prove (C13 / C19 / C20 /
-    # C33): re-derived and compared before any entry is judged.
-    _check_installed_basis(packet_dir, label, record, "the collection")
     recorded = _recorded_seals(packet_dir, label)
     entries = []
     evaluated = []
@@ -2136,7 +1595,7 @@ def collect(packet_dir, label: str) -> Collection:
                              f"({' '.join(str(exc).split())}) — nothing about "
                              f"the round is known; repair the host and "
                              f"collect again") from exc
-        if check.returncode not in (0, 2):  # 2 = verify's own refusal (V3)
+        if check.returncode not in (0, 2):  # 2 = verify's own refusal
             tail = " ".join((check.stderr or "").split())[-300:]
             raise _HostFault(f"the round integrity check (`review_scratch.py "
                              f"verify`) did not finish (exit "
@@ -2144,21 +1603,11 @@ def collect(packet_dir, label: str) -> Collection:
                              f" — nothing about the round is known; repair "
                              f"the host and collect again")
         if check.returncode != 0:
-            _integrity_refusal(packet_dir, label,
-                               " ".join((check.stderr or "").split()))
-        # G3: a leg still running may have written into an earlier attempt
-        # since this collection checked it, so that custody is re-checked
-        # right before an AGREED record is written.
-        for _, entry in evaluated:
-            entry_dir = packet_dir / record["results_dir"] / entry["name"]
-            late = _history_reason(entry_dir, dict(_attempts(entry_dir)),
-                                   entry["attempt"],
-                                   recorded.get(entry["name"]), entry,
-                                   record)
-            if late is not None:
-                raise CollectError(f"roster entry {entry['name']!r} changed "
-                                   f"while this collection ran: {late} — "
-                                   f"nothing was recorded")
+            why = " ".join((check.stderr or "").split())
+            raise CollectError(
+                f"every entry agreed, but the round integrity check "
+                f"(`review_scratch.py verify`) failed: {why[-600:]} — the "
+                f"round is INVALID; prepare a new round")
     families = sorted({e.family for e in entries if e.state == "valid"})
     deviations = [{"name": e.name, "verdict": e.verdict, "attempt": e.attempt}
                   for e in entries if e.deviation]
@@ -2188,41 +1637,6 @@ def collect(packet_dir, label: str) -> Collection:
     return collection
 
 
-def _integrity_refusal(packet_dir: Path, label: str, why: str) -> None:
-    """Raise the AGREED refusal for a failed round integrity check, naming
-    the remedy BY CAUSE (R-AGREE, R-PREPARE; M4)."""
-    head = (f"every entry agreed, but the round integrity check "
-            f"(`review_scratch.py verify`) failed: {why[-600:]} — ")
-    if re.search(r"could not be run|verification record \S+ could not be "
-                 r"written|heartbeat could not be refreshed", why):
-        raise _HostFault(f"{head}nothing about the round is known; repair "
-                         f"the host and collect again")
-    later = sorted(int(m.group(1)) for p in Path(packet_dir).iterdir()
-                   if (m := re.fullmatch(r"\.snapshot-r(\d+)\.json", p.name))
-                   and int(m.group(1)) > int(label[1:]))
-    stray = re.search(r"uncovered non-output file in packet dir: (.+?) — it "
-                      r"is absent", why)  # the WHOLE name (P1)
-    if later:
-        remedy = (f"round {label} is superseded by r{later[-1]} (its prepare "
-                  f"re-pinned the tree), so it cannot be AGREED; collect "
-                  f"r{later[-1]}")
-    elif re.search(r"holds \d+ round worktrees", why):
-        remedy = ("this round cannot be AGREED while a second round tree "
-                  "sits in the packet dir; prepare a new round in a new "
-                  "packet dir (`review_scratch.py open` with a new slug)")
-    elif stray and re.fullmatch(r"\.tmp-\d+-(?:collect-r\d+\.json|\.roster-r"
-                                r"\d+\.json|\.verified-r\d+\.json)",
-                                stray.group(1)):
-        remedy = ("that file is this host's own staging leftover from a "
-                  "stopped write, and the host's deletion command removes a "
-                  "whole packet dir only: prepare a new round")
-    else:
-        remedy = ("this round cannot be AGREED: it is INVALID (a leg may "
-                  "have read bytes the round did not bind); prepare a new "
-                  "round")
-    raise CollectError(head + remedy)
-
-
 def retry(packet_dir, label: str, name: str, diagnosis: str) -> Path:
     """Allocate attempt K+1 for an entry that did NOT return a valid verdict.
 
@@ -2236,16 +1650,11 @@ def retry(packet_dir, label: str, name: str, diagnosis: str) -> Path:
     prepare a new round."""
     packet_dir = Path(packet_dir)
     record = _read_record(packet_dir, label)
-    # The ADMISSION basis is checked here too (row r8-10): `retry` evaluates
-    # the entry through the same admission, and R-RETRY's "nothing changed"
-    # covers the contract exactly as it covers the clauses and the producer
-    # projection. Before any evaluation, so a refusal leaves nothing behind.
-    _check_contract_basis(record, "retry")
+    # The installed toolkit, checked BEFORE any evaluation and the allocation
+    # below (R-RETRY: a changed control refuses before an attempt is
+    # allocated; cases C19 / C20), so a refusal leaves nothing behind.
+    _check_toolkit(record, "retry")
     bound = _bound_metadata(packet_dir, label, record, "the retry")
-    # The clause, projection and preset basis, re-derived from the installed
-    # files BEFORE the allocation below (R-RETRY: a changed
-    # control refuses before an attempt is allocated; cases C19 / C20).
-    _check_installed_basis(packet_dir, label, record, "the retry")
     recorded = _recorded_seals(packet_dir, label)
     by_name = {e["name"]: e for e in record["entries"]}
     entry = by_name.get(name)
@@ -2275,28 +1684,23 @@ def retry(packet_dir, label: str, name: str, diagnosis: str) -> Path:
     if refusal is not None:
         raise CollectError(f"roster entry {name!r}: {refusal}")
 
-    # `_evaluate` now SCOPES the unusable-attempt-directory refusal to the
-    # entry (row r5-11), so `retry` runs the same scan itself: a retry has to
-    # allocate the NEXT number, and it cannot know what that is while a
-    # directory in the tree carries no readable attempt number. Same reason
-    # text, raised as the refusal it has always been.
+    # `_evaluate` scopes the attempt-name refusal to the entry, so `retry`
+    # runs the same scan itself: it allocates the NEXT number, which it
+    # cannot know while a name in the tree is not an attempt directory.
     attempts = _attempts(Path(packet_dir) / record["results_dir"] / name)
-    # THE RECORDED ATTEMPT IS JUDGED FIRST (gate-1 r10 row r10-1):
-    # `_evaluate` evaluates exactly attempt K (row r10-2), never the highest
-    # on-disk attempt, so a planted `attempt-K+1/` cannot turn the RECORDED
+    # THE RECORDED ATTEMPT IS JUDGED FIRST: `_evaluate` evaluates exactly
+    # attempt K, never the highest on-disk attempt, so a planted `attempt-K+1/` cannot turn the RECORDED
     # attempt's valid verdict into an `invalid` state and get it retried.
-    # V1: the replaced attempt's digests are taken BEFORE it is judged, and
-    # its seal binds exactly these (`_seal_replaced` refuses on a change).
-    found = _seal_files(Path(packet_dir) / record["results_dir"] / name
-                        / f"attempt-{entry['attempt']}", entry, as_found=True)
+    # The replaced attempt's digests are taken once, BEFORE it is judged,
+    # and its seal binds exactly these. One that cannot be read is refused
+    # after retry's own refusals below, so the two commands agree on them.
+    try:
+        found, unsealable = _seal_files(
+            Path(packet_dir) / record["results_dir"] / name
+            / f"attempt-{entry['attempt']}", entry), None
+    except CollectError as exc:
+        found, unsealable = None, " ".join(str(exc).split())
     result = _evaluate(packet_dir, record, entry, recorded, label)
-    # V4: an answered attempt is sealed with its state (an inadmissible
-    # answer is `invalid`); one holding no answer failed to run. A native
-    # attempt's answer is its saved reply, raw.json (Z4).
-    answered = ((found["result"][1] is not None and result.state == "invalid")
-                or (entry.get("family", entry["vendor"]) == "claude"
-                    and found["receipt"][1] is not None))
-    judged = (found, "invalid" if answered else "failed-to-run")
     if result.state == "valid":
         raise CollectError(
             f"roster entry {name!r} returned a VALID verdict "
@@ -2306,13 +1710,23 @@ def retry(packet_dir, label: str, name: str, diagnosis: str) -> Path:
             f"(R-REREVIEW)")
     # EVERY REFUSAL BEFORE ANY WRITE OR ALLOCATION is `_retry_blocked` —
     # the one predicate `collect` also asks about an attempt above the
-    # recorded one, so the two never disagree about what a retry does here
-    # (tail follow-up).
+    # recorded one, so the two never disagree about what a retry does here.
     blocked = _retry_blocked(
         packet_dir, label, record, entry, attempts, recorded.get(name, {}),
         result)
     if blocked is not None:
         raise CollectError(blocked[1] + blocked[2])
+    if unsealable is not None:
+        raise CollectError(f"attempt {result.attempt} cannot be recorded "
+                           f"before it is replaced ({unsealable}) — nothing "
+                           f"was allocated; prepare a new round")
+    # An answered attempt is sealed with its state (an inadmissible answer is
+    # `invalid`); one holding no answer failed to run. A native attempt's
+    # answer is its saved reply, raw.json.
+    answered = ((found["result"][1] is not None and result.state == "invalid")
+                or (entry.get("family", entry["vendor"]) == "claude"
+                    and found["receipt"][1] is not None))
+    judged = (found, "invalid" if answered else "failed-to-run")
     attempt_dir = (packet_dir / record["results_dir"] / name
                    / f"attempt-{result.attempt}")
     diagnosis_path = attempt_dir / "retry-diagnosis.txt"
@@ -2328,26 +1742,17 @@ def retry(packet_dir, label: str, name: str, diagnosis: str) -> Path:
         packet_dir, worktree, label, record["review_id"],
         record["content_digest"], entry["leg"], result.attempt + 1,
         _bound_conditions(packet_dir, label, record, name))
-    # THE PROMPT, PRODUCER-SCHEMA AND PRESET BASIS were proven unchanged
-    # before any evaluation (`_check_installed_basis`, gate-1 rows r4-16 /
-    # r5-7 / r7-x1, cases C19 / C20), and the render above reads the same
+    # THE INSTALLED TOOLKIT was proven unchanged before any evaluation
+    # (`_check_toolkit`, cases C19 / C20), and the render above reads the same
     # installed files, so the allocation below re-runs the SAME basis.
-    # ALLOCATE FIRST, diagnose second (gate-1 r3 row r3-18). The diagnosis
-    # used to be written before the allocation, and the guard above refuses
-    # any attempt that already carries one — so an allocation that failed
-    # (an unwritable results tree, a directory that raced in) left the leg
-    # PERMANENTLY unretryable: the only recovery command this round offers
-    # refused on a file the failed run had just planted. `v2_write_attempt`
-    # is itself the exclusive-create allocation, so once it returns the
-    # diagnosis records a step that actually happened.
+    # ALLOCATE FIRST, diagnose second: the guard above refuses any attempt
+    # that already carries a diagnosis, so a diagnosis written before a
+    # failed allocation would leave the leg unretryable. `v2_write_attempt`
+    # is the exclusive-create allocation.
     _seal_replaced(attempt_dir, entry, result.attempt, *judged)
     review_scratch.v2_write_attempt(alloc)
-    # ONE LINE, NEVER A TRACEBACK (gate-1 r9 row r9-12). This write was bare,
-    # so an OSError here — an unwritable attempt directory, a full disk —
-    # escaped as a traceback out of the ONE recovery command this round
-    # offers, and it does so AFTER `v2_write_attempt` has already allocated
-    # attempt K+1, i.e. in the state the operator most needs a readable
-    # refusal for.
+    # ONE LINE, NEVER A TRACEBACK: this write runs AFTER `v2_write_attempt`
+    # allocated attempt K+1, so a failure here names that state.
     try:
         diagnosis_path.write_text(text if text.endswith("\n") else text + "\n",
                                   encoding="utf-8")
@@ -2373,26 +1778,7 @@ def retry(packet_dir, label: str, name: str, diagnosis: str) -> Path:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-def _relax_std_stream_errors() -> None:
-    """NEVER DIE ON AN ENCODER (gate-1 r6 row r6-16). Entry-point only.
-
-    Operator text here is em-dash-bearing English and `sys.stdout`'s error
-    handler is STRICT, so under a non-UTF-8 locale the first such line raised
-    UnicodeEncodeError and took the command down instead of printing its
-    outcome. Only the ERROR HANDLER changes (the encoding is untouched), and
-    a stream that cannot be reconfigured is left alone. Full rationale:
-    `review_scratch.py::_relax_std_stream_errors` — each v2 lib is separately
-    executable and separately vendored, so the call is repeated at each entry
-    rather than imported across them."""
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(errors="backslashreplace")
-        except (AttributeError, ValueError):
-            pass
-
-
 def main(argv: list) -> int:
-    _relax_std_stream_errors()
     try:
         if len(argv) == 3 and argv[0] == "collect":
             return collect(Path(argv[1]), argv[2]).exit_code

@@ -1,7 +1,7 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — prepares ONE frozen round from a named ROSTER of INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime — agy via triad-antigravity-dispatch, with compatibility for the older gemini CLI via triad-gemini-dispatch — plus any entry the project configured), frames the suspect/omitted/simplified decisions as QUESTIONS, admits every entry's verdict (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE) against the canonical schema, and folds them into ONE outcome (AGREED / BLOCKED / INCOMPLETE) driving a fix→NEW-round loop. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.41.0
+version: 0.48.0
 # changelog: docs/reviews/2026-09-18-cfr-skill-history.md (every entry; the newest section is last)
 ---
 
@@ -32,7 +32,7 @@ Five references carry the detail — open one only when its column applies.
 
 | Reference | Open it when |
 |---|---|
-| `references/leg-contracts.md` | dispatching entries, or weighing an agy verdict — the roster's per-vendor shapes, the Google-route chain, the producer schema projection, per-leg prompts, the agy READ-GRANT block, **the MECHANICAL read-audit gate (executable form = `lib/read_audit_gate.sh`)**, the agy read/network residual |
+| `references/leg-contracts.md` | dispatching entries, or weighing an agy verdict — the roster's per-vendor shapes, the Google-route chain, the producer schema projection, per-leg prompts, the agy READ-GRANT block, **the MECHANICAL read-audit gate (executable form = `lib/read_audit_gate.sh`), the hook load check and the attempt seal**, the agy read/network residual |
 | `references/packet-lifecycle.md` | opening/closing a packet dir, the per-attempt results tree, shrinking a large diff, ordering and fencing a round, or freezing it |
 | `references/triage.md` | consolidating a round — dispositions, REAL / REACHABLE-UNOBSERVED / SPECULATIVE, the scope-expansion gate, the residual table and the next round's current residual |
 | `references/failure-modes.md` | a round misbehaved and you want the rule that already covers it — symptom → cause → rule index |
@@ -99,12 +99,10 @@ Five references carry the detail — open one only when its column applies.
    MECHANICAL read-audit gate, egress evidence) is in
    `references/leg-contracts.md`. An agy entry's verdict is weighed only after
    CUSTODY (its `stderr.log` carries the whole line `read-audit-file: <path>`),
-   `lib/read_audit_gate.sh --audit-file <attempt>/read-audit.json` AND the
-   hook LOAD CHECK `lib/agy_hook.py check <abs-read-audit.json>
-   <abs-hook-log.jsonl>` pass (`prepare` / `retry` print both): every stepped
-   census row of the attempt has a hook row under its own conversation id
-   (`HOOK_LOAD_PASS`). The hook check is per attempt: another entry's audit or
-   census never blocks this entry's `retry` (rule 13).
+   the read-audit gate (`lib/read_audit_gate.sh`) AND the per-attempt hook
+   LOAD CHECK (`lib/agy_hook.py check`) pass — `prepare` / `retry` print both
+   lines; each check's verdicts and remedies are in `references/leg-contracts.md`
+   § agy read-audit gate and § agy hook load check.
 2. **Frame suspect decisions as QUESTIONS, not settled facts.** "Is X actually
    safe to omit?" — never "X is a no-op." Biased framing propagates.
 3. **Every entry gets the SAME scope, through the SAME transport.** Give the
@@ -156,10 +154,9 @@ Five references carry the detail — open one only when its column applies.
    unusable schema, refused `--admitted-out` target) — a 64 says nothing about
    the leg. The claude entry's RAW reply admits via `--admit … --end-marker
    '<END-VERDICT>' --admitted-out <attempt>/admitted.json`; no repair path:
-   only an ADMITTED reply is sealed; a reply that fails admission is not
-   sealed — `collect` reports the entry not admitted (`MISSING`, `INCOMPLETE`)
-   and `retry` stays open (it seals that attempt `invalid` when it replaces
-   it), and a new answer comes only from `retry` (rule 13) or a new round. A leader-completed reply is never admissible.
+   only an ADMITTED reply is sealed, a refused one collects as not admitted
+   and stays open to `retry` (rule 13), and a new answer comes only from
+   `retry` or a new round. A leader-completed reply is never admissible.
 5. **Fix→re-review loop — NO round cap, NO focused pass (R-REREVIEW, R-STOP).**
    Findings → fix each (own implementer + per-fix review, SDD/TDD; the leader
    VERIFIES the findings, delegating verification or the implementation to a
@@ -259,20 +256,16 @@ Five references carry the detail — open one only when its column applies.
    context ceiling. `prepare` runs the round's `capture` (evidence snapshot +
    canonical worktree fingerprint) and the tree stays FROZEN; after every
    dispatched entry terminates, `verify` must print `ROUND_INTEGRITY_OK r<N>`
-   (the round-suffixed token — a NON-round label's qualified line never
-   satisfies this gate) and leaves `.verified-r<N>.json` (`close` re-runs the
-   check fresh). **Per-entry custody.** `prepare` allocates one
+   and leaves `.verified-r<N>.json` (`close` re-runs the check fresh). **Per-entry custody.** `prepare` allocates one
    `results-r<N>/<name>/attempt-K/` per enabled non-skipped entry —
    `binding.json`, `prompt.txt`, `dispatch.json`, `schema.projected.json`
    where the route takes one — and records the frozen roster in
    `.roster-r<N>.json`; `collect` writes `collect-r<N>.json`. One entry plus
    one attempt number is ONE exclusive allocation: a retry allocates the NEXT
    number and never touches attempt K (rule 13). **The packet dir is
-   HELPER-OWNED** (owner ruling): manual manipulation beyond the ONE
-   documented recovery (`references/packet-lifecycle.md` § Going on in a new
-   packet dir) is out of scope; for any state it cannot name as its own round
-   tree the helper REFUSES WITHOUT DELETING, states what it OBSERVES and points
-   at that section — do not expect or add a runnable exit there. Lifecycle
+   HELPER-OWNED** (owner ruling): for any state it cannot name as its own round
+   the helper REFUSES WITHOUT DELETING and points at the one recovery,
+   `references/packet-lifecycle.md` § Going on in a new packet dir. Lifecycle
    commands, ownership fences, fencing text, the `Review metadata:` block and
    capture/verify: `references/packet-lifecycle.md`.
 9. **codex leg: DE-INLINED — it reads the round worktree like every other leg
@@ -356,16 +349,11 @@ Five references carry the detail — open one only when its column applies.
     directory and a record with no absolute `hook_log` — each a NEW round.
     A valid NEGATIVE
     verdict is completed work, never retried — correcting what it found changes
-    the basis, a NEW ROUND (rule 5). **A recorded attempt is SEALED (R-BIND):**
-    the native admission seals an admitted reply, the first `collect` that judges an answer
-    seals a wrapper attempt, `retry` seals the attempt it replaces over the bytes it judged (`failed-to-run`, or `invalid` over an inadmissible answer — a refused native `raw.json` included; a write while it judged refuses: collect again), and later collections re-check the sealed files of EVERY attempt, and those of every attempt before the recorded one once more right before an AGREED record; when a retried leg may still be running, collect once more before using an AGREED — a late answer after the last check is caught only by the next `collect` (a
-    change — a late answer into a replaced attempt included — is that entry's integrity failure, `INCOMPLETE`, whose reason ends
-    "prepare a new round", and `retry` refuses it too). A sealed attempt is never re-answered: the printed
-    `guard:` line and the guard inside each wrapper line refuse a re-run into
-    it, the native `admit:` (`--admit … --admitted-out`) is refused on it (exit
-    64; a wrapper entry's `admit:` only re-validates, read-only), and a new
-    answer needs `retry` (an attempt sealed INVALID, never one sealed valid) or
-    a new round. Never hand-remove or hand-rename anything under
+    the basis, a NEW ROUND (rule 5). **A recorded attempt is SEALED (R-BIND)**
+    and never re-answered: a new answer needs `retry` (never over an attempt
+    sealed valid) or a new round, and a sealed file that changes is that
+    entry's integrity failure — who seals, what is refused and when to collect
+    again: `references/leg-contracts.md` § Attempt seal. Never hand-remove or hand-rename anything under
     `results-r<N>/`, and never chain a file operation on a helper-managed file
     before a dispatch (a failed `mv &&` left a leg unlaunched).
 14. **Finding triage and over-design containment (owner directive; R-VERIFY,
@@ -379,9 +367,11 @@ Five references carry the detail — open one only when its column applies.
     failed repro records a DISCLOSED residual, not code (occurrence gate,
     `references/triage.md`); **SPECULATIVE** (cannot occur in this deployment
     — including, in a TRIAD host's own code, a trigger R-THREAT rules out:
-    deliberate tampering with the host's own files or a concurrent operation) →
-    **no code**, a recorded fact; a stop at any point (a token or usage limit
-    too) and a leader's hand-made file layout are ordinary failures. A fix that
+    deliberate tampering with the host's own files or a second operation inside
+    one working folder) → **no code**, a recorded fact; a stop at any point (a
+    token or usage limit too) and a leader's hand-made file layout are ordinary
+    failures; a vendor shape no run has shown is a recorded limit
+    (HARDENING-SUGGESTION). A fix that
     expands design scope (a new guard / fallback / retry / lock / validation
     layer, a new file / dependency / config surface, a spill beyond the
     finding's file) STOPS for an owner OK, even mid-round, only when it changes
@@ -437,8 +427,7 @@ with a sha256 per file in `spec/SPEC_MANIFEST.json`. The repo-root `SPEC_REVISIO
 names the CANDIDATE commit those bytes came from: reading a candidate is
 provenance, NOT adoption of a tagged revision. Never edit a payload; re-vendor
 it and update the manifest (a host-data edit updates its digest there). The producer projection a vendor receives
-(`schema.projected.json`) and the `TRIAD_TEST_SEAMS=1` gate every seam here
-requires are in `references/leg-contracts.md` § Producer schema projection —
+(`schema.projected.json`) is in `references/leg-contracts.md` § Producer schema projection —
 admission always runs the FULL canonical schema, never the projection.
 
 **Retired v1 round.** `prepare` always prepares the named-roster round;
@@ -451,9 +440,10 @@ close it and prepare a new round.
 ## Flow
 
 1. Scope the review: branch ref + base SHA + the list of suspect/omitted/
-   simplified decisions (phrased as questions). Open the packet dir with the
-   rule-8 helper (`python3 <skill>/lib/review_scratch.py open <abs>/_runs/review
-   <slug>`, which also prunes stale packets from crashed past reviews). Author
+   simplified decisions (phrased as questions). Open a packet dir FOR EACH
+   ROUND with the rule-8 helper (`python3 <skill>/lib/review_scratch.py open
+   <abs>/_runs/review <gate-slug>-r<N>`, which also prunes stale packets from
+   crashed past reviews). Author
    the round's BRIEF — deployment context above one `=====QUESTIONS=====`
    marker line, the suspect questions below it — as a standalone file; that
    brief (plus the current residual, rule 5) is the ONLY per-round text the leader writes. Its context (R-CONTEXT): review basis and scope, target runtime/deployment, relevant dependency declarations and resolved versions, the verification actually observed, material assumptions, and unknown or conflicting facts — each cited, `unknown` with a reason rather than a guess, no credentials. Keep the GATED SURFACE
@@ -476,10 +466,8 @@ close it and prepare a new round.
    `--review-kind` selects the purpose clause (omitted = `pre-merge`;
    `formal-plan` = the plan purpose). The round binds the stage,
    `review_web_authorized` (rule 7) and its UTC date. It creates the round
-   WORKTREE at
-   `<packet-dir>/wt-r<N>` (re-pinning REMOVES the round tree present, identified
-   by its OWN name — never by the incoming label — after checking it against
-   that round's record) pinned at the right-hand side of `--diff`, writes its
+   WORKTREE at `<packet-dir>/wt-r<N>` (a packet dir that already holds a round
+   refuses, creating nothing) pinned at the right-hand side of `--diff`, writes its
    four artifacts (`brief.md`, `diff.prod.patch`, `diff.tests.patch`,
    `history.txt`) FILE-TO-FILE (never streamed through leader context), writes
    `delivery-r<N>.md` + `digest-r<N>.txt`, resolves the ROSTER, allocates
@@ -506,7 +494,7 @@ close it and prepare a new round.
    `admit:` line — `verdict_v2.py … --admit` for the claude raw reply,
    `verdict_v2.py <verdict.json>` for a wrapper entry, that one carrying the
    six `--expected-*` flags including `--expected-packet
-   <packet-dir>/delivery-r<N>.md` (the claude line types none: it reads the attempt's `binding.json`, and a typed flag that disagrees is exit 64, nothing sealed). `collect` re-admits a wrapper entry's `verdict.json` itself; for the claude entry it admits `admitted.json` as found — it never admits a `raw.json` alone, so a saved, admissible `raw.json` with no `admitted.json` and no seal is reported "never admitted" and `retry` refuses it until its `admit:` line runs (a refused one collects as not admitted, `retry` open); the printed `admit:` line is the EARLY per-entry check — its exit 1, 2 or 3 is a failed attempt that `retry` may take as soon as the entry has terminated, without waiting for `collect` (rule 13); on a sealed attempt the native `--admit … --admitted-out` line is refused (exit 64) while a wrapper entry's line only re-validates (rule 13). Do not retype these commands: a hand-built
+   <packet-dir>/delivery-r<N>.md` (the claude line types none: it reads the attempt's `binding.json`, and a typed flag that disagrees is exit 64). `collect` re-admits a wrapper entry's `verdict.json` itself; for the claude entry it admits `admitted.json` as found — it never admits a `raw.json` alone, so a saved, admissible `raw.json` with no `admitted.json` and no seal is reported "never admitted" and `retry` refuses it until its `admit:` line runs (a refused one collects as not admitted, `retry` open); the printed `admit:` line is the EARLY per-entry check — its exit 1, 2 or 3 is a failed attempt that `retry` may take as soon as the entry has terminated, without waiting for `collect` (rule 13); a sealed attempt refuses the native line (`references/leg-contracts.md` § Attempt seal). Do not retype these commands: a hand-built
    one is how a round gets admitted against the wrong digest. Per-entry flags
    and prompts: `references/leg-contracts.md`.
 4. **Once every dispatched entry has terminated, `verify` then `collect`.**
@@ -522,15 +510,16 @@ close it and prepare a new round.
      Minor-only negative included, recorded as a deviation), or it carries a
      blocking finding or an unresolved OPEN QUESTION. VERIFY each finding
      (rule 4) and TRIAGE it (rule 14); fixes are a NEW ROUND (rule 5).
-   - **`INCOMPLETE` (5)** — some enabled entry is missing or invalid, INCLUDING one the roster SKIPPED (it is counted and named with its skip reason — rule 1). Each non-valid entry's reason carries the evidence tool's own WHY and remedy; when it says prepare a NEW round, `retry` refuses too. Diagnose WHY it failed to RUN, then `retry <packet-dir> r<N> <name> --diagnosis "<why>"` — it PRINTS the new attempt's dispatch / gate / admit block exactly as `prepare` did; run those lines for that entry only (attempt K+1 on the unchanged basis) and dispatch the new attempt. `retry` REFUSES before any mutation in the rule-13 cases (a recorded attempt directory that is absent: prepare a new round). A valid NEGATIVE verdict is never an `INCOMPLETE` retry, and a SKIPPED entry is settled by the leader installing its route or asking the owner for a roster change (a NEW round), not by retrying it. An entry that ended on a SUBSCRIPTION CAP (`[wrapper] <cli> cli-subscription-cap`, exit 65) is not retried before its quota resets, and the host compensates NOTHING on its own: never another model, never an added or substituted leg. Tell the OWNER which entry hit the cap and offer the three exits — wait for the reset and `retry`; an owner EXCEPTION on the entries that answered (a ledger record; the round stays `INCOMPLETE`, rule 1); or ask for a roster change (an extra entry, or a second entry of an answering family — a separate invocation identity with the same shared prompt), which is a NEW round.
-   - **`BASIS CHANGED` (2)** — the round record's frozen `contract_digest` (the ADMISSION schema every reply is judged against) is absent or does not match the installed contract, or the record's selection or configuration differs from the round's bound basis. A changed basis is a NEW ROUND, never a re-collection (`references/triage.md` § Collect outcomes).
-   - **`HOST FAULT` (64)** — THIS host cannot admit any reply (`jsonschema` absent, the vendored contract unusable in ANY way — unreadable, invalid UTF-8, non-JSON, over-nested, not Draft 2020-12) or an agy evidence tool (read-audit gate / hook check) could not RUN at all. `collect` STOPS and writes NO per-entry state: nothing about any leg is known, so repair the host and collect AGAIN — never re-dispatch paid legs over it. A contract that cannot LOAD is 64; one that loads and DIFFERS is the exit-2 basis refusal above (`references/triage.md` § Collect outcomes).
+   - **`INCOMPLETE` (5)** — some enabled entry is missing or invalid, INCLUDING one the roster SKIPPED (it is counted and named with its skip reason — rule 1). Each non-valid entry's reason names its cause — an agy evidence tool's failure as its token and exit code; when it says prepare a NEW round, `retry` refuses too. Diagnose WHY it failed to RUN, then `retry <packet-dir> r<N> <name> --diagnosis "<why>"` — it PRINTS the new attempt's dispatch / gate / admit block exactly as `prepare` did; run those lines for that entry only (attempt K+1 on the unchanged basis) and dispatch the new attempt. `retry` REFUSES before any mutation in the rule-13 cases (a recorded attempt directory that is absent: prepare a new round). A valid NEGATIVE verdict is never an `INCOMPLETE` retry, and a SKIPPED entry is settled by the leader installing its route or asking the owner for a roster change (a NEW round), not by retrying it. An entry that ended on a SUBSCRIPTION CAP (`[wrapper] <cli> cli-subscription-cap`, exit 65) is not retried before its quota resets, and the host compensates NOTHING on its own: never another model, never an added or substituted leg. Tell the OWNER which entry hit the cap and offer the three exits — wait for the reset and `retry`; an owner EXCEPTION on the entries that answered (a ledger record; the round stays `INCOMPLETE`, rule 1); or ask for a roster change (an extra entry, or a second entry of an answering family — a separate invocation identity with the same shared prompt), which is a NEW round.
+   - **`BASIS CHANGED` (2)** — the installed toolkit differs from the round record's `toolkit_map` (`the installed toolkit changed since this round was prepared: <files> — prepare a new round (R-REREVIEW)`), the record carries no map, or the record's selection or configuration differs from the round's bound basis. A changed basis is a NEW ROUND, never a re-collection (`references/triage.md` § Collect outcomes).
+   - **`HOST FAULT` (64)** — THIS host cannot admit any reply (`jsonschema` absent, the vendored contract unusable in ANY way — unreadable, invalid UTF-8, non-JSON, over-nested, not Draft 2020-12) or an agy evidence tool (read-audit gate / hook check) could not RUN at all, or an installed toolkit file cannot be read. `collect` STOPS and writes NO per-entry state: nothing about any leg is known, so repair the host and collect AGAIN — never re-dispatch paid legs over it. A contract that cannot LOAD is 64; one that loads and DIFFERS is the exit-2 basis refusal above (`references/triage.md` § Collect outcomes).
    Then run rule 4's consolidation over the collected findings.
 5. **Close the round.** Run any owed REACHABLE-UNOBSERVED repros FIRST — a
    successful repro reclassifies the item REAL and it joins the fix path. Then:
    - Any REAL blocking finding → the smallest adequate fix (implementer +
      per-fix review; a design-expanding fix stops for an owner OK), then GOTO
-     2 for round `r<N+1>` with the current residual (rule 5).
+     1 (open a new packet dir) and 2 for round `r<N+1>` with the current
+     residual (rule 5).
    - A CONFLICTED item (both findings survive verification) → the owner
      decides that item, with the rule-12 conflict table; an item oscillating
      without new evidence stops repeating; every other item continues (R-STOP).
@@ -540,13 +529,15 @@ close it and prepare a new round.
    - No remaining item has a path to new evidence (rule 5c; rule 14's TERMINAL
      round) → stop: record the dissent, unknowns and stop reason and hand the
      merge decision to the owner. The round stays non-agreed; an owner exception
-     is recorded as an exception, never as agreement. Do not GOTO 2.
+     is recorded as an exception, never as agreement. Do not GOTO 1.
    Restore a per-round live roster override once `collect` has run (the round
-   reads its frozen `.roster-r<N>.json`). Copy the COMPLETE residual table to
-   `docs/reviews/<UTC-date>-<slug>-residuals.md` BEFORE `close <packet-dir>` —
-   close DELETES the dir. Close removes the round worktree first, refuses
-   rather than forcing if a leg wrote into the reviewed tree, WARNS when the
-   last captured round does not verify NOW (it re-runs `verify`), and a SECOND close
+   reads its frozen `.roster-r<N>.json`). Close each round's packet dir once
+   the next round is prepared, and the last one at gate end — after the
+   COMPLETE residual table is copied to
+   `docs/reviews/<UTC-date>-<slug>-residuals.md`: `close <packet-dir>` DELETES
+   the dir. Close WARNS when the last captured round does not verify NOW (it
+   re-runs `verify`), checks the round tree once and refuses — deleting
+   nothing — if a leg wrote into it, and a SECOND close
    of the same (now absent) dir is a no-op at rc 0.
 
 ## Failure modes

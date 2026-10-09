@@ -1,8 +1,9 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg; `triad-gemini-dispatch` exists for legacy compatibility with the older gemini CLI); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.16.13
+version: 0.16.14
 # changelog:
+#   0.16.14 (2026-10-09): doc — § Isolation's durable-file paragraph and references/read-audit.md point to the review skill's leg-contracts for the binding and the gate (one home per mechanism); no rule change.
 #   0.16.13 (2026-10-09): doc — the web-evidence clause is read from the vendored spec (E5-20); no embedded constant.
 #   0.16.12 (2026-10-09): doc — an override call writes no default-dir copy and logs no `read-audit-copy:` line; `read-audit-file:` is the one custody line.
 #   0.16.11 (2026-10-08): doc — the claude host never writes, locks or heals the agy settings (DL-112); § Self-healing names one layer.
@@ -345,15 +346,15 @@ digest carries NO policy — it gates, denies and judges nothing by itself; the
 caller reads it and decides what a missing or unexpected packet-read means
 for that dispatch.
 
-**Durable digest FILE (the consumer contract).** A caller that needs the digest
-as a durable, jq-only artifact — e.g. the `triad-cross-family-review` gate —
-sets `TRIAD_READ_AUDIT_FILE=<absolute-path>` in the wrapper invocation's
-environment, and the wrapper writes `{meta, digest}` to exactly that path on
-EVERY completed call, success or failure (unlike the run-log, which exists only
-on failure). Bind it at dispatch time; writing is best-effort and never changes
-the exit code or classification. Digest shape, caps, retry-merge semantics and
-the notes a consuming gate needs:
-[references/read-audit.md](references/read-audit.md).
+**Durable digest FILE.** A caller that needs the digest as a file sets
+`TRIAD_READ_AUDIT_FILE=<absolute-path>` in the wrapper invocation's
+environment AT DISPATCH TIME; the wrapper writes `{meta, digest}` to exactly
+that path on every completed call, success or failure — best-effort, never
+changing the exit code or classification. Shape and caller notes:
+[references/read-audit.md](references/read-audit.md). The review skill's use
+of it — the per-attempt binding and the gate — is owned by
+`triad-cross-family-review` `references/leg-contracts.md` (§ agy leg, the
+Read-audit binding bullet; § agy read-audit gate).
 
 ## Hard rules
 

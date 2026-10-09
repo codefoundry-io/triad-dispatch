@@ -7,7 +7,8 @@
   "note": "Payload bytes UNCHANGED from the source commit (README \u00a7 How a host uses a revision, step 2). review-legs.default.json is HOST A DATA, not a spec payload; it is listed for integrity only.",
   "file_commits_note": "file_commits names the source commit of a payload vendored from a LATER commit than candidate_commit (the local, unpublished spec branch); every such file is re-vendored with the rest when that branch is published.",
   "file_commits": {
-    "contracts/cleanup-roots.schema.json": "6c4c8b18d002e0d9674f072353c610a2ee52edfd"
+    "contracts/cleanup-roots.schema.json": "6c4c8b18d002e0d9674f072353c610a2ee52edfd",
+    "prompts/common-clauses.md": "3afc4d7e931e55d601dd74877bdbe65e610a8e59"
   },
   "files": {
     "contracts/cleanup-roots.schema.json": "7cf0b1b659123b2fa2a8d6cfa89b0705fe0fd972cfeba0541f0f12aa96ab7f67",
@@ -20,7 +21,7 @@
     "contracts/review-legs.example.json": "af665f9e92db6198f77b37a7d2216072e9a5b025717828d9a2ec8576b381d0b7",
     "contracts/review-legs.schema.json": "1611655cda859a6738ec8ff52dd3d3aa08539cc8ba01741c8a72426abda37cb9",
     "prompts/README.md": "71ac005a0dd1ece903bd640da8b97435b95ec30def776cfdd6f89b32a3f8224e",
-    "prompts/common-clauses.md": "6e2e7a3c9a6c3bba8b77077e70affaca7a564ad8561eaea2c55994a17517322c",
+    "prompts/common-clauses.md": "95384c4cc78dc56889d227717953868362ec4918a84d5357112a0c10d831579a",
     "prompts/investigation.md": "a92982e6b9a9f82be8c8c2f8ccb8529a8599f3adf97a59250345e10a87f06583",
     "prompts/leg-claude.md": "ba6383a1a7e991165d1ca8df08f629446e5d83cf114ebab86e94a508ae7219d5",
     "prompts/leg-codex.md": "d7e0e5017f54542e2be4b95f9c3a0f4e867096d432e7bee832ea0f03d80548df",

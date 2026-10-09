@@ -3,7 +3,8 @@
 (triad-cross-family-review, S2 enforcement — plan
 2026-09-16-cfr-delivery-and-enforcement-redesign § Enforcement).
 
-Two modes, one file, python3 stdlib only, no AI:
+Two modes, no AI — hook mode: stdlib only, this file alone; check mode
+also loads verdict_v2 from this directory:
 
   hook mode    agy_hook.py --log <abs-jsonl> [--web]
       (--web: a round with review web — a v2 round whose bound
@@ -76,7 +77,6 @@ from __future__ import annotations
 import errno
 import json
 import os
-import stat
 import sys
 import time
 from pathlib import Path
@@ -233,48 +233,37 @@ def _census_rows(digest):
 def _read_regular(path: Path) -> tuple:
     """(text, None) for a plain REGULAR UTF-8 file, else (None, why) — `why`
     names the ACTUAL reason (`_WHY_NOT_REGULAR`, `_WHY_UNDECODABLE`,
-    `_WHY_UNREADABLE`; gate-1 r20 row r20-6), so every refusal built on it
-    says which one fired.
+    `_WHY_UNREADABLE`), so every refusal built on it says which one fired.
 
-    HARDENED (gate-1 r11 row r11-7): `_audit` read every audit — including
-    the SIBLING audits the round check takes as arguments — with
-    `path.read_text()`, which FOLLOWS a symlink and BLOCKS FOREVER on a FIFO.
-    That is the r10-7 class `collect_v2._read_regular_file` closed one file
-    over, reopened here by a new argument. Same shape as
-    `verdict_v2._read_regular_file_no_symlink`, spelled LOCALLY because this
-    module is the vendor's hook handler and must stay stdlib-only and
-    importable on its own: `lstat` decides for every non-regular type BEFORE
-    the open (so a FIFO cannot block), `O_NONBLOCK` closes the window where
-    one appears in between, `O_NOFOLLOW` covers a symlink swapped in after
-    the lstat, and the descriptor's own `fstat` re-checks S_ISREG before a
-    byte is read.
+    The read is `verdict_v2._read_regular_file_no_symlink`, the review libs'
+    one hardened reader (a symlink or a FIFO is refused, never followed or
+    blocked on), imported from this file's directory on first use in check
+    mode only — hook mode stays stdlib-only and never loads it; an
+    already-loaded `verdict_v2` is reused (the `collect_v2._load_sibling`
+    rule). The UTF-8 decode stays here.
     """
-    try:
-        st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode):
-            return (None, _WHY_NOT_REGULAR)
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                     | getattr(os, "O_NONBLOCK", 0))
-    except OSError as exc:
+    verdict_v2 = sys.modules.get("verdict_v2")
+    if verdict_v2 is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "verdict_v2", Path(__file__).resolve().parent / "verdict_v2.py")
+        verdict_v2 = importlib.util.module_from_spec(spec)
+        sys.modules["verdict_v2"] = verdict_v2
+        try:
+            spec.loader.exec_module(verdict_v2)
+        except BaseException:
+            sys.modules.pop("verdict_v2", None)
+            raise
+    path = Path(path)
+    data, reason = verdict_v2._read_regular_file_no_symlink(path)
+    if reason is not None:
         # ELOOP: a symlink swapped in after the lstat (O_NOFOLLOW refused it)
-        return (None, _WHY_NOT_REGULAR if exc.errno == errno.ELOOP
-                else _WHY_UNREADABLE)
+        if (reason.startswith(f"cannot read {path}: ")
+                and f"[Errno {errno.ELOOP}]" not in reason):
+            return (None, _WHY_UNREADABLE)
+        return (None, _WHY_NOT_REGULAR)
     try:
-        fst = os.fstat(fd)
-        if not stat.S_ISREG(fst.st_mode):
-            return (None, _WHY_NOT_REGULAR)
-        chunks = []
-        while True:
-            block = os.read(fd, 1 << 20)
-            if not block:
-                break
-            chunks.append(block)
-    except OSError:
-        return (None, _WHY_UNREADABLE)
-    finally:
-        os.close(fd)
-    try:
-        return (b"".join(chunks).decode("utf-8"), None)
+        return (data.decode("utf-8"), None)
     except UnicodeDecodeError:
         return (None, _WHY_UNDECODABLE)
 

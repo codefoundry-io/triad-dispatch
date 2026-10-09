@@ -49,12 +49,12 @@ Exit codes:
       schema file, or a REFUSED `--admitted-out` target - the HOST-fault
       class. A missing, unreadable, non-JSON or non-Draft-2020-12 schema
       says nothing about the leg's reply, so it must never be reported as
-      "invalid reply" (exit 1); neither does a symlink / FIFO / occupied
-      target at the path the caller chose to copy an ALREADY-ADMITTED reply
-      into.
+      "invalid reply" (exit 1); neither does an existing target or an
+      unwritable directory at the path the caller chose to copy an
+      ALREADY-ADMITTED reply into.
 
-Every stderr reason is ONE line of plain ASCII, capped at 300 characters:
-a schema message may otherwise inline the whole reply.
+Every stderr reason is ONE line (CR and LF folded), capped at 300
+characters: a schema message may otherwise inline the whole reply.
 
 Consumers (the collector slice) use `admit_file()` / `admit_raw()`, which
 return an `Admission`. A consumer that loads this file BY PATH rather than
@@ -66,45 +66,26 @@ field annotations strings, and `dataclasses` resolves them through
 ADMIT mode (`--admit <raw-reply.txt>`) exists for the NATIVE claude leg,
 whose reply is raw text terminated by a marker line rather than a
 machine-written file:
-  * the end marker must be the final non-empty line (split on `"\\n"` only,
-    tolerating a trailing CR on that line), spelled either literally or in
-    its one-level `html.escape` form - an escaping transport escapes the
-    marker's angle brackets too, and refusing it here killed the reply
-    before the unescape retry could run;
-  * the candidate object is the ORIGINAL TEXT before the marker line, taken
-    by OFFSET - never `splitlines()` + `join`, which rewrites CRLF and the
-    Unicode separators U+2028/U+2029 that may sit INSIDE a JSON string, so
-    that a valid reply could fail and the admitted bytes could differ from
-    what the leg actually sent;
-  * that text must BEGIN with `{` after leading whitespace. The prompt's
-    OUTPUT-SHAPE NOTICE promises the leg exactly this rule, and the earlier
-    first-`{`/last-`}` slice quietly contradicted it (it would admit an
-    object buried in prose);
-  * the pass runs RAW FIRST. A single `html.unescape` retry runs ONLY when
-    the raw pass failed to PARSE as JSON and entity tokens are present (the
-    escaped-transport case). A raw pass that PARSED and then failed the
-    schema or the duplicate check is FINAL: unescaping a whole reply can
-    restructure the object - a `&quot;` inside a string becomes a real
-    quote - and a second verdict must never be conjured that way.
+  * the end marker must be the final non-empty line; the candidate object is
+    the original text before that line, taken by offset, and must begin with
+    `{` after leading whitespace;
+  * the pass runs RAW FIRST and unescapes at most once: the whole reply is
+    `html.unescape`d when the marker itself arrived escaped, or when the raw
+    pass failed to PARSE and entity tokens are present. A raw pass that
+    parsed and then failed the schema or the duplicate check is FINAL;
   * the six expected values come from the attempt's own `binding.json`
     beside the reply (R-BIND), so the printed line types none; a typed
     `--expected-*` set that disagrees with that record is refused as an
     argument error (exit 64) before the reply is read, so nothing is sealed.
     With no record beside the reply the six flags are required, as above.
 `--admitted-out` writes the ORIGINAL admitted bytes (never a
-re-serialization) through a same-directory pid-unique temp file plus
-`os.link`, so an interrupted write can never leave a truncated canonical
-file; an existing target is inspected through the SAME hardened read the
-reply gets (lstat first, `O_NONBLOCK`, never a blocking `read_bytes()`),
-holding exactly those bytes is an idempotent success, and any other state
-is refused as a host fault (exit 64). A target whose attempt directory
-carries a seal (`seal.json`, case C66) is refused first, the same way: a
-recorded attempt takes no second admission. A successful `--admitted-out`
-IS the record step of the native route: it seals the attempt beside the
-target with the digests of the admitted object and the raw reply.
-
-Test seam: `TRIAD_VERDICT_V2_SCHEMA` overrides the canonical schema path,
-honored ONLY with `TRIAD_TEST_SEAMS=1` beside it (announced on stderr).
+re-serialization) through a same-directory pid-unique temp file (`O_EXCL`)
+plus `os.link`, so an interrupted write can never leave a truncated canonical
+file; an existing target fails at the link (exit 64). A target whose attempt
+directory carries a seal (`seal.json`, case C66) is refused first: a recorded
+attempt takes no second admission. A successful `--admitted-out` IS the
+record step of the native route: it seals the attempt beside the target with
+the digests of the admitted object and the raw reply.
 """
 from __future__ import annotations
 
@@ -135,10 +116,9 @@ EXIT_UNPARSEABLE = 2
 EXIT_MARKER_ABSENT = 3
 EXIT_USAGE = 64
 
-# THE SEAL OF A RECORDED ATTEMPT (R-BIND, case C66) — the same name as
-# `collect_v2._SEAL_NAME`, spelled here because this module imports no
-# sibling (t15 axis 81 pins the two equal). `--admitted-out` writes it (the
-# native route's record step) and refuses a target whose directory has one.
+# THE SEAL OF A RECORDED ATTEMPT (R-BIND, case C66) — the one spelling of the
+# name; `collect_v2._SEAL_NAME` reads it from here. `--admitted-out` writes it
+# (the native route's record step) and refuses a target whose directory has one.
 _SEAL_NAME = "seal.json"
 
 _JSONSCHEMA_MISSING_MSG = (
@@ -151,26 +131,7 @@ _JSONSCHEMA_MISSING_MSG = (
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[1] / "spec" / "contracts" / "leg-verdict.schema.json"
 )
-SCHEMA_PATH_ENV = "TRIAD_VERDICT_V2_SCHEMA"
-TEST_SEAMS_ENV = "TRIAD_TEST_SEAMS"
 MAX_REASON_CHARS = 300
-
-# The three cross-field rules the vendored contract carries in its TOP-LEVEL
-# `allOf`, keyed by the prefix of the failing error's `schema_path`. jsonschema
-# reports such a failure against the WHOLE instance (an `anyOf` message inlines
-# the entire reply) or against a sub-enum that reads like a bogus severity
-# vocabulary; a named rule is what the leader and the leg can act on. Keep in
-# step with `spec/contracts/leg-verdict.schema.json` -> `allOf`.
-_NAMED_ROOT_RULES = (
-    (("allOf", 0),
-     "family google requires route agy|gemini; other families require "
-     "route null"),
-    (("allOf", 1, "then"),
-     "SAFE TO MERGE allows only Minor/HARDENING-SUGGESTION findings and no "
-     "open_questions"),
-    (("allOf", 1, "else"),
-     "a non-SAFE verdict requires at least one finding or one open question"),
-)
 
 _BINDING_FIELDS = (
     "review_id",
@@ -214,29 +175,8 @@ def _flatten(text: str) -> str:
     return one
 
 
-def _safe(text: object) -> str:
-    """One LEG-CONTROLLED fragment, rendered printable-ASCII-only.
-
-    A duplicate member NAME, the JSON POINTER PATH built from such names and
-    a schema message are all text the leg chose. `_flatten` folds CR and LF,
-    but U+2028 / U+2029 / U+0085 are line terminators to a `splitlines()`
-    reader and a C0 control can rewrite a terminal line, so an unescaped
-    fragment could forge extra leader-visible lines inside what the contract
-    promises is ONE line (gate 1 r2 row r2-8). `ascii()` is `repr()` with
-    every non-printable and non-ASCII character escaped; the surrounding
-    quotes are stripped so the caller keeps its own quoting. Applied to the
-    FRAGMENT, before `_flatten`'s 300-character cap.
-    """
-    return ascii(str(text))[1:-1]
-
-
 def _schema_path() -> Path:
-    """The canonical contract path; the seam applies only when unlocked."""
-    override = os.environ.get(SCHEMA_PATH_ENV)
-    if override and os.environ.get(TEST_SEAMS_ENV) == "1":
-        print(f"NOTE: verdict_v2: TEST SEAM active - canonical schema read "
-              f"from {override}", file=sys.stderr)
-        return Path(override)
+    """The canonical contract path (the vendored file beside this lib)."""
     return SCHEMA_PATH
 
 
@@ -308,23 +248,12 @@ def _get_validator() -> tuple[object | None, str | None]:
     return _VALIDATOR, None
 
 
-def _named_root_rule(error) -> str | None:
-    """The human rule name for a failure of a TOP-LEVEL cross-field rule."""
-    schema_path = tuple(error.schema_path)
-    for prefix, rule in _NAMED_ROOT_RULES:
-        if schema_path[: len(prefix)] == prefix:
-            return rule
-    return None
-
-
 def _schema_reason(obj: object) -> str | None:
     """None when `obj` satisfies the canonical schema, else a one-line
     reason. The DEEPEST error wins: a root `allOf`/`anyOf` failure knows only
     that "the whole object is wrong" and jsonschema renders it by inlining
     the entire reply, while a sibling error one level down names the field
-    that actually broke. A failure of one of the contract's top-level
-    cross-field rules is reported as that RULE, never as its sub-schema
-    (whose enum reads like a bogus severity vocabulary)."""
+    that actually broke."""
     validator, err = _get_validator()
     if err is not None:
         return err
@@ -339,88 +268,45 @@ def _schema_reason(obj: object) -> str | None:
     if not errors:
         return None
     first = errors[0]
-    rule = _named_root_rule(first)
-    if rule is not None:
-        return f"schema rule violated: {rule}"
-    # Both fragments are leg-controlled: the pointer path is built from the
-    # reply's own member names and the message can inline reply text.
-    path = _safe("/".join(str(p) for p in first.absolute_path)) or "<root>"
-    return f"schema validation failed at {path}: {_safe(first.message)}"
+    path = "/".join(str(p) for p in first.absolute_path) or "<root>"
+    return f"schema validation failed at {path}: {first.message}"
 
 
 # ── duplicate-member rejection at the ORIGINAL text ───────────────────────
-class _DuplicateTracker:
-    """`object_pairs_hook` that records every object carrying a repeated
-    member instead of raising immediately. Recording (rather than raising)
-    is what makes a JSON PATH reportable: the hook runs innermost-first and
-    has no parent context, but the dict it returns IS the object embedded in
-    the finished structure, so an identity walk over the parse result
-    recovers where the duplicate sat."""
-
-    def __init__(self) -> None:
-        self.dups: list[tuple[str, dict]] = []
-
-    def hook(self, pairs: list[tuple[str, object]]) -> dict:
-        seen: set[str] = set()
-        dup: str | None = None
-        for key, _ in pairs:
-            if key in seen and dup is None:
-                dup = key
-            seen.add(key)
-        obj = dict(pairs)
-        if dup is not None:
-            self.dups.append((dup, obj))
-        return obj
+class _DuplicateMember(Exception):
+    """The first repeated member name `_reject_duplicate` met."""
 
 
-def _identity_path(root: object, target: object, path: str = "") -> str | None:
-    if root is target:
-        return path or "<root>"
-    if isinstance(root, dict):
-        for key, value in root.items():
-            found = _identity_path(value, target, f"{path}/{key}" if path else str(key))
-            if found is not None:
-                return found
-    elif isinstance(root, list):
-        for index, value in enumerate(root):
-            found = _identity_path(value, target, f"{path}/{index}" if path else str(index))
-            if found is not None:
-                return found
-    return None
+def _reject_duplicate(pairs: list[tuple[str, object]]) -> dict:
+    """`object_pairs_hook`: refuse the first repeated member name, at any
+    depth (`json.loads` alone is last-wins)."""
+    seen: set[str] = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise _DuplicateMember(key)
+        seen.add(key)
+    return dict(pairs)
 
 
 def _parse_strict(text: str, label: str) -> tuple[bool, object, str | None, str | None]:
     """(ok, obj, reason, failure_kind). Rejects a duplicate member at ANY
-    depth. `ok` is an explicit flag because a valid top-level `null` parses
-    to None and must still reach schema validation as a shape failure, not
-    be mistaken for a parse failure. `failure_kind` is "json" only for a
-    genuine JSON syntax error - the one failure an escaped-transport retry
-    could legitimately repair - and "duplicate" for the last-wins guard.
-    A reply nested past the interpreter's recursion limit is a syntax-class
-    failure too, reported on one line instead of a traceback."""
-    tracker = _DuplicateTracker()
+    depth, naming the member. `ok` is an explicit flag because a valid
+    top-level `null` parses to None and must still reach schema validation as
+    a shape failure, not be mistaken for a parse failure. `failure_kind` is
+    "json" only for a genuine JSON syntax error - the one failure an
+    escaped-transport retry could legitimately repair - and "duplicate" for
+    the last-wins guard. A reply nested past the interpreter's recursion
+    limit is a syntax-class failure too, reported on one line instead of a
+    traceback."""
     try:
-        obj = json.loads(text, object_pairs_hook=tracker.hook)
+        obj = json.loads(text, object_pairs_hook=_reject_duplicate)
+    except _DuplicateMember as e:
+        return False, None, (
+            f"duplicate member '{e.args[0]}' in {label} - last-wins parsing "
+            "would hide the earlier value"
+        ), "duplicate"
     except ValueError as e:
         return False, None, f"{label} is not valid JSON: {e}", "json"
-    except RecursionError:
-        return False, None, f"{label} nesting too deep", "json"
-    try:
-        dups = list(tracker.dups)
-        for key, container in dups:
-            where = _identity_path(obj, container)
-            if where is not None:
-                return False, None, (
-                    f"duplicate JSON member '{_safe(key)}' at {_safe(where)} "
-                    f"in {label} - last-wins parsing would hide the earlier "
-                    "value"
-                ), "duplicate"
-        if dups:
-            key = dups[0][0]
-            return False, None, (
-                f"duplicate JSON member '{_safe(key)}' at <unknown> in "
-                f"{label} - last-wins parsing would hide the earlier value"
-            ), "duplicate"
     except RecursionError:
         return False, None, f"{label} nesting too deep", "json"
     return True, obj, None, None
@@ -694,52 +580,23 @@ def _ok_line(admission: Admission) -> str:
 
 def _write_admitted_out(target: Path, payload: str) -> str | None:
     """None on success, else a one-line reason. The ORIGINAL admitted bytes
-    are materialized in a same-directory pid-unique temp file and hard-linked
-    into place, so an interrupted write never leaves a truncated canonical
-    file and a concurrent writer cannot be clobbered."""
+    are written to a same-directory pid-unique temp file (`O_EXCL`) and
+    hard-linked into place, so an interrupted write never leaves a truncated
+    canonical file; an existing target fails at the link."""
     # A RECORDED ATTEMPT IS SEALED (R-BIND, case C66): a re-admission into
-    # it is refused BEFORE its target is inspected, so neither identical
-    # bytes nor a target removed by hand can put an answer into it again.
+    # it is refused before its target is touched.
     if os.path.lexists(target.parent / _SEAL_NAME):
         return ("--admitted-out: the attempt directory is sealed - its "
                 "result was recorded, and a re-admission into a "
                 "recorded attempt is refused (R-BIND, case C66); a new answer "
                 "needs a new attempt (retry after a failure to run) or a new "
                 "round")
-    if target.is_symlink():
-        return "--admitted-out: refuses a symlink target"
-    data = payload.encode("utf-8")
-    # PRESENCE by lstat, CONTENT by the hardened reader - never
-    # `read_bytes()`. A FIFO planted at the target blocked that open forever
-    # (gate 1 r2 row r2-6), and by then the reply had already been admitted,
-    # so the tool hung holding a finished verdict. `lstat` refuses every
-    # non-regular type before the open and `O_NONBLOCK` closes the window
-    # where one appears in between.
-    try:
-        target.lstat()
-        present = True
-    except FileNotFoundError:
-        present = False
-    except OSError as e:
-        return f"--admitted-out: {e}"
-    if present:
-        existing, read_err = _read_regular_file_no_symlink(target)
-        if read_err is not None:
-            return f"--admitted-out: {read_err}"
-        if existing == data:
-            print(
-                "NOTICE: --admitted-out already holds these exact bytes - "
-                "idempotent re-admission",
-                file=sys.stderr,
-            )
-            return None
-        return "--admitted-out: target exists with DIFFERENT content - refusing to overwrite"
     tmp = target.with_name(f".tmp-admit-{os.getpid()}-{target.name}")
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         try:
             with os.fdopen(fd, "wb") as fh:
-                fh.write(data)
+                fh.write(payload.encode("utf-8"))
                 fh.flush()
                 os.fsync(fh.fileno())
             os.link(tmp, target)
@@ -921,24 +778,6 @@ def _attempt_binding(raw_path: Path, typed: dict | None) -> tuple:
     return record, None
 
 
-def _relax_std_stream_errors() -> None:
-    """NEVER DIE ON AN ENCODER (gate-1 r6 row r6-16). Entry-point only.
-
-    Operator text here is em-dash-bearing English and `sys.stdout`'s error
-    handler is STRICT, so under a non-UTF-8 locale the first such line raised
-    UnicodeEncodeError and took the command down instead of printing its
-    outcome. Only the ERROR HANDLER changes (the encoding is untouched), and
-    a stream that cannot be reconfigured is left alone. Full rationale:
-    `review_scratch.py::_relax_std_stream_errors` — each v2 lib is separately
-    executable and separately vendored, so the call is repeated at each entry
-    rather than imported across them."""
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(errors="backslashreplace")
-        except (AttributeError, ValueError):
-            pass
-
-
 def _heartbeat(admitted_out: Path) -> None:
     """Refresh the round packet's `.active` mtime (M3: an admission is
     activity). The packet is three levels above the attempt
@@ -952,7 +791,6 @@ def _heartbeat(admitted_out: Path) -> None:
 
 
 def main(argv: list[str]) -> int:
-    _relax_std_stream_errors()
     parsed, reason = _parse_argv(argv)
     if reason is not None:
         print(reason, file=sys.stderr)
@@ -1015,10 +853,10 @@ def main(argv: list[str]) -> int:
                 obj_text or "", expected)
         if write_err is not None:
             # HOST fault (exit 64), never exit 1: the reply itself was
-            # ADMITTED two lines up, and the target - a symlink, a FIFO, a
-            # file with other content, an unwritable directory - says nothing
-            # about the leg's work. Reporting it as "invalid reply" made the
-            # leader re-ask a leg that had already answered correctly.
+            # ADMITTED two lines up, and the target - an existing path, an
+            # unwritable directory - says nothing about the leg's work.
+            # Reporting it as "invalid reply" made the leader re-ask a leg
+            # that had already answered correctly.
             print(write_err, file=sys.stderr)
             return EXIT_USAGE
         _heartbeat(Path(parsed["admitted_out"]))
