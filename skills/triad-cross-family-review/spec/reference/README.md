@@ -19,6 +19,7 @@ the sources below and update the three maps together when a destination changes.
 | Review rules: agreement, correction re-review, phase/context, roster semantics, Google leg, leader triage, convergence, containment, CLI compatibility, no-cost | `reference/review-rules.md` | SKILL.md rule text (pointers + host invocation syntax), prompt clauses |
 | Process flow and failure diagnosis | `reference/process.md` (one diagram) | SKILL flow sections |
 | Latest-source verification and cross-host change coordination | `reference/spec-authoring.md#R-AUTHORING-SYNC` | shared agent entry files and host instructions point here |
+| The order of deciding a gap found while implementing; what the other host must learn goes into the specification | `reference/spec-authoring.md#R-DECISION-ORDER` | host instructions and the dev-log's cross-check rule point here |
 | PRD/Spec authoring structure and requirement links | `authoring/implementation-map.schema.json`; current bundles in `authoring/maps/` | [Authoring guide and checks](../authoring/README.md); document prose remains at the linked anchors |
 | Prompt text | `prompts/*.md` | vendored copies in host skills (vendoring rule: `README.md` § How a host uses a revision) |
 | Behavioral cases (inputs, expected results, rule anchor) | `cases/cases.json` | host tests carrying the case ids in their names |

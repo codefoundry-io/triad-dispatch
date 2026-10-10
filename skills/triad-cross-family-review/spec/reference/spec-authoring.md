@@ -111,6 +111,20 @@ This section is the one normative copy of this authoring protocol. Shared `AGENT
 pointer; host instructions also point here. Reading latest authoring `main` does not change a host's adopted revision,
 vendored payload bytes or digest manifest; adoption and publication still follow `README.md` § How a host uses a revision.
 
+<a id="R-DECISION-ORDER"></a>
+When implementing a common item finds a behaviour, a gap or a defect, decide it in this order: (1) what this
+specification already decides; (2) otherwise the other host's code — when it settles the behaviour, this specification
+gains the rule and the other host is not changed; (3) otherwise a fact or limit that neither host closes is recorded here
+(the rule it limits, a case, a dev-log row) without an owner question; (4) the owner is asked only for a design choice
+with a trade-off that neither the specification nor either host settles. An absolute law (R-AUTH,
+[D-AUTH-ABSOLUTE-20261004](../decisions/owner-register.md#D-AUTH-ABSOLUTE-20261004)) is never a design choice and never a
+limit both hosts lack: a gap against it is a defect both hosts fix. Whatever the other host must learn — a gap that
+made a leader read the other host's code, a defect both hosts share, a defect of the other host — is written into this
+specification (rule text, case, or an `authoring/shared-dev-log.md` row naming the host that acts) in the same turn it is
+found, never only into a host's private record. Neither a plan nor this specification is assumed complete. Owner
+direction: [D-DECISION-ORDER-20261004](../decisions/owner-register.md#D-DECISION-ORDER-20261004),
+[D-SPEC-GAPS-20261003](../decisions/owner-register.md#D-SPEC-GAPS-20261003).
+
 ## 6. What code does and what AI does
 
 - Code: `tools/check_authoring.py` validates registered PRD/Spec bundles against

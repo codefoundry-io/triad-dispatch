@@ -8,11 +8,11 @@
       "acceptance": "required",
       "claude": {
         "agent": "cross-family-review-reviewer",
-        "model": "claude-opus-5-5",
+        "model": "opus",
         "effort": "xhigh"
       },
       "timeout_s": 900,
-      "note": "Recommended Claude model/effort: R-ROSTER. Explicit model overrides and null retain host selection semantics; agent names the native reviewer preset on A (required) and is passed as --agent on B when set. B's runnable default timeout is 1200 s."
+      "note": "Recommended Claude model/effort: R-ROSTER (the versionless `opus` alias, which the claude CLI and the native agent preset both accept). Explicit model overrides and null retain host selection semantics; agent names the native reviewer preset on A (required) and is passed as --agent on B when set. B's runnable default timeout is 1200 s."
     },
     {
       "name": "codex",
@@ -24,7 +24,7 @@
         "reasoning": "high"
       },
       "timeout_s": 900,
-      "note": "Recommended codex model/reasoning: R-ROSTER (shipped defaults carry the explicit ID). An explicit null override retains host-default semantics and is frozen as null."
+      "note": "Recommended codex model/reasoning: R-ROSTER (shipped defaults carry the explicit ID until a codex alias is measured). An explicit null override retains host-default semantics and is frozen as null."
     },
     {
       "name": "google",
@@ -40,7 +40,7 @@
         "effort": null
       },
       "timeout_s": 600,
-      "note": "Google route pin: google.route = agy or gemini; otherwise preserve the host's selection chain. Default Pro family with verifiable HIGH; model placeholders must be replaced from the route catalog. Adapter-specific timeout and effort support remain mandatory."
+      "note": "Google route pin: google.route = agy or gemini; otherwise preserve the host's selection chain. Default Pro family with verifiable HIGH; model placeholders are replaced by the user's pin (a host's shipped default or the user's override), passed as written and never checked against a model list (R-MODEL). Adapter-specific timeout and effort support remain mandatory."
     },
     {
       "name": "x-claude-high",
@@ -68,5 +68,5 @@
       "timeout_s": 900
     }
   ],
-  "_comment": "ILLUSTRATIVE TEMPLATE, not a runnable default: the three enabled legs are the default roster shape; placeholder model values must be replaced from each host's recorded catalog before dispatch. Fields and resolution rules: reference/review-rules.md#R-ROSTER; keys deliberately absent: CHANGELOG.md rev-0"
+  "_comment": "ILLUSTRATIVE TEMPLATE, not a runnable default: the three enabled legs are the default roster shape; placeholder model values are replaced by the user's pin (each host's shipped default roster data or the user's override) before dispatch; no model list is consulted (R-MODEL). Fields and resolution rules: reference/review-rules.md#R-ROSTER; keys deliberately absent: CHANGELOG.md rev-0"
 }

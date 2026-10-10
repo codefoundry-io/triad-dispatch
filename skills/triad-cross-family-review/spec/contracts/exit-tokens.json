@@ -10,9 +10,7 @@
     "EXIT_RATE_GIVE_UP": 64,
     "EXIT_TERMINAL": 65,
     "EXIT_SCHEMA_FAIL": 66,
-    "EXIT_SCHEMA_REJECTED": 67,
-    "EXIT_FANOUT_PARTIAL": 68,
-    "EXIT_TASK_BLOCKED": 69
+    "EXIT_SCHEMA_REJECTED": 67
   },
   "tokens": [
     {
@@ -61,11 +59,6 @@
       "exit_name": "EXIT_SCHEMA_REJECTED"
     },
     {
-      "token": "fanout-spawn-error",
-      "exit": 65,
-      "exit_name": "EXIT_TERMINAL"
-    },
-    {
       "token": "config-conflict",
       "exit": 65,
       "exit_name": "EXIT_TERMINAL"
@@ -107,10 +100,11 @@
     }
   ],
   "notes": [
-    "B (105a1e4) shares the exit-code numbers 0-4 and 64-69 (bin/_common.py:56-66) but maps 16 tokens: `route-mismatch` is emitted by antigravity_wrapper.py:317 and reaches exit 65 via _fail without a map row; `input-delivery-failed` has no B token (B fails closed through RunResult._stdin_delivery_failed) — D-11 aligns the two tables.",
+    "B (105a1e4) shares the exit-code numbers 0-4 and 64-67 (it still carries 68 / 69 and the fan-out tokens `fanout-spawn-error` / `fanout-partial` until its DL-91 change; its `task-blocked` row, bin/_common.py:83, stays — claude's permission denial at 65) (bin/_common.py:56-66) but maps 16 tokens: `route-mismatch` is emitted by antigravity_wrapper.py:317 and reaches exit 65 via _fail without a map row; `input-delivery-failed` has no B token (B fails closed through RunResult._stdin_delivery_failed) — D-11 aligns the two tables.",
     "A's `token-limit` and `cli-subscription-cap` rows are compatibility aliases kept until consumer evidence says otherwise (audit rank 14 / codex P4-14).",
     "Conformance test shape (both hosts): every token the host EMITS is a member of this table; every table token maps to the same exit code; explicit exception lists name wrapper-only tokens.",
-    "Phase-specific exception (round r2, codex): A emits `input-delivery-failed` with exit 3 for a PRE-SPAWN encoding failure and exit 65 for post-spawn incomplete delivery — classifier mappings and direct wrapper exits are inventoried separately; a conformance test checks the phase, not one code."
+    "Phase-specific exception (round r2, codex): A emits `input-delivery-failed` with exit 3 for a PRE-SPAWN encoding failure and exit 65 for post-spawn incomplete delivery — classifier mappings and direct wrapper exits are inventoried separately; a conformance test checks the phase, not one code.",
+    "The codex wrapper's `--task` mode (the fan-out worker layer and `--task code`) is removed from the contract with its exits 68 (`EXIT_FANOUT_PARTIAL`) and 69 (`EXIT_TASK_BLOCKED`) and its tokens `fanout-spawn-error` and `fanout-partial`; `task-blocked` (65) stays — both hosts' claude wrappers emit it for a `permission_denials` envelope with an empty result (A `3rd-Agent/wrappers/_common.py` `promote_claude_extraction`; B `bin/_common.py:83`, `:1277-1281` @ `7f75863`) (owner 2026-10-05; no real run since 2026-07-05; DL-91)."
   ],
   "b_delta": {
     "emitted_without_map_row": [

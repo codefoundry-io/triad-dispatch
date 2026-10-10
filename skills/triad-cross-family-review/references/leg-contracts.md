@@ -596,11 +596,11 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
   fact. **Custody:** the attempt's own `stderr.log` must carry the WHOLE line
   `read-audit-file: <that absolute path>` (the wrapper's timestamp prefix, the
   path percent-escaped from its filesystem bytes); `collect` checks it before
-  the gate. An audit no dispatch of that attempt named (misfiled or foreign),
-  and a dispatched attempt that wrote no audit, are refused with the remedy
-  "prepare a NEW round"; only a genuine audit whose `stderr.log` lost its line
-  is cleared by a `retry`. The leader never removes, renames or moves an
-  audit. Never a bare `$AGY_READ_AUDIT_FILE` (a gate-local name, unset at
+  the gate. An audit no dispatch of that attempt named (an assembled
+  directory, not evidence), and an attempt that wrote no audit, are refused
+  with the remedy `retry`: it seals the attempt `invalid` and allocates the
+  next with its own audit path (R-RETRY). The leader never removes, renames or
+  moves an audit. Never a bare `$AGY_READ_AUDIT_FILE` (a gate-local name, unset at
   dispatch time) and never a `${TRIAD_READ_AUDIT_FILE:-...}` fallback (it could
   name a leftover another shell left set).
 - **Prompt body.** It is `<attempt>/prompt.txt` (rendered from the vendored
@@ -678,8 +678,8 @@ retry of the round, and another entry's census never blocks this one.
 | Verdict (exit) | Meaning | Remedy |
 |---|---|---|
 | `ABSENT` (2) | no read audit | settle the read-audit gate's ABSENT first |
-| `INCONCLUSIVE` (4) | broken evidence — an audit or hook log that is not a readable regular UTF-8 file, no `digest.tool_steps`, no or a malformed `digest.attempts` census, a stepped row with no recorded id, a log line that is not a hook row | check `hooks.json` in the round worktree, then prepare a new round |
-| `VOID` (3) | stepped rows and zero hook invocations, or a stepped row with no hook row under any of its own ids (the check names each such attempt) | check `hooks.json` in the round worktree, then prepare a new round (a fresh hook log) |
+| `INCONCLUSIVE` (4) | broken evidence — an audit or hook log that is not a readable regular UTF-8 file, no `digest.tool_steps`, no or a malformed `digest.attempts` census, a stepped row with no recorded id, a log line that is not a hook row | a broken READ AUDIT (this attempt's own): `retry` (it takes this attempt's digests, seals it and allocates the next); when `retry` refuses because the audit cannot be read, prepare a new round (R-RETRY). A broken HOOK LOG (the round's hook log, serving every attempt of the round): check `hooks.json` in the round worktree, then prepare a new round |
+| `VOID` (3) | stepped rows and zero hook invocations, or a stepped row with no hook row under any of its own ids (the check names each such attempt) | check `hooks.json` in the round worktree, then prepare a new round (the round's `hooks.json` and hook log serve every attempt of the round) |
 | `INCONCLUSIVE` (4) | no stepped row and no invocation — nothing proves or disproves the hook | none here: the read-audit gate voids a read-blind leg on its own |
 | `PASS` (0) | every stepped row is attributed | none |
 
@@ -739,9 +739,9 @@ by hand — a failed attempt stays on disk beside the next one.
 | Verdict (exit) | Meaning | Remedy |
 |---|---|---|
 | `PASS` (0) | every required file matched | weigh the verdict; verify each surviving agy cite against the round worktree first (§ agy leg, Cites) |
-| `ABSENT` (2) | no audit file at the path | check the dispatch line's `env TRIAD_READ_AUDIT_FILE=…` member first — an unbound env looks exactly like a call that never completed. Then prepare a NEW round; only an attempt that never spawned agy (no `exec` line in its `stderr.log`) is cleared by `retry` |
+| `ABSENT` (2) | no audit file at the path | check the dispatch line's `env TRIAD_READ_AUDIT_FILE=…` member first — an unbound env looks exactly like a call that never completed (a dispatch fault). Then `retry <packet-dir> r<N> <name> --diagnosis "<why>"` and run the lines it prints exactly as printed: it seals this attempt (`failed-to-run` when it holds no answer) and allocates the next with its own audit path (R-RETRY) — not a new round |
 | `VOID` (3) | a confirmed miss: a required file is not in `files_read` and `files_read_omitted` is 0 (a valid-JSON audit with no `.digest` lands here too); the answer is UNVERIFIED and is not read | `retry <packet-dir> r<N> <name> --diagnosis "<why>"` once on the unchanged basis (SKILL Flow 4) and run the lines it prints; the new attempt is judged on its own audit. Still VOID after that retry: the entry is missing (rule 13) and the round `INCOMPLETE` — no second re-dispatch; a new answer comes only from a NEW round |
-| `INCONCLUSIVE` (4) | never PASS and never VOID; stderr names the cause | a CAPPED digest (`files_read_omitted > 0`): weigh `digest.attempts[]` and `digest.read_attempts[]`; if they do not settle it, a narrower packet is a NEW round. BROKEN evidence (jq could not read the file): inspect it, then prepare a NEW round. A required path of 200 characters or more: shorten the packet path and run the gate again |
+| `INCONCLUSIVE` (4) | never PASS and never VOID; stderr names the cause | a CAPPED digest (`files_read_omitted > 0`): weigh `digest.attempts[]` and `digest.read_attempts[]`; if they do not settle it, a narrower packet is a NEW round. BROKEN evidence (jq could not read the file): inspect it, then `retry` (it takes this attempt's digests, seals it and allocates the next); when `retry` refuses because the audit cannot be read, prepare a NEW round (R-RETRY). A required path of 200 characters or more: shorten the packet path and run the gate again |
 
 **Output.** One `[gate] <VERDICT> <file>` line per evaluated file, then the
 summary `READ_AUDIT_GATE_<PASS|VOID|INCONCLUSIVE|ABSENT> checked=<n> pass=<n>

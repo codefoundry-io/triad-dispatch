@@ -1,0 +1,206 @@
+{
+  "schema": "triad-vendor-failure-lines.v1-draft",
+  "rule": "reference/review-rules.md#R-CLASSIFY",
+  "lines": [
+    {
+      "cli": "codex",
+      "line": "Selected model is at capacity. Please try a different model.",
+      "match": "selected model is at capacity",
+      "carrier": "JSONL `error` event and `turn.failed`, vendor exit 1",
+      "token": "server-capacity",
+      "observed": "2026-09"
+    },
+    {
+      "cli": "agy",
+      "line": "There was a network issue connecting to the server, please try again.",
+      "match": "network issue connecting to the server",
+      "carrier": "print mode result with status ERROR and an empty response, vendor exit 1",
+      "token": "server-capacity",
+      "observed": "2026-08-20"
+    },
+    {
+      "cli": "agy",
+      "line": "[agy] print timeout after <duration> with turn in progress; returning partial output",
+      "match": "with turn in progress; returning partial output",
+      "carrier": "the whole stderr line beginning `[agy] `, at any vendor exit, with or without a partial answer, which is never returned",
+      "token": "timeout",
+      "observed": "2026-10-03"
+    },
+    {
+      "cli": "codex",
+      "line": "unexpected status 401 Unauthorized: Incorrect API key provided",
+      "match": "unexpected status 401 unauthorized: incorrect api key",
+      "carrier": "a codex `error` event message of a failed run; the key prefix that follows the sentence is never recorded",
+      "token": "oauth-env",
+      "observed": "2026-09-25"
+    },
+    {
+      "cli": "claude",
+      "line": "Not logged in · Please run /login",
+      "match": "please run /login",
+      "carrier": "the `result` text of a print-mode JSON envelope with `is_error` true (api_error_status null)",
+      "token": "oauth-env",
+      "observed": "2026-08-21 (https://github.com/anthropics/claude-code/issues/88434, Claude Code 2.1.238)"
+    },
+    {
+      "cli": "codex",
+      "line": "Error loading configuration: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
+      "match": "please log out and sign in again",
+      "carrier": "a stderr line beginning `Error loading configuration:`, printed before any JSONL event, or a codex `error` / `turn.failed` message",
+      "token": "oauth-env",
+      "observed": "2026-03-25 (https://github.com/openai/codex/issues/15754, codex 0.116.0)"
+    },
+    {
+      "cli": "gemini",
+      "line": "API key not valid. Please pass a valid API key.",
+      "match": "api key not valid",
+      "carrier": "the gemini error object (code 400) on stdout or the trailing stderr envelope",
+      "token": "oauth-env",
+      "observed": "2026 (https://github.com/google-gemini/gemini-cli/issues/20284)"
+    },
+    {
+      "cli": "claude",
+      "line": "Invalid API key · Fix external API key",
+      "match": "invalid api key",
+      "carrier": "the `result` text of a print-mode envelope with `is_error` true, no `api_error_status`",
+      "token": "oauth-env",
+      "observed": "Claude Code 2.1.39 (a captured CI run, https://github.com/aidenybai/react-grab/actions/runs/22843267285)"
+    },
+    {
+      "cli": "gemini",
+      "line": "Manual authorization is required but the current session is non-interactive. … (FatalAuthenticationError)",
+      "match": "manual authorization is required",
+      "carrier": "the gemini CLI's own exit code 41 (FATAL_AUTHENTICATION_ERROR), with the message as plain stderr text and no error object",
+      "token": "oauth-env",
+      "observed": "gemini CLI v0.60.0 source (packages/cli/index.ts, packages/core/src/utils/exitCodes.ts, oauth2.ts)"
+    },
+    {
+      "cli": "gemini",
+      "line": "429 stderr with status RESOURCE_EXHAUSTED, reason rateLimitExceeded, MODEL_CAPACITY_EXHAUSTED",
+      "match": "model_capacity_exhausted",
+      "carrier": "the CLI's stderr of a failed run",
+      "token": "server-capacity",
+      "observed": "2026-05 (host A gemini audit, 10 failed runs)"
+    },
+    {
+      "cli": "gemini",
+      "line": "429 stderr with status RESOURCE_EXHAUSTED, reason rateLimitExceeded, MODEL_CAPACITY_EXHAUSTED",
+      "match": "resource_exhausted",
+      "carrier": "the CLI's stderr of a failed run",
+      "token": "server-capacity",
+      "observed": "2026-05 (host A gemini audit, 10 failed runs)"
+    },
+    {
+      "cli": "gemini",
+      "line": "429 stderr with status RESOURCE_EXHAUSTED, reason rateLimitExceeded, MODEL_CAPACITY_EXHAUSTED",
+      "match": "ratelimitexceeded",
+      "carrier": "the CLI's stderr of a failed run",
+      "token": "server-capacity",
+      "observed": "2026-05 (host A gemini audit, 10 failed runs)"
+    },
+    {
+      "cli": "gemini",
+      "line": "…exhausted your capacity on this model. Your quota will reset after <t>.",
+      "match": "your quota will reset after",
+      "carrier": "stderr of a failed run",
+      "token": "cli-subscription-cap",
+      "observed": "2026-05..07 (37 classified rows)"
+    },
+    {
+      "cli": "gemini",
+      "line": "Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals.",
+      "match": "no longer supported for gemini code assist for individuals",
+      "carrier": "plain stderr text, not the gemini error object",
+      "token": "cli-subscription-cap",
+      "observed": "2026-06/07 (43 rows)"
+    },
+    {
+      "cli": "gemini",
+      "line": "Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals.",
+      "match": "ineligibletiererror",
+      "carrier": "plain stderr text, not the gemini error object",
+      "token": "cli-subscription-cap",
+      "observed": "2026-06/07 (43 rows)"
+    },
+    {
+      "cli": "claude",
+      "line": "an API error envelope of type overloaded_error (HTTP 529)",
+      "match": "overloaded_error",
+      "carrier": "a print-mode envelope with is_error true: its api_error_status or result text",
+      "token": "server-capacity",
+      "observed": "2026-07-05 (a real overload on host A; the error type is Anthropic's own 529 type)"
+    },
+    {
+      "cli": "agy",
+      "line": "error: UNAVAILABLE (code 503): Deadline expired before operation could complete.",
+      "match": "unavailable (code 503)",
+      "carrier": "stderr, vendor exit 3",
+      "token": "server-capacity",
+      "observed": "2026-09-26 (agy 1.2.11, DL-14)"
+    },
+    {
+      "cli": "codex",
+      "line": "exceeded retry limit, last status: 429",
+      "match": "exceeded retry limit, last status: 429",
+      "carrier": "codex error / turn.failed message",
+      "token": "server-capacity",
+      "observed": "vendor source codex-rs protocol/src/error.rs RetryLimitReachedError (read 2026-10-05)"
+    },
+    {
+      "cli": "codex",
+      "line": "You've hit your usage limit…",
+      "match": "you've hit your usage limit",
+      "carrier": "codex error / turn.failed message",
+      "token": "cli-subscription-cap",
+      "observed": "vendor source codex-rs protocol/src/error.rs UsageLimitReachedError (read 2026-10-05)"
+    },
+    {
+      "cli": "codex",
+      "line": "Invalid schema for response_format '<name>': …",
+      "match": "invalid schema for response_format",
+      "carrier": "codex error event, code invalid_json_schema",
+      "token": "schema-rejected",
+      "observed": "2026-09-20 (2 runs)"
+    },
+    {
+      "cli": "agy",
+      "line": "timeout waiting for response",
+      "match": "timeout waiting for response",
+      "carrier": "the typed `result.error` of the terminal result event (status ERROR, empty response, vendor exit 1), matched only at the start of that field",
+      "token": "vendor-timeout",
+      "observed": "2026-09-04 (agy 1.1.26)"
+    },
+    {
+      "cli": "agy",
+      "line": "Error: Please sign in to view available models. Launch the CLI without arguments to sign in.",
+      "match": "please sign in to view available models",
+      "carrier": "the output of a failed `agy models` call (an operator's own model listing; under R-MODEL no host runs it on the review or dispatch path); the exit code was not captured",
+      "token": "oauth-env",
+      "observed": "2026-10-08 (the lab owner, signed out, on the host A machine; agy 1.3.1 installed there)"
+    },
+    {
+      "cli": "agy",
+      "line": "Authentication required. Please visit the URL to log in:",
+      "match": "authentication required. please visit the url",
+      "carrier": "the first stderr line of a signed-out print-mode run, plain or stream-json, at the start of the line; the sign-in URL, a 60 s wait and `error: authentication failed or timed out` follow; vendor exit 1",
+      "token": "oauth-env",
+      "observed": "2026-10-08 (agy 1.3.1, signed out, host A; `agy -p \"hi\"` with stdin closed)"
+    },
+    {
+      "cli": "agy",
+      "line": "authentication failed or timed out",
+      "match": "authentication failed or timed out",
+      "carrier": "the `result.error` of the terminal stream-json result event (status ERROR, empty response, num_turns 0, empty conversation_id); vendor exit 1",
+      "token": "oauth-env",
+      "observed": "2026-10-08 (agy 1.3.1, signed out, host A; `agy -p \"hi\" --output-format stream-json`)"
+    },
+    {
+      "cli": "agy",
+      "line": "Your AI credits balance is too low to continue.",
+      "match": "your ai credits balance is too low to continue",
+      "carrier": "the agy CLI's own message for an exhausted plan quota with no AI credits (per agy changelog 1.2.15); the stream position is not captured",
+      "token": "cli-subscription-cap",
+      "observed": "agy changelog 1.2.15 (the vendor's own source, read 2026-10-08)"
+    }
+  ]
+}

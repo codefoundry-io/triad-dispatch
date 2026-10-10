@@ -97,10 +97,16 @@ WEB_TOOLS = frozenset({"read_url_content", "search_web"})
 
 _POLICY = "blocked by triad cross-family review policy"
 _REPORT_CAP = 40   # denied rows printed by `check` — the digest's list cap
-# THE ONE REMEDY for an unhooked attempt and for broken evidence: a fresh hook
-# log comes only with a new round, after the round worktree's hooks.json is
-# checked.
+# THE REMEDY for an unhooked attempt and for a broken HOOK LOG: the round
+# worktree's hooks.json and the round's hook log serve every attempt of the
+# round, so once hooks.json is checked the remedy is a new round.
 _REMEDY = "check hooks.json in the round worktree, then prepare a new round"
+# THE REMEDY for a broken READ AUDIT, this attempt's own evidence (R-RETRY):
+# `retry` digests it, seals it and allocates the next attempt; only a retry
+# refused because the audit cannot be read leaves a new round.
+_AUDIT_REMEDY = ("`retry` (it takes this attempt's digests, seals it and "
+                 "allocates the next); when `retry` refuses because the audit "
+                 "cannot be read, prepare a new round")
 # WHY A FILE COULD NOT BE READ, named by the ACTUAL reason. `_read_regular`
 # returns one of these; each follows "<the path> " in
 # a refusal.
@@ -322,12 +328,12 @@ def check_loaded(read_audit: Path, hook_log: Path) -> tuple:
     if tool_steps is None:
         return ("INCONCLUSIVE", 4, [],
                 f"the read audit at {read_audit} {why} — broken evidence, not "
-                f"a verdict; {_REMEDY}", None)
+                f"a verdict; {_AUDIT_REMEDY}", None)
     if isinstance(rows, str):
         return ("INCONCLUSIVE", 4, [],
                 f"the read audit at {read_audit} carries {rows} — a census "
                 f"this check cannot attribute is broken evidence, never a "
-                f"verdict; {_REMEDY}", tool_steps)
+                f"verdict; {_AUDIT_REMEDY}", tool_steps)
     must = [row for row in rows if row["tool_steps"] > 0]
     invocations = 0
     denied = []
@@ -339,8 +345,8 @@ def check_loaded(read_audit: Path, hook_log: Path) -> tuple:
         text, why = _read_regular(hook_log)
         if text is None:
             return ("INCONCLUSIVE", 4, [],
-                    f"the hook log at {hook_log} {why} — broken evidence, not "
-                    f"a verdict; {_REMEDY}", tool_steps)
+                    f"the round's hook log at {hook_log} {why} — broken "
+                    f"evidence, not a verdict; {_REMEDY}", tool_steps)
         for idx, line in enumerate(text.split("\n"), 1):
             if not line.strip():
                 continue
@@ -354,8 +360,9 @@ def check_loaded(read_audit: Path, hook_log: Path) -> tuple:
                     or "tool" not in row):
                 return ("INCONCLUSIVE", 4, [],
                         f"hook log line {idx} is not a hook row (a JSON object "
-                        f"with decision allow|deny and a tool key) — the hook "
-                        f"log is broken evidence, not a verdict; {_REMEDY}",
+                        f"with decision allow|deny and a tool key) — the "
+                        f"round's hook log is broken evidence, not a verdict; "
+                        f"{_REMEDY}",
                         tool_steps)
             invocations += 1
             conv = row.get("conversation_id")

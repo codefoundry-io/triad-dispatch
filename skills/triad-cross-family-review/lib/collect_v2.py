@@ -602,8 +602,9 @@ def _agy_custody_reason(attempt_dir: Path, audit: Path) -> str | None:
                   else f"{stderr_path} could not be read ({exc.strerror or exc})")
         return (f"{detail} — this attempt's dispatch stderr is where the "
                 f"`{wanted}` line lives, and without it "
-                f"nothing ties the read audit beside it to this entry, which "
-                f"stays a SIBLING of every later attempt — prepare a new round")
+                f"nothing ties the read audit beside it to this entry — "
+                f"`retry` this entry (R-RETRY: it seals this attempt and "
+                f"allocates the next with its own audit path)")
     # THE PREFIX MUST BE THERE: the wrapper's `_common.log` always
     # timestamps, so only a line whose
     # prefix MATCHES at its start is the producer's.
@@ -612,29 +613,24 @@ def _agy_custody_reason(attempt_dir: Path, audit: Path) -> str | None:
         m = _LOG_PREFIX.match(line)
         return m is not None and line[m.end():] == want
     if not any(_custody(line) for line in raw.split(b"\n")):
-        # NO AUDIT AT ALL. This runs only after a
-        # valid verdict was admitted, so the attempt RAN and wrote no read
-        # audit: the hook load check reads it as a dispatched sibling with no
-        # audit (INCONCLUSIVE) for every later attempt of the round, so a
-        # re-dispatch inside the round cannot clear it — the remedy is a NEW
-        # round. A PRESENT audit with no custody line is a NEW round too: a
-        # misfiled or foreign audit stays a sibling (ambiguous or
-        # complete-VOID for the whole round) and hand-removal is forbidden;
-        # only a genuine audit whose stderr lost its line clears on a retry.
+        # NO AUDIT AT ALL: this runs only after a valid verdict was admitted,
+        # so the attempt RAN and wrote no read audit. A PRESENT audit with no
+        # custody line is an assembled directory, not evidence. Either is a
+        # result judged inadmissible: `retry` seals the attempt `invalid` and
+        # allocates the next with its own audit path (R-RETRY); nothing is
+        # hand-removed.
         if not os.path.lexists(audit):
             return (f"{stderr_path} carries no `{wanted}` line and no read "
                     f"audit exists at {audit} — this attempt wrote no read "
-                    f"evidence; it stays a SIBLING of every later attempt of "
-                    f"this round (the hook load check reads a dispatched "
-                    f"attempt with no audit as INCONCLUSIVE and deletes "
-                    f"none), so prepare a NEW round (a fresh hook log) rather "
-                    f"than re-dispatching inside this one")
+                    f"evidence — `retry` this entry (R-RETRY: it seals this "
+                    f"attempt `invalid` and allocates the next with its own "
+                    f"audit path), not a new round")
         return (f"the audit at {audit} was not written by this dispatch "
                 f"(no `{_CUSTODY_MARKER.decode('ascii').strip()}` line in its "
-                f"stderr.log): a misfiled or foreign audit stays a SIBLING of every later "
-                f"attempt of the round and cannot be hand-removed, so prepare "
-                f"a NEW round; only a genuine audit whose stderr lost its line "
-                f"is cleared by a retry")
+                f"stderr.log): an assembled directory, not evidence, and never "
+                f"hand-removed — `retry` this entry (R-RETRY: it seals this "
+                f"attempt `invalid` and allocates the next with its own audit "
+                f"path), not a new round")
     return None
 
 

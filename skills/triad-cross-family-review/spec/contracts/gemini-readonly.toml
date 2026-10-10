@@ -18,13 +18,13 @@
 # the CLI help string "Additional policy files" is misleading for the user tier).
 # Approved route = CLI login without API keys (reference/review-rules.md#R-NOCOST); the
 # older Vertex/API-key enforcement-test wording is HISTORICAL. Live enforcement of the denies
-# is PENDING confirmation where gemini is in service (owner briefing, R-GOOGLE) — no run evidence yet.
+# is PENDING confirmation (owner briefing, R-GOOGLE) — no run evidence yet.
 # ROUND r2 FINDING (claude, verified against v0.60.0 default read-only.toml): before 2026-09-19 this file had no web
 # rows and no catch-all, and `--policy` replaces only the USER tier, so the DEFAULT tier's allow for google_web_search
 # (priority 50) was INHERITED on A's review posture; web_fetch was denied only by the default headless rule.
 # D-9 RULED 2026-09-19 (owner): review legs have no web tools — the explicit deny rows at the end of this file. Applied
-# without a live run (gemini is not in service where the author runs); the runtime effect is verified where gemini is
-# in service by the checks in `contracts/gemini-readonly.verify.toml`, reported through the owner briefing (R-GOOGLE).
+# without a live run; gemini is the compatibility route (D-ONE-ENVIRONMENT-20261003), and its runtime effect is
+# verified by the checks in `contracts/gemini-readonly.verify.toml`, reported through the owner briefing (R-GOOGLE).
 
 # --- allow read tools ---
 [[rule]]

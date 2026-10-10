@@ -63,8 +63,9 @@ case "$PACKET_DIR" in /*) : ;; *) usage_die "packet dir must be an absolute path
 # shape is what keeps "inside the packet dir" from degenerating into
 # "anywhere below it" — an audit anywhere else (the packet dir itself, a
 # foreign subdirectory, outside it) was never this attempt's evidence. The
-# attempt stays a SIBLING of every later attempt of the round, so the remedies
-# below say which cases a retry clears and which need a NEW round.
+# remedies below follow R-RETRY: `retry` records the attempt it replaces and
+# allocates the next with its own audit path; only an attempt whose digests
+# cannot be taken is refused by `retry`, and that case needs a NEW round.
 _pkt_norm="${PACKET_DIR%/}"
 case "$AUDIT_FILE_OVERRIDE" in
   "$_pkt_norm"/*) : ;;
@@ -95,11 +96,10 @@ if [ ! -f "$AGY_READ_AUDIT_FILE" ]; then
   # unset/misbound at dispatch time is empty in exactly the same way as a
   # call that never completed. Check the dispatch env FIRST; only once that
   # is sound does an absent file mean the leg did not run.
-  # The remedy is a NEW round, never a re-dispatch inside it: the attempt
-  # stays a sibling of every later attempt of the round, and the hook load
-  # check reads a DISPATCHED attempt with no audit as INCONCLUSIVE — one that
-  # never spawned agy is skipped, so a retry does clear that case.
-  echo "[review] agy leg read-audit ABSENT — no digest file at $AGY_READ_AUDIT_FILE. Cause is EITHER a vendor call that never completed OR TRIAD_READ_AUDIT_FILE was never set at dispatch time. Verify the dispatch env; only once it is sound does this mean the leg did not run — then treat as VOID (leg-not-run). The attempt stays a SIBLING of every later attempt of this round (a dispatched attempt with no read audit is INCONCLUSIVE in the hook load check, which reads every attempt and deletes none), so a re-dispatch inside the round cannot clear it: prepare a NEW round (a fresh hook log) (if the attempt never spawned agy — no \`exec\` line in its stderr.log — the hook check skips it and a retry does clear it)." >&2
+  # The remedy is `retry` (R-RETRY): it seals this attempt and allocates the
+  # next with its own audit path. An env never bound at dispatch is a
+  # dispatch fault: the retry's printed dispatch line is run as printed.
+  echo "[review] agy leg read-audit ABSENT — no digest file at $AGY_READ_AUDIT_FILE. Cause is EITHER a vendor call that never completed OR TRIAD_READ_AUDIT_FILE was never set at dispatch time. Verify the dispatch env; only once it is sound does this mean the leg did not run — then treat as VOID (leg-not-run). Remedy: \`retry\` the entry — it seals this attempt (\`failed-to-run\` when it holds no answer) and allocates the next attempt with its own audit path (R-RETRY); not a new round. If TRIAD_READ_AUDIT_FILE was never set at dispatch, that is a dispatch fault: \`retry\`, then run the dispatch line it prints exactly as printed." >&2
   echo "READ_AUDIT_GATE_ABSENT checked=0 pass=0 void=0 inconclusive=0 unevaluated=$#"
   exit 2
 fi
@@ -142,9 +142,11 @@ for PACKET_ABS_PATH in "$@"; do
     # jq could not produce a usable answer — a BROKEN reading of the
     # evidence, not evidence. Never silently VOID (or PASS) on it. rc>=2
     # covers every jq failure mode: read, parse, program, or runtime error.
-    # The remedy is a NEW round — the unreadable audit
-    # stays a sibling of every later attempt, INCONCLUSIVE in the hook check.
-    echo "[review] agy leg read-audit INCONCLUSIVE — jq could not produce a usable answer from $AGY_READ_AUDIT_FILE (rc=$jq_rc: read, parse, program, or runtime error). Do NOT read this as VOID and do NOT read it as PASS: inspect the file directly. The unreadable audit stays a SIBLING of every later attempt of this round (the hook load check reads it as broken evidence — INCONCLUSIVE — and deletes none), so a re-dispatch inside the round cannot clear it: prepare a NEW round (a fresh hook log)." >&2
+    # The remedy is `retry` first (R-RETRY): jq's rc cannot tell a parse
+    # failure from a read failure, and a readable but malformed audit can be
+    # digested; only a retry refused because the audit cannot be read leaves
+    # a NEW round.
+    echo "[review] agy leg read-audit INCONCLUSIVE — jq could not produce a usable answer from $AGY_READ_AUDIT_FILE (rc=$jq_rc: read, parse, program, or runtime error). Do NOT read this as VOID and do NOT read it as PASS: inspect the file directly. Remedy: \`retry\` (it takes this attempt's digests, seals it and allocates the next); when \`retry\` refuses because the audit cannot be read, prepare a NEW round (R-RETRY)." >&2
     echo "[gate] INCONCLUSIVE $PACKET_ABS_PATH"
     n_inconclusive=$((n_inconclusive + 1))
     # Parse state is digest-global — further files would fail identically.
@@ -156,15 +158,10 @@ for PACKET_ABS_PATH in "$@"; do
       echo "[gate] INCONCLUSIVE $PACKET_ABS_PATH"
       n_inconclusive=$((n_inconclusive + 1))
     else
-      # RETRY-CLEARABLE, unlike the ABSENT / jq rc>=2 arms: a read-blind
-      # attempt wrote a readable audit
-      # with its census, so the hook load check attributes it like any other
-      # hooked attempt and a later attempt of the same round can stand beside
-      # it — a re-dispatch inside the round CAN clear this one. The message
-      # names that CONDITION: a census that is missing
-      # or incomplete is refused by the hook check, and then only a NEW round
-      # clears it.
-      echo "[review] agy leg VOID — packet path not in read_audit.digest.files_read ($PACKET_ABS_PATH); retry the entry once on the unchanged basis — a retry inside the round clears this because the read-blind attempt wrote a readable census with its conversation ids and is attributed like any other attempt; if that census is missing or incomplete the hook check refuses and a NEW round is needed; still VOID after that retry is a missing result and the round stays INCOMPLETE (R-AGREE — no second re-dispatch)" >&2
+      # The remedy is `retry` (R-RETRY): a confirmed miss is a result judged
+      # inadmissible, so `retry` seals this attempt `invalid` and the next
+      # attempt is judged on its own audit.
+      echo "[review] agy leg VOID — packet path not in read_audit.digest.files_read ($PACKET_ABS_PATH); retry the entry once on the unchanged basis — \`retry\` seals this attempt \`invalid\` and allocates the next, judged on its own audit (R-RETRY); still VOID after that retry is a missing result and the round stays INCOMPLETE (R-AGREE — no second re-dispatch)" >&2
       echo "[gate] VOID $PACKET_ABS_PATH"
       n_void=$((n_void + 1))
     fi
