@@ -106,9 +106,10 @@ Claude 가 `triad-codex-dispatch` skill 을 실행하고, codex wrapper 를 호�
    ```
 
    프로젝트 루트에서 실행하세요(`./.claude/settings.json` 을 쓰며, 없으면 만들고,
-   엔트리를 중복 없이 병합합니다). `<plugin-dir>` 는 Claude Code 에게 Bash tool
-   호출로 물어보면 됩니다: `command -v codex_wrapper.py` 가 설치된 플러그인의
-   `bin/` 아래로 해소되고, 그 상위가 플러그인 루트입니다. `--target <경로-또는-디렉터리>`
+   엔트리를 중복 없이 병합합니다). `<plugin-dir>` 는 설치된 플러그인의 버전
+   디렉터리 `~/.claude/plugins/cache/<marketplace>/triad-dispatch/<version>/`
+   입니다(`<marketplace>` = `marketplace add` 때 준 이름;
+   `ls -d ~/.claude/plugins/cache/*/triad-dispatch/*/` 로 확인). `--target <경로-또는-디렉터리>`
    로 다른 곳을 지정하거나 `--dry-run` 으로 미리 볼 수도 있습니다. 파일을 직접
    편집하고 싶으면 아래 [수동 allowlist](#수동-allowlist--스크립트가-하는-일) 를 보세요.
 
@@ -195,8 +196,9 @@ https://github.com/obra/superpowers .
 
 *step 4 의 스모크 테스트로 부족해 각 계층을 확인하고 싶을 때만.*
 
-- **bin PATH** — `command -v codex_wrapper.py` 가 설치된 플러그인의 `bin/` 아래로
-  해소됩니다(자동 PATH 추가; 사용자 조치 불필요).
+- **플러그인 경로** — 디스패치 skill 은 각 `bin/` 파일을
+  `python3 ${CLAUDE_PLUGIN_ROOT}/bin/<file>` 로 실행합니다; Claude Code 가 skill 을
+  로드할 때 설치된 플러그인 디렉터리를 채워 넣습니다(사용자 조치 불필요).
 - **자기개선 분류기** — 인식 안 된 실패 시 해당 wrapper-repair 에이전트의 proposal
   이 `~/.config/triad-dispatch/classifier-patches.json` (홈 디렉터리, 플러그인
   디렉터리 아님)에 적용되고, 그 파일에 엔트리가 생겨 플러그인 업데이트를 가로질러
@@ -210,18 +212,48 @@ https://github.com/obra/superpowers .
 *`scripts/setup_permissions.py` 대신 파일을 직접 편집하고 싶을 때만.* 아래
 엔트리를 `.claude/settings.json`(또는 `.claude/settings.local.json`)에
 추가하세요 — 스크립트가 병합하는 `permissions.allow` 엔트리가 이것입니다. 스크립트는
-이 밖에도 `sandbox.excludedCommands`, hardening `env` 블록, sidecar 파일 두 개를
+이 밖에도 `sandbox.excludedCommands`, hardening `env` 블록, sidecar 파일 하나를
 씁니다
 ([이 플러그인이 쓰는 파일](#이-플러그인이-쓰는-파일) 참고):
 
 ```json
 { "permissions": { "allow": [
-  "Bash(codex_wrapper.py:*)",
-  "Bash(gemini_wrapper.py:*)",
-  "Bash(antigravity_wrapper.py:*)"
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/codex_wrapper.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/gemini_wrapper.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/antigravity_wrapper.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/apply_patch.py *)",
+  "Bash(env TRIAD_REVIEW_LOG_DIR=* python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/codex_wrapper.py *)",
+  "Bash(env TRIAD_REVIEW_LOG_DIR=* python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/gemini_wrapper.py *)",
+  "Bash(env TRIAD_READ_AUDIT_FILE=* env TRIAD_REVIEW_LOG_DIR=* python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/antigravity_wrapper.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/review_scratch.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/verdict_v2.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/agy_hook.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/roster_v2.py *)",
+  "Bash(bash <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/read_audit_gate.sh *)"
 ] } }
 ```
 
+앞의 네 개는 디스패치 skill 이 실행하는 명령, 다음 세 개는 리뷰 skill 의 leg 줄
+(`env` 접두가 붙어 규칙이 따로 필요함), 마지막 다섯 개는 리뷰 skill 이 실행하라고
+안내하는 리뷰 라이브러리 파일입니다(read-audit gate 스크립트는 `bash` 로 실행).
+`<home>` 은 홈 디렉터리의 절대 경로로, `<marketplace>` 는 `marketplace add` 때 준
+이름으로 바꿔 쓰세요; `triad-dispatch/` 뒤의 `*` 는 플러그인 버전 자리라 업데이트
+뒤에도 엔트리가 유지됩니다. 와일드카드가 두 개인 규칙은 인자가 붙은 명령에만
+맞습니다 — 인자 없는 `python3 …/codex_wrapper.py` 는 여전히 프롬프트가 뜨며,
+skill 이 실행하는 디스패치는 모두 인자를 붙입니다.
+기록된 한계: skill 은 플러그인 경로를 따옴표 없이 씁니다(따옴표로 감싼 경로는 이
+규칙에 맞지 않음). 그래서 홈 디렉터리 경로에 공백이 있으면 호출이 깨지며, 이는
+처리하지 않습니다. 또 `~/.claude` 나 홈 디렉터리가 심볼릭 링크이면 grant 는 해소된
+실제 경로를 담으므로, 해소되지 않은 경로로 입력된 디스패치는 프롬프트가 뜹니다 —
+배치를 고친 뒤 `--install` 을 다시 실행하거나 해소되지 않은 형태를 직접 추가하세요.
+그리고 리뷰 leg 의 렌더링된 줄은 셸 리다이렉션(`> verdict.json 2> stderr.log`)을
+noclobber 로 보호된 subshell 안에 담고 있고, claude leg 의 `guard:` 줄은 grant 가
+없는 셸 내장 명령입니다. Claude Code 는 이런 부분을 모든 Bash 규칙과 별개로
+승인하므로, 설치된 환경의 리뷰 라운드는 leg 마다 한 번(leg 당 Bash 호출 하나)
+승인을 묻습니다(리다이렉션은 2026-10-11 측정; subshell 과 내장 명령 부분은 측정하지
+않음).
+leader 가 쓰는 prompt / proposal 파일은 `<project>/_runs/prompts/` 아래에 있습니다;
+`_runs/` 가 아직 무시되지 않는다면 프로젝트 `.gitignore` 에 추가하세요.
 allowlist 가 없으면 디스패치마다 승인 프롬프트가 뜨고 headless 환경에서는 거부
 됩니다. allowlist 등록과 샌드박스는 **직교(orthogonal)** 합니다 — allowlist 에
 있다고 해서 Bash 샌드박스에서 면제되지 않습니다.
@@ -233,9 +265,18 @@ Bash 샌드박스는 **기본 OFF** 입니다 (`/sandbox` 로 opt-in). 켜면 �
 
 ```json
 { "sandbox": { "excludedCommands": [
-  "codex_wrapper.py *",
-  "gemini_wrapper.py *",
-  "antigravity_wrapper.py *"
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/codex_wrapper.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/gemini_wrapper.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/antigravity_wrapper.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/apply_patch.py *",
+  "env TRIAD_REVIEW_LOG_DIR=* python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/codex_wrapper.py *",
+  "env TRIAD_REVIEW_LOG_DIR=* python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/gemini_wrapper.py *",
+  "env TRIAD_READ_AUDIT_FILE=* env TRIAD_REVIEW_LOG_DIR=* python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/antigravity_wrapper.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/review_scratch.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/verdict_v2.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/agy_hook.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/roster_v2.py *",
+  "bash <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/read_audit_gate.sh *"
 ] } }
 ```
 
@@ -401,7 +442,7 @@ Wrapper telemetry는 로컬에 남고, 정리 설정(`bin/cleanup-roots.default.
   timestamp, process id, 8자 random UUID suffix가 들어가므로 병렬 dispatch끼리
   충돌하지 않습니다.
 - repair loop 뒤에 run log를 지우는 단계는 없습니다: 다음 normal dispatch가 role의 floor를
-  넘은 run log와 `.repair.json`을 sweep하고, cap prune이 개수 / byte 상한을 넘는 것을 가장
+  넘은 run log를 sweep하고, cap prune이 개수 / byte 상한을 넘는 것을 가장
   오래된 것부터 지웁니다. floor보다 새 파일은 지우지 않으므로 run log 디렉터리(그리고
   read-audit 디렉터리)는 cap을 넘은 채로 남을 수 있습니다 — cap이 디스크가 차는 것을 막지는
   않습니다.
@@ -414,19 +455,19 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
 
 아래의 `~/.config` 는 `$XDG_CONFIG_HOME` 이 절대 경로로 설정되어 있으면 그
 경로입니다 (config home). 상대 경로인 `XDG_CONFIG_HOME` 은 wrapper 가 wrapper 명령을
-실행한 디렉터리를 기준으로 해석합니다. 제거 단계는 이를 알리기만 하고 그곳에서는
-아무것도 지우지 않습니다.
+실행한 디렉터리를 기준으로 해석합니다. 제거 단계는 그곳에서 아무것도 지우지
+않습니다: wrapper 가 그곳에 쓴 것은 남고, 사용자의 것입니다.
 
 | 범위 | 경로 | 쓰는 시점 | 지우는 방법 |
 |---|---|---|---|
-| 프로젝트 | `.claude/settings.json` — `permissions.allow`, `sandbox.excludedCommands`, `env` (파일이 없었다면 파일 자체도; `--install` 과 `--remove` 는 이전 버전이 쓰고 그 기록에 담긴 `hooks.PreToolUse` 항목도 지움; `--remove` 는 설치가 만든 컨테이너가 비면 항목을 직접 지운 경우에도 함께 지우고(설치 기록이 설정 파일을 명시할 때; 명시하지 않는 기록은 [제거](#제거-uninstall) 2단계 참고), 설치가 만든 파일에 남은 것이 없으면 그 파일도 지움; 직접 비운 hook 그룹은 남음) | `scripts/setup_permissions.py` | 설치 때와 같은 `--target` 으로 `setup_permissions.py --remove` |
+| 프로젝트 | `.claude/settings.json` — `permissions.allow`, `sandbox.excludedCommands`, `env` (파일이 없었다면 파일 자체도; `--install` 과 `--remove` 는 이전 버전이 쓰고 그 기록에 담긴 `hooks.PreToolUse` 항목도 지움; `--remove` 는 기록된 항목을 지우고 파일을 다시 씀 — 파일과 비게 된 컨테이너는 남음; 직접 비운 hook 그룹은 남음) | `scripts/setup_permissions.py` | 설치 때와 같은 `--target` 으로 `setup_permissions.py --remove` |
 | 프로젝트 | `.claude/.triad-dispatch-managed.json` (설정 스크립트가 쓴 내용의 기록; 설치가 쓴 설정 파일 하나의 이름을 담음; 설정 파일보다 먼저 쓰고 설정 파일을 쓴 뒤 마무리하므로, 두 쓰기 사이에서 멈춘 실행은 설정 스크립트를 다시 실행하면 복구됨; 기록만 바꾸는 실행은 기록만 씀) | `scripts/setup_permissions.py` | 설치 때와 같은 `--target` 으로 `setup_permissions.py --remove` |
-| 프로젝트 | `.claude/.triad-dispatch.lock` | `setup_permissions.py --install` 을 실행할 때마다 (`--dry-run` 미리 보기는 만들지 않음); `--remove` 는 실행되는 동안 이 파일을 잡고 있음 | 설치 때와 같은 `--target` 으로 `setup_permissions.py --remove` |
 | 프로젝트 | `_runs/review/<date>-<slug>/` 리뷰 packet 과 라운드별 git worktree | `triad-cross-family-review` gate 마다 | `review_scratch.py close <packet-dir>`; 오래된 packet 은 다음 `open` 이 정리; 비어 있는 `_runs/review/` 디렉터리는 남음 |
-| 프로젝트 | codex write 호출용 `_runs/worktrees/<name>/` git worktree (`triad-codex-dispatch` § Write calls; `_runs/worktrees/` 를 프로젝트 `.gitignore` 에 두어 커밋이 트리를 embedded repository 로 담지 않게 함) | 그 문단대로 leader 가 만듦; 비어 있는 남은 폴더는 codex wrapper 가 호출을 시작할 때 지움 | 트리의 모든 작업을 그 브랜치에 커밋한 뒤 프로젝트 최상위에서 `python3 <plugin-dir>/bin/cleanup.py remove code-worktrees _runs/worktrees/<name>` (커밋되지 않았거나 추적되지 않는 변경이 있는 트리는 거부됨) |
+| 프로젝트 | codex write 호출용 `_runs/worktrees/<name>/` git worktree (`triad-codex-dispatch` § Write calls; `_runs/worktrees/` 를 프로젝트 `.gitignore` 에 두어 커밋이 트리를 embedded repository 로 담지 않게 함) | 그 문단대로 leader 가 만듦; 멈춘 `cleanup.py remove code-worktrees` 가 남긴 빈 폴더는 그대로 남지만 해롭지 않음 — 같은 이름으로 나중에 `git worktree add` 해도 성공함 (git 2.43.0 과 2.50.1 에서 측정 — git-worktree 매뉴얼은 이를 명시하지 않음) | 트리의 모든 작업을 그 브랜치에 커밋한 뒤 프로젝트 최상위에서 `python3 <plugin-dir>/bin/cleanup.py remove code-worktrees _runs/worktrees/<name>` (커밋되지 않았거나 추적되지 않는 변경이 있는 트리는 거부됨) |
+| 프로젝트 | `_runs/prompts/<utc-timestamp>-<cli>.md` 와 `…-<cli>-proposal.json` — 디스패치와 적용하는 repair proposal 을 위해 leader 가 쓰는 prompt / proposal 파일 (`_runs/` 를 프로젝트 `.gitignore` 에 둠) | leader 가 Write tool 로 (디스패치 Step 1, Step 5c) | 파일이 `dispatch-prompts` role 의 floor 보다 오래되면 wrapper 의 다음 실행 sweep (`TRIAD_DISPATCH_PROMPTS_DIR` 가 절대 경로 폴더를 가리키면 그 폴더를 대신 sweep) |
 | 머신 | `~/.config/triad-dispatch/classifier-patches.json` 과 `classifier-patches.json.lock` | repair 제안이 적용될 때 | `setup_permissions.py --uninstall-machine` |
 | 머신 | `~/.gemini/config/agents/triad-readonly-review.md` 와 `triad-readonly-research.md` | `bin/antigravity_wrapper.py --setup-agents` | `setup_permissions.py --uninstall-machine` |
-| 임시 | `$TMPDIR/codex_last_*.txt`, `$TMPDIR/codex_schema_*.json` | codex 디스패치마다 | 호출이 끝날 때 wrapper 가 지움; 남은 것은 남음 (`setup_permissions.py --uninstall-machine` 은 목록만 출력하고 그곳에서는 아무것도 지우지 않음) |
+| 임시 | `$TMPDIR/codex_last_*.txt`, `$TMPDIR/codex_schema_*.json` | codex 디스패치마다 | 호출이 끝날 때 wrapper 가 지움; 공유 임시 디렉터리에 남은 wrapper 이름 형태의 항목은 남고, 사용자의 것임 |
 | 플러그인 디렉터리 | `bin/_logs/<cli>/` (audit log, run log, read-audit digest) | 디스패치마다 | 위의 rotation, sweep, cap prune (role 의 floor 보다 새 파일은 남음); 플러그인 디렉터리 삭제 |
 | 플러그인 디렉터리 | `bin/_debug/<UTC-date>/` | `--debug` 를 줄 때만 | `wrapper-debug` floor 를 지난 날짜 디렉터리는 다음 `--debug` 호출이 지움; 플러그인 디렉터리 삭제 |
 
@@ -437,7 +478,9 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
 - 환경 변수로 옮긴 위치(`TRIAD_DISPATCH_LOG_DIR`, `TRIAD_DEBUG_DIR`,
   `TRIAD_CLASSIFIER_EXTENSION`, `AGY_AGENTS_DIR`,
   `TRIAD_READ_AUDIT_FILE`)는 사용자의 것이며, 어떤 단계도
-  지우지 않습니다. `TRIAD_READ_AUDIT_FILE` 은 호출한 쪽이 정한 read-audit 파일이며,
+  지우지 않습니다. 예외는 `TRIAD_DISPATCH_PROMPTS_DIR` 하나입니다 — prompts sweep 을
+  옮기므로, 그 폴더 바로 안에 있는 `dispatch-prompts` floor 보다 오래된 파일은 지워집니다.
+  `TRIAD_READ_AUDIT_FILE` 은 호출한 쪽이 정한 read-audit 파일이며,
   리뷰 도우미는 이를 리뷰 packet 안에 두므로 `close` 가 지웁니다.
 - 파일을 쓰는 동안에는 비슷한 이름의 임시 파일이 잠깐 옆에 생깁니다. 정상적으로
   끝난 실행은 아무것도 남기지 않습니다.
@@ -472,11 +515,10 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
    디렉터리의 다른 설정 파일에 있는 항목을 구별할 수 없기 때문입니다. 남은 기록은 사용자의
    것입니다. 설정 파일에 있지만 어떤 기록에도 없는 플러그인의 항목(기록이
    지워졌거나 이전 버전이 쓴 것)은 사용자의 것으로 보며, 두 명령 모두 이를 지우지
-   않습니다: `--install` 과 `--remove` 가 모두 알려 줍니다 — 권한 항목, sandbox
-   패턴, env 키(이름만)는 note 하나로, 명령에 hook 파일 이름이 들어 있는 PreToolUse
-   handler 는 `left <target>: hook <command>` 줄로 알려 주니 설정 파일에서 직접 고치세요. 아무
-   항목도 없는 기록은 설정 파일을 읽을 수 없을 때도 `--remove` 가 지우며,
-   `left <target>: <reason>` 줄로 그 파일을 확인하지 못했다고 알립니다. 호스트 제거보다 **먼저** 하세요: 호스트 제거가 이 스크립트를 지웁니다. **이전** 버전이 설정한
+   않으니 설정 파일에서 직접 고치세요. 아무 항목도 없는 기록은 설정 파일을 읽을 수
+   없을 때도 `--remove` 가 지웁니다. 이전 플러그인 버전이 설정 파일 옆에 남긴 빈
+   `.claude/.triad-dispatch.lock` 은 이제 `--remove` 가 건드리지 않으며, 사용자가
+   지웁니다. 호스트 제거보다 **먼저** 하세요: 호스트 제거가 이 스크립트를 지웁니다. **이전** 버전이 설정한
    프로젝트에는 그 버전의 디렉터리에 고정된 `hooks.PreToolUse` 항목이 있어서, 호스트가
    그 디렉터리를 지우면 그 프로젝트의 모든 셸 명령이 실패합니다. 플러그인을 업데이트한
    뒤에는 이전 버전이 설정한 프로젝트마다 설치 때와 같은 `--target` 으로
@@ -485,8 +527,8 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
    `python3 <plugin-dir>/scripts/setup_permissions.py --uninstall-machine`. 항목마다
    `removed <path>` 또는 `left <path>: <reason>` 을 출력하며, `--dry-run` 으로 미리
    볼 수 있습니다. 공유 임시 디렉터리에는 무엇이 플러그인의 것인지 기록이 없어서
-   아무것도 지우지 않고, 그곳의 codex 임시 항목을 목록으로만 알려 줍니다; 그
-   항목은 사용자가 지웁니다.
+   그곳에서는 아무것도 지우지도, 알리지도 않습니다; 그곳에 남은 wrapper 이름
+   형태의 항목은 사용자의 것입니다.
 4. **호스트 단계.** 셸에서:
 
    ```

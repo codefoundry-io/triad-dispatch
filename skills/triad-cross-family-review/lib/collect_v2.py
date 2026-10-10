@@ -954,11 +954,6 @@ def _seal_reason(attempt_dir: Path, entry: dict, attempt: int,
                             and len(files[role]) == 2
                             and files[role][0] == path.name)
                       for role, path in derived.items()))
-    if not shaped and isinstance(files, dict) and "run_log" not in files \
-            and set(files) | {"run_log"} == set(derived):
-        return (f"attempt {attempt} was sealed before a host change (the "
-                f"run-log receipt binding) and cannot be judged under it — "
-                f"prepare a new round")
     if not shaped:
         return (f"{head} its seal {seal} does not bind this entry's result, "
                 f"receipt and read evidence at this attempt — {_SEAL_REMEDY}")

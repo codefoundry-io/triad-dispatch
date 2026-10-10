@@ -107,9 +107,11 @@ Four steps get you a working install. Everything past this section is optional.
    ```
 
    Run it from your project root (it writes `./.claude/settings.json`, creating it
-   if absent, and merges the entries without duplicating). To find `<plugin-dir>`,
-   ask Claude Code in a Bash tool call: `command -v codex_wrapper.py` resolves
-   under the installed plugin's `bin/`; the plugin root is its parent. You can also
+   if absent, and merges the entries without duplicating). `<plugin-dir>` is the
+   installed plugin's version directory,
+   `~/.claude/plugins/cache/<marketplace>/triad-dispatch/<version>/`
+   (`<marketplace>` = the name you gave at `marketplace add`;
+   `ls -d ~/.claude/plugins/cache/*/triad-dispatch/*/` lists it). You can also
    point the script elsewhere with `--target <path-or-dir>`, or preview with
    `--dry-run`. The [manual allowlist](#manual-allowlist-what-the-script-does) is
    below if you prefer to edit the file yourself.
@@ -200,8 +202,9 @@ https://github.com/obra/superpowers .
 *Do this ONLY if the smoke test in step 4 was not enough and you want to confirm
 each layer.*
 
-- **bin on PATH** — `command -v codex_wrapper.py` resolves under the installed
-  plugin's `bin/` (auto-added to PATH; no user action needed).
+- **plugin path** — the dispatch skills run each `bin/` file as
+  `python3 ${CLAUDE_PLUGIN_ROOT}/bin/<file>`; Claude Code fills in the installed
+  plugin's directory when it loads the skill (no user action needed).
 - **self-improving classifier** — on an unrecognized failure the matching
   wrapper-repair agent's proposal is applied to
   `~/.config/triad-dispatch/classifier-patches.json` (in your home, not the plugin
@@ -216,17 +219,48 @@ each layer.*
 `scripts/setup_permissions.py`.* Add these entries to `.claude/settings.json`
 (or `.claude/settings.local.json`) — these are the `permissions.allow` entries
 the script merges in; the script also writes `sandbox.excludedCommands`, the
-hardening `env` block and two sidecar files (see
+hardening `env` block and a sidecar file (see
 [Files this plugin writes](#files-this-plugin-writes)):
 
 ```json
 { "permissions": { "allow": [
-  "Bash(codex_wrapper.py:*)",
-  "Bash(gemini_wrapper.py:*)",
-  "Bash(antigravity_wrapper.py:*)"
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/codex_wrapper.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/gemini_wrapper.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/antigravity_wrapper.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/apply_patch.py *)",
+  "Bash(env TRIAD_REVIEW_LOG_DIR=* python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/codex_wrapper.py *)",
+  "Bash(env TRIAD_REVIEW_LOG_DIR=* python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/gemini_wrapper.py *)",
+  "Bash(env TRIAD_READ_AUDIT_FILE=* env TRIAD_REVIEW_LOG_DIR=* python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/antigravity_wrapper.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/review_scratch.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/verdict_v2.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/agy_hook.py *)",
+  "Bash(python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/roster_v2.py *)",
+  "Bash(bash <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/read_audit_gate.sh *)"
 ] } }
 ```
 
+The first four are the commands the dispatch skills run; the next three are the
+review skill's leg lines, whose `env` prefix needs a rule of its own; the last five
+are the review library files the review skill has you run (its read-audit gate
+script with `bash`).
+Write `<home>` as your absolute home directory and `<marketplace>` as the name you
+gave at `marketplace add`; the `*` after `triad-dispatch/` stands for the plugin
+version, so the entries outlive an update. A rule with these two wildcards matches
+a command that carries arguments only — a bare `python3 …/codex_wrapper.py` with
+no argument still prompts; every dispatch the skills run carries arguments.
+Recorded limits: the skills write the plugin path unquoted (a quoted path is not
+matched by these rules), so a home directory path that carries a space breaks the
+invocation — not handled; and if `~/.claude` or the home directory is a symlink,
+the grant names the resolved path, so a dispatch typed with the unresolved path
+prompts — re-run `--install` after fixing the layout or add the unresolved form by
+hand; and a review leg's rendered line carries its shell redirections
+(`> verdict.json 2> stderr.log`) inside a noclobber-guarded subshell, and the
+claude leg's `guard:` line is shell built-ins with no grant; Claude Code approves
+such parts separately from any Bash rule, so an installed review round asks once
+per leg — one Bash call per leg (measured 2026-10-11 for the redirection; the
+subshell and built-in parts not measured). The prompt and proposal files the
+leader writes live under `<project>/_runs/prompts/`; add `_runs/` to the project's
+`.gitignore` if it is not already ignored.
 Without the allowlist you are prompted on every dispatch (or denied when
 headless). Being allow-listed and being sandboxed are **orthogonal** — the
 allowlist does not exempt a command from the Bash sandbox.
@@ -239,9 +273,18 @@ the manual form is:
 
 ```json
 { "sandbox": { "excludedCommands": [
-  "codex_wrapper.py *",
-  "gemini_wrapper.py *",
-  "antigravity_wrapper.py *"
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/codex_wrapper.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/gemini_wrapper.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/antigravity_wrapper.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/apply_patch.py *",
+  "env TRIAD_REVIEW_LOG_DIR=* python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/codex_wrapper.py *",
+  "env TRIAD_REVIEW_LOG_DIR=* python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/gemini_wrapper.py *",
+  "env TRIAD_READ_AUDIT_FILE=* env TRIAD_REVIEW_LOG_DIR=* python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/bin/antigravity_wrapper.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/review_scratch.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/verdict_v2.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/agy_hook.py *",
+  "python3 <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/roster_v2.py *",
+  "bash <home>/.claude/plugins/cache/<marketplace>/triad-dispatch/*/skills/triad-cross-family-review/lib/read_audit_gate.sh *"
 ] } }
 ```
 
@@ -408,7 +451,7 @@ live under `bin/_logs/<cli>/` for each wrapper family (`codex`, `gemini`, `antig
   include UTC timestamp, process id, and an 8-character random UUID suffix, so
   parallel dispatches do not collide.
 - Nothing deletes a run log after the repair loop: the next normal dispatch sweeps
-  run logs and `.repair.json` files past the role's floor, and a cap prune deletes
+  run logs past the role's floor, and a cap prune deletes
   the oldest past a count / byte cap. A file younger than the floor is never pruned,
   so the run-log directory (and the read-audit directory) can stay over its cap —
   the caps do not keep the disk from filling.
@@ -421,19 +464,19 @@ do not silently overwrite each other.
 
 `~/.config` below means `$XDG_CONFIG_HOME` when that is set to an absolute path
 (the config home). A relative `XDG_CONFIG_HOME` is resolved by the wrappers
-against the directory the wrapper command ran from; the uninstall reports it
-and removes nothing there.
+against the directory the wrapper command ran from; the uninstall removes
+nothing there: what the wrappers wrote there stays and is yours.
 
 | scope | path | written when | removed by |
 |---|---|---|---|
-| project | `.claude/settings.json` — `permissions.allow`, `sandbox.excludedCommands`, `env` (and the file itself when it was absent; `--install` and `--remove` also take out the `hooks.PreToolUse` entry an earlier version wrote and its record lists; `--remove` also takes out the containers the install created once they are empty, also when you removed the entries by hand (when the install record names its settings file; for a record that names none, see [Uninstall](#uninstall) step 2), and the file it created when nothing else is left in it; a hook group you emptied by hand is left) | `scripts/setup_permissions.py` | `setup_permissions.py --remove` with the same `--target` as the install |
+| project | `.claude/settings.json` — `permissions.allow`, `sandbox.excludedCommands`, `env` (and the file itself when it was absent; `--install` and `--remove` also take out the `hooks.PreToolUse` entry an earlier version wrote and its record lists; `--remove` takes out the recorded entries and rewrites the file — the file and its emptied containers stay; a hook group you emptied by hand is left) | `scripts/setup_permissions.py` | `setup_permissions.py --remove` with the same `--target` as the install |
 | project | `.claude/.triad-dispatch-managed.json` (the record of what the setup wrote, naming the one settings file it wrote; written before the settings file and completed after it, so a run that stops between the two is repaired by running the setup again; a run that changes only the record writes the record alone) | `scripts/setup_permissions.py` | `setup_permissions.py --remove` with the same `--target` as the install |
-| project | `.claude/.triad-dispatch.lock` | each `setup_permissions.py --install` (a `--dry-run` preview creates none); a `--remove` holds it while it runs | `setup_permissions.py --remove` with the same `--target` as the install |
 | project | `_runs/review/<date>-<slug>/` review packets and their per-round git worktrees | each `triad-cross-family-review` gate | `review_scratch.py close <packet-dir>`; a stale packet is pruned by the next `open`; the empty `_runs/review/` directory stays |
-| project | `_runs/worktrees/<name>/` git worktrees for codex write calls (`triad-codex-dispatch` § Write calls; keep `_runs/worktrees/` in the project's `.gitignore`, so a commit never stages a tree as an embedded repository) | the leader, per that paragraph; the codex wrapper removes an empty leftover folder there at the start of a call | `python3 <plugin-dir>/bin/cleanup.py remove code-worktrees _runs/worktrees/<name>` from the project's top level, after everything in the tree is committed to its branch (a tree with uncommitted or untracked changes is refused) |
+| project | `_runs/worktrees/<name>/` git worktrees for codex write calls (`triad-codex-dispatch` § Write calls; keep `_runs/worktrees/` in the project's `.gitignore`, so a commit never stages a tree as an embedded repository) | the leader, per that paragraph; an empty folder a stopped `cleanup.py remove code-worktrees` leaves stays; it is harmless; a later `git worktree add` of the same name succeeds (measured on git 2.43.0 and 2.50.1 — the git-worktree manual does not state it) | `python3 <plugin-dir>/bin/cleanup.py remove code-worktrees _runs/worktrees/<name>` from the project's top level, after everything in the tree is committed to its branch (a tree with uncommitted or untracked changes is refused) |
+| project | `_runs/prompts/<utc-timestamp>-<cli>.md` and `…-<cli>-proposal.json` — the prompt and proposal files the leader writes for a dispatch and an applied repair proposal (keep `_runs/` in the project's `.gitignore`) | the leader, with the Write tool (dispatch Step 1, Step 5c) | the wrappers' next-run sweep, once a file is older than the `dispatch-prompts` role's floor (when `TRIAD_DISPATCH_PROMPTS_DIR` names an absolute folder, that folder is swept instead) |
 | machine | `~/.config/triad-dispatch/classifier-patches.json` and `classifier-patches.json.lock` | when a repair proposal is applied | `setup_permissions.py --uninstall-machine` |
 | machine | `~/.gemini/config/agents/triad-readonly-review.md` and `triad-readonly-research.md` | `bin/antigravity_wrapper.py --setup-agents` | `setup_permissions.py --uninstall-machine` |
-| temporary | `$TMPDIR/codex_last_*.txt`, `$TMPDIR/codex_schema_*.json` | each codex dispatch | the wrapper after each call; what is left stays (`setup_permissions.py --uninstall-machine` lists it and removes nothing there) |
+| temporary | `$TMPDIR/codex_last_*.txt`, `$TMPDIR/codex_schema_*.json` | each codex dispatch | the wrapper after each call; entries of the wrappers' shapes in the shared temporary directory stay; they are yours |
 | plugin directory | `bin/_logs/<cli>/` (audit log, run logs, read-audit digests) | every dispatch | the wrappers' rotation, sweep and cap prunes above (a file younger than its role's floor stays); the plugin directory's removal |
 | plugin directory | `bin/_debug/<UTC-date>/` | only with `--debug` | day directories past the `wrapper-debug` floor, by the next `--debug` call; the plugin directory's removal |
 
@@ -445,7 +488,9 @@ and removes nothing there.
 - A location you moved with an environment variable (`TRIAD_DISPATCH_LOG_DIR`,
   `TRIAD_DEBUG_DIR`, `TRIAD_CLASSIFIER_EXTENSION`,
   `AGY_AGENTS_DIR`, `TRIAD_READ_AUDIT_FILE`) is yours:
-  nothing removes it. `TRIAD_READ_AUDIT_FILE` names a read-audit file the caller
+  nothing removes it. `TRIAD_DISPATCH_PROMPTS_DIR` is the one exception: it moves
+  the prompts sweep, so files older than the `dispatch-prompts` floor directly inside
+  the folder it names are removed. `TRIAD_READ_AUDIT_FILE` names a read-audit file the caller
   chose; the review helper puts it inside the review packet, which `close`
   removes.
 - While a file is being written, a temporary file of a similar name sits beside
@@ -482,14 +527,12 @@ they are yours.
    be told from entries in another settings file of that directory; the kept record is
    yours. An entry of the plugin's that is in the
    settings file and in no record (the record was deleted, or an earlier version
-   wrote it) is treated as yours, and neither command removes it: `--install`
-   and `--remove` both name it — the grants, sandbox patterns and env keys (by
-   name) in one note, and a PreToolUse handler whose command contains the hook's
-   file name in a `left <target>: hook <command>` line — edit it out of the settings file yourself. A
-   record that lists nothing is removed by `--remove` also when the settings
-   file cannot be read; a `left <target>: <reason>` line says the file was not
-   checked. Do this BEFORE
-   the host uninstall, which deletes this script. A project an EARLIER version
+   wrote it) is treated as yours, and neither command removes it: edit it out
+   of the settings file yourself. A record that lists nothing is removed by
+   `--remove` also when the settings file cannot be read. An empty
+   `.claude/.triad-dispatch.lock` an earlier plugin version left beside the
+   settings file is not touched by `--remove` any more; it is yours to delete.
+   Do this BEFORE the host uninstall, which deletes this script. A project an EARLIER version
    set up holds a `hooks.PreToolUse` entry pinned to that version's directory;
    once the host deletes that directory, every shell command of the project
    fails. After updating the plugin, run `setup_permissions.py` once, with the
@@ -498,9 +541,9 @@ they are yours.
 3. **ONCE per machine, after the last project**:
    `python3 <plugin-dir>/scripts/setup_permissions.py --uninstall-machine`. It
    prints `removed <path>` or `left <path>: <reason>` per item; `--dry-run`
-   previews it. It removes nothing in the shared temporary directory, which holds
-   no record of what is the plugin's: it lists the codex temporary entries there;
-   they are yours to remove.
+   previews it. It removes and lists nothing in the shared temporary directory,
+   which holds no record of what is the plugin's: the entries of the wrappers'
+   shapes there stay; they are yours.
 4. **The host steps.** From a shell:
 
    ```

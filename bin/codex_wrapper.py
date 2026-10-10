@@ -39,10 +39,6 @@ from _common import (
     validate_wrapper_cwd,
     _emit_payload,
     _guarded_main,
-    _emit_canonical_summary,
-    _payload_or_demote,
-    _prune_empty_worktrees,
-    _relax_diagnostic_stream,
     load_prompt_text,
     resolve_prompt_file,
     _ensure_within_runtime_roots,
@@ -86,9 +82,6 @@ def main() -> int:
 
 
 def _main(ctx: dict) -> int:
-    # The DIAGNOSTIC stream survives any locale; the PAYLOAD stream is never
-    # re-encoded (gate-1 r7 row r7-c2 — `_common` § payload vs diagnostic).
-    _relax_diagnostic_stream()
     # SIGTERM/SIGHUP: from the first dispatch on the handler only records the
     # signal. During a dispatch _run_once reaps the vendor group and the run
     # ends as the interrupted-run record (`unknown` / 1), `oauth-env` / 65 on a
@@ -213,10 +206,6 @@ def _main(ctx: dict) -> int:
         log("--sandbox workspace-write requires --cwd (codex edits files in its "
             "working directory — the blast radius must be an isolated directory)")
         return EXIT_ARG_ERROR
-
-    # Next-run cleanup: the empty leftovers under the code-worktrees root
-    # (R-CLEANUP / C69).
-    _prune_empty_worktrees()
 
     if not args.prompt.strip():
         log("empty prompt")
@@ -392,33 +381,16 @@ def _main(ctx: dict) -> int:
     audit_cmd = build_cmd(args.prompt)
     ctx["cmd"] = audit_cmd
 
-    # THE PAYLOAD IS DECIDED BEFORE THE AUDIT ROW (gate-1 r7 rows r7-c2 /
-    # r7-k5). stdout is the payload channel and was written LAST, with the
-    # strict locale encoder: an em-dash in the answer raised
-    # UnicodeEncodeError after every record already said `ok`, and the
-    # consumer's captured file was left empty. The bytes are built here, so
-    # an answer this host cannot carry demotes the result while the audit
-    # row is still unwritten; `_emit_payload` at the tail only writes them.
-    _pre_payload_classification = result.classification
+    # The payload: ONE UTF-8 encode; a code point UTF-8 cannot carry (a lone
+    # surrogate) leaves as its `\udXXX` escape, exit and token unchanged.
     if pydantic_cls and result.validated is not None:
-        payload = _payload_or_demote(
-            "codex", result,
-            json.dumps(result.validated, ensure_ascii=False) + "\n",
-            result.validated)
+        out = json.dumps(result.validated, ensure_ascii=False) + "\n"
     else:
         out = result.final_answer or ""
         if out and not out.endswith("\n"):
             out += "\n"
-        payload = _payload_or_demote("codex", result, out)
-    # THE SUMMARY LINE IS CORRECTED BY A SECOND EMISSION (gate-1 r8 row
-    # r8-5): the canonical line was printed inside run_cli_with_retry, i.e.
-    # BEFORE the demotion above, so without this the LAST `[wrapper] codex`
-    # line the dispatch SKILL parses still said `ok exit=0` for a run that
-    # exits 1 with an empty stdout.
-    if result.classification != _pre_payload_classification:
-        _emit_canonical_summary("codex", result)
+    payload = out.encode("utf-8", "backslashreplace")
 
-    # The audit row records the final exit code (after any payload demotion).
     audit("codex", audit_cmd, args.prompt, result)
     ctx["recorded"] = True
 
@@ -432,7 +404,7 @@ def _main(ctx: dict) -> int:
         log(f"run-log: {run_log_path}")
 
     # Stdout = validated JSON (if --pydantic) or raw final answer, as the
-    # UTF-8 BYTES built above.
+    # bytes built above.
     _emit_payload(payload)
     return result.exit_code
 

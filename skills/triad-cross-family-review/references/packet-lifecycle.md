@@ -75,7 +75,7 @@ exported installs.
   prune at the next `open` or `close` is only the crash backstop. Close runs
   four steps, in order:
   1. **Verify report.** It re-runs `verify` on the highest captured round
-     (never trusting a remembered `.verified-r<N>.json`); when the round does
+     (fresh, every time); when the round does
      not verify NOW it prints a WARNING and goes on (owner-ruled) — never a
      refusal by itself.
   2. **One check of the round tree**, read-only: a lock, content this helper
@@ -117,23 +117,12 @@ exported installs.
   dir is a NO-OP at rc 0 with every shape check and the configuration check
   still run (C7): the first one already deleted it, so a repeat must not look
   like a failure.
-- **Deletion follows a CLAIM RECORD, never a name shape (C4/C5).** A
-  `<name>.pruning` directory (left by a close of an earlier version, which
-  renamed) skips the age floor at a later `open` or `close` sweep only when
-  `<name>.pruning/.claim` PROVES this helper claimed THAT directory: a
-  regular non-symlink file under 4096 bytes, parsing as a JSON object,
-  carrying the provenance magic, and naming an `original` equal to the
-  directory's own name minus the suffix. A foreign tree that merely wears the
-  suffix, a record copied from another dir, or a symlinked record is NOT ours
-  and is preserved and reported. The removal is the host's deletion command,
-  which proves the residue by its `.active` (a claim-only residue whose
-  `.active` is gone stays, reported); a residue with a managed `.active` but no
-  claim is judged like a packet (the floor applies); an EMPTY `<name>.pruning`
-  dir goes through the command's empty-folder rule once it is older than the
-  floor; a fresher one is left. A residue or stale packet the deletion command
-  refuses (a git-LOCKED worktree at any depth) is left with that refusal as one
-  line — `prune FAILED for <name> (left for the next open or close): <reason>`
-  (`reclaim FAILED …` for a residue); no deletion ever forces a lock.
+- **Deletion follows the `.active` marker, never a name shape (C4/C5).** A
+  `<name>.pruning` folder is an ordinary name: without the marker it is an
+  unmanaged folder (below), with it a packet like any other. A stale packet
+  the deletion command refuses (a git-LOCKED worktree at any depth) is left
+  with that refusal as one line — `prune FAILED for <name> (left for the next
+  open or close): <reason>`; no deletion ever forces a lock.
 
 Symlinks are refused (root and children), non-date-prefixed entries and plain
 files are never touched, and the root is always an explicit absolute path (never
@@ -168,7 +157,6 @@ immutable custody under the packet dir:
                                     toolkit files and their sha256 — see
                                     below)
   .snapshot-r<N>.json               capture's census + worktree fingerprint
-  .verified-r<N>.json               verify's record (content digest + fingerprint)
   collect-r<N>.json                 the collector's folded per-entry result (the
                                     LAST collection that wrote it; a refused
                                     collect, exit 2, leaves it untouched — the
@@ -282,13 +270,11 @@ including each attempt's `binding.json` / `prompt.txt` / `dispatch.json` /
 TOP-LEVEL DIRECTORY (`results-r<N>` as the first path component), not a
 basename glob, because the artifacts sit in subdirectories. `collect-r<N>.json` is leg
 output too — a collection is re-runnable by design, so censusing it would
-make a second `collect` report a mutation. Three dot-records are EXCLUDED
-from the census entirely: `.snapshot-<label>.json` (the census itself),
+make a second `collect` report a mutation. Two dot-records are EXCLUDED
+from the census entirely: `.snapshot-<label>.json` (the census itself) and
 `.roster-r<N>.json` (a `retry` bumps an entry's `attempt` in it on an
 unchanged basis, so censusing it would make the round's own retry path look
-like a mutation) and `.verified-r<N>.json` (written by `verify` after
-certifying the round; censusing it would make `verify` refuse its own record
-on the next run). What those records point at is frozen elsewhere — the
+like a mutation). What those records point at is frozen elsewhere — the
 worktree by the fingerprint, each attempt's inputs by this census.
 
 ### Going on in a new packet dir
@@ -460,12 +446,12 @@ binding (`b53409b`) cannot be retried, and a round without the
 selection or configuration binding cannot be collected either: prepare a new
 round. A round prepared before a host update — here the executed-command
 receipt binding (`a9f78bc`, sealed by `2bda56f`) — is the operator's to replace:
-prepare a new round. The host does not refuse every such round by name: an
+prepare a new round. The host refuses no such round by name: an
 unsealed wrapper attempt is judged by its run-log against `dispatch.json`'s
 argv, and a line prepared before the binding wrote no run-log there, so it
-always collects INVALID (no receipt). What the host refuses by name: a seal
-without the `run_log` role ("sealed before a host change … prepare a new
-round"; `references/leg-contracts.md` § Attempt seal).
+always collects INVALID (no receipt); a seal without the `run_log` role gets
+the generic seal refusal ("does not bind … prepare a new round";
+`references/leg-contracts.md` § Attempt seal).
 Everything below describes
 both paths unless it names one.
 

@@ -1,8 +1,33 @@
 ---
 name: triad-codex-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Codex CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 codex_wrapper.py` raw; the user asks to call codex once, have codex handle a task, or run a one-shot codex analysis; a higher-level orchestration SKILL needs the Codex leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Gemini (`triad-gemini-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.10.0
+version: 0.15.1
 # changelog:
+#   0.15.1 (2026-10-11): doc — Step 2 wording only ("— Step 3 reads it from the tool result").
+#   0.15.0 (2026-10-11): Flow — the prompt and proposal files live under
+#     `<project>/_runs/prompts/` (inside the hardened allowed root; the wrapper's
+#     next-run sweep prunes them under the `dispatch-prompts` role, owner option 1);
+#     Step 2 says Step 3 reads the summary from the tool result.
+#   0.14.1 (2026-10-10): doc — Step 5a: the run-log path is passed on as the wrapper
+#     printed it (the last `run-log:` line); no reading rule restates a former shell
+#     check; a forged earlier `run-log:` line is a recorded limit.
+#   0.14.0 (2026-10-10): doc — the leader reads the tool result (Step 3 summary token,
+#     5a run-log path, 5c analyzer JSON keys) with no shell parse; files in
+#     /tmp/triad-prompts (prompt and proposal; the OS temporary directory owns expiry).
+#   0.13.0 (2026-10-10): doc — Step 1 and Step 5d: every wrapper / applier call is ONE simple
+#     command with literal arguments; the prompt (Step 1) and the proposal (Step 5d,
+#     `--proposal-file`) go through files the leader writes with the Write tool.
+#     Measured (Claude Code 2.1.289): a command substitution / heredoc, an array
+#     expansion and a quoted-variable pipe cannot be checked before they run, so the
+#     plugin's grant does not match them; the plugin-root variable is substituted in
+#     the SKILL.md body only, so references carry no runnable bin command.
+#   0.12.0 (2026-10-10): doc — Step 5d: the apply step is a plain pipe into
+#     `apply_patch.py` (no `if` / `case`: the permission grant matches a plain
+#     command only); the leader reads its exit code (0 applied → `--repair-mode`
+#     re-run in its own call; 3 refused, nothing written).
+#   0.11.0 (2026-10-10): doc — the payload is one byte-safe UTF-8 encode (a lone
+#     surrogate leaves as its `\udXXX` escape, exit and token unchanged); the
+#     unemittable-payload demotion and its summary re-emission are removed.
 #   0.10.0 (2026-10-05): the `--task` mode is removed (the fan-out worker
 #     layer and `--task code`; exits 68 / 69 and the tokens
 #     `fanout-spawn-error` / `fanout-partial` / `task-blocked` leave codex).
@@ -93,41 +118,27 @@ makes the `unknown`-classification path correctly route to the repair sub-agent.
 
 ## Flow
 
-### Step 1 — Build the wrapper invocation
+### Step 1 — Write the prompt file, build the wrapper invocation
 
-Single-quoted heredoc for the prompt body so Korean / emoji / `$variables` /
-backticks / quotes survive intact, with a collision-resistant terminator: a line
-consisting of exactly the terminator word ends the heredoc early, and a bare
-`PROMPT` is a word real prompt bodies contain. `TRIAD_CODEX_PROMPT_EOF` is the
-house terminator. Use `--prompt-file <absolute-path>` INSTEAD of the heredoc
-(the two are mutually exclusive — argparse rejects both together) for either of
-these bodies: **content the leader did not author** (pasted files, vendor
-output, a diff, a packet), or **any body that quotes a dispatch template or a
-SKILL body** — a quoted template carries the house terminator as literal text,
-which is exactly how this defect was first observed. `--prompt-file` removes
-the terminator collision entirely and is the standing path for both.
+Write the prompt body to a file with the Write tool, then run the wrapper as
+ONE simple command on ONE line. The file is new per dispatch:
+`<project>/_runs/prompts/<utc-timestamp>-codex.md`, where `<project>` is the
+directory the leader runs in — the hardened install's allowed root, so the
+wrapper accepts the path (create the folder with the Write tool as needed). The
+wrapper's next-run sweep prunes the folder past the `dispatch-prompts` role's
+floor; add `_runs/` to the project's `.gitignore` if it is not
+already ignored. The file keeps Korean / emoji /
+`$variables` / backticks / quotes intact with no shell quoting at all.
+
+The command line carries LITERAL values only — no `$(…)`, heredoc, variable,
+pipe, array or `\` continuation: the plugin's permission grant matches one
+simple command, and a command substitution, a variable or an array cannot be
+checked before it runs, so such a call prompts on every dispatch. Fill in the
+bracketed options you need with literal values and drop the rest:
 
 ```bash
-codex_wrapper.py \
-  --prompt "$(cat <<'TRIAD_CODEX_PROMPT_EOF'
-<leader-prompt-verbatim>
-TRIAD_CODEX_PROMPT_EOF
-)" \
-  [--prompt-file /absolute/path/to/prompt.txt] \
-  [--cwd /absolute/path] \
-  [--sandbox read-only|workspace-write] \
-  [--reasoning low|medium|high|xhigh|max] \
-  [--model <catalog-slug>] \
-  [--search] \
-  [--timeout <seconds>] \
-  [--pydantic module:Class] \
-  [--output-schema-file /absolute/path/schema.json] \
-  [--attempt <int>] \
-  [--image /absolute/path.png ...]
+python3 ${CLAUDE_PLUGIN_ROOT}/bin/codex_wrapper.py --prompt-file <project>/_runs/prompts/<utc-timestamp>-codex.md [--cwd /absolute/path] [--sandbox <read-only or workspace-write>] [--reasoning <low, medium, high, xhigh or max>] [--model <catalog-slug>] [--search] [--timeout <seconds>] [--pydantic module:Class] [--output-schema-file /absolute/path/schema.json] [--attempt <int>] [--image /absolute/path.png ...]
 ```
-
-`--prompt-file` REPLACES the `--prompt` heredoc — argparse rejects both
-together, so delete the heredoc when switching to a file body.
 
 **`--output-schema-file <path>`** hands a CALLER-OWNED JSON schema
 file straight to codex `--output-schema`. It is TRANSPORT ONLY: the wrapper
@@ -162,7 +173,7 @@ at an isolated git worktree, never the live working tree. Create it under
 `_runs/worktrees/<name>` (the declared `code-worktrees` root, kept git-ignored).
 codex never commits; verify its changes yourself, then commit. When done, commit
 everything in the tree to its branch, then remove it only with
-`cleanup.py remove code-worktrees _runs/worktrees/<name>`
+`python3 ${CLAUDE_PLUGIN_ROOT}/bin/cleanup.py remove code-worktrees _runs/worktrees/<name>`
 from the repository top level. Network and MCP stay reachable under this sandbox.
 
 **`--search`** enables codex's live web search (codex's top-level `--search`, inserted
@@ -175,41 +186,39 @@ exposed to the run — the no-search contract is enforced, not just advertised.
 
 **`--model` (dispatch-time model pin, 2026-08-08).** Omit for routine dispatches — the config-alive model (`~/.codex/config.toml`) applies. Pass a CATALOG slug (from `codex debug models`, Tier-2 lookup at dispatch time) when a house policy pins a review/worker tier — e.g. a review-policy leg that must run a specific variant regardless of the owner's interactive config default. The wrapper carries NO slug anywhere (free-form passthrough, `-c model="<slug>"`); slugs rot, so never copy one from memory or docs — read the catalog first. Origin: a config-alive default silently moved review legs off the recorded review policy; dispatch-time pinning restores "model/effort are set at dispatch time" without touching the owner's config.
 
-The prompt is delivered to codex via **stdin** internally (caller still passes `--prompt`). `--pydantic` drives codex's native `--output-schema` (the class is massaged to codex-strict shape); a submit-time refusal surfaces as `schema-rejected` (rc 67). `--image` (repeatable) passes vision inputs as codex `-i` (bad path → `EXIT_ARG_ERROR` pre-spawn).
+The prompt is delivered to codex via **stdin** internally (the caller passes `--prompt-file`). `--pydantic` drives codex's native `--output-schema` (the class is massaged to codex-strict shape); a submit-time refusal surfaces as `schema-rejected` (rc 67). `--image` (repeatable) passes vision inputs as codex `-i` (bad path → `EXIT_ARG_ERROR` pre-spawn).
 
 ### Step 2 — Run via Bash; capture rc, stdout, stderr
 
 Wrapper stderr contains:
 - Timestamped wrapper log lines
 - Mirrored vendor stderr (Codex `--json` keeps this small)
-- 1-line summary: `[<timestamp>] [wrapper] codex <classification> exit=<int> vendor=<int> elapsed=<s>` followed by the recorded-facts tail ` attempt=<n>`, ` prompt_file=<abs>` when a `--prompt-file` was given, ` model=<slug>` when `--model` was requested and ` reasoning=<tier>` when `--reasoning` was requested (absent = the CLI's config default) (every wrapper log line, this one included, carries the leading timestamp bracket — the Step 3 grep anchors on it)
+- 1-line summary: `[<timestamp>] [wrapper] codex <classification> exit=<int> vendor=<int> elapsed=<s>` followed by the recorded-facts tail ` attempt=<n>`, ` prompt_file=<abs>` when a `--prompt-file` was given, ` model=<slug>` when `--model` was requested and ` reasoning=<tier>` when `--reasoning` was requested (absent = the CLI's config default) (every wrapper log line, this one included, carries the leading timestamp bracket — Step 3 reads it from the tool result)
 - On failure: `run-log: <absolute-path>`
 
 ### Step 3 — Read the classification
 
-Grep the summary line; extract classification. **Use the LAST `[wrapper]` line** — when extraction-error happens, `_run_once` emits an early `ok` summary that is later corrected by a second emission with `extraction-error`. Take the last one only:
+Read the classification from the Bash tool result — no shell parse (a
+command substitution or a pipe cannot be checked before it runs, so a parse
+command would prompt). In the stderr, read the LAST line that STARTS with
+`[<timestamp>] [wrapper] codex ` (the timestamp bracket, then `[wrapper] codex `);
+the classification is the token right after `[wrapper] codex ` (e.g. `ok`,
+`unknown`, `extraction-error`). Use the LAST such line — when an
+`extraction-error` happens, `_run_once` emits an early `ok` summary that a
+second emission corrects. On a failure, the run-log path is the value after
+`run-log: ` on its line (the last such line).
 
-```bash
-SUMMARY=$(grep -E '^\[[^]]*\] \[wrapper\] codex ' <stderr-text> | tail -1)
-CLS=$(printf '%s' "$SUMMARY" | sed -E 's/^\[[^]]*\] \[wrapper\] codex ([a-z-]+) .*/\1/')
-```
-
-**BOTH patterns are ANCHORED to the line start** (gate-1 r9 row r9-3). The sed
-used to be greedy (`s/.*\[wrapper\] codex ([a-z-]+) .*/\1/`), so it took the
-LAST `[wrapper] codex <token> ` sequence ANYWHERE in the line — and the summary
-tail carries a FREE-TEXT field (`prompt_file=<abs>`), so a prompt file living
-under a directory literally named `…[wrapper] codex ok …` overrode the token the
-wrapper emitted: a demoted `extraction-error` run parsed as `ok`, and the
-MANDATORY repair-agent routing (Step 5) never fired. Since the same row the
-engine ALSO percent-escapes every free-text field of the summary
+Only a line that STARTS with that prefix counts (gate-1 r9 row r9-3): the
+summary tail carries a free-text field (`prompt_file=<abs>`), and a reading that
+took the last `[wrapper] codex <token> ` ANYWHERE in the line once let a prompt
+file under a directory named `…[wrapper] codex ok …` override the emitted token
+(an `extraction-error` run read as `ok`, and the MANDATORY repair routing never
+fired). The engine also percent-escapes every free-text field of the summary
 (`_common._summary_field` — SPACE and `[` / `]` are outside the safe set, so the
-sequence is unconstructible inside `prompt_file=`; an ordinary POSIX path is
-emitted byte-identically and the audit row keeps the raw value), so the shape
-can no longer occur — but the ANCHORED parse is the CONTRACT here, and the two
-defences are independent. The wrapper's other stderr lines stay out of reach BY
-CONSTRUCTION: `run-log: <abs>` and `exec cwd=… argv=…` never carry the
-`[wrapper] codex <token> ` prefix AT THE LINE START, and the demotion note keeps
-its colon (`[wrapper] codex: unemittable-payload — …`).
+sequence cannot be built inside `prompt_file=`; an ordinary POSIX path is
+emitted byte-identically and the audit row keeps the raw value) — the two
+defences are independent. The wrapper's other stderr lines (`run-log: <abs>`,
+`exec cwd=… argv=…`) never START with the `[wrapper] codex <token> ` prefix.
 
 Token set:
 `ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | schema-rejected | config-conflict | input-delivery-failed | timeout | extraction-error | unknown`
@@ -226,7 +235,7 @@ Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg; also an un
 | `input-delivery-failed` (65; 3 when refused pre-spawn) | The wrapper's OWN stdin transport did not confirm delivery of the prompt (write/flush failed — typically the child closed its stdin early —, the writer had not finished within the bounded join, or the prompt was not UTF-8-encodable and nothing was sent) while codex exited 0 and answered like a success. The answer is BLANKED (stdout empty) and the raw vendor rc is kept. The cause is on the wrapper's OWN stderr, the deterministic line right before the summary — `exit=0 … but stdin delivery failed:<ExceptionClass>; failing closed` (or `unconfirmed`) — which the leader may read; the audit record and the failure run-log ALSO carry it as `stdin_delivery`, for the analyzer and for forensics only (Hard rule 2: the leader does not read the run-log). Surface to user with that cause; a re-dispatch is reasonable. Leave the failure run-log alone — no Step 5 arm ran, and the NEXT dispatch's own IPC cleanup prunes it (the wrapper clears prior residue on start). **NOT** repair-agent territory (a wrapper transport defect, not a classifier gap — the token is never a repair proposal). A genuine vendor error (rc != 0) after an early close keeps ITS classification; the delivery failure is an annotation there. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already retried per backoff. |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 6). Spawn it even when you are busy or also surfacing the failure — never skip.** |
-| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 6).** Vendor returned rc=0 but extractor found no answer (empty JSON envelope, missing last-message file) — **or the answer is an UNEMITTABLE PAYLOAD**: a lone surrogate this host cannot encode on the payload channel, demoted before the audit row (the stderr line is `[wrapper] codex: unemittable-payload — …` — note the COLON, which keeps it out of the summary grep above; after the demotion the wrapper RE-EMITS the canonical summary with the final classification, so the LAST `[wrapper] codex ` line reads `extraction-error exit=1`). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
+| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 6).** Vendor returned rc=0 but extractor found no answer (empty JSON envelope, missing last-message file). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
 | `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since hang is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
 | `schema-rejected` (67) | Surface to user: the pydantic class / massaged schema is invalid for codex strict mode, or codex strict-rule drift. Fix the class / massage and re-dispatch. **NOT** repair-agent territory (deterministic, not transient). Distinct from `schema fail (66)` = post-hoc pydantic validation failing after a well-formed answer. |
 | arg (3) / binary missing (4) / schema fail (66) | Surface to user with cause. |
@@ -239,17 +248,14 @@ that proposal via the deterministic, zero-LLM `apply_patch.py`, then re-runs the
 wrapper in `--repair-mode` to verify routing. Safe-by-construction: the
 untrusted-input handler has no write authority; the write path has no LLM.
 
-#### 5a. Extract the run-log path
+#### 5a. Read the run-log path
 
-```bash
-RUN_LOG_PATH=$(sed -n 's/.*run-log: //p' <stderr-text> | tail -1)
-[ -f "$RUN_LOG_PATH" ] || { echo "run-log path missing"; exit 1; }
-```
-
-Take everything after `run-log: ` to the end of that line (last occurrence) — the
-path may contain spaces, so a whitespace-delimited grab would truncate it. Keep
-every later use double-quoted. (The path itself is wrapper-generated —
-`_logs/codex/runs/<id>.json`, a safe charset for the JSON template below.)
+Take the path from the Bash tool result exactly as the wrapper printed it: the
+value after `run-log: ` on the LAST `run-log:` line of stderr. The path is
+wrapper-generated — `_logs/codex/runs/<id>.json`, a safe charset for the JSON
+template below. Recorded limit: a vendor child printing a forged `run-log:` line
+earlier in stderr is a constructed shape — the wrapper's own line comes last and
+the leader reads the last; not guarded.
 
 The leader passes this PATH to the analyzer — it does NOT read the run-log content
 itself (Hard rule 2). There is no output file: the analyzer replies inline.
@@ -282,57 +288,51 @@ Example response (return this inline JSON as your entire chat reply):
 Now do the analysis and return the inline JSON.
 ```
 
-#### 5c. Parse the analyzer's inline JSON proposal
+#### 5c. Read the analyzer's inline JSON proposal
 
-The Agent tool returns the analyzer's final chat text, which is the inline JSON object. Parse it with `jq`:
-
-```bash
-AGENT_JSON=$(cat <<'TRIAD_JSON_EOF'
-<paste the analyzer inline JSON reply here>
-TRIAD_JSON_EOF
-)   # quoted heredoc with a collision-resistant terminator: apostrophes/quotes stay literal
-OUTCOME=$(jq -r '.outcome' <<<"$AGENT_JSON")
-REASON=$(jq -r '.reason' <<<"$AGENT_JSON")
-PROPOSAL=$(jq -c '.proposal' <<<"$AGENT_JSON")
-```
-
-Schema top-level keys: `outcome` (`propose` | `escalate`), `reason`, `proposal` (null when escalate).
+The Agent tool returns the analyzer's final chat text, which is the inline JSON
+object. Take `outcome`, `reason` and `proposal` from the analyzer's JSON reply as
+returned — the three top-level keys of Step 5b's `output_schema` — with no
+shell parse. `outcome` is `propose` or `escalate`; `proposal` is null on
+`escalate`. When `outcome` is `propose`, write the `proposal` object verbatim to
+`<project>/_runs/prompts/<utc-timestamp>-codex-proposal.json` with the Write tool,
+then run Step 5d's one command. A reply that is not that JSON object
+(conversational text, or nothing) is unparseable output — Step 5d's last branch.
 
 #### 5d. Branch: escalate → surface; propose → leader applies + verifies
 
-Run 5c's parse and this case block in the SAME Bash invocation — shell state
-(`AGENT_JSON`, `OUTCOME`, `PROPOSAL`) does not persist across separate Bash
-calls, so a split run reads an empty `OUTCOME` and skips the apply.
+Pick the branch from the analyzer reply's `outcome` (5c). Every
+command below is ONE simple command with literal arguments — never wrapped in
+`if` / `case`, never fed by a pipe or a variable: the permission grant matches
+only that, and anything else prompts.
 
-```bash
-case "$OUTCOME" in
-  escalate)
-    # Analyzer could not classify — surface REASON, no apply.
-    echo "repair escalated: $REASON"
-    ;;
-  propose)
-    # Leader applies the proposal via the deterministic, zero-LLM applier.
-    if printf '%s' "$PROPOSAL" \
-         | apply_patch.py --cli codex; then
-      # applier exit 0 → patch landed; re-run in --repair-mode to verify the
-      # previously-unrouted error now classifies correctly.
-      codex_wrapper.py \
-        --repair-mode <original-args>   # replay the ORIGINAL argv verbatim (same flags/values) — do not retype from memory
-    else
-      # applier exit 3 → the proposal was invalid (analyzer error) — treat as escalate.
-      echo "proposal rejected by applier: $REASON"
-    fi
-    ;;
-  *)
-    # Unparseable analyzer output: the agent returned conversational text (or
-    # empty), so jq failed and OUTCOME is not propose/escalate. Do NOT silently
-    # proceed — SURFACE it. No patch is applied; the original failure
-    # classification stands.
-    echo "repair skipped — unparseable analyzer output (OUTCOME='$OUTCOME'); the original failure classification stands"
-    # The run-log is the diagnostic input for the manual follow-up.
-    ;;
-esac
-```
+- **`propose`** — with the `proposal` object written to
+  `<project>/_runs/prompts/<utc-timestamp>-codex-proposal.json` (5c), run the apply
+  step as ONE simple command with literal arguments:
+
+  ```bash
+  python3 ${CLAUDE_PLUGIN_ROOT}/bin/apply_patch.py --cli codex --proposal-file <project>/_runs/prompts/<utc-timestamp>-codex-proposal.json
+  ```
+
+  Read the applier's exit code from the Bash tool result:
+  - **0** — applied. Re-run the wrapper in `--repair-mode`, in its own Bash
+    call, to verify that the previously-unrouted error now classifies
+    correctly: run Step 1's literal command line again, unchanged (same
+    prompt file, flags and values — do not retype it from memory), with
+    `--repair-mode` appended:
+
+    ```bash
+    python3 ${CLAUDE_PLUGIN_ROOT}/bin/codex_wrapper.py <the Step 1 arguments, verbatim> --repair-mode
+    ```
+  - **3** — invalid proposal or bad input; the extension file is untouched.
+    Surface `proposal rejected by applier: <REASON>` and treat it as an escalate.
+- **`escalate`** — the analyzer could not classify: surface
+  `repair escalated: <REASON>`; no apply.
+- **anything else** — unparseable analyzer output: the agent returned
+  conversational text (or nothing), or its `outcome` is neither value. Do NOT
+  proceed silently — surface `repair skipped — unparseable analyzer output; the
+  original failure classification stands`. No patch is
+  applied; the run-log is the diagnostic input for the manual follow-up.
 
 The applier re-validates the proposal independently (enum + pattern-name + literal bounds), so it is the security backstop even if the analyzer misbehaves: on exit 3 the extension file is left untouched and the leader surfaces it as an escalate. The run-log stays in every arm (on unparseable analyzer output it is the input for manual diagnosis); the wrapper's own sweep collects it later.
 

@@ -1,8 +1,8 @@
 # agy wrapper invocation — flag reference
 
 Loaded on demand from `triad-antigravity-dispatch/SKILL.md` Step 1. Read this
-when you need what a flag actually does; the invocation SHAPE (heredoc
-terminator, `--prompt-file` rule, argv-array retention) stays in Step 1 itself.
+when you need what a flag actually does; the invocation SHAPE (the prompt
+file, one simple command with literal arguments) stays in Step 1 itself.
 
 ## Flags
 
@@ -19,18 +19,17 @@ terminator, `--prompt-file` rule, argv-array retention) stays in Step 1 itself.
 - `--pydantic module:Class` forces JSON output through agy's **native
   `--json-schema`** flag: the wrapper passes `json.dumps(cls.model_json_schema())`
   as its argv value — no prompt-side instruction, no completion marker. The
-  driver's `_validate_structured` PREFERS the vendor's own schema-checked
-  `result["structured_output"]` and falls back to the raw response text when it
-  is absent (vendor-drift guard); local pydantic re-validates either way. On
-  failure it does ONE schema-repair re-run (a text hint appended to the `-p`
-  prompt), then exits `EXIT_SCHEMA_FAIL=66`. e2e-verified against real agy
+  driver's `_validate_structured_detail` validates a dict
+  `result["structured_output"]`; anything else (absent, `null`, not a dict) is
+  treated as absent and the raw response text is validated. On failure it does
+  ONE schema-repair re-run (a text hint appended to the `-p` prompt), then exits
+  `EXIT_SCHEMA_FAIL=66`. e2e-verified against real agy
   (`tests/e2e/wrappers/agy-stream/s1-real-stream.sh` case 3).
 - `--timeout` default is `600` seconds. The wrapper derives agy's `--print-timeout` from it (`max(timeout - 10, 5)s`); the wrapper's own SIGTERM→SIGKILL process-group kill (shared with codex/gemini/claude) is the backstop.
 - `--prompt-file <absolute-path>` reads the prompt body from a file INSTEAD of
   `--prompt` (the two are mutually exclusive — argparse rejects both together).
-  Use it whenever the body is not leader-authored, OR whenever the body quotes
-  a dispatch template or a SKILL body — quoted text carries the house heredoc
-  terminator verbatim and would close the heredoc early (Step 1). The path is
+  Step 1 always uses it: the leader writes the body with the Write tool, so the
+  command line stays one simple command with literal arguments. The path is
   absolute, and a hardened install gates it against the allowed roots.
 - `--cwd` sets agy's working directory. On the read-only path
   (`--sandbox read-only`) it is ALSO the source of `--add-dir` — the leg's

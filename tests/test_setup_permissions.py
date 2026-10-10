@@ -3,11 +3,14 @@
 
 Covers the redesigned merge / provenance / --remove / hardening / robustness
 contract of `setup_permissions.py`:
-  (1) a fresh --install writes the bare BASENAME wrapper grants (matching the bare
-      invocation the dispatch SKILLs emit so dispatch stays promptless),
-      the sandbox.excludedCommands (excluded posture), and the wrapper hardening
+  (1) a fresh --install writes the plugin-path grants (`python3 <plugin>/*/bin/
+      <file> *`, matching the invocation the dispatch SKILLs emit so dispatch
+      stays promptless across plugin updates), the same patterns in
+      sandbox.excludedCommands (excluded posture), and the wrapper hardening
       `env` block (TRIAD_WRAPPER_HARDENED / TRIAD_WRAPPER_ALLOWED_ROOTS; no
-      vendor pin), and a provenance sidecar records them;
+      vendor pin), and a provenance sidecar records them; the grants also
+      cover the review library's env-prefixed leg lines and the library
+      modules its SKILL has the leader type (I4);
   (2) a second --install is a byte-identical no-op (idempotent);
   (3) a directory --target resolves to <dir>/.claude/settings.json;
   (4) an unrelated settings key + a pre-existing allow entry survive;
@@ -18,14 +21,14 @@ contract of `setup_permissions.py`:
       TypeError traceback;
   (9) --install then --remove round-trips a pre-existing settings.json for
       unrelated keys, removing ONLY the authored entries;
-  (10) a symlinked settings path is refused on read (O_NOFOLLOW / lstat).
+  (10) a symlinked settings path is refused on read (lstat).
 
 Runs in BOTH layouts: the source repo (the script lives under
 `export_assets/claude-host/scripts/`) and the exported plugin (`tests/` with a
 `scripts/` sibling). The script is loaded by file path, not import name.
 
 Hermetic: a fake plugin `bin/` (the wrapper scripts — the installer requires the
-bin dir to exist before it writes the basename grants) and a fake vendor-bin dir
+bin dir to exist before it writes the plugin-path grants) and a fake vendor-bin dir
 on PATH (codex/gemini/agy, for the pin resolution) are
 built in a tempdir per test, so the assertions do not depend on the host's
 installed vendors.
@@ -33,6 +36,7 @@ installed vendors.
 from __future__ import annotations
 
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -41,7 +45,6 @@ import re
 import stat
 import sys
 import tempfile
-import threading
 import time
 import traceback
 from pathlib import Path
@@ -77,7 +80,6 @@ def _load_script():
 
 setup_permissions = _load_script()
 WRAPPER_SCRIPTS = setup_permissions.WRAPPER_SCRIPTS
-SANDBOX_PATTERNS = setup_permissions.SANDBOX_EXCLUDE_PATTERNS
 # the vendor CLIs whose wrappers this product ships (the fake vendors on PATH)
 VENDOR_CLIS = ("codex", "gemini", "agy")
 
@@ -245,7 +247,28 @@ def _plant_temp(m: _Machine) -> dict:
     return items
 
 
-TEMP_LEFT = ": in the shared temporary directory, which holds no record of what is the plugin's"
+def _after_remove(original: dict) -> dict:
+    """What --remove leaves of a settings file that held `original` before the
+    install: the user's content, and each container the install added, empty
+    (the file is rewritten; no container is taken out)."""
+    after = copy.deepcopy(original)
+    after.setdefault("permissions", {}).setdefault("allow", [])
+    after.setdefault("sandbox", {}).setdefault("excludedCommands", [])
+    after.setdefault("env", {})
+    return after
+
+
+def _patterns(e: "_Env") -> list:
+    """The sandbox.excludedCommands patterns of `e`'s plugin: the grants' rule
+    text, since a pattern and a `Bash(...)` rule share one syntax."""
+    return [g[len("Bash("):-1] for g in setup_permissions.wrapper_grant_entries(e.bin)]
+
+
+def _rule_matches(rule: str, command: str) -> bool:
+    """A `Bash(...)` rule / excludedCommands pattern against a command line:
+    `*` matches any text, including spaces and `/`; the rest matches as written."""
+    return re.fullmatch(".*".join(re.escape(part) for part in rule.split("*")),
+                        command) is not None
 
 
 def _age(*paths: Path, seconds: int = 3 * 3600) -> None:
@@ -254,8 +277,8 @@ def _age(*paths: Path, seconds: int = 3 * 3600) -> None:
         os.utime(path, (then, then), follow_symlinks=False)
 
 
-# ── (1) fresh install: basename grants + sandbox + hardening env + provenance ─
-def test_fresh_install_writes_basename_grants_and_hardening():
+# ── (1) fresh install: plugin-path grants + sandbox + hardening env + record ─
+def test_fresh_install_writes_plugin_path_grants_and_hardening():
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         with _Env(tmp) as e:
@@ -263,17 +286,24 @@ def test_fresh_install_writes_basename_grants_and_hardening():
             assert e.install(target) == 0
             data = json.loads(target.read_text(encoding="utf-8"))
             allow = data["permissions"]["allow"]
-            for grant in setup_permissions.wrapper_grant_entries(e.bin):
-                assert grant in allow, f"missing basename grant: {grant}"
-            # the basename form matches the bare SKILL invocation -> promptless
-            assert "Bash(codex_wrapper.py:*)" in allow
-            # the install-absolute form must NOT be written (would never match the
-            # bare invocation, re-introducing a prompt on every dispatch)
-            abs_codex = str((e.bin / "codex_wrapper.py").resolve())
-            assert f"Bash({abs_codex}:*)" not in allow
             excluded = data["sandbox"]["excludedCommands"]
-            for pat in SANDBOX_PATTERNS:
-                assert pat in excluded, f"missing sandbox exclude: {pat}"
+            # the plugin dir holding the version dirs; `*` = the version
+            plugin = e.bin.resolve().parent.parent
+            files = ("codex_wrapper.py", "gemini_wrapper.py",
+                     "antigravity_wrapper.py", "apply_patch.py")
+            for name in files:
+                pattern = f"python3 {plugin}/*/bin/{name} *"
+                assert f"Bash({pattern})" in allow, (name, allow)
+                assert pattern in excluded, (name, excluded)
+                # the rule matches the dispatch command of a LATER version,
+                # which carries arguments
+                assert _rule_matches(
+                    pattern, f"python3 {plugin}/0.9.12/bin/{name} --cwd /w x")
+            # the four bin files + the review library's three env-prefixed leg
+            # shapes + the five library files the leader runs (I4)
+            assert len(allow) == len(excluded) == len(files) + 3 + 5, (allow, excluded)
+            # the bare-name grant is not written
+            assert "Bash(codex_wrapper.py:*)" not in allow, allow
             env = data["env"]
             assert env["TRIAD_WRAPPER_HARDENED"] == "1"
             assert env["TRIAD_WRAPPER_ALLOWED_ROOTS"] == str(e.work.resolve())
@@ -284,6 +314,63 @@ def test_fresh_install_writes_basename_grants_and_hardening():
                            for k in env), env
             prov = target.parent / setup_permissions.PROVENANCE_NAME
             assert prov.exists(), "install must write a provenance sidecar"
+
+
+# ── (I4) the review library's lines are granted: its three env-prefixed leg
+#    shapes (`leg-contracts.md` § v2 dispatch shapes, the line's redirections
+#    left out — no rule covers a redirection, measured) and the library
+#    modules the review SKILL has the leader type ─────────────────────────────
+def test_fresh_install_grants_the_review_library_lines():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert e.install(target) == 0
+            data = json.loads(target.read_text(encoding="utf-8"))
+            allow = data["permissions"]["allow"]
+            excluded = data["sandbox"]["excludedCommands"]
+            plugin = e.bin.resolve().parent.parent
+            ver = f"{plugin}/0.9.12"
+            att = "/w/_runs/review/g-r1/results-r1/leg/attempt-1"
+            tail = (f"--prompt-file {att}/prompt.txt --cwd /w/_runs/review/g-r1/wt-r1 "
+                    "--timeout 3600 --attempt 1")
+            log_env = f"env TRIAD_REVIEW_LOG_DIR={att}/logs"
+            lib = f"{ver}/skills/triad-cross-family-review/lib"
+            lines = (
+                f"{log_env} python3 {ver}/bin/codex_wrapper.py --sandbox read-only "
+                f"--search --output-schema-file {att}/schema.projected.json {tail}",
+                f"env TRIAD_READ_AUDIT_FILE={att}/read-audit.json {log_env} python3 "
+                f"{ver}/bin/antigravity_wrapper.py --sandbox read-only --review-web "
+                f"--model=m --effort=high --json-schema-file "
+                f"{att}/schema.projected.json {tail}",
+                f"{log_env} python3 {ver}/bin/gemini_wrapper.py --sandbox read-only "
+                f"--approval-mode default --review-web {tail}",
+                f"python3 {lib}/review_scratch.py open /w/_runs/review g-r1",
+                f"python3 {lib}/review_scratch.py prepare /w/_runs/review/g-r1 /w r1 "
+                "--brief /w/brief.md --diff main..HEAD",
+                f"python3 {lib}/review_scratch.py collect /w/_runs/review/g-r1 r1",
+                f"python3 {lib}/verdict_v2.py {att}/verdict.json "
+                "--expected-packet /w/_runs/review/g-r1/delivery-r1.md",
+                f"python3 {lib}/verdict_v2.py --admit {att}/raw.json "
+                f"--admitted-out {att}/admitted.json",
+                f"python3 {lib}/agy_hook.py check {att}/read-audit.json "
+                "/w/_runs/review/g-r1/agy-hook-r1.jsonl",
+                f"python3 {lib}/roster_v2.py resolve /w/_runs/review/g-r1/wt-r1",
+                # the agy `gate:` line as `review_scratch` prints it: one simple
+                # command, `bash` at its head
+                f"bash {lib}/read_audit_gate.sh --audit-file {att}/read-audit.json "
+                "/w/_runs/review/g-r1 /w/_runs/review/g-r1/wt-r1/brief.md "
+                "/w/_runs/review/g-r1/wt-r1/diff.prod.patch",
+            )
+            for line in lines:
+                grants = [g for g in allow if _rule_matches(g[len("Bash("):-1], line)]
+                assert len(grants) == 1, (line, grants)
+                assert grants[0][len("Bash("):-1] in excluded, (grants, excluded)
+            # an env-prefixed line is not matched by the plain grant (measured,
+            # B23): each prefix needs its own rule
+            assert not _rule_matches(f"python3 {plugin}/*/bin/codex_wrapper.py *",
+                                     lines[0])
 
 
 # ── (2) idempotent second install is a byte-identical no-op ───────────────────
@@ -345,7 +432,7 @@ def test_preserves_existing_sandbox_key():
             sandbox = json.loads(target.read_text(encoding="utf-8"))["sandbox"]
             assert sandbox["network"] == {"allowUnixSockets": True}
             assert "gh *" in sandbox["excludedCommands"]
-            for pat in SANDBOX_PATTERNS:
+            for pat in _patterns(e):
                 assert sandbox["excludedCommands"].count(pat) == 1
 
 
@@ -401,11 +488,12 @@ def test_install_remove_round_trip():
             assert e.install(target) == 0
             assert e.remove(target) == 0
             restored = json.loads(target.read_text(encoding="utf-8"))
-            assert restored == original, "remove must restore the pre-install state"
+            assert restored == _after_remove(original), \
+                "remove must take out exactly the authored entries"
             assert not (target.parent / setup_permissions.PROVENANCE_NAME).exists()
 
 
-# ── (10) a symlinked settings path is refused (O_NOFOLLOW / lstat) ───────────
+# ── (10) a symlinked settings path is refused (lstat) ─────────────────────────
 def test_symlinked_settings_refused():
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
@@ -436,11 +524,9 @@ def test_takes_out_the_recorded_pretooluse_hook_of_an_earlier_version():
                 (target.parent / setup_permissions.PROVENANCE_NAME)
                 .read_text(encoding="utf-8"))
             assert "pretooluse_wrapper_guard.py" not in json.dumps(prov), prov
-            # the install CREATED the settings file (no pre-existing one), and
-            # the earlier version created the hook containers: --remove deletes
-            # the file.
             assert e.remove(target) == 0
-            assert not target.exists(), "self-created settings file must be removed"
+            data = json.loads(target.read_text(encoding="utf-8"))
+            assert data == {**_after_remove({}), "hooks": {"PreToolUse": []}}, data
 
 
 # ── (12) a pre-existing user PreToolUse hook survives install + remove ────────
@@ -494,16 +580,18 @@ def test_user_entries_already_present_survive_install_and_remove():
             hook_group = {"matcher": "Bash", "hooks": [
                 {"type": "command", "command": LEGACY_HOOK}]}
             original = {
-                "permissions": {"allow": ["Bash(codex_wrapper.py:*)"]},
-                "sandbox": {"excludedCommands": ["codex_wrapper.py *"]},
+                "permissions": {"allow": [
+                    setup_permissions.wrapper_grant_entries(e.bin)[0]]},
+                "sandbox": {"excludedCommands": [_patterns(e)[0]]},
                 "hooks": {"PreToolUse": [hook_group]},
             }
             _touch(target, json.dumps(original, indent=2))
             assert e.install(target) == 0
             installed = json.loads(target.read_text(encoding="utf-8"))
-            assert len(installed["permissions"]["allow"]) == len(WRAPPER_SCRIPTS)
+            assert len(installed["permissions"]["allow"]) == len(
+                setup_permissions.wrapper_grant_entries(e.bin))
             assert e.remove(target) == 0
-            assert json.loads(target.read_text(encoding="utf-8")) == original
+            assert json.loads(target.read_text(encoding="utf-8")) == _after_remove(original)
 
 
 # The hook entry an earlier version of the plugin wrote (the setup writes none).
@@ -513,19 +601,12 @@ LEGACY_GROUP = {"matcher": "Bash", "hooks": [{"type": "command", "command": LEGA
 
 def _plant_an_earlier_versions_hook(target: Path) -> None:
     """Add to an installed settings file and its record the hook entry an earlier
-    version wrote: its own group, recorded, with the containers it created."""
+    version wrote: its own group, recorded."""
     prov = target.parent / setup_permissions.PROVENANCE_NAME
     data = json.loads(target.read_text(encoding="utf-8"))
     record = json.loads(prov.read_text(encoding="utf-8"))
-    if "hooks" not in data:
-        data["hooks"] = {}
-        record["created_containers"].append("hooks")
-    if "PreToolUse" not in data["hooks"]:
-        data["hooks"]["PreToolUse"] = []
-        record["created_containers"].append("hooks.PreToolUse")
-    data["hooks"]["PreToolUse"].append(LEGACY_GROUP)
+    data.setdefault("hooks", {}).setdefault("PreToolUse", []).append(LEGACY_GROUP)
     record["hooks_pretooluse"] = [LEGACY_HOOK]
-    record["created_containers"].sort()
     target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     prov.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
@@ -542,8 +623,9 @@ def test_install_writes_no_hook():
             record = json.loads((target.parent / setup_permissions.PROVENANCE_NAME)
                                 .read_text(encoding="utf-8"))
             assert record["hooks_pretooluse"] == [], record
-            assert not any(c.startswith("hooks") for c in record["created_containers"]), \
-                record
+            assert sorted(record) == ["allow", "env", "excludedCommands",
+                                      "hooks_pretooluse", "settings_file",
+                                      "version"], record
 
 
 # ── (H2) --install takes out the hook an earlier version wrote ───────────────
@@ -573,11 +655,12 @@ def test_install_removes_the_hook_an_earlier_version_wrote():
                 assert LEGACY_GROUP not in data["hooks"]["PreToolUse"], data
                 assert json.loads(prov.read_text(encoding="utf-8"))[
                     "hooks_pretooluse"] == [], out
-                # --remove leaves the settings as they were before any install,
-                # dropping the hook containers the earlier version created
+                # --remove takes out the entries; the containers stay
                 rc, out = m.run("--remove", "--target", str(target))
                 assert rc == 0, out
-                assert json.loads(target.read_text(encoding="utf-8")) == original, out
+                expected = _after_remove(original)
+                expected.setdefault("hooks", {"PreToolUse": []})
+                assert json.loads(target.read_text(encoding="utf-8")) == expected, out
 
 
 # ── (H3) --install runs when the plugin ships no hooks/ directory ────────────
@@ -617,13 +700,14 @@ def test_remove_without_claude_dir_creates_nothing():
             assert not (proj / ".claude").exists()
 
 
-# ── (A2) an empty provenance record is removed, and no lock is left ──────────
+# ── (A2) an empty provenance record is removed ──────────────────────────────
 def test_remove_empty_record_deletes_provenance():
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         with _Machine(tmp) as m:
             claude = tmp / "proj" / ".claude"
             settings = _touch(claude / "settings.json", '{"model": "opus"}\n')
+            # a version-1 record: its container keys are read past (ignored)
             _touch(claude / setup_permissions.PROVENANCE_NAME, json.dumps(
                 {"version": 1, "allow": [], "excludedCommands": [], "env": [],
                  "hooks_pretooluse": [], "created_containers": [],
@@ -641,7 +725,7 @@ def test_remove_with_absent_settings_does_not_create_it():
         with _Env(tmp) as e, _Machine(tmp) as m:
             target = _touch(tmp / "proj" / ".claude" / "settings.json", "{}\n")
             assert e.install(target) == 0
-            target.unlink()  # the user deleted it; the record says we did not create it
+            target.unlink()  # the user deleted it
             rc, out = m.run("--remove", "--target", str(target))
             # no settings file beside the target holds a recorded entry: the
             # record is stale -> removed, nothing left, nothing created
@@ -666,8 +750,31 @@ def test_install_remove_leaves_no_sidecar():
             rc, out = m.run("--remove", "--target", str(target))
             assert rc == 0, out
             assert os.listdir(target.parent) == ["settings.json"], os.listdir(target.parent)
-            assert json.loads(target.read_text(encoding="utf-8")) == original
+            assert json.loads(target.read_text(encoding="utf-8")) == _after_remove(original)
             assert (tmp / "proj" / ".claude").is_dir(), "the user's .claude/ must stay"
+
+
+def test_install_leaves_no_lock_sidecar():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            assert e.install(target) == 0
+            assert sorted(os.listdir(target.parent)) == [".triad-dispatch-managed.json", "settings.json"], os.listdir(target.parent)
+
+
+def test_remove_with_a_hand_deleted_record_prints_only_the_plain_result():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            assert e.install(target) == 0
+            setup_permissions.provenance_path(target).unlink()
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                assert setup_permissions.main(["--remove", "--target", str(target)]) == 0
+            assert out.getvalue() == f"nothing to remove: no managed entries at {target}\n", out.getvalue()
+            assert err.getvalue() == "", err.getvalue()
 
 
 # ── (A5) --remove --dry-run creates and removes nothing ──────────────────────
@@ -677,7 +784,6 @@ def test_remove_dry_run_changes_nothing():
         with _Env(tmp) as e, _Machine(tmp) as m:
             target = tmp / "proj" / ".claude" / "settings.json"
             assert e.install(target) == 0
-            (target.parent / setup_permissions.LOCK_NAME).unlink()
             _touch(target.parent / ".settings.k3j2m4n5.json.tmp")
             before = _snapshot(tmp)
             rc, out = m.run("--remove", "--dry-run", "--target", str(target))
@@ -706,7 +812,8 @@ def test_remove_other_target_is_refused():
             assert _snapshot(tmp) == before, out
             rc, out = m.run("--remove", "--target", str(local))
             assert rc == 0, out
-            assert os.listdir(local.parent) == [], os.listdir(local.parent)
+            assert os.listdir(local.parent) == ["settings.local.json"], \
+                os.listdir(local.parent)
 
 
 # ── (A9) an install into a second settings file of the directory is refused ──
@@ -763,7 +870,7 @@ def test_version1_record_without_settings_file():
             _make_v1_record(prov)
             rc, out = m.run("--remove", "--target", str(target))
             assert rc == 0, out
-            assert os.listdir(claude) == [], os.listdir(claude)
+            assert os.listdir(claude) == ["settings.json"], os.listdir(claude)
 
 
 def _v1_refusal(target: Path, prov: Path) -> str:
@@ -871,7 +978,8 @@ def test_the_record_is_written_first_and_an_interrupted_first_install_is_repaire
             assert e.install(target) == 0
             rc, out = m.run("--remove", "--target", str(target))
             assert rc == 0, out
-            assert json.loads(target.read_text(encoding="utf-8")) == original, out
+            assert json.loads(target.read_text(encoding="utf-8")) == \
+                _after_remove(original), out
             assert not (target.parent / setup_permissions.PROVENANCE_NAME).exists()
 
 
@@ -921,11 +1029,6 @@ def test_plugin_update_interrupted_after_the_settings_write_is_repaired():
             assert _pretooluse_commands(json.loads(target.read_text(encoding="utf-8"))) == []
 
 
-def _left_hook(target: Path, command: str) -> str:
-    return (f"left {target}: hook {command} — in no install record, not removed; "
-            "edit it out of the settings file yourself if an earlier install wrote it\n")
-
-
 # The env key names the plugin writes (written out here, not read from the
 # script, so a change of the script's set shows in this test).
 PLUGIN_ENV_NAMES = ("TRIAD_WRAPPER_HARDENED", "TRIAD_WRAPPER_ALLOWED_ROOTS")
@@ -933,107 +1036,9 @@ USER_CONTENT = {"model": "opus", "env": {"MY_VAR": "keep-me"},
                 "permissions": {"allow": ["Bash(ls *)"]}}
 
 
-def _unrecorded_note(target: Path, entries) -> str:
-    if len(entries) == 1:
-        return (f"note: 1 entry of the plugin's is in {target} and in no install "
-                f"record ({entries[0]}); it is treated as yours and --remove leaves "
-                "it. Edit it out of the settings file yourself if an earlier "
-                "install wrote it.\n")
-    return (f"note: {len(entries)} entries of the plugin's are in {target} and in no "
-            f"install record ({', '.join(entries)}); they are treated as yours and "
-            "--remove leaves them. Edit them out of the settings file yourself if an "
-            "earlier install wrote them.\n")
-
-
 def _every_plugin_entry(e: _Env) -> list:
-    return [*setup_permissions.wrapper_grant_entries(e.bin), *SANDBOX_PATTERNS,
+    return [*setup_permissions.wrapper_grant_entries(e.bin), *_patterns(e),
             *PLUGIN_ENV_NAMES]
-
-
-def _add_an_unrecorded_hook(target: Path) -> None:
-    """The hook entry an earlier version wrote, in the settings and in no record."""
-    data = json.loads(target.read_text(encoding="utf-8"))
-    data.setdefault("hooks", {}).setdefault("PreToolUse", []).append(LEGACY_GROUP)
-    target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-
-
-def _assert_user_content_unnamed(out: str, e: _Env) -> None:
-    # the user's own env key and grant, and the VALUES of the plugin's env keys
-    for text in ("MY_VAR", "keep-me", "Bash(ls *)", str(e.vbin.resolve()),
-                 str(e.work.resolve())):
-        assert text not in out, (text, out)
-
-
-def test_entries_in_no_record_are_named():
-    with tempfile.TemporaryDirectory() as t:
-        tmp = Path(t)
-        with _Env(tmp) as e, _Machine(tmp) as m:
-            target = _touch(tmp / "proj" / ".claude" / "settings.json",
-                            json.dumps(USER_CONTENT, indent=2))
-            prov = target.parent / setup_permissions.PROVENANCE_NAME
-            assert e.install(target) == 0
-            prov.unlink()                    # the user deleted the record
-            _add_an_unrecorded_hook(target)
-            cmd = LEGACY_HOOK
-            note = _unrecorded_note(target, _every_plugin_entry(e))
-            for run in range(2):             # a run that writes, then an up-to-date one
-                rc, out = m.run(*e.install_args(target))
-                assert rc == 0, out
-                assert note in out, out
-                assert _left_hook(target, cmd) in out, out
-                _assert_user_content_unnamed(out, e)
-                record = json.loads(prov.read_text(encoding="utf-8"))
-                assert (record["allow"], record["excludedCommands"],
-                        record["hooks_pretooluse"]) == ([], [], []), record
-            assert "already up to date" in out, out
-            before = target.read_bytes()
-            rc, out = m.run("--remove", "--target", str(target))
-            assert rc == 0, out
-            assert "nothing to remove" in out, out
-            assert note in out, out
-            assert _left_hook(target, cmd) in out, out
-            assert target.read_bytes() == before, out
-
-
-def test_remove_names_every_entry_of_the_plugins_in_no_record():
-    with tempfile.TemporaryDirectory() as t:
-        tmp = Path(t)
-        with _Env(tmp) as e, _Machine(tmp) as m:
-            target = _touch(tmp / "proj" / ".claude" / "settings.json",
-                            json.dumps(USER_CONTENT, indent=2))
-            assert e.install(target) == 0
-            (target.parent / setup_permissions.PROVENANCE_NAME).unlink()
-            _add_an_unrecorded_hook(target)
-            cmd = LEGACY_HOOK
-            before = target.read_bytes()
-            rc, out = m.run("--remove", "--target", str(target))
-            assert rc == 0, out
-            assert out.count("note: ") == 1, out
-            assert _unrecorded_note(target, _every_plugin_entry(e)) in out, out
-            assert _left_hook(target, cmd) in out, out
-            _assert_user_content_unnamed(out, e)
-            assert target.read_bytes() == before, out
-            # one entry: the singular text
-            target.write_text('{"env": {"TRIAD_WRAPPER_HARDENED": "1"}}\n',
-                              encoding="utf-8")
-            rc, out = m.run("--remove", "--target", str(target))
-            assert rc == 0, out
-            assert _unrecorded_note(target, ["TRIAD_WRAPPER_HARDENED"]) in out, out
-
-
-def test_a_record_of_every_entry_gets_no_note():
-    with tempfile.TemporaryDirectory() as t:
-        tmp = Path(t)
-        with _Env(tmp) as e, _Machine(tmp) as m:
-            target = _touch(tmp / "proj" / ".claude" / "settings.json",
-                            json.dumps(USER_CONTENT, indent=2))
-            outs = [m.run(*e.install_args(target)), m.run(*e.install_args(target)),
-                    m.run("--remove", "--target", str(target))]
-            for rc, out in outs:
-                assert rc == 0, out
-                assert "no install record" not in out, out
-                _assert_user_content_unnamed(out, e)
-            assert json.loads(target.read_text(encoding="utf-8")) == USER_CONTENT
 
 
 def test_remove_of_a_record_without_entries_goes_on_past_an_unreadable_settings_file():
@@ -1045,8 +1050,7 @@ def test_remove_of_a_record_without_entries_goes_on_past_an_unreadable_settings_
                 target = claude / "settings.json"
                 prov = _touch(claude / setup_permissions.PROVENANCE_NAME, json.dumps(
                     {"version": 2, "allow": [], "excludedCommands": [], "env": [],
-                     "hooks_pretooluse": [], "created_containers": [],
-                     "created_settings_file": False, "settings_file": "settings.json"}))
+                     "hooks_pretooluse": [], "settings_file": "settings.json"}))
                 if kind == "not json":
                     _touch(target, "{ not json")
                 else:
@@ -1054,8 +1058,6 @@ def test_remove_of_a_record_without_entries_goes_on_past_an_unreadable_settings_
                 before = _snapshot(tmp)
                 rc, out = m.run("--remove", "--target", str(target))
                 assert rc == 0, (kind, out)
-                assert re.search(rf"^left {re.escape(str(target))}: .+ — not checked "
-                                 "for entries of the plugin's$", out, re.M), (kind, out)
                 assert f"nothing to remove: no managed entries at {target}\n" in out, out
                 assert not prov.exists(), (kind, out)
                 after = _snapshot(tmp)
@@ -1063,25 +1065,7 @@ def test_remove_of_a_record_without_entries_goes_on_past_an_unreadable_settings_
                 assert after == before, (kind, out)
 
 
-def test_a_hook_joined_to_a_shell_operator_is_named():
-    with tempfile.TemporaryDirectory() as t:
-        tmp = Path(t)
-        with _Env(tmp) as e, _Machine(tmp) as m:
-            cmd = "python3 /old/hooks/pretooluse_wrapper_guard.py&&true"
-            group = {"matcher": "Bash", "hooks": [{"type": "command", "command": cmd}]}
-            target = _touch(tmp / "proj" / ".claude" / "settings.json",
-                            json.dumps({"hooks": {"PreToolUse": [group]}}, indent=2))
-            rc, out = m.run(*e.install_args(target))
-            assert rc == 0, out
-            assert _left_hook(target, cmd) in out, out
-            rc, out = m.run("--remove", "--target", str(target))
-            assert rc == 0, out
-            assert _left_hook(target, cmd) in out, out
-            assert json.loads(target.read_text(encoding="utf-8")) == \
-                {"hooks": {"PreToolUse": [group]}}
-
-
-def test_a_hook_of_an_earlier_version_is_named_and_left():
+def test_a_hook_of_an_earlier_version_in_no_record_is_left():
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         with _Env(tmp) as e, _Machine(tmp) as m:
@@ -1092,22 +1076,19 @@ def test_a_hook_of_an_earlier_version_is_named_and_left():
             prov = target.parent / setup_permissions.PROVENANCE_NAME
             rc, out = m.run(*e.install_args(target), "--dry-run")
             assert rc == 0, out
-            assert _left_hook(target, cmd_old) in out, out
             assert target.read_text(encoding="utf-8") == text and not prov.exists()
             rc, out = m.run(*e.install_args(target))
             assert rc == 0, out
-            assert _left_hook(target, cmd_old) in out, out
             assert json.loads(prov.read_text(encoding="utf-8"))["hooks_pretooluse"] == []
             assert _pretooluse_commands(json.loads(target.read_text(encoding="utf-8"))) == \
                 [cmd_old]
             rc, out = m.run("--remove", "--target", str(target))
             assert rc == 0, out
-            assert _left_hook(target, cmd_old) in out, out
             assert json.loads(target.read_text(encoding="utf-8")) == \
-                {"hooks": {"PreToolUse": [old_group]}}
+                _after_remove({"hooks": {"PreToolUse": [old_group]}})
 
 
-def test_a_users_own_hook_gets_no_line():
+def test_a_users_own_hook_is_left():
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         with _Env(tmp) as e, _Machine(tmp) as m:
@@ -1120,17 +1101,14 @@ def test_a_users_own_hook_gets_no_line():
             assert rc == 0, out
             rc, out_remove = m.run("--remove", "--target", str(target))
             assert rc == 0, out_remove
-            for text in (out, out_remove):
-                assert "in no install record" not in text, text
             assert json.loads(target.read_text(encoding="utf-8")) == \
-                {"hooks": {"PreToolUse": groups}}
+                _after_remove({"hooks": {"PreToolUse": groups}})
 
 
 def _empty_record(claude: Path, settings_file: str = "settings.json") -> Path:
     return _touch(claude / setup_permissions.PROVENANCE_NAME, json.dumps(
         {"version": 2, "allow": [], "excludedCommands": [], "env": [],
-         "hooks_pretooluse": [], "created_containers": [],
-         "created_settings_file": False, "settings_file": settings_file}))
+         "hooks_pretooluse": [], "settings_file": settings_file}))
 
 
 # ── (W5-1) a record that names another file is refused, whatever it lists ───
@@ -1148,8 +1126,7 @@ def test_remove_of_a_record_without_entries_that_names_another_file_is_refused()
             record = setup_permissions.read_provenance(local)
             assert record["settings_file"] == "settings.local.json", record
             assert not setup_permissions._has_entries(record), record
-            _add_an_unrecorded_hook(local)
-            # an entry of the plugin's in the default file too: a read would name it
+            # an entry of the plugin's in the default file too: the refusal leaves it
             _touch(claude / "settings.json",
                    '{"env": {"TRIAD_WRAPPER_HARDENED": "1"}}\n')
             before = _snapshot(tmp)
@@ -1162,44 +1139,8 @@ def test_remove_of_a_record_without_entries_that_names_another_file_is_refused()
             assert _snapshot(tmp) == before, out
             rc, out = m.run("--remove", "--target", str(local))
             assert rc == 0, out
-            assert _unrecorded_note(local, _every_plugin_entry(e)) in out, out
-            assert _left_hook(local, LEGACY_HOOK) in out, out
             assert f"nothing to remove: no managed entries at {local}\n" in out, out
             assert not prov.exists(), out
-
-
-# ── (W5-2) a container that is no object holds no entry ─────────────────────
-def test_a_container_that_is_no_object_holds_no_entry():
-    handler = {"type": "command",
-               "command": "python3 /old/hooks/pretooluse_wrapper_guard.py"}
-    for settings in ({"permissions": ["Bash(codex_wrapper.py:*)"]},
-                     {"sandbox": ["codex_wrapper.py *"]},
-                     {"hooks": [{"matcher": "Bash", "hooks": [handler]}]}):
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            with _Machine(tmp) as m:
-                claude = tmp / "proj" / ".claude"
-                target = _touch(claude / "settings.json", json.dumps(settings))
-                _empty_record(claude)
-                rc, out = m.run("--remove", "--target", str(target))
-                assert rc == 0, (settings, out)
-                assert out == (f"nothing to remove: no managed entries at {target}\n"
-                               f"removed the install record of {target}\n"), \
-                    (settings, out)
-
-
-# ── (W5-3) every env key the install writes is named by the note ─────────────
-def test_every_env_key_the_install_writes_is_named():
-    with tempfile.TemporaryDirectory() as t:
-        tmp = Path(t)
-        with _Env(tmp) as e, _Machine(tmp) as m:
-            env = setup_permissions.hardening_env(str(e.work))
-            claude = tmp / "proj" / ".claude"
-            target = _touch(claude / "settings.json", json.dumps({"env": env}))
-            _empty_record(claude)
-            rc, out = m.run("--remove", "--target", str(target))
-            assert rc == 0, out
-            assert _unrecorded_note(target, list(env)) in out, out
 
 
 # ── (W5-4) the preview names the hook path of an earlier version it would take out
@@ -1219,26 +1160,8 @@ def test_install_dry_run_names_the_hook_path_it_would_remove():
             assert prov.read_bytes() == record_before, out
 
 
-# ── (W6-1) the note reads each container in the shape the host reads ────────
-def test_a_container_of_another_type_than_the_host_reads_holds_no_entry():
-    for settings in ({"env": ["TRIAD_WRAPPER_HARDENED"]},
-                     {"permissions": {"allow": {"Bash(codex_wrapper.py:*)": True}}},
-                     {"sandbox": {"excludedCommands": {"codex_wrapper.py *": True}}}):
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            with _Machine(tmp) as m:
-                claude = tmp / "proj" / ".claude"
-                target = _touch(claude / "settings.json", json.dumps(settings))
-                _empty_record(claude)
-                rc, out = m.run("--remove", "--target", str(target))
-                assert rc == 0, (settings, out)
-                assert out == (f"nothing to remove: no managed entries at {target}\n"
-                               f"removed the install record of {target}\n"), \
-                    (settings, out)
-
-
 # ── (W6-2) a preview of the install writes nothing ──────────────────────────
-def test_install_dry_run_creates_no_directory_and_no_lock_file():
+def test_install_dry_run_creates_no_directory_and_no_file():
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         with _Env(tmp) as e, _Machine(tmp) as m:
@@ -1248,11 +1171,12 @@ def test_install_dry_run_creates_no_directory_and_no_lock_file():
             before = _snapshot(tmp)
             rc, out = m.run(*e.install_args(target), "--dry-run")
             assert rc == 0, out
-            assert f"would add {len(WRAPPER_SCRIPTS)} permissions.allow grants to " \
+            grants = len(setup_permissions.wrapper_grant_entries(e.bin))
+            assert f"would add {grants} permissions.allow grants to " \
                    f"{target}:\n" in out, out
             assert _snapshot(tmp) == before, out
             assert not (proj / ".claude").exists(), out
-            # a .claude/ without a lock file: the preview creates none
+            # an existing, empty .claude/: the preview creates nothing in it
             target.parent.mkdir()
             rc, out = m.run(*e.install_args(target), "--dry-run")
             assert rc == 0, out
@@ -1420,7 +1344,8 @@ def test_an_empty_group_of_the_users_stays():
                 {"PreToolUse": [empty]}, out
             rc, out = m.run("--remove", "--target", str(target))
             assert rc == 0, out
-            assert json.loads(target.read_text(encoding="utf-8")) == original, out
+            assert json.loads(target.read_text(encoding="utf-8")) == \
+                _after_remove(original), out
 
 
 # ── (W8-1) the ordinary branch of --remove says what it removes ─────────────
@@ -1433,19 +1358,19 @@ def test_remove_names_the_settings_file_and_the_record_it_removes():
             prov = claude / setup_permissions.PROVENANCE_NAME
             # every entry of the plugin's
             count = f"{len(_every_plugin_entry(e))} authored entries from {target}\n"
-            # the install creates the settings file: --remove deletes it
+            # the install creates the settings file: --remove keeps it
             assert e.install(target) == 0
             before = _snapshot(tmp)
             rc, out = m.run("--remove", "--dry-run", "--target", str(target))
             assert rc == 0, out
-            assert out == (f"would remove {count}would remove {target}\n"
+            assert out == (f"would remove {count}"
                            f"would remove the install record of {target}\n"), out
             assert _snapshot(tmp) == before, out
             rc, out = m.run("--remove", "--target", str(target))
             assert rc == 0, out
-            assert out == (f"removed {count}removed {target}\n"
+            assert out == (f"removed {count}"
                            f"removed the install record of {target}\n"), out
-            assert os.listdir(claude) == [], os.listdir(claude)
+            assert os.listdir(claude) == ["settings.json"], os.listdir(claude)
             # a settings file with an entry of the user's stays
             _touch(target, json.dumps(USER_CONTENT, indent=2))
             assert e.install(target) == 0
@@ -1457,188 +1382,66 @@ def test_remove_names_the_settings_file_and_the_record_it_removes():
             assert rc == 0, out
             assert out == (f"removed {count}"
                            f"removed the install record of {target}\n"), out
-            assert json.loads(target.read_text(encoding="utf-8")) == USER_CONTENT
+            assert json.loads(target.read_text(encoding="utf-8")) == \
+                _after_remove(USER_CONTENT)
             assert not prov.exists(), out
 
 
-# ── (W8-2) entries taken out by hand: --remove clears what the install created
-def test_remove_clears_the_empty_containers_the_install_created():
-    empty = {"permissions": {"allow": []}, "sandbox": {"excludedCommands": []},
-             "env": {}}
-    for case in ("the install created the file", "the user's entry",
-                 "no container left"):
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            with _Env(tmp) as e, _Machine(tmp) as m:
-                claude = tmp / "proj" / ".claude"
-                target = claude / "settings.json"
-                prov = claude / setup_permissions.PROVENANCE_NAME
-                if case != "the install created the file":
-                    _touch(target, json.dumps(USER_CONTENT, indent=2))
-                assert e.install(target) == 0
-                # the user takes every entry of the plugin's out by hand
-                if case == "the install created the file":
-                    _touch(target, json.dumps(empty, indent=2))
-                elif case == "the user's entry":
-                    _touch(target, json.dumps(
-                        {**USER_CONTENT, "sandbox": {"excludedCommands": []}},
-                        indent=2))
-                else:
-                    target.write_bytes(
-                        (json.dumps(USER_CONTENT, indent=4) + "\n").encode("utf-8"))
-                    target.chmod(0o644)
-                raw, inode = target.read_bytes(), target.stat().st_ino
-                done = {"the install created the file": f"{target}\n",
-                        "the user's entry": "the empty containers the install "
-                                            f"created from {target}\n",
-                        "no container left": None}[case]
-                # (W9-2) a run that removed something does not say `nothing to remove`
-                tail = (f"no managed entries were left in {target}\n" if done else
-                        f"nothing to remove: no managed entries at {target}\n")
-                before = _snapshot(tmp)
-                rc, out = m.run("--remove", "--dry-run", "--target", str(target))
-                assert rc == 0, (case, out)
-                assert out == (f"would remove {done}" if done else "") + tail + \
-                    f"would remove the install record of {target}\n", (case, out)
-                assert _snapshot(tmp) == before, (case, out)
-                rc, out = m.run("--remove", "--target", str(target))
-                assert rc == 0, (case, out)
-                assert out == (f"removed {done}" if done else "") + tail + \
-                    f"removed the install record of {target}\n", (case, out)
-                assert not prov.exists(), case
-                if case == "the install created the file":
-                    assert os.listdir(claude) == [], os.listdir(claude)
-                elif case == "the user's entry":
-                    assert json.loads(target.read_text(encoding="utf-8")) == \
-                        USER_CONTENT, target.read_text(encoding="utf-8")
-                else:
-                    assert target.read_bytes() == raw, case
-                    st = target.stat()
-                    assert stat.S_IMODE(st.st_mode) == 0o644, oct(st.st_mode)
-                    assert st.st_ino == inode, case
-
-
-# ── (W9-1) a settings file the install created, emptied by hand, goes too ────
-def test_remove_deletes_a_settings_file_the_install_created_emptied_by_hand():
-    for case in ("{}", "zero bytes", "the user's file", "deleted"):
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            with _Env(tmp) as e, _Machine(tmp) as m:
-                claude = tmp / "proj" / ".claude"
-                target = claude / "settings.json"
-                prov = claude / setup_permissions.PROVENANCE_NAME
-                if case == "the user's file":
-                    _touch(target, json.dumps(USER_CONTENT, indent=2))
-                assert e.install(target) == 0
-                if case == "deleted":
-                    # the user deletes the file the install created: the
-                    # branch stays silent about it and only drops the record
-                    target.unlink()
-                    tail = f"nothing to remove: no managed entries at {target}\n"
-                    before = _snapshot(tmp)
-                    rc, out = m.run("--remove", "--dry-run", "--target", str(target))
-                    assert (rc, out) == (0, tail + "would remove the install "
-                                         f"record of {target}\n"), (case, out)
-                    assert _snapshot(tmp) == before, (case, out)
-                    rc, out = m.run("--remove", "--target", str(target))
-                    assert (rc, out) == (0, tail + "removed the install "
-                                         f"record of {target}\n"), (case, out)
-                    assert os.listdir(claude) == [], (case, os.listdir(claude))
-                    continue
-                # the user empties the file by hand
-                target.write_bytes(b"" if case == "zero bytes" else b"{}\n")
-                target.chmod(0o644)
-                raw, inode = target.read_bytes(), target.stat().st_ino
-                ours = case != "the user's file"
-                tail = (f"no managed entries were left in {target}\n" if ours else
-                        f"nothing to remove: no managed entries at {target}\n")
-                before = _snapshot(tmp)
-                rc, out = m.run("--remove", "--dry-run", "--target", str(target))
-                assert rc == 0, (case, out)
-                assert out == (f"would remove {target}\n" if ours else "") + tail + \
-                    f"would remove the install record of {target}\n", (case, out)
-                assert _snapshot(tmp) == before, (case, out)
-                rc, out = m.run("--remove", "--target", str(target))
-                assert rc == 0, (case, out)
-                assert out == (f"removed {target}\n" if ours else "") + tail + \
-                    f"removed the install record of {target}\n", (case, out)
-                assert not prov.exists(), case
-                if ours:
-                    assert os.listdir(claude) == [], (case, os.listdir(claude))
-                else:
-                    assert target.read_bytes() == raw, case
-                    st = target.stat()
-                    assert stat.S_IMODE(st.st_mode) == 0o644, oct(st.st_mode)
-                    assert st.st_ino == inode, case
-
-
-# ── (A7) an unlinked lock file cannot split the lock ─────────────────────────
-def _same_inode(fd: int, path: Path) -> bool:
-    st, fst = os.stat(path, follow_symlinks=False), os.fstat(fd)
-    return (st.st_dev, st.st_ino) == (fst.st_dev, fst.st_ino)
-
-
-def test_open_lock_follows_an_unlinked_lock_file():
+# ── (W8-2) --remove takes out the entries and keeps the settings file ──────
+def test_remove_keeps_the_settings_file():
     with tempfile.TemporaryDirectory() as t:
-        target = Path(t) / "proj" / ".claude" / "settings.json"
-        lock = target.parent / setup_permissions.LOCK_NAME
-        # a released, unlinked lock: a fresh open takes the path's inode
-        fd1 = setup_permissions._open_lock(target)
-        setup_permissions._release_lock(fd1, lock)
-        fd2 = setup_permissions._open_lock(target)
-        try:
-            assert _same_inode(fd2, lock)
-        finally:
-            setup_permissions._release_lock(fd2)
-        # a waiter blocked on the old inode while the holder unlinks and releases
-        # ends up on the inode the path names now, not on the unlinked one
-        holder = setup_permissions._open_lock(target)
-        blocking = threading.Event()
-        real = setup_permissions.fcntl
-
-        class _Shim:
-            LOCK_EX, LOCK_UN = real.LOCK_EX, real.LOCK_UN
-
-            @staticmethod
-            def flock(fd, op):
-                if op == real.LOCK_EX:
-                    blocking.set()
-                real.flock(fd, op)
-
-        def _unlink_and_release():
-            blocking.wait()
-            setup_permissions._release_lock(holder, lock)
-
-        worker = threading.Thread(target=_unlink_and_release)
-        worker.start()
-        setup_permissions.fcntl = _Shim
-        try:
-            waiter = setup_permissions._open_lock(target)
-        finally:
-            setup_permissions.fcntl = real
-            worker.join()
-        try:
-            assert lock.exists(), "the waiter holds a lock on an unlinked file"
-            assert _same_inode(waiter, lock)
-        finally:
-            setup_permissions._release_lock(waiter)
+        tmp = Path(t)
+        with _Env(tmp) as e, _Machine(tmp) as m:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            assert not target.exists()
+            assert e.install(target) == 0
+            rc, out = m.run("--remove", "--target", str(target))
+            assert rc == 0, out
+            assert target.exists(), out
+            data = json.loads(target.read_text(encoding="utf-8"))
+            allow = data.get("permissions", {}).get("allow", [])
+            assert not any(a in allow for a in
+                           setup_permissions.wrapper_grant_entries(e.bin)), data
+            assert not any(k.startswith("TRIAD_") for k in data.get("env", {})), data
+            assert not (target.parent / setup_permissions.PROVENANCE_NAME).exists()
 
 
-# ── (A8) a lock file --remove created is removed when the run errors ─────────
-def test_remove_error_removes_only_a_lock_it_created():
-    for lock_before in (False, True):
+# ── (W9-1) a settings file emptied by hand stays as it is ──────────────────
+def test_remove_of_a_hand_emptied_file_keeps_it():
+    for emptied in (b"{}\n", b""):
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             with _Env(tmp) as e, _Machine(tmp) as m:
                 target = tmp / "proj" / ".claude" / "settings.json"
                 assert e.install(target) == 0
-                target.write_text("{ not json", encoding="utf-8")
-                lock = target.parent / setup_permissions.LOCK_NAME
-                if not lock_before:
-                    lock.unlink()
+                target.write_bytes(emptied)
+                inode = target.stat().st_ino
                 rc, out = m.run("--remove", "--target", str(target))
-                assert rc == 1, out
-                assert lock.exists() == lock_before, (lock_before, out)
+                assert rc == 0, (emptied, out)
+                assert target.exists(), (emptied, out)
+                assert target.read_bytes() == emptied, emptied
+                assert target.stat().st_ino == inode, emptied
+                assert out == (f"nothing to remove: no managed entries at {target}\n"
+                               f"removed the install record of {target}\n"), out
+
+
+# ── (W9-2) a symlinked install record is read like a file ───────────────────
+def test_symlinked_record_is_read():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e, _Machine(tmp) as m:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            assert e.install(target) == 0
+            prov = target.parent / setup_permissions.PROVENANCE_NAME
+            real = tmp / "elsewhere" / "record.json"
+            real.parent.mkdir()
+            prov.rename(real)
+            os.symlink(real, prov)
+            rc, out = m.run("--remove", "--target", str(target))
+            assert rc == 0, out
+            data = json.loads(target.read_text(encoding="utf-8"))
+            assert _every_plugin_entry(e)[0] not in data["permissions"]["allow"], data
+            assert not any(k.startswith("TRIAD_") for k in data["env"]), data
 
 
 # ── (B1) --uninstall-machine removes every machine item and says so ──────────
@@ -1683,9 +1486,7 @@ def test_uninstall_machine_leaves_env_override_locations():
             os.environ["TRIAD_CLASSIFIER_EXTENSION"] = str(ext)
             rc, out = m.run("--uninstall-machine")
             assert rc == 0, out
-            for path, var in ((ext, "TRIAD_CLASSIFIER_EXTENSION"),):
-                assert path.exists(), f"{path} (set by {var}) was removed"
-                assert f"left {path}: set by {var} (yours)" in out, out
+            assert ext.exists(), f"{ext} (set by TRIAD_CLASSIFIER_EXTENSION) was removed"
 
 
 # ── (B4) the agy settings files are never the plugin's: every one is left ────
@@ -1706,30 +1507,6 @@ def test_uninstall_machine_leaves_agy_settings_files():
                 assert text not in out, f"the uninstall names {text!r}\n{out}"
 
 
-# ── (B20) no usable temporary directory: reported, and the run goes on ───────
-def test_uninstall_machine_without_a_usable_temporary_directory():
-    class _NoTemp:
-        @staticmethod
-        def gettempdir():
-            raise FileNotFoundError(2, "No usable temporary directory found")
-
-    for tmpdir_set in (True, False):
-        with tempfile.TemporaryDirectory() as t:
-            with _Machine(Path(t)) as m:
-                if not tmpdir_set:
-                    os.environ.pop("TMPDIR")
-                real = setup_permissions.tempfile
-                setup_permissions.tempfile = _NoTemp
-                try:
-                    rc, out = m.run("--uninstall-machine")
-                finally:
-                    setup_permissions.tempfile = real
-                where = m.systmp if tmpdir_set else "the temporary directory"
-                assert rc == 0, out
-                assert f"left {where}: No usable temporary directory found\n" in out, out
-                assert out.endswith("machine-scope clean-up finished\n"), out
-
-
 # ── (B5) a symlinked item is left, and its target is untouched ───────────────
 def test_uninstall_machine_leaves_symlinks():
     with tempfile.TemporaryDirectory() as t:
@@ -1743,15 +1520,11 @@ def test_uninstall_machine_leaves_symlinks():
             dlink = m.home / ".config" / "triad-dispatch"
             dlink.parent.mkdir(parents=True)
             os.symlink(real_dir, dlink)
-            tlink = m.systmp / "codex_last_1_zzzzzzzz.txt"
-            os.symlink(real, tlink)
             rc, out = m.run("--uninstall-machine")
             assert rc == 0, out
-            for p in (link, dlink, tlink):
-                assert p.is_symlink(), f"symlink removed: {p}"
             for p in (link, dlink):
+                assert p.is_symlink(), f"symlink removed: {p}"
                 assert f"left {p}: symlink" in out, out
-            assert f"left {tlink}{TEMP_LEFT}" in out, out
             assert real.exists() and (real_dir / "report.md").exists()
 
 
@@ -1784,20 +1557,27 @@ def test_uninstall_machine_dry_run_changes_nothing():
             assert "removed " not in out, out
 
 
-# ── (B10) nothing is removed in the shared temp dir: what matches is listed ──
+# ── (B10) nothing is removed in the shared temp dir ─────────────────────────
 def test_uninstall_machine_removes_nothing_in_the_shared_temp_dir():
     with tempfile.TemporaryDirectory() as t:
         with _Machine(Path(t)) as m:
-            items = _plant_temp(m)
-            unrelated = _touch(m.systmp / "codex_last_notes.txt")
-            _age(unrelated)
+            _plant_temp(m)
+            _age(_touch(m.systmp / "codex_last_notes.txt"))
             before = _snapshot(m.systmp)
             rc, out = m.run("--uninstall-machine")
             assert rc == 0, out
             assert _snapshot(m.systmp) == before, out
-            for name, p in items.items():
-                assert f"left {p}{TEMP_LEFT}" in out, f"{name}: no line\n{out}"
-            assert str(unrelated) not in out, out
+
+
+# ── (B10b) nothing in the shared temp dir is listed either ─────────────────
+def test_uninstall_machine_lists_nothing_in_the_shared_temp_dir():
+    with tempfile.TemporaryDirectory() as t:
+        with _Machine(Path(t)) as m:
+            planted = _touch(m.systmp / "codex_last_123_abcdefgh.txt")
+            rc, out = m.run("--uninstall-machine")
+            assert rc == 0, out
+            assert planted.exists(), out
+            assert planted.name not in out, out
 
 
 # ── (B11) the config home follows the engine: XDG_CONFIG_HOME when set, else ~/.config
@@ -1809,14 +1589,6 @@ def test_uninstall_machine_config_home_follows_the_engine():
             rc, out = m.run("--uninstall-machine")
             assert rc == 0, out
             assert not home_patch.exists() and not home_patch.parent.exists(), out
-    with tempfile.TemporaryDirectory() as t:
-        with _Machine(Path(t)) as m:
-            os.environ["XDG_CONFIG_HOME"] = "relative/config"
-            before = _snapshot(m.tmp)
-            rc, out = m.run("--uninstall-machine")
-            assert rc == 0, out
-            assert "left relative/config/triad-dispatch: XDG_CONFIG_HOME is relative" in out, out
-            assert _snapshot(m.tmp) == before, "a relative XDG_CONFIG_HOME run changed the tree"
 
 
 # ── (B13) one item that cannot be removed does not stop the uninstall ────────
@@ -1903,40 +1675,15 @@ def test_a_directory_that_cannot_be_listed_does_not_end_the_run():
             assert not later.exists() and f"removed {later}" in out, out
             assert rc_remove == 0, out_remove
             assert f"left {target.parent}: " in out_remove, out_remove
-            assert not target.exists(), out_remove
+            data = json.loads(target.read_text(encoding="utf-8"))
+            assert data == _after_remove({}), out_remove
 
 
-# ── (B14) temp names match the exact shapes the wrappers create ──────────────
-def test_temp_names_match_the_wrapper_shapes_only():
-    candidates = (_TESTS_DIR.parent / "bin" / "codex_wrapper.py",  # export
-                  _TESTS_DIR.parent / "codex_wrapper.py")          # source
-    wrapper = next((c for c in candidates if c.is_file()), None)
-    assert wrapper is not None, f"codex_wrapper.py not found: {candidates}"
-    text = wrapper.read_text(encoding="utf-8")
-    for call in ('prefix=f"codex_last_{os.getpid()}_", suffix=".txt"',
-                 'prefix=f"codex_schema_{os.getpid()}_", suffix=".json"'):
-        assert call in text, f"the wrapper's temp name changed: {call}"
-    # the 8 random characters tempfile appends
-    assert set(tempfile._RandomNameSequence.characters) == set(
-        "abcdefghijklmnopqrstuvwxyz0123456789_")
+# ── (B14) --remove takes out this script's own stray temp names only ───────
+def test_remove_takes_out_only_its_own_stray_temp_names():
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         with _Machine(tmp) as m:
-            shapes = [_touch(m.systmp / "codex_last_901_x7y8z9w0.txt"),
-                      _touch(m.systmp / "codex_schema_901_k_l_m_n_.json")]
-            # a report dir of the removed codex `--task` mode is no wrapper name now
-            others = [_touch(m.systmp / "codex_report_ab_1cd2e" / "synthesis.md").parent,
-                      _touch(m.systmp / "codex_last_notes.txt"),
-                      _touch(m.systmp / "codex_schema_mine.json"),
-                      _touch(m.systmp / "codex_schema_901_k_l_m_n_X.json")]
-            _age(*shapes, *others)
-            rc, out = m.run("--uninstall-machine")
-            assert rc == 0, out
-            for p in shapes:
-                assert f"left {p}{TEMP_LEFT}" in out, f"{p}: no line\n{out}"
-            for p in others:
-                assert f"left {p}:" not in out, f"{p} is not a wrapper temp name\n{out}"
-            # this script's own stray temp names in a project's .claude/
             claude = tmp / "proj" / ".claude"
             strays = [_touch(claude / ".settings.a1b2c3d4.json.tmp"),
                       _touch(claude / ".triad-prov.a1b2c3d4.json.tmp")]
@@ -2080,12 +1827,13 @@ def test_unrecorded_pin_key_is_left():
             assert "TRIAD_REQUIRE_PINNED_VENDOR" not in record["env"], record
 
 
-# ── (D1) the grants are the three Python wrappers; no daily check is granted ─
-def test_wrapper_scripts_are_the_three_python_wrappers():
+# ── (D1, I2) the grants are the three wrappers and the patch applier; no daily
+#    check is granted ─────────────────────────────────────────────────────────
+def test_wrapper_scripts_are_the_wrappers_and_the_applier():
     module = _load_script()
     assert module.WRAPPER_SCRIPTS == (
-        "codex_wrapper.py", "gemini_wrapper.py", "antigravity_wrapper.py"), \
-        module.WRAPPER_SCRIPTS
+        "codex_wrapper.py", "gemini_wrapper.py", "antigravity_wrapper.py",
+        "apply_patch.py"), module.WRAPPER_SCRIPTS
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         with _Env(tmp) as e:
@@ -2095,6 +1843,39 @@ def test_wrapper_scripts_are_the_three_python_wrappers():
             data = json.loads(target.read_text(encoding="utf-8"))
             assert not [x for x in data["permissions"]["allow"]
                         + data["sandbox"]["excludedCommands"] if "daily" in x], data
+
+
+# ── (I2) --install retires the bare-name grants of an earlier install ──────
+def test_install_retires_an_earlier_bare_grant():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            target = tmp / "proj" / ".claude" / "settings.json"
+            prov = target.parent / setup_permissions.PROVENANCE_NAME
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert e.install(target) == 0
+            # the settings and the record as an earlier install left them: the
+            # bare-name grant and pattern instead of the plugin-path ones
+            old_grant, old_pattern = "Bash(codex_wrapper.py:*)", "codex_wrapper.py *"
+            data = json.loads(target.read_text(encoding="utf-8"))
+            record = json.loads(prov.read_text(encoding="utf-8"))
+            data["permissions"]["allow"] = [old_grant]
+            data["sandbox"]["excludedCommands"] = [old_pattern]
+            record["allow"] = [old_grant]
+            record["excludedCommands"] = [old_pattern]
+            target.write_text(json.dumps(data), encoding="utf-8")
+            prov.write_text(json.dumps(record), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert e.install(target) == 0
+            data = json.loads(target.read_text(encoding="utf-8"))
+            record = json.loads(prov.read_text(encoding="utf-8"))
+            allow = data["permissions"]["allow"]
+            excluded = data["sandbox"]["excludedCommands"]
+            assert old_grant not in allow and old_pattern not in excluded, data
+            assert old_grant not in record["allow"], record
+            assert old_pattern not in record["excludedCommands"], record
+            assert allow == setup_permissions.wrapper_grant_entries(e.bin), allow
+            assert excluded == _patterns(e), excluded
 
 
 # ── (D1) --install retires the daily-check grants its record shows it wrote ──
@@ -2150,7 +1931,8 @@ def test_uninstall_machine_leaves_triad_daily():
 
 
 TESTS = [
-    test_fresh_install_writes_basename_grants_and_hardening,
+    test_fresh_install_writes_plugin_path_grants_and_hardening,
+    test_fresh_install_grants_the_review_library_lines,
     test_second_install_is_idempotent,
     test_directory_target_resolves,
     test_preserves_unrelated_keys_and_existing_allow,
@@ -2171,6 +1953,8 @@ TESTS = [
     test_remove_empty_record_deletes_provenance,
     test_remove_with_absent_settings_does_not_create_it,
     test_install_remove_leaves_no_sidecar,
+    test_install_leaves_no_lock_sidecar,
+    test_remove_with_a_hand_deleted_record_prints_only_the_plain_result,
     test_remove_dry_run_changes_nothing,
     test_remove_other_target_is_refused,
     test_install_into_a_second_settings_file_is_refused,
@@ -2180,49 +1964,42 @@ TESTS = [
     test_the_record_is_written_first_and_an_interrupted_first_install_is_repaired,
     test_install_interrupted_before_the_settings_write_is_removable,
     test_plugin_update_interrupted_after_the_settings_write_is_repaired,
-    test_entries_in_no_record_are_named,
-    test_remove_names_every_entry_of_the_plugins_in_no_record,
-    test_a_record_of_every_entry_gets_no_note,
     test_remove_of_a_record_without_entries_goes_on_past_an_unreadable_settings_file,
-    test_a_hook_joined_to_a_shell_operator_is_named,
-    test_a_hook_of_an_earlier_version_is_named_and_left,
-    test_a_users_own_hook_gets_no_line,
+    test_a_hook_of_an_earlier_version_in_no_record_is_left,
+    test_a_users_own_hook_is_left,
     test_remove_of_a_record_without_entries_that_names_another_file_is_refused,
-    test_a_container_that_is_no_object_holds_no_entry,
-    test_every_env_key_the_install_writes_is_named,
     test_install_dry_run_names_the_hook_path_it_would_remove,
-    test_a_container_of_another_type_than_the_host_reads_holds_no_entry,
-    test_install_dry_run_creates_no_directory_and_no_lock_file,
+    test_install_dry_run_creates_no_directory_and_no_file,
     test_install_beside_a_record_without_entries_that_names_another_file_is_refused,
     test_a_run_that_changes_the_record_alone_says_so,
     test_a_run_that_changes_the_record_alone_leaves_the_settings_file_as_it_is,
     test_remove_says_that_it_removes_the_record,
     test_an_empty_group_of_the_users_stays,
     test_remove_names_the_settings_file_and_the_record_it_removes,
-    test_remove_clears_the_empty_containers_the_install_created,
-    test_remove_deletes_a_settings_file_the_install_created_emptied_by_hand,
-    test_open_lock_follows_an_unlinked_lock_file,
-    test_remove_error_removes_only_a_lock_it_created,
+    test_remove_keeps_the_settings_file,
+    test_remove_of_a_hand_emptied_file_keeps_it,
+    test_symlinked_record_is_read,
     test_uninstall_machine_removes_every_item,
     test_uninstall_machine_nothing_present_creates_nothing,
     test_uninstall_machine_leaves_env_override_locations,
     test_uninstall_machine_leaves_agy_settings_files,
-    test_uninstall_machine_without_a_usable_temporary_directory,
     test_uninstall_machine_leaves_symlinks,
     test_uninstall_machine_keeps_dir_with_foreign_file,
     test_uninstall_machine_dry_run_changes_nothing,
     test_uninstall_machine_removes_nothing_in_the_shared_temp_dir,
+    test_uninstall_machine_lists_nothing_in_the_shared_temp_dir,
     test_uninstall_machine_config_home_follows_the_engine,
     test_uninstall_machine_continues_past_an_item_it_cannot_remove,
     test_a_directory_that_cannot_be_examined_is_reported,
     test_a_directory_that_cannot_be_listed_does_not_end_the_run,
-    test_temp_names_match_the_wrapper_shapes_only,
+    test_remove_takes_out_only_its_own_stray_temp_names,
     test_agy_agent_names_match_the_wrapper,
     test_modes_are_mutually_exclusive,
     test_install_retires_recorded_pin_keys,
     test_unrecorded_pin_key_is_left,
     test_install_retires_the_keys_an_interrupted_run_left,
-    test_wrapper_scripts_are_the_three_python_wrappers,
+    test_wrapper_scripts_are_the_wrappers_and_the_applier,
+    test_install_retires_an_earlier_bare_grant,
     test_install_retires_recorded_daily_grants,
     test_uninstall_machine_leaves_triad_daily,
 ]

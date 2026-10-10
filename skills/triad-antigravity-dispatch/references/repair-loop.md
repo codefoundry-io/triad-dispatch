@@ -2,16 +2,16 @@
 
 Loaded on demand from `triad-antigravity-dispatch/SKILL.md` Step 5. Read this
 when a dispatch classified `unknown` / `extraction-error` / `timeout` and the
-repair analyzer is in play. The analyzer prompt itself (Step 5b) and the
-proposal parse (Step 5c) stay in the SKILL body; this file carries the
-surrounding shell.
+repair analyzer is in play. The analyzer prompt itself (Step 5b), the proposal
+read (Step 5c) and every command stay in the SKILL body; this file carries the
+surrounding rules.
 
 ## Contents
 
 | Section | Open it when |
 |---|---|
 | Terminal (65) causes | a call classified terminal and you are deciding what to tell the user |
-| 5a — extract the run-log path | pulling the run-log path out of wrapper stderr |
+| 5a — read the run-log path | reading the run-log path from the wrapper's stderr |
 | 5d — branch | the analyzer returned and you are applying or escalating |
 | Branch summary | you want the outcome table only |
 
@@ -36,90 +36,48 @@ do.
 something a classifier patch could express, which is why they stay out of the
 repair branch.
 
-## 5a — extract the run-log path
+## 5a — read the run-log path
 
-```bash
-RUN_LOG_PATH=$(grep -E '^\[[^]]*\] run-log: ' <stderr-text> \
-                 | sed -E 's/^\[[^]]*\] run-log: //' | tail -1)
-# Shape gate, in order: reject traversal and anything that would break quoting
-# downstream, then pin the directory AND the basename the wrapper actually emits.
-case "$RUN_LOG_PATH" in
-  *..*|*\'*|*\"*|*'`'*|*'$'*|*' '*|*"$(printf '\t')"*|"")
-    echo "run-log path rejected (traversal, quote/expansion character, or whitespace): $RUN_LOG_PATH"; exit 1 ;;
-esac
-case "$RUN_LOG_PATH" in
-  */_logs/antigravity/runs/*.json) ;;
-  *) echo "run-log path failed shape validation (expected .../_logs/antigravity/runs/*.json): $RUN_LOG_PATH"; exit 1 ;;
-esac
-case "$(basename -- "$RUN_LOG_PATH")" in
-  *.json) ;;
-  *) echo "run-log basename is not a .json file: $RUN_LOG_PATH"; exit 1 ;;
-esac
-[ -f "$RUN_LOG_PATH" ] || { echo "run-log path missing"; exit 1; }
-```
-
-The value reaches the 5b analyzer prompt, so it passes all three gates BEFORE
-that use: no `..` segment, no quote / backtick / `$` / whitespace
-character, the wrapper's own directory shape, and a `.json` basename. A value
-that fails any gate is refused rather than passed through.
-
-Anchor on the wrapper's OWN timestamped log line (`^\[[^]]*\] run-log: `,
-mirroring the Step 3 summary grep's anchor): a plain `.*run-log: ` substring
-match can be tricked by vendor-influenced stderr text that merely CONTAINS that
-phrase, and the stream is untrusted vendor output. Validate the extracted path
-against the expected `_logs/antigravity/runs/…json` shape BEFORE
-interpolating it into the analyzer prompt — a value that fails
-validation is refused rather than passed through. Take everything after the
-anchor to the end of that line (last occurrence), since the path may contain
-spaces and a whitespace-delimited grab would truncate it. Keep every later use
-double-quoted.
+Take the path from the Bash tool result (SKILL.md Step 3) exactly as the wrapper
+printed it: the value after `run-log: ` on the LAST `run-log:` line of stderr —
+a file the wrapper wrote under its own `_logs/antigravity/runs/`. The leader
+passes it on unchanged; it is not re-checked. Recorded limit: a vendor child
+printing a forged `run-log:` line earlier in stderr is a constructed shape — the
+wrapper's own line comes last and the leader reads the last; not guarded.
 
 The leader passes this PATH to the analyzer and does not read the run-log content
 itself (Hard rule 2). There is no output file: the analyzer replies inline.
 
 ## 5d — branch: escalate surfaces, propose applies and verifies
 
-**Control flow (one reading only).** 5a's extraction runs in its OWN Bash call,
-right after Step 2's failing dispatch — its output (`RUN_LOG_PATH`) is what gets
+**Control flow (one reading only).** 5a reads the path from the failing dispatch's tool result,
+right after Step 2's failing dispatch — the path it reads is what gets
 substituted into 5b's prompt. Step 5b then spawns the analyzer in the BACKGROUND
 (`run_in_background: true`, Hard rule 8) and the leader WAITS for its completion
 notification — a separate, non-Bash step; never poll. Only once the analyzer's
-inline JSON reply has arrived do 5c's parse and this case block run, and they run
-TOGETHER in ONE Bash invocation. Shell state (`AGENT_JSON`, `OUTCOME`, `PROPOSAL`,
-and Step 1's `AGY_CMD` array — re-declare Step 1's exact `AGY_CMD=( … )` array
-in this same invocation, since the propose branch replays it; never flatten it
-into one string) does not persist across separate Bash calls, and a
-split run reads an empty `OUTCOME` and skips the apply. The run-log stays in every branch: never delete
-it, or anything else under `_logs/` — the wrapper's own sweep collects it later.
+inline JSON reply has arrived does the leader pick the branch from its `outcome`
+(the value 5c parses). The run-log stays in every branch: never delete it, or
+anything else under `_logs/` — the wrapper's own sweep collects it later.
 
-```bash
-case "$OUTCOME" in
-  escalate)
-    echo "repair escalated: $REASON"
-    ;;
-  propose)
-    if printf '%s' "$PROPOSAL" \
-         | apply_patch.py --cli antigravity; then
-      # applier exit 0 → patch landed; re-run in --repair-mode to verify routing.
-      # Replay Step 1's exact AGY_CMD=( … ) array, re-declared in this
-      # invocation, with --repair-mode appended as its own DISTINCT element —
-      # never flatten it into one string (an optional bracketed value is not
-      # quoting-safe once flattened).
-      "${AGY_CMD[@]}" --repair-mode
-    else
-      echo "proposal rejected by applier: $REASON"   # applier exit 3 → treat as escalate
-    fi
-    ;;
-  *)
-    # Unparseable analyzer output: the agent returned conversational text (or
-    # empty), so jq failed and OUTCOME is not propose/escalate. Do NOT silently
-    # proceed — SURFACE it. No patch is applied; the original failure
-    # classification stands.
-    echo "repair skipped — unparseable analyzer output (OUTCOME='$OUTCOME'); the original failure classification stands"
-    # The run-log is the diagnostic input for the manual follow-up.
-    ;;
-esac
-```
+The commands themselves are in SKILL.md Step 5d — run them from there, never
+from this file: the skill body is where the plugin path is filled in.
+
+- **`propose`** — the leader writes the analyzer's `proposal` object to a new
+  absolute file (the Write tool) and runs the apply step, one simple command
+  with literal arguments (the command in SKILL.md Step 5d). It reads the
+  applier's exit code from the Bash tool result:
+  - **0** — applied. The leader verifies routing in a separate Bash call: Step
+    1's literal command line again, unchanged, with `--repair-mode` appended
+    (SKILL.md Step 5d).
+  - **3** — invalid proposal or bad input; the extension file is untouched.
+    Surface `proposal rejected by applier: <REASON>` and treat it as an escalate.
+- **`escalate`** — the analyzer could not classify: surface
+  `repair escalated: <REASON>`; no apply.
+- **anything else** — unparseable analyzer output: the agent returned
+  conversational text (or nothing), or its `outcome` is neither value. Do NOT
+  proceed silently — surface `repair skipped — unparseable analyzer output; the
+  original failure classification stands`. No patch is
+  applied; the run-log is the diagnostic input for the manual follow-up.
 
 The applier re-validates the proposal independently (enum + pattern-name +
 literal bounds), so it is the security backstop even if the analyzer misbehaves:

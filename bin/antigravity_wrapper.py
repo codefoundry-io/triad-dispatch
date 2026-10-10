@@ -132,7 +132,6 @@ def _is_vendor_print_timeout(stderr) -> bool:
     return isinstance(stderr, str) and bool(_VENDOR_PRINT_TIMEOUT_RE.search(stderr))
 
 
-@_common._never_raises(lambda exc: ("unknown", _common.EXIT_CLI_FAIL), cli="antigravity")
 def _classify_no_answer(stderr: str, signals, vendor_rc: int,
                         status=None, stdout: str = "") -> tuple:
     """Decide classification for the no-usable-answer case.
@@ -169,23 +168,6 @@ def _classify_no_answer(stderr: str, signals, vendor_rc: int,
     return cls, _common.map_classification_to_exit(cls)
 
 
-# agy 1.1.3 flipped headless (-p) permission policy: a tool needing a
-# confirmation is soft-denied UNCONDITIONALLY (the allow-list is not consulted
-# in print mode — verified: allow-rule forms, settings modes, env vars, and a
-# PreToolUse decision:allow hook all fail). agy emits this distinctive line:
-#   "... a tool required the "read_file" permission that headless mode cannot
-#    prompt for, so it was auto-denied."
-_HEADLESS_SOFTDENY_SIGNATURE = "headless mode cannot prompt"
-
-
-def _is_headless_softdeny(text) -> bool:
-    """True when agy's output carries the 1.1.3+ headless soft-deny signature.
-    Targeted — matches ONLY that vendor message, so a version where the
-    allow-list works (<=1.1.2 and any future fix) never trips it, and a plain
-    empty/extraction failure is untouched."""
-    return _HEADLESS_SOFTDENY_SIGNATURE in (text or "").lower()
-
-
 # agy CLI-side answer fold (observed 2026-07-22, repro A-F): print output AND
 # the transcript PLANNER_RESPONSE/DONE record are BOTH capped (~4KB observed)
 # with a literal own-line `<truncated N bytes>` / `<truncated N lines>` marker
@@ -198,7 +180,8 @@ def _is_headless_softdeny(text) -> bool:
 # file intact) -> the SKILL's absolute-path output-file contract, which needs
 # the write-capable permissive baseline (unavailable on a hardened install and
 # forbidden on the cross-family-review leg -> compact re-dispatch there).
-_AGY_TRUNCATION_MARKER_RE = re.compile(r"(?m)^[ \t]*<truncated \d+ (?:bytes|lines)>[ \t]*$")
+# The marker line may end LF or CRLF (C43).
+_AGY_TRUNCATION_MARKER_RE = re.compile(r"(?m)^[ \t]*<truncated \d+ (?:bytes|lines)>[ \t]*\r?$")
 
 
 def _add_skip_permissions(cmd):
@@ -565,7 +548,7 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
     Every vendor-controlled string on the reason is capped at
     `_AGY_DIGEST_KEY_CAP` (gate r1, claude: the engine closed that class).
     (Rule 3 — local validation of the answer — is the caller's existing
-    `_validate_structured*` path.)"""
+    `_validate_structured_detail` path.)"""
     for idx, line in enumerate((stream_text or "").split("\n"), 1):
         s = line.strip()
         if not s:
@@ -669,53 +652,22 @@ def _agy_needs_skip_permissions(ver) -> bool:
 
 
 def _validate_structured_detail(result, answer, pydantic_cls):
-    """Local pydantic validation over the vendor's --json-schema output.
-    PREFER result['structured_output'] (the vendor already schema-checked and
-    self-repaired it — spike P4 showed an internal repair turn); fall back to
-    the raw response text ONLY when it is ABSENT. Returns
-    (True, validated_dict, False) or (False, error_message_str, nonrepairable)
-    — `nonrepairable` is True only for a duplicate JSON member (spec C14).
-
-    When `structured_output` is PRESENT but fails validation, that error is
-    what the schema-repair hint carries (the raw fallback's generic
-    'Invalid JSON: expecting value' is not actionable), and the raw-response
-    fallback is SUPPRESSED: once the vendor emitted a schema-checked object,
-    that object IS the answer channel; a raw string that parses is a
-    divergent second answer, never a recovery for the first. The one
-    schema-repair retry re-dispatches and re-validates struct-first, so it is
-    the recovery channel."""
+    """Local pydantic validation of a `--pydantic` answer:
+    (ok, validated_dict_or_error, nonrepairable). A dict `structured_output`
+    is the answer and is validated; anything else (absent, null, not a dict)
+    is treated as absent and the raw response text is validated.
+    `nonrepairable` is True only for a duplicate JSON member (spec C14)."""
     structured = result.get("structured_output") if isinstance(result, dict) else None
-    # PRESENCE is the measured shape (discard-10): only a dict
-    # `structured_output` is the schema-checked channel; a non-dict one (null
-    # included) is treated as absent and the raw `response` is validated.
     if isinstance(structured, dict):
-        ok, payload, nonrepairable = _common.validate_response_detail(
-            json.dumps(structured, ensure_ascii=False, default=str), pydantic_cls)
-        if ok:
-            return ok, payload, False
-        # Bounded: this string is appended to the repair prompt. The
-        # suppression NOTE is part of the message so the run-log records WHY
-        # only one payload was judged.
-        struct_err = str(payload)[:600]
-        return False, (f"structured_output invalid: {struct_err} "
-                       f"| raw-response fallback suppressed: structured_output "
-                       f"present"), nonrepairable
+        return _common.validate_response_detail(json.dumps(structured), pydantic_cls)
     return _common.validate_response_detail(answer, pydantic_cls)
-
-
-def _validate_structured(result, answer, pydantic_cls):
-    """(ok, validated_dict_or_error_string) — 2-tuple façade over
-    `_validate_structured_detail` for callers that do not drive the
-    schema-repair retry."""
-    ok, payload, _ = _validate_structured_detail(result, answer, pydantic_cls)
-    return ok, payload
 
 
 def _done(rr: _common.RunResult, cls: str, code: int, *, audit, answer=None,
           validated=None, err=None) -> _common.RunResult:
     """This driver's verdict, stamped on the engine's own RunResult. The
     engine's transport facts (stdout, stderr, vendor rc, effective cwd,
-    spawned, orphans_reaped, capture_complete) ride through untouched."""
+    spawned, capture_complete) ride through untouched."""
     rr.classification, rr.exit_code = cls, code
     rr.final_answer = answer or ""
     rr.validated = validated
@@ -726,7 +678,7 @@ def _done(rr: _common.RunResult, cls: str, code: int, *, audit, answer=None,
 
 def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                         repair_mode=False, pydantic_cls=None,
-                        allow_skip_retry=True, admission=None,
+                        admission=None,
                         schema_file_mode=False, web=False) -> tuple[_common.RunResult, list]:
     """Dedicated extract-then-classify driver over the stream-json transport.
     See the plan's decision table (2026-07-31) — ORDER MATTERS. Spawn =
@@ -738,16 +690,14 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
     if not repair_mode:
         _common.prune_stale_run_logs("antigravity")
 
-    # F-Q2: these three retry budgets are INDEPENDENT — schema_repaired,
-    # skip_retried, and the server-capacity budget (max_retries/server_attempt)
-    # each gate a different failure shape and do not share state. In
-    # particular, schema repair fires exactly ONCE regardless of repair_mode;
-    # repair_mode only disables the server-capacity retry (max_retries=0),
-    # never the one-shot schema repair or the one-shot soft-deny retry.
+    # F-Q2: the two retry budgets are INDEPENDENT — schema_repaired and the
+    # server-capacity budget (max_retries/server_attempt) each gate a
+    # different failure shape and do not share state. In particular, schema
+    # repair fires exactly ONCE regardless of repair_mode; repair_mode only
+    # disables the server-capacity retry (max_retries=0).
     max_retries = 0 if repair_mode else SERVER_CAP_RETRIES
     server_attempt = 0
     schema_repaired = False   # one-shot local-validation repair re-run (Task 5)
-    skip_retried = False      # one-shot headless soft-deny -> skip-permissions retry
     # r1/R4: one digest per ATTEMPT, aggregated on every return path. Emitting
     # only the LAST attempt's digest let a short-circuiting retry CONCEAL an
     # earlier attempt's reads — the review SKILL's mechanical read-audit gate
@@ -760,20 +710,25 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
     forbidden_omitted_seen = 0          # census overflow beyond the cap, MAX across attempts (row 19 / rs-r1)
     argv = list(cmd)       # the argv of the last attempt that spawned
     spawned_rr = None      # that attempt's engine record
+    last_rr = None         # the previous attempt of this call (C1)
     while True:
-        prev_rr = _common._SIGNAL_STATE["last"]   # C1: returned AGAIN when nothing spawned
-        rr = _common._run_once("antigravity", cmd, cwd, timeout,
-                               classify_and_log=False)
-        if rr is prev_rr or (attempt_digests and not rr.spawned):
+        signum = _common._SIGNAL_STATE["signum"]
+        interrupted = last_rr is not None and signum is not None
+        if interrupted:
+            _common._SIGNAL_STATE["signum"] = None
+            rr = _common._interrupted_previous(last_rr, signum)
+        else:
+            rr = last_rr = _common._run_once("antigravity", cmd, cwd, timeout,
+                                             classify_and_log=False)
+        if interrupted or (attempt_digests and not rr.spawned):
             # C1 / R-READ-AUDIT: a RETRY turn that spawned nothing — a signal
-            # BETWEEN attempts (the engine handed back the previous attempt's
+            # BETWEEN attempts (this driver returns the previous attempt's
             # record, now carrying the signal failure) or a spawn failure on
             # the re-run. The attempts that ran are already counted; a digest
             # here would seal an attempt that never ran. R-RECEIPT: the record
             # describes the last turn that spawned, as `argv` does.
             if not rr.spawned and spawned_rr is not None:
                 rr.spawned = True
-                rr.orphans_reaped = spawned_rr.orphans_reaped
                 rr.capture_complete = spawned_rr.capture_complete
             return _done(rr, rr.classification,
                          _common.map_classification_to_exit(rr.classification),
@@ -1063,20 +1018,10 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                                  "(own-line <truncated N bytes|lines> marker). "
                                  f"quarantined answer: {snippet}"), argv
             if pydantic_cls is None:
-                # --json-schema-file (caller-owned producer schema): the
-                # SCHEMA-CONSTRAINED channel is the answer, exactly as on the
-                # pydantic path (`_validate_structured_detail` prefers
-                # `structured_output` and main() prints `validated`). Measured
-                # 2026-09-21: agy's result event carries BOTH channels, and
-                # `response` is the same JSON plus agy's own finish-tool
-                # metadata (`toolAction`, `toolSummary`) — printing it made
-                # verdict_v2 admission fail with "Additional properties are
-                # not allowed ('toolAction', 'toolSummary' were unexpected)".
-                # This wrapper still validates nothing and retries nothing:
-                # it only picks the channel the vendor schema-checked.
-                #
-                # `structured_member` (computed once above the answer guard)
-                # is the one membership test: a non-dict channel is absent.
+                # --json-schema-file: transport only — a dict
+                # `structured_output` is the answer (`response` carries agy's
+                # finish-tool metadata too, measured 2026-09-21); anything
+                # else is treated as absent and the response text is printed.
                 if schema_file_mode:
                     if structured_member:
                         return _done(rr, "ok", _common.EXIT_OK, audit=audit,
@@ -1092,8 +1037,8 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                 return _done(rr, "ok", _common.EXIT_OK, audit=audit,
                              answer=answer,
                              validated=payload), argv
-            # `_repair_cmd` replays `payload` (the validation error) into the
-            # ONE re-dispatch; a duplicate JSON member (C14) never reaches it.
+            # One repair turn (the validation error replayed into the
+            # re-dispatch); a duplicate JSON member (C14) never takes it.
             if not schema_repaired and not nonrepairable:
                 cmd = _repair_cmd(cmd, payload, web)
                 schema_repaired = True
@@ -1101,22 +1046,10 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             if nonrepairable:
                 _common.log("schema validation non-repairable (duplicate JSON "
                             "member) — skipping repair retry")
-            # STDOUT QUARANTINE. `main()` writes `final_answer` to stdout, so
-            # a reply `_validate_structured_detail` refused would otherwise
-            # ride the channel a consumer captures (`agy-r<N>.out`) while the
-            # run-log holds the evidence. Same idiom the vendor-error /
-            # truncated-answer paths use — no answer, a bounded copy in
-            # `extraction_error`, the full stream still in the run-log.
-            #
-            # Scope = exactly the two shapes where the stdout reply is NOT
-            # the vendor's schema-checked channel: a duplicate JSON member, or
-            # a dict `structured_output` (the raw fallback is suppressed). A
-            # struct-ABSENT repairable failure keeps the pass-through: there
-            # the failing text is the vendor's only answer, with no second
-            # payload to diverge from, and surfacing it stays a debugging aid.
-            #
-            # The same membership test as `_validate_structured_detail`
-            # (`structured_member`, above): a dict channel was the one judged.
+            # 66. The refused reply is quarantined off stdout (bounded copy in
+            # `extraction_error`) when it is a duplicate member or when a dict
+            # `structured_output` was the channel judged; a struct-absent
+            # failure passes its text through.
             if nonrepairable or structured_member:
                 snippet = answer if len(answer) <= 2000 else answer[:2000] + " …[truncated]"
                 return _done(rr, "schema-fail", _common.EXIT_SCHEMA_FAIL, audit=audit,
@@ -1127,43 +1060,10 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                          err=f"schema: {payload}"), argv
         # ── no usable answer from here ──
         # The ONE measured carrier only (the result-level `error`). The raw
-        # stream is deliberately NOT part of either the
-        # soft-deny match or the classify blob (r1/R2 + the adjudicated F2
-        # structural fix): it carries the reviewed content, so quoted text
-        # could steer a retry or a terminal classification.
+        # stream is deliberately NOT part of the classify blob (r1/R2): it
+        # carries the reviewed content, so quoted text could steer a retry or
+        # a terminal classification.
         signals = _common.agy_classify_signals(result)
-        softdeny_blob = "\n".join([rr.stderr or "", *signals])
-        # allow_skip_retry=False on the v2 read-only path: it carries NO danger
-        # flag by design, so the soft-deny re-dispatch (which would insert it)
-        # must never fire there; the permissive baseline keeps it.
-        if (allow_skip_retry and not skip_retried and _is_headless_softdeny(softdeny_blob)
-                and os.environ.get("AGY_NO_HEADLESS_AUTOAPPROVE") != "1"):
-            # P2 evidence: the jetski soft-deny notice coexists with a
-            # SUCCESS+empty result — so this retry covers the empty-response
-            # path, not only the missing-result path.
-            #
-            # SECURITY (owner-authorized 2026-07-18; RE-MEASURED 2026-08-22, gate
-            # r5): on 1.1.17 --dangerously-skip-permissions does NOT void the
-            # per-call deny transaction (Deny > dsp: arm A command(*), probe G
-            # write_file(*)) — the 1.1.3-era "voids" wording is history. The
-            # retry is still suppressed in agent mode (allow_skip_retry=False)
-            # because an allowlisted agent gains nothing from it. Opt out with
-            # AGY_NO_HEADLESS_AUTOAPPROVE=1 (checked just above).
-            #
-            # Retry ONLY when the flag actually CHANGES the command (the
-            # adjudicated F2 structural fix). On every dispatchable build the
-            # stream floor (1.1.8) is above the soft-deny floor (1.1.3), so
-            # main() already set the flag on call #1 and _add_skip_permissions
-            # is idempotent — the retry then re-ran a BYTE-IDENTICAL command,
-            # silently doubling the vendor call with no possible change in
-            # outcome. skip_retried is consumed either way (one-shot).
-            skip_retried = True
-            new_cmd = _add_skip_permissions(cmd)
-            if new_cmd != cmd:
-                cmd = new_cmd
-                continue
-            _common.log("headless soft-deny signature but the flag is already "
-                        "present — skipping an identical re-run")
         def _refuse_no_answer() -> _common.RunResult:
             # The model burned the turn on a forbidden tool and returned NO
             # answer: the allowlist class, whatever run-level signal rides
@@ -1233,7 +1133,7 @@ def _dispatch(args, ver, pydantic_cls, agy_bin,
     setup-once tools-allowlisted agent (`--agent`, review without web tools or
     research with them under --web), `--add-dir <cwd>` so repository reads are
     auto-allowed in print mode, NO danger flag, NO settings transaction, NO agy
-    --sandbox, NO soft-deny retry; admission by what the stream shows
+    --sandbox; admission by what the stream shows
     (`admit`). A fallback to agy's default agent cannot write or run a shell
     without the danger flag (ladder round 2, K1/K5) and is rejected by the
     census.
@@ -1282,7 +1182,6 @@ def _dispatch(args, ver, pydantic_cls, agy_bin,
         return _run_agy_with_retry(cmd, args.prompt, args.timeout, cwd=args.cwd,
                                    repair_mode=args.repair_mode,
                                    pydantic_cls=pydantic_cls,
-                                   allow_skip_retry=False,
                                    admission=(allowlist, read_set),
                                    schema_file_mode=getattr(
                                        args, "json_schema_file", None) is not None,
@@ -1303,9 +1202,6 @@ def main() -> int:
 
 
 def _main(ctx: dict) -> int:
-    # The DIAGNOSTIC stream survives any locale; the PAYLOAD stream is never
-    # re-encoded (gate-1 r7 row r7-c2 — `_common` § payload vs diagnostic).
-    _common._relax_diagnostic_stream()
     # SIGTERM/SIGHUP unwind instead of dying mid-call, so the vendor child
     # kill runs on the way out. No route holds a settings lock (DL-112).
     try:
@@ -1622,24 +1518,15 @@ def _main(ctx: dict) -> int:
         r.classification, r.exit_code = "config-conflict", _common.EXIT_TERMINAL
         r.extraction_error = msg
 
-    # THE PAYLOAD IS DECIDED BEFORE THE AUDIT ROW (gate-1 r7 rows r7-c2 /
-    # r7-k5). stdout is the payload channel and was written LAST with the
-    # strict locale encoder, so two shapes lost a finished verdict after every
-    # record claimed `ok`: an em-dash under a non-UTF-8 locale, and a
-    # `structured_output` string carrying an escaped lone surrogate (which has
-    # no UTF-8 encoding at ANY locale). The bytes are built HERE, above the
-    # record writes, so a demotion reaches the audit row, the run-log, the
-    # canonical summary line and this function's exit code by construction;
-    # `_common._emit_payload` at the tail only writes them.
+    # The payload: ONE UTF-8 encode; a code point UTF-8 cannot carry (a lone
+    # surrogate) leaves as its `\udXXX` escape, exit and token unchanged.
     if r.validated is not None:
-        _payload = _common._payload_or_demote(
-            "antigravity", r,
-            json.dumps(r.validated, ensure_ascii=False) + "\n", r.validated)
+        _answer = json.dumps(r.validated, ensure_ascii=False) + "\n"
     else:
         _answer = r.final_answer or ""
         if _answer and not _answer.endswith("\n"):
             _answer += "\n"
-        _payload = _common._payload_or_demote("antigravity", r, _answer)
+    _payload = _answer.encode("utf-8", "backslashreplace")
 
     # The record fields only main() knows. vendor_version: `ver` is the SAME
     # _probe_agy_version() tuple the stream-json floor gate above already
@@ -1691,8 +1578,6 @@ def _main(ctx: dict) -> int:
     # C35 as amended: the requested effort tier rides the same record.
     r.requested_reasoning = args.effort
     r.runtime_model = runtime_model
-    # R-REVIEW-WEB (case C32): a review leg dispatched with web is recorded.
-    r.review_web = args.review_web
 
     # Canonical 1-line summary — byte-match the format _run_once emits so the
     # dispatch SKILL grep + the parity test see the same shape.
@@ -1713,7 +1598,7 @@ def _main(ctx: dict) -> int:
     if run_log_path is not None:
         _common.log(f"run-log: {run_log_path}")
 
-    # Stdout = the UTF-8 BYTES built above, never a locale re-encoding.
+    # Stdout = the bytes built above, never a locale re-encoding.
     _common._emit_payload(_payload)
     return r.exit_code
 

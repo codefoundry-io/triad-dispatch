@@ -1,8 +1,35 @@
 ---
 name: triad-gemini-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Gemini CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 gemini_wrapper.py` raw; the user asks to call gemini once, have gemini handle a task, or run a one-shot gemini analysis; a higher-level orchestration SKILL needs the Gemini leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Codex (`triad-codex-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.6.5
+version: 0.12.1
 # changelog:
+#   0.12.1 (2026-10-11): doc — Step 2 wording only ("— Step 3 reads it from the tool result").
+#   0.12.0 (2026-10-11): Flow — the prompt and proposal files live under
+#     `<project>/_runs/prompts/` (inside the hardened allowed root; the wrapper's
+#     next-run sweep prunes them under the `dispatch-prompts` role, owner option 1);
+#     Step 2 says Step 3 reads the summary from the tool result.
+#   0.11.1 (2026-10-10): doc — Step 5a: the run-log path is passed on as the wrapper
+#     printed it (the last `run-log:` line); no reading rule restates a former shell
+#     check; a forged earlier `run-log:` line is a recorded limit.
+#   0.11.0 (2026-10-10): doc — the leader reads the tool result (Step 3 summary token,
+#     5a run-log path, 5c analyzer JSON keys) with no shell parse; files in
+#     /tmp/triad-prompts (prompt and proposal; the OS temporary directory owns expiry).
+#   0.10.0 (2026-10-10): doc — Step 1 and Step 5d: every wrapper / applier call is ONE simple
+#     command with literal arguments; the prompt (Step 1) and the proposal (Step 5d,
+#     `--proposal-file`) go through files the leader writes with the Write tool.
+#     Measured (Claude Code 2.1.289): a command substitution / heredoc, an array
+#     expansion and a quoted-variable pipe cannot be checked before they run, so the
+#     plugin's grant does not match them; the plugin-root variable is substituted in
+#     the SKILL.md body only, so references carry no runnable bin command.
+#   0.9.0 (2026-10-10): doc — Step 5d: the apply step is a plain pipe into
+#     `apply_patch.py` (no `if` / `case`: the permission grant matches a plain
+#     command only); the leader reads its exit code (0 applied → `--repair-mode`
+#     re-run in its own call; 3 refused, nothing written).
+#   0.8.0 (2026-10-10): doc — the payload is one byte-safe UTF-8 encode (a lone
+#     surrogate leaves as its `\udXXX` escape, exit and token unchanged); the
+#     unemittable-payload demotion and its summary re-emission are removed.
+#   0.7.0 (2026-10-10): doc — `--review-web` is no longer recorded as an audit
+#     key (`review_web` is written nowhere; the recorded argv shows the launch).
 #   0.6.5 (2026-10-09): doc — one Gemini CLI floor `>= 0.63.0` on EVERY route
 #     (raw, write, `--web`, review; owner decision D-GEMINI-FLOOR-20261009),
 #     `cli_version` recorded on every route; `--help` stays review-route only.
@@ -81,40 +108,27 @@ makes the `unknown`-classification path correctly route to the repair sub-agent.
 
 ## Flow
 
-### Step 1 — Build the wrapper invocation
+### Step 1 — Write the prompt file, build the wrapper invocation
 
-Single-quoted heredoc for the prompt body so Korean / emoji / `$variables` /
-backticks / quotes survive intact, with a collision-resistant terminator: a line
-consisting of exactly the terminator word ends the heredoc early, and a bare
-`PROMPT` is a word real prompt bodies contain. `TRIAD_GEMINI_PROMPT_EOF` is the
-house terminator. Use `--prompt-file <absolute-path>` INSTEAD of the heredoc
-(the two are mutually exclusive — argparse rejects both together) for either of
-these bodies: **content the leader did not author** (pasted files, vendor
-output, a diff, a packet), or **any body that quotes a dispatch template or a
-SKILL body** — a quoted template carries the house terminator as literal text,
-which is exactly how this defect was first observed. `--prompt-file` removes
-the terminator collision entirely and is the standing path for both.
+Write the prompt body to a file with the Write tool, then run the wrapper as
+ONE simple command on ONE line. The file is new per dispatch:
+`<project>/_runs/prompts/<utc-timestamp>-gemini.md`, where `<project>` is the
+directory the leader runs in — the hardened install's allowed root, so the
+wrapper accepts the path (create the folder with the Write tool as needed). The
+wrapper's next-run sweep prunes the folder past the `dispatch-prompts` role's
+floor; add `_runs/` to the project's `.gitignore` if it is not
+already ignored. The file keeps Korean / emoji /
+`$variables` / backticks / quotes intact with no shell quoting at all.
+
+The command line carries LITERAL values only — no `$(…)`, heredoc, variable,
+pipe, array or `\` continuation: the plugin's permission grant matches one
+simple command, and a command substitution, a variable or an array cannot be
+checked before it runs, so such a call prompts on every dispatch. Fill in the
+bracketed options you need with literal values and drop the rest:
 
 ```bash
-gemini_wrapper.py \
-  --prompt "$(cat <<'TRIAD_GEMINI_PROMPT_EOF'
-<leader-prompt-verbatim>
-TRIAD_GEMINI_PROMPT_EOF
-)" \
-  [--prompt-file /absolute/path/to/prompt.txt] \
-  [--cwd /absolute/path] \
-  [--sandbox read-only|workspace-write] \
-  [--approval-mode default|auto_edit] \
-  [--web | --review-web] \
-  [--model <pinned-model-name>] \
-  [--skip-trust] \
-  [--attempt <int>] \
-  [--timeout <seconds>] \
-  [--pydantic module:Class]
+python3 ${CLAUDE_PLUGIN_ROOT}/bin/gemini_wrapper.py --prompt-file <project>/_runs/prompts/<utc-timestamp>-gemini.md [--cwd /absolute/path] [--sandbox <read-only or workspace-write>] [--approval-mode <default or auto_edit>] [--web or --review-web] [--model <pinned-model-name>] [--skip-trust] [--attempt <int>] [--timeout <seconds>] [--pydantic module:Class]
 ```
-
-`--prompt-file` REPLACES the `--prompt` heredoc — argparse rejects both
-together, so delete the heredoc when switching to a file body.
 
 **`--web` = the INVESTIGATION route (spec C29 / R-INVEST), never a review.**
 It attaches the wrapper-adjacent research profile
@@ -133,9 +147,9 @@ review leg of a round that binds `review_web_authorized` true
 (`triad-cross-family-review` prints it). With `--sandbox read-only` it
 attaches the complete review web profile `policies/gemini-readonly-web.toml`
 INSTEAD of `gemini-readonly.toml` (never an overlay: only `google_web_search`
-and `web_fetch` move to allow), appends no clause, and is recorded in the
-audit row (`review_web: true`). It needs `--sandbox read-only` and is refused
-with `--web`. Without it the read-only review profile denies both web tools.
+and `web_fetch` move to allow) and appends no clause. It needs
+`--sandbox read-only` and is refused with `--web`. Without it the read-only
+review profile denies both web tools.
 
 **`--attempt <int>`** (>= 1, default 1) is the dispatch attempt number,
 RECORDED on the transport receipt and the summary tail and never interpreted.
@@ -175,34 +189,32 @@ Defaults: no `--sandbox` policy and `--approval-mode default` (read auto, write/
 Wrapper stderr contains:
 - Timestamped wrapper log lines
 - Mirrored vendor stderr (small baseline: `Warning:` + `Ripgrep` lines; on error, may include trailing JSON `{error: ...}`)
-- 1-line summary: `[<timestamp>] [wrapper] gemini <classification> exit=<int> vendor=<int> elapsed=<s>` followed by the recorded-facts tail ` attempt=<n>`, ` prompt_file=<abs>` when a `--prompt-file` was given and ` model=<slug>` when `--model` was requested (absent = the CLI's config default; this wrapper has no reasoning flag) (every wrapper log line, this one included, carries the leading timestamp bracket — the Step 3 grep anchors on it)
+- 1-line summary: `[<timestamp>] [wrapper] gemini <classification> exit=<int> vendor=<int> elapsed=<s>` followed by the recorded-facts tail ` attempt=<n>`, ` prompt_file=<abs>` when a `--prompt-file` was given and ` model=<slug>` when `--model` was requested (absent = the CLI's config default; this wrapper has no reasoning flag) (every wrapper log line, this one included, carries the leading timestamp bracket — Step 3 reads it from the tool result)
 - On failure: `run-log: <absolute-path>`
 
 ### Step 3 — Read the classification
 
-Grep the summary line; extract classification. **Use the LAST `[wrapper]` line** — when extraction-error happens (Gemini empty `response` field, valid JSON envelope but no answer), `_run_once` emits an early `ok` summary that is later corrected by a second emission with `extraction-error`. Take the last one only:
+Read the classification from the Bash tool result — no shell parse (a
+command substitution or a pipe cannot be checked before it runs, so a parse
+command would prompt). In the stderr, read the LAST line that STARTS with
+`[<timestamp>] [wrapper] gemini ` (the timestamp bracket, then `[wrapper] gemini `);
+the classification is the token right after `[wrapper] gemini ` (e.g. `ok`,
+`unknown`, `extraction-error`). Use the LAST such line — when an
+`extraction-error` happens, `_run_once` emits an early `ok` summary that a
+second emission corrects. On a failure, the run-log path is the value after
+`run-log: ` on its line (the last such line).
 
-```bash
-SUMMARY=$(grep -E '^\[[^]]*\] \[wrapper\] gemini ' <stderr-text> | tail -1)
-CLS=$(printf '%s' "$SUMMARY" | sed -E 's/^\[[^]]*\] \[wrapper\] gemini ([a-z-]+) .*/\1/')
-```
-
-**BOTH patterns are ANCHORED to the line start** (gate-1 r9 row r9-3). The sed
-used to be greedy (`s/.*\[wrapper\] gemini ([a-z-]+) .*/\1/`), so it took the
-LAST `[wrapper] gemini <token> ` sequence ANYWHERE in the line — and the summary
-tail carries a FREE-TEXT field (`prompt_file=<abs>`), so a prompt file living
-under a directory literally named `…[wrapper] gemini ok …` overrode the token
-the wrapper emitted: a demoted `extraction-error` run parsed as `ok`, and the
-MANDATORY repair-agent routing (Step 5) never fired. Since the same row the
-engine ALSO percent-escapes every free-text field of the summary
+Only a line that STARTS with that prefix counts (gate-1 r9 row r9-3): the
+summary tail carries a free-text field (`prompt_file=<abs>`), and a reading that
+took the last `[wrapper] gemini <token> ` ANYWHERE in the line once let a prompt
+file under a directory named `…[wrapper] gemini ok …` override the emitted token
+(an `extraction-error` run read as `ok`, and the MANDATORY repair routing never
+fired). The engine also percent-escapes every free-text field of the summary
 (`_common._summary_field` — SPACE and `[` / `]` are outside the safe set, so the
-sequence is unconstructible inside `prompt_file=`; an ordinary POSIX path is
-emitted byte-identically and the audit row keeps the raw value), so the shape
-can no longer occur — but the ANCHORED parse is the CONTRACT here, and the two
-defences are independent. The wrapper's other stderr lines stay out of reach BY
-CONSTRUCTION: `run-log: <abs>` and `exec cwd=… argv=…` never carry the
-`[wrapper] gemini <token> ` prefix AT THE LINE START, and the demotion note
-keeps its colon (`[wrapper] gemini: unemittable-payload — …`).
+sequence cannot be built inside `prompt_file=`; an ordinary POSIX path is
+emitted byte-identically and the audit row keeps the raw value) — the two
+defences are independent. The wrapper's other stderr lines (`run-log: <abs>`,
+`exec cwd=… argv=…`) never START with the `[wrapper] gemini <token> ` prefix.
 
 Token set:
 `ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | timeout | extraction-error | unknown`
@@ -218,7 +230,7 @@ Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) / `4` (bin
 | terminal (65) — cli-subscription-cap / token-limit | Surface to user with cause (Code Assist license daily-quota or API-key RPM-tier reset / prompt size — see the Lane note in § Use when). **NOT** repair-agent territory. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper retried per backoff (plus Gemini's own internal retries). |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 7). Spawn it even when you are busy or also surfacing the failure — never skip.** |
-| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 7).** Vendor returned rc=0 but extractor found no answer (empty `response` field, unparseable JSON, vendor refusal text) — **or the answer is an UNEMITTABLE PAYLOAD**: a lone surrogate this host cannot encode on the payload channel, demoted before the audit row (the stderr line is `[wrapper] gemini: unemittable-payload — …` — note the COLON, which keeps it out of the summary grep above; after the demotion the wrapper RE-EMITS the canonical summary with the final classification, so the LAST `[wrapper] gemini ` line reads `extraction-error exit=1`). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
+| `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 7).** Vendor returned rc=0 but extractor found no answer (empty `response` field, unparseable JSON, vendor refusal text). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
 | `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since hang is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
 | arg (3) / binary missing (4) / schema fail (66) | Surface to user with cause. |
 
@@ -230,17 +242,14 @@ that proposal via the deterministic, zero-LLM `apply_patch.py`, then re-runs the
 wrapper in `--repair-mode` to verify routing. Safe-by-construction: the
 untrusted-input handler has no write authority; the write path has no LLM.
 
-#### 5a. Extract the run-log path
+#### 5a. Read the run-log path
 
-```bash
-RUN_LOG_PATH=$(sed -n 's/.*run-log: //p' <stderr-text> | tail -1)
-[ -f "$RUN_LOG_PATH" ] || { echo "run-log path missing"; exit 1; }
-```
-
-Take everything after `run-log: ` to the end of that line (last occurrence) — the
-path may contain spaces, so a whitespace-delimited grab would truncate it. Keep
-every later use double-quoted. (The path itself is wrapper-generated —
-`_logs/gemini/runs/<id>.json`, a safe charset for the JSON template below.)
+Take the path from the Bash tool result exactly as the wrapper printed it: the
+value after `run-log: ` on the LAST `run-log:` line of stderr. The path is
+wrapper-generated — `_logs/gemini/runs/<id>.json`, a safe charset for the JSON
+template below. Recorded limit: a vendor child printing a forged `run-log:` line
+earlier in stderr is a constructed shape — the wrapper's own line comes last and
+the leader reads the last; not guarded.
 
 The leader passes this PATH to the analyzer — it does NOT read the run-log content
 itself (Hard rule 2). There is no output file: the analyzer replies inline.
@@ -273,53 +282,51 @@ Example response (return this inline JSON as your entire chat reply):
 Now do the analysis and return the inline JSON.
 ```
 
-#### 5c. Parse the analyzer's inline JSON proposal
+#### 5c. Read the analyzer's inline JSON proposal
 
-The Agent tool returns the analyzer's final chat text, which is the inline JSON object. Parse it with `jq`:
-
-```bash
-AGENT_JSON=$(cat <<'TRIAD_JSON_EOF'
-<paste the analyzer inline JSON reply here>
-TRIAD_JSON_EOF
-)   # quoted heredoc with a collision-resistant terminator: apostrophes/quotes stay literal
-OUTCOME=$(jq -r '.outcome' <<<"$AGENT_JSON")
-REASON=$(jq -r '.reason' <<<"$AGENT_JSON")
-PROPOSAL=$(jq -c '.proposal' <<<"$AGENT_JSON")
-```
-
-Schema top-level keys: `outcome` (`propose` | `escalate`), `reason`, `proposal` (null when escalate).
+The Agent tool returns the analyzer's final chat text, which is the inline JSON
+object. Take `outcome`, `reason` and `proposal` from the analyzer's JSON reply as
+returned — the three top-level keys of Step 5b's `output_schema` — with no
+shell parse. `outcome` is `propose` or `escalate`; `proposal` is null on
+`escalate`. When `outcome` is `propose`, write the `proposal` object verbatim to
+`<project>/_runs/prompts/<utc-timestamp>-gemini-proposal.json` with the Write tool,
+then run Step 5d's one command. A reply that is not that JSON object
+(conversational text, or nothing) is unparseable output — Step 5d's last branch.
 
 #### 5d. Branch: escalate → surface; propose → leader applies + verifies
 
-Run 5c's parse and this case block in the SAME Bash invocation — shell state
-(`AGENT_JSON`, `OUTCOME`, `PROPOSAL`) does not persist across separate Bash
-calls, so a split run reads an empty `OUTCOME` and skips the apply.
+Pick the branch from the analyzer reply's `outcome` (5c). Every
+command below is ONE simple command with literal arguments — never wrapped in
+`if` / `case`, never fed by a pipe or a variable: the permission grant matches
+only that, and anything else prompts.
 
-```bash
-case "$OUTCOME" in
-  escalate)
-    echo "repair escalated: $REASON"
-    ;;
-  propose)
-    if printf '%s' "$PROPOSAL" \
-         | apply_patch.py --cli gemini; then
-      # applier exit 0 → patch landed; re-run in --repair-mode to verify routing.
-      gemini_wrapper.py \
-        --repair-mode <original-args>   # replay the ORIGINAL argv verbatim (same flags/values) — do not retype from memory
-    else
-      echo "proposal rejected by applier: $REASON"   # applier exit 3 → treat as escalate
-    fi
-    ;;
-  *)
-    # Unparseable analyzer output: the agent returned conversational text (or
-    # empty), so jq failed and OUTCOME is not propose/escalate. Do NOT silently
-    # proceed — SURFACE it. No patch is applied; the original failure
-    # classification stands.
-    echo "repair skipped — unparseable analyzer output (OUTCOME='$OUTCOME'); the original failure classification stands"
-    # The run-log is the diagnostic input for the manual follow-up.
-    ;;
-esac
-```
+- **`propose`** — with the `proposal` object written to
+  `<project>/_runs/prompts/<utc-timestamp>-gemini-proposal.json` (5c), run the apply
+  step as ONE simple command with literal arguments:
+
+  ```bash
+  python3 ${CLAUDE_PLUGIN_ROOT}/bin/apply_patch.py --cli gemini --proposal-file <project>/_runs/prompts/<utc-timestamp>-gemini-proposal.json
+  ```
+
+  Read the applier's exit code from the Bash tool result:
+  - **0** — applied. Re-run the wrapper in `--repair-mode`, in its own Bash
+    call, to verify that the previously-unrouted error now classifies
+    correctly: run Step 1's literal command line again, unchanged (same
+    prompt file, flags and values — do not retype it from memory), with
+    `--repair-mode` appended:
+
+    ```bash
+    python3 ${CLAUDE_PLUGIN_ROOT}/bin/gemini_wrapper.py <the Step 1 arguments, verbatim> --repair-mode
+    ```
+  - **3** — invalid proposal or bad input; the extension file is untouched.
+    Surface `proposal rejected by applier: <REASON>` and treat it as an escalate.
+- **`escalate`** — the analyzer could not classify: surface
+  `repair escalated: <REASON>`; no apply.
+- **anything else** — unparseable analyzer output: the agent returned
+  conversational text (or nothing), or its `outcome` is neither value. Do NOT
+  proceed silently — surface `repair skipped — unparseable analyzer output; the
+  original failure classification stands`. No patch is
+  applied; the run-log is the diagnostic input for the manual follow-up.
 
 The applier re-validates the proposal independently (enum + pattern-name + literal bounds), so it is the security backstop even if the analyzer misbehaves: on exit 3 the extension file is left untouched and the leader surfaces it as an escalate. The run-log stays in every arm (on unparseable analyzer output it is the input for manual diagnosis); the wrapper's own sweep collects it later.
 

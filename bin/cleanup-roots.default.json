@@ -5,6 +5,7 @@
     {"role": "wrapper-run-logs", "root": "$HOST_DIR/_logs", "proof": "inside-owned-packet", "min_age_s": 86400},
     {"role": "wrapper-audit-archives", "root": "$HOST_DIR/_logs", "proof": "inside-owned-packet", "min_age_s": 0},
     {"role": "wrapper-debug", "root": "$HOST_DIR/_debug", "proof": "alloc-record", "min_age_s": 2592000},
+    {"role": "dispatch-prompts", "root": "_runs/prompts", "proof": "inside-owned-packet", "min_age_s": 86400},
     {"role": "code-worktrees", "root": "_runs/worktrees", "proof": "git-registered", "min_age_s": 0}
   ]
 }

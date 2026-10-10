@@ -43,11 +43,8 @@ Subcommands (absolute paths only):
                              snapshot and the four artifact hashes in
                              `delivery-r<N>.md` (refused when that record is
                              absent); prints `ROUND_INTEGRITY_OK r<N>` or
-                             fails loud naming what diverged. A round that
-                             passes leaves `<packet-dir>/.verified-r<N>.json` (the
-                             round's content digest + worktree fingerprint) —
-                             written atomically; it is census-exempt, so
-                             re-verifying a round is not a mutation of it.
+                             fails loud naming what diverged. It writes
+                             nothing; `close` re-runs it.
     prepare <abs-packet-dir> <abs-source-repo> r<N>
             --brief <abs-file> --diff <range> [--diff-path <rel>]...
             [--tests-path <pathspec>]... [--excerpt <rel>:<start>-<end>]...
@@ -84,8 +81,7 @@ Subcommands (absolute paths only):
 
 Prune rules (applied during `open` and after a successful `close`, only to
 DIRECT children of the explicit root, only to DATE-PREFIXED (YYYY-MM-DD-...)
-real directories that CARRY the helper's `.active` ownership marker, or that
-wear the helper-reserved `.pruning` suffix under its own rule below):
+real directories that CARRY the helper's `.active` ownership marker):
     - stale when the `.active` heartbeat mtime is older than the floor (a
       crashed loop stops refreshing it; `touch`, `prepare`, `capture` and
       `verify` refresh it; a normally-closed dir was deleted whole by
@@ -95,23 +91,14 @@ wear the helper-reserved `.pruning` suffix under its own rule below):
       date-named directories. An empty unmanaged date dir younger than the
       floor is reported and left; past it, it goes to the deletion command's
       empty-folder rule (its own line printed when it refuses).
-    - a `<name>.pruning` dir (left by a close of an earlier version, which
-      claimed and renamed; this one removes in place) skips the floor only when
-      its `.claim` record names it; one with a managed `.active` but no claim
-      is judged like a packet (stale by its heartbeat); an EMPTY one, like an
-      EMPTY dated folder without a marker, goes through the deletion command's
-      empty-folder rule once older than the floor (owner ruling 2026-09-27,
-      spec R-CLEANUP). Any other one is reported and left — a claim-only
-      residue (its `.active` already gone) included.
-    - a stale packet or residue the deletion command refuses (a worktree git
-      has locked at any depth, a checkout it cannot detach) is left with one
-      line, `prune FAILED for <name> (left for the next open or close):
-      <reason>` (`reclaim FAILED …` for a residue); an EMPTY round-tree folder
-      goes with the packet.
+    - a stale packet the deletion command refuses (a worktree git has locked
+      at any depth, a checkout it cannot detach) is left with one line,
+      `prune FAILED for <name> (left for the next open or close): <reason>`;
+      an EMPTY round-tree folder goes with the packet.
     - symlinks are refused (never followed, never deleted); non-date names
       and plain files are never touched. `close` runs the same sweep after it
       has deleted its own dir.
-Every deletion (prune, reclaim, close) is the host's deletion command,
+Every deletion (prune, close) is the host's deletion command,
 `cleanup.remove('review-scratch', …)` (R-CLEANUP / C69): the root must be the
 review-scratch root the cleanup configuration of the ROOT's project declares
 (its git top-level; the root itself outside a repository), never the cwd's;
@@ -133,7 +120,7 @@ everything again and rewrites it in full; a close stopped after `.active` went
 leaves an EMPTY dated folder, which close removes through the command's
 empty-folder rule. A worktree git has LOCKED, at any depth, is refused by the
 command — every deletion leaves it (spec 7198efd), and every lock line prints the
-lock's reason. An explicit close (and a claimed residue) skips only the floor.
+lock's reason. An explicit close skips only the floor.
 
 Floor: the review-scratch role's `min_age_s`, raised to the host minimum of one
 day (a paused round still uses its packet). A missing or invalid configuration, an undeclared
@@ -220,10 +207,6 @@ _MARKER_MAGIC = b"review_scratch/1\n"
 # line (a short or failed append) reads as not started: the next close runs
 # the whole check again and rewrites the line in full.
 _CLOSE_VERIFIED = _MARKER_MAGIC + b"close verified\n"
-# Helper-reserved suffix: an earlier version RENAMED a dir it was deleting to
-# <name>.pruning; such residue is still recognised (and the slug still
-# refused at open). This version removes in place.
-_PRUNING_SUFFIX = ".pruning"
 # The round's git worktree — the REVIEWED TREE the legs read, at
 # <packet-dir>/wt-r<N>. It is NOT packet evidence, and `_packet_relpaths` skips
 # it: that walk recurses and refuses any symlink beneath it, so (measured
@@ -244,14 +227,6 @@ _PRUNING_SUFFIX = ".pruning"
 # outside the material, needs no extra file, no write/unlink lifecycle and no
 # census rule of its own, and `git worktree list` shows the round.
 _WORKTREE_PREFIX = "wt-"
-# The PRE-carrier-N layout: one unnamed `wt` CHECKOUT per packet dir — a
-# DIRECTORY carrying a `.git` entry (`_is_git_checkout`), the one predicate
-# `close` and the prune share; a plain file or a directory with no `.git` at
-# that name is ordinary packet content. Such a packet is left behind: the round
-# goes on in a new packet dir and the old one goes whole through the host's
-# deletion command (`references/packet-lifecycle.md` § Going on in a new packet
-# dir) — the refusal points there; there is no legacy-parsing code anywhere.
-_LEGACY_WORKTREE_DIRNAME = "wt"
 
 
 def _wt_dirname(label: str) -> str:
@@ -314,26 +289,6 @@ _RECOVERY_POINTER = ("NOTHING has been deleted. Recovery: "
                      "packet dir.")
 
 
-def _is_git_checkout(path: Path) -> bool:
-    """True when `path` is a real DIRECTORY (never a symlink) carrying a `.git`
-    entry — the predicate `close` and the stale-sibling prune share for a
-    legacy `wt` checkout; a plain file or a non-checkout directory named `wt`
-    is ordinary packet content.
-
-    A linked worktree's `.git` is a FILE and a primary repo's is a DIRECTORY;
-    both count, because what matters is that git may hold a registration for the
-    path, which is what makes deleting the directory around it an ORPHAN. A
-    symlinked `.git` counts too — refusing is the conservative read."""
-    if path.is_symlink():
-        return False
-    try:
-        if not path.is_dir():
-            return False
-    except OSError:
-        return False
-    return _has_git_entry(path)
-
-
 def _has_git_entry(path: Path) -> bool:
     """True when `path` carries a `.git` entry of ANY kind. The gate the
     owner probe below sits behind: git DISCOVERS a repository by walking parent
@@ -377,7 +332,7 @@ def _deletion_cmd(role: str, path, mod) -> str:
     except Exception:  # noqa: BLE001 — a top level that cannot be named: say so
         where = "<the repository that holds it>"
     return (f"cd {where} && python3 "
-            f"{shlex.quote(_wrapper_command_path('cleanup.py')[0])} "
+            f"{shlex.quote(_wrapper_command_path('cleanup.py'))} "
             f"remove {role} {shlex.quote(str(path))}")
 
 
@@ -398,9 +353,7 @@ def _scratch_role(root: Path, refuse: bool = False):
     line and None (the sweep deletes nothing) — or, with `refuse`, a refusal
     (close)."""
     try:
-        path, missing = _wrapper_command_path("cleanup.py")
-        if missing:
-            raise FileNotFoundError(missing)
+        path = _wrapper_command_path("cleanup.py")
         spec = importlib.util.spec_from_file_location("cleanup", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -485,53 +438,6 @@ def _require_no_close_started(packet_dir: Path) -> None:
               f"({packet_dir}); nothing written")
 
 
-# The CLAIM RECORD (spec cases C4/C5, rule R-CLEANUP). "Ownership is proven by
-# an allocation record or marker, never by a name shape; an empty directory ...
-# can still be foreign": the `*.pruning` reclaim never fires on the NAME, and an
-# empty unmanaged date dir is reported and left. The claim step that precedes
-# every rename WRITES its proof INSIDE the directory it is about to take, and
-# the reclaim reads that proof back. The one empty-directory removal: an empty
-# unclaimed `<name>.pruning` residue older than the floor is removed by
-# `rmdir`, which can only remove an empty directory (owner ruling 2026-09-27,
-# spec R-CLEANUP amendment). Same provenance magic as the
-# `.active` marker (derived from it, never a second literal), same bounded
-# BINARY read, same never-follow rule.
-_CLAIM_FILENAME = ".claim"
-_CLAIM_MAGIC = _MARKER_MAGIC.decode("ascii").strip()
-# A claim record is one JSON line. The bound is the marker read's rationale:
-# a huge foreign file parked at `.claim` must not be read into memory to be
-# rejected.
-_CLAIM_MAX_BYTES = 4096
-
-
-def _claim_proves_ownership(claimed: Path) -> bool:
-    """True only when `<claimed>/.claim` PROVES this helper claimed THIS
-    directory: a regular non-symlink file, bounded, parsing as a JSON object,
-    carrying the provenance magic, and naming an `original` that is exactly
-    this directory's name minus the reserved suffix. Anything else — a foreign
-    tree that merely wears the suffix, a record copied from another dir, a
-    symlinked record — is NOT ours (C4)."""
-    rec = claimed / _CLAIM_FILENAME
-    if rec.is_symlink() or not rec.is_file():
-        return False
-    try:
-        with rec.open("rb") as f:
-            raw = f.read(_CLAIM_MAX_BYTES + 1)
-    except OSError:
-        return False  # unreadable — never treat as owned
-    if len(raw) > _CLAIM_MAX_BYTES:
-        return False
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return False
-    if not isinstance(data, dict) or data.get("magic") != _CLAIM_MAGIC:
-        return False
-    original = data.get("original")
-    return (isinstance(original, str)
-            and original + _PRUNING_SUFFIX == claimed.name)
-
-
 def _require_date_dir(path: Path, label: str) -> Path:
     """Validate + CANONICALIZE a caller-supplied managed-dir path. Returns
     the resolved path so later operations act on the same file the checks
@@ -571,53 +477,6 @@ def _prune_stale(root: Path, keep: Path, now: datetime) -> None:
         if not child.is_dir():
             continue
         if not _DATE_PREFIX_RE.match(child.name):
-            continue
-        if child.name.endswith(_PRUNING_SUFFIX):
-            # A pre-23b claimed-but-unfinished deletion (since slice 23b fix 2
-            # this helper no longer renames). The NAME is not the proof (C4/C5,
-            # R-CLEANUP): the CLAIM RECORD naming this original decides the
-            # floor bypass (a decided deletion resumed); a managed `.active`
-            # without one is judged like any packet (stale by its heartbeat,
-            # the floor applies); an EMPTY residue gets the same floor and host
-            # minimum through the command's empty-folder rule. The deletion is
-            # the host's deletion command, which proves the residue by
-            # `.active` — a claim-only residue (its `.active` gone) stays.
-            claimed = _claim_proves_ownership(child)
-            try:
-                empty = not any(child.iterdir())
-                folder_age = child.lstat().st_mtime
-            except OSError:
-                empty, folder_age = False, now.timestamp()
-            heart = child / ".active"
-            if claimed and not empty:
-                explicit = True
-            elif _is_managed_marker(heart):
-                try:
-                    if now_ts - heart.stat().st_mtime <= floor_s:
-                        continue  # a fresh one: the floor applies
-                except OSError:
-                    continue
-                explicit = False
-            elif empty and now_ts - folder_age > floor_s:
-                explicit = False
-            else:
-                print(f"review_scratch: foreign or unclaimed *.pruning dir "
-                      f"observed, NOTHING deleted: {child.name}. "
-                      f"{_RECOVERY_POINTER}", file=sys.stderr)
-                continue
-            # a git-LOCKED worktree at any depth is the deletion command's
-            # refusal, printed below (R-CLEANUP, spec 7198efd)
-            rc, said = _cleanup_remove(mod, root, child, explicit=explicit)
-            if os.path.lexists(child):
-                print(f"review_scratch: reclaim FAILED for {child.name} "
-                      f"(left for the next open or close): {said}",
-                      file=sys.stderr)
-            elif empty:
-                print(f"review_scratch: removed empty residue {child.name}",
-                      file=sys.stderr)
-            else:
-                print(f"review_scratch: reclaimed {child.name}",
-                      file=sys.stderr)
             continue
         heartbeat = child / ".active"
         if not _is_managed_marker(heartbeat):
@@ -675,16 +534,7 @@ def _prune_stale(root: Path, keep: Path, now: datetime) -> None:
             # below, with no integrity check: a round abandoned for the floor
             # has no verdict left to protect. Whatever the command cannot prove
             # (a locked worktree at any depth, a tree it cannot detach) is its
-            # refusal, printed as the `prune FAILED` line. A LEGACY `wt` is
-            # left: its round is unknown, so nothing here can say whether it
-            # was ever verified.
-            legacy_wt = child / _LEGACY_WORKTREE_DIRNAME
-            if _is_git_checkout(legacy_wt):
-                print(f"review_scratch: skip stale {child.name} — it carries a "
-                      f"pre-named-layout worktree whose round no name declares; "
-                      f"the sweep never removes it (verify it if you have not). "
-                      f"{_RECOVERY_POINTER}", file=sys.stderr)
-                continue
+            # refusal, printed as the `prune FAILED` line.
             # The deletion: the host's deletion command, in place (it keeps
             # `.active` until last, so a stopped prune is resumed by the next
             # sweep from the same, still stale, marker).
@@ -711,12 +561,6 @@ def cmd_open(root_arg: str, slug: str) -> None:
         # trailing newline, and a newline-bearing dirname breaks the printed
         # one-line path contract (round-3 codex finding).
         _fail(f"slug must fully match [A-Za-z0-9._-]+ (got {slug!r})")
-    if slug.lower().endswith(_PRUNING_SUFFIX):
-        # round-5 (all three reviewer families converged): a live packet
-        # named *.pruning would be unconditionally reclaimed by the NEXT
-        # open — the suffix is helper-reserved for claimed deletions, never
-        # a valid slug tail. Case-insensitive: common macOS filesystems are.
-        _fail(f"slug must not end with the reserved {_PRUNING_SUFFIX!r} suffix")
     now = datetime.now(timezone.utc)
     try:
         root.mkdir(parents=True, exist_ok=True)
@@ -790,21 +634,6 @@ def cmd_touch(dir_arg: str) -> None:
     _refresh_heartbeat(path)
 
 
-def _verified_record(packet_dir: Path, round_no: int):
-    """The `.verified-r<N>.json` record `verify` leaves behind, or None when
-    there is none this helper can read (C7). Never raises, never follows a
-    symlink: an unreadable or forged record means "not verified", which is a
-    WARNING at close, not a refusal."""
-    rec = packet_dir / f".verified-r{round_no}.json"
-    if rec.is_symlink() or not rec.is_file():
-        return None
-    try:
-        data = json.loads(rec.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
 def _round_digest_on_disk(packet_dir: Path, round_no: int):
     """`sha256=` out of the round's `digest-r<N>.txt`, or None."""
     child = packet_dir / f"digest-r{round_no}.txt"
@@ -821,8 +650,7 @@ def _round_digest_on_disk(packet_dir: Path, round_no: int):
 def _report_verification_state(path: Path) -> None:
     """Say whether the round being closed VERIFIES NOW, before anything is
     disposed of (C7 / R-CLEANUP "disposal never precedes export
-    verification"). The round check runs FRESH (M5): a remembered
-    `.verified-r<N>.json` cannot see a change made after it was written.
+    verification"). The round check runs FRESH (M5).
 
     A WARNING, never a refusal: the owner ruled on 2026-09-17 that `close`
     PROCEEDS on a round whose tree is already gone — refusing here would wedge
@@ -905,19 +733,13 @@ def cmd_close(dir_arg: str) -> None:
     # in the tree is a leg having written to the reviewed tree — a
     # review-integrity event, so close refuses there, NOTHING deleted. The
     # tree itself goes with the packet through the deletion command, which
-    # detaches it through its owner (its ONE registration). A LEGACY `wt` (a
-    # DIRECTORY carrying a `.git` entry) predates the named layout: no name
-    # here declares its round, and nothing may guess one. A packet dir that
+    # detaches it through its owner (its ONE registration). A packet dir that
     # cannot be listed cannot be checked at all.
     try:
         listed = os.listdir(path)
     except OSError as e:
         _fail(f"packet dir {path} could not be listed ({e}), so what it holds "
               f"cannot be checked. {_RECOVERY_POINTER}")
-    legacy = path / _LEGACY_WORKTREE_DIRNAME
-    if _is_git_checkout(legacy):
-        _fail(f"{legacy} predates the named-worktree layout (wt-r<N>), so no "
-              f"name says which round that tree is. {_RECOVERY_POINTER}")
     trees = _find_round_worktrees(path)
     if len(trees) > 1:
         # `verify` refuses outright while a second round tree is in the dir,
@@ -1162,8 +984,8 @@ def _digest_regular_file(path: Path, label: str) -> str:
 def _packet_relpaths(packet_dir: Path) -> list:
     """Recursive census of `packet_dir`: every REGULAR file, sorted by
     relative POSIX path, excluding the lifecycle `.active` marker, any
-    `.snapshot-*.json` round file, the helper's own top-level round records
-    (`.roster-r<N>.json`, `.verified-r<N>.json`), and the round worktree
+    `.snapshot-*.json` round file, the helper's own top-level round record
+    (`.roster-r<N>.json`), and the round worktree
     `wt-r<N>/` (all of them live directly under packet_dir — the helper's own
     bookkeeping and the reviewed tree, never packet evidence; see
     `_wt_round`). A symlink or other
@@ -1181,19 +1003,12 @@ def _packet_relpaths(packet_dir: Path) -> list:
             if entry.is_symlink():
                 _fail(f"packet dir contains a symlink: {path}")
             if entry.is_dir(follow_symlinks=False):
-                if directory == packet_dir and (
-                        _wt_round(entry.name) is not None
-                        or entry.name == _LEGACY_WORKTREE_DIRNAME):
+                if directory == packet_dir and _wt_round(entry.name) is not None:
                     # The round worktree is the reviewed tree, fingerprinted by
                     # `_worktree_fingerprint`, never censused as packet
                     # evidence. Only a TOP-LEVEL round-worktree NAME is skipped
                     # — a nested `sub/wt-r1` is ordinary packet content, the
-                    # same nesting rule as before the rename. A top-level
-                    # legacy `wt` is skipped too for the migration window: the
-                    # packet dirs that carry one still refuse at `prepare` and
-                    # `close`, and censusing their checkout would replace that
-                    # named refusal with a symlink complaint from inside the
-                    # tree.
+                    # same nesting rule as before the rename.
                     continue
                 visit(path)
             elif entry.is_file(follow_symlinks=False):
@@ -1217,18 +1032,6 @@ def _packet_relpaths(packet_dir: Path) -> list:
                 if (
                     len(rel.parts) == 1
                     and rel.parts[0].startswith(".roster-r")
-                    and rel.parts[0].endswith(".json")
-                ):
-                    continue
-                # `.verified-r<N>.json` is the same class (S9 / C7): `verify`
-                # itself writes it AFTER certifying the round, so censusing it
-                # would make `verify` refuse its own record as an uncovered
-                # file on the very next run. What it records — the round's
-                # content digest and the worktree fingerprint — is frozen
-                # elsewhere by definition.
-                if (
-                    len(rel.parts) == 1
-                    and rel.parts[0].startswith(".verified-r")
                     and rel.parts[0].endswith(".json")
                 ):
                     continue
@@ -1664,67 +1467,13 @@ def _recompute_snapshot_digest(packet_dir: Path, listed, when: str) -> str:
     return _prepared_digest(entries)
 
 
-def _write_verified_record(packet_dir: Path, round_no: int,
-                           fingerprint: str) -> None:
-    """Record that round `round_no` PASSED verification, so `close` can say
-    whether disposal is following one (C7). The record binds the round's own
-    content digest — the sha256 of `delivery-r<N>.md`, the very file a
-    verdict's `content_digest` is bound to — and the worktree fingerprint
-    this run computed.
-
-    Exclusive-create, like every other artifact this file writes. A REPEATED
-    verify of the same round is legitimate (t8 verifies, mutates, restores and
-    verifies again), so an existing record is re-written only when it carries
-    the IDENTICAL digest; a record naming a different digest is a state this
-    command must not paper over — the round on disk is not the round that was
-    certified."""
-    digest = _digest_regular_file(packet_dir / f"delivery-r{round_no}.md",
-                                  "delivery record")
-    rec = packet_dir / f".verified-r{round_no}.json"
-    payload = json.dumps({
-        "label": f"r{round_no}",
-        "digest": digest,
-        "utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "worktree_fingerprint": fingerprint,
-    }, sort_keys=True) + "\n"
-    if rec.is_symlink():
-        _fail(f"{rec.name} is a symlink — refusing to write the round's "
-              f"verification record through it")
-    if rec.exists():
-        previous = _verified_record(packet_dir, round_no)
-        if previous is None or previous.get("digest") != digest:
-            _fail(f"{rec.name} already records a DIFFERENT round — "
-                  f"{(previous or {}).get('digest')!r} vs this run's "
-                  f"{digest!r}. A verification record is never overwritten "
-                  f"with another round's result; prepare the round in a new "
-                  f"packet dir (`open` with a new slug)")
-    # ATOMIC (M4): a temp file replaced into place, so a stop or a full disk
-    # never leaves a truncated record behind.
-    tmp = packet_dir / f".tmp-{os.getpid()}-{rec.name}"
-    try:
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                     | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0), 0o644)
-        try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(payload.encode("utf-8"))
-            os.replace(tmp, rec)
-        finally:
-            tmp.unlink(missing_ok=True)
-    except OSError as e:
-        _fail(f"the round verified, but its verification record "
-              f"{rec.name} could not be written ({e}) — `close` will report "
-              f"this round as unverified until it can be")
-    _refresh_heartbeat(packet_dir)
-
-
 def cmd_verify(packet_arg: str, worktree_arg: str, label: str) -> None:
     packet_dir = _require_date_dir(_require_abs(packet_arg, "packet dir"), "packet dir")
     label = _require_label(label)
     snapshot_file = _snapshot_path(packet_dir, label)
     worktree = _require_worktree_toplevel(worktree_arg)
-    # The heartbeat is refreshed when this command SUCCEEDS — after its only
-    # write (`_write_verified_record`): a verify that refuses or fails at any
-    # point never refreshes it.
+    # The heartbeat is refreshed when this command SUCCEEDS: a verify that
+    # refuses or fails at any point never refreshes it.
 
     # TWO round trees is never a valid round: `_packet_relpaths` skips every
     # top-level `wt-r<N>` directory, so a stray one is invisible to the
@@ -1812,12 +1561,7 @@ def cmd_verify(packet_arg: str, worktree_arg: str, label: str) -> None:
                   f"longer matches its recorded sha256 (the legs were handed "
                   f"different bytes than the verdicts are bound to)")
 
-    # The round is VERIFIED — leave the record `close` reads (C7 / R-CLEANUP
-    # "disposal never precedes export verification"). Written LAST, after
-    # every check above has passed and after the TOCTOU bracket. The file is
-    # census-EXEMPT (`_packet_relpaths`), so writing it does not disturb the
-    # digest this command just certified.
-    _write_verified_record(packet_dir, round_no, fingerprint)
+    _refresh_heartbeat(packet_dir)
     print(f"ROUND_INTEGRITY_OK {label}")
 
 
@@ -1932,56 +1676,6 @@ def _require_clean_relpath(rel: str, flag: str) -> Path:
         _fail(f"{flag} path must not contain empty, '.', or '..' "
               f"segments: {rel!r}")
     return p
-
-
-def _read_worktree_text(worktree: Path, rel: str, flag: str) -> str:
-    """UTF-8 text of a worktree file, opened through a dir_fd chain with
-    O_NOFOLLOW on EVERY component — an intermediate directory swapped to a
-    symlink between a containment check and the open cannot redirect the
-    read outside the worktree (r1 finding, codex+agy convergence: the old
-    resolve()-then-open shape guarded only the FINAL component). A symlink
-    anywhere in the path is refused outright, racing or not — stricter
-    than the old containment-only rule, and deliberately so: packet
-    evidence must name real files. NUL bytes (binary) and non-UTF-8 fail
-    loud — packet data blocks are text by contract."""
-    parts = _require_clean_relpath(rel, flag).parts
-    dir_flags = (os.O_RDONLY | os.O_NOFOLLOW
-                 | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
-    leaf_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    try:
-        fd = os.open(str(worktree), dir_flags)
-    except OSError as e:
-        _fail(f"worktree could not be opened: {e}")
-    try:
-        for part in parts[:-1]:
-            next_fd = os.open(part, dir_flags, dir_fd=fd)
-            os.close(fd)
-            fd = next_fd
-        leaf_fd = os.open(parts[-1], leaf_flags, dir_fd=fd)
-    except OSError as e:
-        os.close(fd)
-        _fail(f"{flag} {rel!r} could not be opened under the worktree "
-              f"(symlink components are refused): {e}")
-    os.close(fd)
-    chunks = []
-    try:
-        st = os.fstat(leaf_fd)
-        if not stat.S_ISREG(st.st_mode):
-            _fail(f"{flag} {rel!r} is not a regular file")
-        while True:
-            chunk = os.read(leaf_fd, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-    finally:
-        os.close(leaf_fd)
-    data = b"".join(chunks)
-    if b"\0" in data:
-        _fail(f"{flag} {rel!r} carries binary (NUL) content — refused")
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError as e:
-        _fail(f"{flag} {rel!r} is not valid UTF-8: {e}")
 
 
 # Alternate line-boundary characters (everything str.splitlines recognizes
@@ -2110,23 +1804,18 @@ def _qualify_claude_agent_id(agent: str, remedy: str) -> str:
 _DEV_WRAPPERS_PACKAGE = "3rd" + "-Agent"
 
 
-def _wrapper_command_path(basename: str) -> tuple:
-    """Absolute path to a dispatch wrapper for the PRINTED command line, from
-    the TWO shipped layouts ONLY — dist first (`<plugin-root>/bin/` at this
-    file's parents[3]), then dev (`<repo-root>/<wrappers-package>/wrappers/`
-    at parents[4]).
+def _wrapper_command_path(basename: str) -> str:
+    """Absolute path to a bin file (a dispatch wrapper, the deletion command)
+    for the PRINTED command line, from the TWO shipped layouts ONLY — dist
+    first (`<plugin-root>/bin/` at this file's parents[3]), then dev
+    (`<repo-root>/<wrappers-package>/wrappers/` at parents[4]).
     Explicit levels, never an unbounded ancestor walk (gate r1, 2-leg): a walk
     with a `*/wrappers/` glob binds the first same-named wrapper in ANY
     ancestor tree, so an unrelated checkout above the install silently becomes
     this round's dispatch command. `len(parents)` is guarded so a shallow or
     unexpected layout falls through instead of raising IndexError. Neither
-    layout present: return the bare name plus a loud NOTE and let the leader
-    resolve it, rather than inventing a path.
-
-    Returns `(command_path, note_or_None)`. The NOTE is RETURNED rather than
-    printed (gate r2, claude Minor): printing it from inside the f-string that
-    builds a leg line emitted it BEFORE that line, wearing the leg indent, so
-    it read as a note on the PREVIOUS leg. The caller prints it after."""
+    layout present: FileNotFoundError naming both layouts — never a bare name,
+    which PATH or the cwd would resolve."""
     here = Path(__file__).resolve()
     candidates = []
     if len(here.parents) > 3:
@@ -2136,9 +1825,12 @@ def _wrapper_command_path(basename: str) -> tuple:
                           / "wrappers" / basename)
     for candidate in candidates:
         if candidate.is_file():
-            return str(candidate), None
-    return basename, (f"NOTE: wrapper not found in either layout — resolve it "
-                      f"before dispatch ({basename})")
+            return str(candidate)
+    raise FileNotFoundError(
+        f"the dispatch wrappers are in neither shipped layout: expected "
+        f"<plugin-root>/bin/{basename} (distribution) or "
+        f"<repo-root>/{_DEV_WRAPPERS_PACKAGE}/wrappers/{basename} "
+        f"(development), relative to {here}")
 
 
 # THE OWNER'S STANDING REVIEW-WEB AUTHORIZATION (R-REVIEW-WEB, case C32):
@@ -2378,9 +2070,8 @@ def _show_at(source: Path, sha: str, rel: str, flag: str) -> str:
     and confirmed it. Reading from the pinned commit removes the divergence by
     construction.
 
-    The tree ENTRY MODE is checked because this no longer goes through
-    `_read_worktree_text`'s O_NOFOLLOW chain: git would happily hand back a
-    symlink's target text as a blob, and a symlinked path was a refusal before.
+    The tree ENTRY MODE is checked: git would happily hand back a symlink's
+    target text as a blob, and a symlinked path is refused.
     """
     clean = str(_require_clean_relpath(rel, flag))
     entry = _git(source, "ls-tree", sha, "--", clean).decode("utf-8", "replace")
@@ -2908,28 +2599,12 @@ def _v2_wrapper_dir() -> Path:
     Derived from `_wrapper_command_path`, the ONE place that knows the dist
     (`<plugin-root>/bin/`) vs dev (`<repo>/<pkg>/wrappers/`) layouts.
 
-    With NEITHER layout present this REFUSES (gate-1 r3 row r3-17): the
-    directory feeds `roster_v2.render_dispatch`, whose absolute-
-    path token check (r2-14) then refused with "wrapper must be an ABSOLUTE
-    path: 'codex_wrapper.py'" — a message about a path nobody typed, naming
-    neither layout, while the purpose-built NOTE just below was unreachable.
-    Failing here states the DIAGNOSIS instead, and does it before any render
-    or mutation."""
-    # The NOTE half of `_wrapper_command_path` is returned and DROPPED here
-    # (gate-1 r4 row r4-14): it is populated only on the bare-basename case,
-    # which the refusal below now owns, so it was always None by the time a
-    # caller could read it — and `v2_print_dispatch`'s `if note:` print was
-    # dead code reading like a live diagnostic. This refusal is the v2 path's
-    # ONLY layout diagnostic.
-    cmd, _unreachable_note = _wrapper_command_path("codex_wrapper.py")
-    parent = Path(cmd).parent
-    if str(parent) == ".":
-        _fail(f"the dispatch wrappers are in neither shipped layout, so no "
-              f"v2 invocation can be built: expected "
-              f"<plugin-root>/bin/codex_wrapper.py (distribution) or "
-              f"<repo-root>/{_DEV_WRAPPERS_PACKAGE}/wrappers/codex_wrapper.py "
-              f"(development), relative to {Path(__file__).resolve()}")
-    return parent
+    With NEITHER layout present this REFUSES with that layout diagnosis, the
+    v2 path's ONLY one, before any render or mutation."""
+    try:
+        return Path(_wrapper_command_path("codex_wrapper.py")).parent
+    except FileNotFoundError as exc:
+        _fail(str(exc))
 
 
 def v2_resolve_roster(source: Path):
@@ -3529,11 +3204,8 @@ def _v2_finish_prepare(packet_dir: Path, worktree: Path, label: str,
                        digest: str, sha: str, resolved, allocs: list,
                        outputs: dict) -> None:
     """The round's print block (one dispatch line per entry) + capture."""
-    # Every resolved-roster WARNING, on STDOUT, before anything else the
-    # operator reads (gate-1 r2, claude Minor): the roster record already
-    # carried them, but a leader who disabled a shipped required leg — or
-    # re-pointed one at another reviewer agent — saw nothing in the terminal
-    # and dispatched a round they believed was the shipped one.
+    # Every resolved-roster WARNING (a Google skip note), on STDOUT, before
+    # anything else the operator reads.
     for warning in resolved.warnings:
         print(f"WARNING: {' '.join(str(warning).split())}")
     _print_round_header(packet_dir, worktree, label, digest, sha)

@@ -16,7 +16,7 @@ the fix queue, and when recording or updating a residual.
 | Scope-expansion gate | sizing a fix for a REAL finding |
 | Loop exit | the round lands no REAL findings |
 | Residual table | recording a residual, or writing the next round's current residual |
-| Consolidating validated LegVerdict objects (jq) | an entry's admitted verdict needs mapping into the residual table |
+| Consolidating validated LegVerdict objects (Read tool) | an entry's admitted verdict needs mapping into the residual table |
 | Fourth-leg comparison record | two entries of ONE family ran this round and you are recording the comparison |
 
 ## Consolidation duties
@@ -454,19 +454,24 @@ to a durable record: the COMPLETE table (every row and disposition, not a summar
 `docs/reviews/<UTC-date>-<slug>-residuals.md`, with the commit body carrying a
 pointer to it plus the load-bearing rows. Packet close deletes the dir.
 
-## Consolidating validated LegVerdict objects (jq)
+## Consolidating validated LegVerdict objects (Read tool)
 
 An ADMITTED verdict is a validated JSON object, not free prose. Mapping its
-`findings[]` into the residual table (above) is mechanical — read it with
-`jq`, never by re-reading the leg's prose.
+`findings[]` into the residual table (above) is mechanical — open the file
+with the Read tool and take the fields by name, never by re-reading the leg's
+prose. No Bash call (no grep, sed or JSON query tool): the files are small,
+and the Read tool needs no permission grant.
 
-The authoritative list of entries is `.roster-r<N>.json`
-(`.entries[] | select(.enabled and .skipped_reason == null)`), and each
-entry's object is `results-r<N>/<name>/attempt-<K>/verdict.json` (a wrapper
-route) or `…/admitted.json` (the claude route — the `--admitted-out` product;
-the raw marker-bearing `raw.json` is NOT jq-consumable, never point jq at
-it). `collect-r<N>.json` already carries the folded per-entry result, so read
-the entry list from the RECORD rather than from memory or a glob. The round's
+The authoritative list of entries is `.roster-r<N>.json` — open it with Read
+and take the entries in `entries` whose `enabled` is true and whose
+`skipped_reason` is null — and each entry's object is
+`results-r<N>/<name>/attempt-<K>/verdict.json` (a wrapper route) or
+`…/admitted.json` (the claude route — the `--admitted-out` product). Open
+that file with Read and take `verdict` and each `findings[]` item's fields by
+name. Never read the raw marker-bearing `raw.json` as the verdict: it is the
+leg's unadmitted reply, not the admitted object. `collect-r<N>.json` already
+carries the folded per-entry result, so read the entry list from the RECORD
+rather than from memory or a glob. The round's
 OUTCOME is the exit code and stdout of the LATEST `collect`, never this file:
 a refused `collect` (exit 2 — an integrity or basis refusal) leaves the file
 untouched, so it is then the EARLIER collection's record (it may still say
@@ -480,9 +485,9 @@ leader still fills in the two fields the schema cannot supply — the triage
 class (REAL / REACHABLE-UNOBSERVED / SPECULATIVE, rule 4's leader-owned
 judgment, never mechanical) and the probe/repro evidence once obtained. The
 `path`/`line` fields also make the cite-verification step (Consolidation duty
-1 — "read the cited lines and reproduce the claim") mechanical to START: `sed
--n '<line>p' <file>` opens exactly the cited line instead of the leader
-hunting for it in prose, though confirming the claim itself still requires
+1 — "read the cited lines and reproduce the claim") mechanical to START: Read
+the file with an offset / limit at that line to open exactly the cited line
+instead of the leader hunting for it in prose, though confirming the claim itself still requires
 reading the surrounding code, and `references/leg-contracts.md` § agy leg
 still requires verifying an agy cite before it enters the table (its cites
 were fabricated in most traced runs even inside a schema-shaped reply).

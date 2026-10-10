@@ -133,9 +133,25 @@ the leader, and a poisoned parent-start environment), not at the user:
 - **Wrapper roots-containment** — `--prompt-file` / `--image` / `--cwd` are
   confined to the configured workspace roots by the shared engine, regardless of
   which product runs it.
-- **claude-host** — no layer of its own. The basename Bash grant
-  (`Bash(codex_wrapper.py:*)`) runs a script of that name without asking; the
-  plugin's environment assumes one operator and nothing planted on PATH. The
+- **claude-host** — no layer of its own. The plugin-path Bash grant
+  (`Bash(python3 <plugin>/*/bin/codex_wrapper.py *)`, `<plugin>` = the installed
+  plugin's directory in the plugin cache, `*` = its version) runs the plugin's own
+  file without asking; so do the review library's leg lines
+  (`Bash(env TRIAD_REVIEW_LOG_DIR=* python3 <plugin>/*/bin/<wrapper> *)`, the agy
+  line with `env TRIAD_READ_AUDIT_FILE=*` before it) and the library files the
+  review skill has the leader run
+  (`Bash(python3 <plugin>/*/skills/triad-cross-family-review/lib/<module> *)`,
+  and `Bash(bash <plugin>/*/skills/triad-cross-family-review/lib/read_audit_gate.sh *)`
+  for the agy read-audit gate). A leg line carries its shell redirections inside
+  a noclobber-guarded subshell, and the claude leg's `guard:` line is shell
+  built-ins with no grant; Claude Code approves such parts separately from any
+  Bash rule, so an installed review round asks once per leg (measured 2026-10-11
+  for the redirection; the subshell and built-in parts not measured). Recorded
+  limit: an env-prefixed grant's `=*` matches any text up to the plugin path, so
+  a line with a second assignment before `python3` (for example `PYTHONPATH=…`)
+  would also run without asking — the same class as the version `*`; not
+  measured live; the threat model below is unchanged. The plugin's environment
+  assumes one operator. The
   wrappers contain `--prompt-file` / `--image` / `--cwd` in the allowed roots under
   the hardening env (`TRIAD_WRAPPER_HARDENED=1`) that the setup writes.
 

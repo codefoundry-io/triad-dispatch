@@ -8,10 +8,9 @@ An AI at most chooses a declared role and a folder, then runs:
     python3 <this directory>/cleanup.py remove <role> <path>
 
 `remove` runs every check before any action, and a check that cannot be made
-(an unreadable entry, a configuration or `gitdir` file that is no regular
-file, a repository that cannot list its worktrees or name its top level, any
-unexpected error, a "nothing to remove" result that cannot be printed)
-refuses; git runs with no inherited GIT_* variable and never discovers a
+(an unreadable entry, a configuration file that is no regular file, a
+repository that cannot list its worktrees or name its top level, any
+unexpected error) refuses; git runs with no inherited GIT_* variable and never discovers a
 repository above the folder holding the `.git` entry meant (a path holding
 ':', which no GIT_CEILING_DIRECTORIES value can carry, refuses):
 a `..` component, a symbolic link as the path or in any component below the
@@ -105,7 +104,6 @@ from pathlib import Path
 
 _EXIT_REFUSED = 64
 _PROJECT_REL = (".claude", "triad-cleanup.json")
-_USER_REL = ("triad", "cleanup.json")
 _HOST_DIR = Path(__file__).resolve().parent
 _DEFAULT = _HOST_DIR / "cleanup-roots.default.json"
 _KEYS = {"role", "root", "proof", "min_age_s"}
@@ -127,16 +125,6 @@ def _project_root(folder: Path | None = None) -> Path:
     if r.returncode != 0 or not top:
         raise ValueError(f"the repository holding {cwd} cannot name its top level ({_said(r)})")
     return Path(top)
-
-
-def _user_file() -> Path:
-    xdg = os.environ.get("XDG_CONFIG_HOME", "")
-    if os.path.isabs(xdg):  # unset, empty or relative (invalid per XDG) -> ~/.config
-        return Path(xdg).joinpath(*_USER_REL)
-    try:
-        return Path.home().joinpath(".config", *_USER_REL)
-    except (RuntimeError, OSError) as exc:  # never a silent fall-through to the default
-        raise ValueError(f"the user configuration file cannot be located: no home directory ({exc})") from None
 
 
 def _validate(path: Path, project: Path) -> dict[str, tuple[str, str, int, str]]:
@@ -201,10 +189,8 @@ def load_roots(project: Path | None = None) -> tuple[Path, dict[str, tuple[str, 
     """Find, read and validate the declared deletion roots.
 
     Lookup, first file present wins: the project file
-    `<project>/.claude/triad-cleanup.json`, then `$XDG_CONFIG_HOME/triad/cleanup.json`
-    (unset, empty or relative -> `~/.config`), then `cleanup-roots.default.json`
-    shipped beside this module; each file is looked up only when every earlier
-    one is absent. A file that is present but invalid (or a symbolic
+    `<project>/.claude/triad-cleanup.json`, then the shipped default
+    `cleanup-roots.default.json` beside this module. A file that is present but invalid (or a symbolic
     link), or one that cannot be probed (only "does not exist" is absent),
     raises — it never falls through to a later file — and no file at all
     raises too: either way nothing may be deleted.
@@ -228,8 +214,7 @@ def load_roots(project: Path | None = None) -> tuple[Path, dict[str, tuple[str, 
     try:
         project = _project_root(project)
         looked: list[Path] = []
-        for lookup in (lambda: project.joinpath(*_PROJECT_REL), _user_file, lambda: _DEFAULT):
-            cand = lookup()  # each lookup only when every earlier file is absent
+        for cand in (project.joinpath(*_PROJECT_REL), _DEFAULT):
             looked.append(cand)
             if _present(cand):
                 return cand, _validate(cand, project)
@@ -464,10 +449,8 @@ def _regdir(repo: str, path: str) -> str:
     common = os.path.join(repo, os.fsdecode(r.stdout).strip())
     for wid in sorted(os.listdir(os.path.join(common, "worktrees"))):
         reg = os.path.join(common, "worktrees", wid)
-        if (gst := _lstat(os.path.join(reg, "gitdir"))) is None:
+        if _lstat(os.path.join(reg, "gitdir")) is None:
             continue
-        if not stat.S_ISREG(gst.st_mode):  # never opened otherwise
-            raise _Refused(f"{os.path.join(reg, 'gitdir')} is not a regular file")
         with open(os.path.join(reg, "gitdir"), encoding="utf-8", errors="surrogateescape") as f:
             named = os.path.normpath(os.path.join(reg, f.read().strip()))
         if os.path.realpath(os.path.dirname(named)) == path:
@@ -526,9 +509,6 @@ def _lock_reason(reg: str) -> str | None:
     cannot be read — never empty."""
     p = os.path.join(reg, "locked")
     try:
-        st = os.lstat(p)
-        if not stat.S_ISREG(st.st_mode):  # never opened otherwise (a FIFO would block)
-            return "its lock file is no regular file"
         with open(p, "rb") as f:
             said = " ".join(f.read(512).decode("utf-8", "replace").split())
     except (FileNotFoundError, NotADirectoryError):
@@ -555,14 +535,11 @@ def _locked(wt: str) -> str | None:
     reason (`_lock_reason`) — or None. Every deletion leaves it (R-CLEANUP;
     this command refuses one at any depth in its check phase): the review
     helpers' own checks name it first, with this reason. None when `wt` holds
-    no `.git` entry; a `.git` that is no regular file, cannot be read or names
-    no registration is left like a lock (never delete on doubt), its reason
+    no `.git` entry; a `.git` that cannot be read (a directory included) or
+    names no registration is left like a lock (never delete on doubt), its reason
     saying the lock state cannot be read — it is no git lock."""
     p = os.path.join(wt, ".git")
     try:
-        st = os.lstat(p)
-        if not stat.S_ISREG(st.st_mode):  # never opened otherwise (a FIFO would block)
-            return "its lock state cannot be read: its .git is no regular file"
         with open(p, "rb") as f:
             line = os.fsdecode(f.read(4096).split(b"\n")[0]).strip()
     except (FileNotFoundError, NotADirectoryError):
@@ -763,13 +740,11 @@ def remove(role: str, path: str, *, project: Path | str | None = None,
         return _refuse(f"a check on {path} could not be made ({type(exc).__name__}: {exc})")
     if check_only:
         return 0
-    if not steps:  # no action taken: a result that cannot be printed refuses
+    if not steps:  # no action taken: an unprintable result is still a no-op
         try:
             print(f"cleanup: nothing to remove at {real}", flush=True)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             _stdout_gone()
-            return _refuse(f"nothing to remove at {path}, but that result could not be printed "
-                           f"({type(exc).__name__}: {exc})")
         return 0
     for step in steps:
         try:

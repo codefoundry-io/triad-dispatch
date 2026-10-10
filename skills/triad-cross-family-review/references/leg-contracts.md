@@ -167,18 +167,6 @@ never agreement: the collector counts a SKIPPED enabled entry as `missing`,
 NAMED with its skip reason, which folds the round to `INCOMPLETE` whatever its
 siblings cover (`collect_v2.py` "SKIPPED at prepare and never dispatched").
 
-**Roster drift = ONE `WARNING:` per CHANGED FIELD** (`roster_v2._drift_warnings`).
-An override that moves a SHIPPED entry is never a veto (R-ROSTER keeps every
-leg switchable), but every moved field — top-level and adapter-block alike —
-gets its own warning carrying `old->new`, printed on stdout and frozen into
-`.roster-r<N>.json`. `note` is excluded (operator prose) and `vendor` is
-excluded because it is REFUSED rather than warned. Exactly one line per
-change: `enabled` is both a drift field and the subject of its own dedicated
-line, so when the dedicated line fires the generic one is skipped FOR THAT
-FIELD ONLY (a round record that counts warnings must not read one move as two
-changes); an `enabled: false -> true` move, which has no dedicated line,
-still gets the generic `old->new`.
-
 A duplicate entry name in the override document — exact or differing only in
 case (`codex` / `Codex`; the name becomes a directory name and the macOS
 default volume folds case) — is refused before anything is created. An
@@ -396,8 +384,9 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
   Symmetric with the codex leg's rule-9 READ-GRANT + `--cwd` duty; build the
   value from the real cwd read at dispatch time (`pwd`), never an assumed
   session directory.** The host runs
-  `antigravity_wrapper.py
-  --setup-agents` once (a missing/drifted file is
+  `python3 <plugin bin>/antigravity_wrapper.py --setup-agents` once (the
+  runnable line is in `triad-antigravity-dispatch` SKILL.md Step 1, Host
+  setup; a missing/drifted file is
   `config-conflict` naming it). **`--setup-agents` prints the written agent
   paths and its permission hint as PAYLOAD BYTES**:
   `_emit_payload(os.fsencode(path))`, so a non-ASCII agents directory
@@ -425,7 +414,8 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
   enforces — the round's `prompt.txt` (the vendored `google-read-grant`
   clause) and the agent body written by `--setup-agents`
   (`_allowlist_rule`, pinned by `t28-agy-agent-mode.sh`; a host must re-run
-  `antigravity_wrapper.py --setup-agents` after
+  `python3 <plugin bin>/antigravity_wrapper.py --setup-agents` (the
+  `triad-antigravity-dispatch` Host setup line) after
   an upgrade that changes the agent body, or every dispatch fails
   `config-conflict` naming the file). The allowlist refusal itself is the
   DISTINCT classification
@@ -583,8 +573,9 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
     from inside whether such a hook is present, so it never makes one, and
     any off-list call that EXECUTES voids. The agent-body sentence is shared
     by the research agent, whose own web tools are never called blocked.
-    Hosts re-run `antigravity_wrapper.py
-    --setup-agents` after an upgrade that changes the agent body.
+    Hosts re-run `python3 <plugin bin>/antigravity_wrapper.py
+    --setup-agents` (the `triad-antigravity-dispatch` Host setup line) after
+    an upgrade that changes the agent body.
 - **Model.** The entry's `agy.model` is passed as
   `--model=<value>` to `antigravity_wrapper.py` (the Pro/High
   variant — agy's catalog encodes effort in the model slug, so the slug stays
@@ -927,15 +918,10 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   record is what makes a mis-resolution legible after the fact, not a
   guarantee it cannot happen.
 
-  Keep `$(cat body.txt)` OUT of a single-quoted heredoc BODY — i.e.
-  `--prompt "$(cat <<'TRIAD_CODEX_PROMPT_EOF'` … a line containing
-  `$(cat body.txt)` … `TRIAD_CODEX_PROMPT_EOF)"`. The heredoc is literal, so
-  that inner `$(...)` is never expanded and codex receives the uninterpreted
-  string `$(cat ...)`. (The sibling dispatch skills' Step 1 uses the heredoc
-  shape for a literal prompt body, each with its own collision-resistant
-  `TRIAD_<CLI>_PROMPT_EOF` terminator. THIS leg's path is `--prompt-file` on
-  the rendered `<attempt>/prompt.txt` — collision-free precisely because
-  there is no heredoc to terminate early.) There is no asymmetry to manage:
+  THIS leg's path is `--prompt-file` on the rendered `<attempt>/prompt.txt`,
+  the same form the sibling dispatch skills' Step 1 uses (the leader writes
+  the body to a file and runs one simple command with literal arguments).
+  There is no asymmetry to manage:
   every leg — codex, agy/gemini and claude — is pointed at the SAME
   round worktree and enters through the same `brief.md`, so the transport is
   uniform and the bytes each leg judges are identical. That identity is what the

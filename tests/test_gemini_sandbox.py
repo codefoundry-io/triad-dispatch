@@ -58,6 +58,8 @@ def _run(tmp_path: Path, *extra: str):
         ARGV_FILE=str(argv_file),
         # never mutate the (possibly installed-plugin) wrapper dir
         TRIAD_DISPATCH_LOG_DIR=str(tmp_path / "_logs"),
+        # the prompts sweep looks in this test's own folder, never <cwd>/_runs/prompts
+        TRIAD_DISPATCH_PROMPTS_DIR=str(tmp_path / "prompts"),
         PYTHONDONTWRITEBYTECODE="1",
         # Hermetic auth-class preflight (C16): point the CLI's own settings
         # locations at empty temp paths so the operator's real ~/.gemini never

@@ -163,25 +163,6 @@ _PRESET_PIN_RE = re.compile(r"^(model|effort): (\S+)$", re.M)
 # This install's own layout root (the dev tree's `.claude/`, a plugin's root):
 # its `agents/` holds the presets the install ships.
 _LAYOUT_ROOT = Path(__file__).resolve().parents[3]
-# TOP-LEVEL fields of a SHIPPED default entry whose override drift is
-# announced. `name` is the merge key. `note` is operator prose. `vendor` is
-# NOT here and never was announceable: re-vendoring a shipped entry is
-# REFUSED, not warned — the entry keeps its shipped adapter block, and the
-# resolved schema (plus `_check_blocks`, which runs first so the refusal
-# NAMES the inherited block) rejects that block on the new vendor, so the
-# warning could never be reached (gate 1 r2 row r2-7).
-DRIFT_FIELDS = ("enabled", "acceptance", "timeout_s")
-# ADAPTER-BLOCK fields an override can move on a shipped entry. Without
-# these, an override could re-point the REQUIRED claude leg at any reviewer
-# agent, or drop the codex leg's reasoning tier, with no round-visible
-# record at all (gate 1 r2 row r2-11). One WARNING per changed field.
-DRIFT_ADAPTER_FIELDS = {
-    "claude": ("agent", "model", "effort"),
-    "codex": ("model", "reasoning"),
-    "agy": ("model", "effort"),
-    "gemini": ("model", "effort"),
-    "google": ("route",),
-}
 
 
 class RosterError(Exception):
@@ -641,72 +622,6 @@ def _resolve_google(leg: dict, which) -> tuple:
     return None, GOOGLE_SKIP_NONE
 
 
-def _drift_warnings(base: dict | None, merged: dict) -> list[str]:
-    """WARNINGS (never refusals) for an override that moves a SHIPPED entry.
-
-    R-ROSTER keeps every leg switchable, so this is not a veto; but silently
-    dropping a shipped required family is exactly the change a round record
-    must carry. Family coverage is descriptive in the collector, never a
-    threshold (R-AGREE).
-
-    Scope: ANY changed field of a shipped entry — top-level (`DRIFT_FIELDS`)
-    and every adapter-block field (`DRIFT_ADAPTER_FIELDS`) — gets one
-    WARNING carrying `old->new`. `note` is excluded (operator prose).
-    `vendor` is excluded because it is REFUSED, not warned: the merged entry
-    keeps its shipped adapter block, and `_check_blocks` (which runs before
-    the resolved-schema validation, so the refusal NAMES that inherited
-    block) rejects it on the new vendor.
-    """
-    if base is None:
-        return []
-    name = base["name"]
-    out: list[str] = []
-    # ONE warning per CHANGED FIELD (gate-1 r3 row r3-16). `enabled` is both a
-    # DRIFT_FIELDS member and the subject of this dedicated line, so a
-    # disabled shipped entry used to print the same move twice — and a round
-    # record that counts warnings then reads as two changes. When the
-    # dedicated line fires, the generic one is skipped for that field ONLY;
-    # an enabled false->true move, which has no dedicated line, still gets the
-    # generic old->new.
-    dedicated: set[str] = set()
-    if base.get("enabled") and not merged.get("enabled"):
-        dedicated.add("enabled")
-        out.append(
-            f"shipped {base.get('acceptance')} leg '{name}' disabled "
-            f"by the project override (enabled true->false) — it no longer "
-            f"reviews; family coverage is reported, never a threshold "
-            f"(R-AGREE)")
-    for field_name in DRIFT_FIELDS:
-        if field_name in dedicated:
-            continue
-        old, new = base.get(field_name), merged.get(field_name)
-        if old != new:
-            out.append(
-                f"project override changed shipped leg '{name}' field "
-                f"'{field_name}': {old!r}->{new!r} — a shipped default's "
-                f"switch, acceptance label and budget are owner-visible "
-                f"(R-AGREE)")
-    # Adapter-block drift is the SAME class of change (gate 1 r2 row r2-11):
-    # `claude.agent` decides WHICH reviewer answers under the required leg's
-    # name, and a tier/slug move changes what the round actually bought. One
-    # WARNING per field, same `old->new` shape, so a round record reads the
-    # same whether the move was top-level or inside a block.
-    for block, fields in DRIFT_ADAPTER_FIELDS.items():
-        base_block = base.get(block) or {}
-        merged_block = merged.get(block) or {}
-        if not isinstance(base_block, dict) or not isinstance(merged_block, dict):
-            continue
-        for field_name in fields:
-            old, new = base_block.get(field_name), merged_block.get(field_name)
-            if old != new:
-                out.append(
-                    f"project override changed shipped leg '{name}' field "
-                    f"'{block}.{field_name}': {old!r}->{new!r} — a shipped "
-                    f"default's adapter block decides which reviewer, tier "
-                    f"and route actually answered (R-AGREE)")
-    return out
-
-
 def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
     """The shipped defaults, merged with the project override, fully validated."""
     schema = _schema()
@@ -768,7 +683,6 @@ def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
         route = None
         skipped = None
         _check_capabilities(leg)
-        warnings.extend(_drift_warnings(shipped.get(leg["name"]), leg))
         if leg["enabled"] and leg["vendor"] == "google":
             route, skipped = _resolve_google(leg, which)
             if route is not None and route not in leg:

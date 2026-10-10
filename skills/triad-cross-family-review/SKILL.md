@@ -1,7 +1,7 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — prepares ONE frozen round from a named ROSTER of INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime — agy via triad-antigravity-dispatch, with compatibility for the older gemini CLI via triad-gemini-dispatch — plus any entry the project configured), frames the suspect/omitted/simplified decisions as QUESTIONS, admits every entry's verdict (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE) against the canonical schema, and folds them into ONE outcome (AGREED / BLOCKED / INCOMPLETE) driving a fix→NEW-round loop. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.48.0
+version: 0.50.1
 # changelog: docs/reviews/2026-09-18-cfr-skill-history.md (every entry; the newest section is last)
 ---
 
@@ -75,8 +75,7 @@ Five references carry the detail — open one only when its column applies.
      `<source-repo>/.claude/triad-review-legs.json` — the SOURCE repo `prepare` names as its second argument (the live checkout, never the round tree) — (schema
      `triad-review-legs.v2`) is the PROJECT override, merged BY NAME — objects
      field by field, scalars and arrays replaced. Every entry is validated
-     enabled or not; an override that moves a SHIPPED entry prints a
-     `WARNING:` line on stdout and is recorded in `.roster-r<N>.json`; a v1
+     enabled or not; a v1
      file (`triad-review-legs.v1`) is REFUSED by the roster schema. No
      user-scope roster file is read. Recommended extra
      entry: the claude `high` arm `cross-family-review-reviewer-high`; Flash
@@ -136,8 +135,9 @@ Five references carry the detail — open one only when its column applies.
    OSCILLATING → the owner on a CONFLICTED item), the severity/triage axes
    and the residual record are in `references/triage.md`. An ADMITTED
    verdict is a validated JSON object, so mapping its `findings[]` into the
-   residual table is mechanical (`jq`, `references/triage.md` § Consolidating
-   validated LegVerdict objects).
+   residual table is mechanical (open the file with the Read tool and take the
+   fields by name, `references/triage.md` § Consolidating validated LegVerdict
+   objects).
    **Admission (v2).** `lib/verdict_v2.py` validates each reply against the
    vendored canonical `spec/contracts/leg-verdict.schema.json` and binds it to
    the attempt that produced it through SIX ALL-OR-NOTHING binding values — a
@@ -256,7 +256,7 @@ Five references carry the detail — open one only when its column applies.
    context ceiling. `prepare` runs the round's `capture` (evidence snapshot +
    canonical worktree fingerprint) and the tree stays FROZEN; after every
    dispatched entry terminates, `verify` must print `ROUND_INTEGRITY_OK r<N>`
-   and leaves `.verified-r<N>.json` (`close` re-runs the check fresh). **Per-entry custody.** `prepare` allocates one
+   (`close` re-runs the check fresh). **Per-entry custody.** `prepare` allocates one
    `results-r<N>/<name>/attempt-K/` per enabled non-skipped entry —
    `binding.json`, `prompt.txt`, `dispatch.json`, `schema.projected.json`
    where the route takes one — and records the frozen roster in
@@ -475,8 +475,7 @@ close it and prepare a new round.
    records `.roster-r<N>.json`, and runs the round's `capture` — so every byte a
    leg reviews sits inside the census by construction
    (`references/packet-lifecycle.md`). READ ITS STDOUT: any `WARNING:` line
-   (roster drift, ONE per CHANGED FIELD — a shipped entry disabled, re-pointed
-   or re-timed) comes FIRST, then one COMPLETE dispatch line per entry, then
+   comes FIRST, then one COMPLETE dispatch line per entry, then
    each `SKIPPED <name>: <reason>` and the roster NOTE.
 3. **Dispatch EVERY printed entry — in parallel (rule 13), same-family entries
    one after another (rule 7) — and run the checks each entry's line printed.** Take the wrapper line VERBATIM, `env` members included — the wrapper's run-log under `<attempt>/logs/` is the receipt `collect` compares with the recorded argv, so an env-less line makes that entry INVALID and a line edited after it was printed is refused by the wrapper itself before the vendor runs (exit 3, R-BIND, C32); it already
@@ -500,7 +499,7 @@ close it and prepare a new round.
 4. **Once every dispatched entry has terminated, `verify` then `collect`.**
    `verify <packet-dir> <packet-dir>/wt-r<N> r<N>` must print
    `ROUND_INTEGRITY_OK r<N>` (a mismatch INVALIDATES the round: mutation
-   detected, never released) and leaves `.verified-r<N>.json`. Then
+   detected, never released). Then
    `collect <packet-dir> r<N>` (it runs `verify` itself before `AGREED`; a failed check is exit 2, a host fault 64) folds each enabled entry's attempt AS NAMED BY THE ROUND RECORD (a HIGHER attempt directory on disk — one this round never allocated — makes that entry `invalid` only when the recorded attempt is not valid; `references/triage.md` § Collect outcomes)
    into ONE outcome, which IS the exit code:
    - **`AGREED` (0)** — the selected roster is nonempty and EVERY entry

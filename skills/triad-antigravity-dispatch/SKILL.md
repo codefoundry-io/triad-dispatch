@@ -1,8 +1,32 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg; `triad-gemini-dispatch` exists for legacy compatibility with the older gemini CLI); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.16.14
+version: 0.22.1
 # changelog:
+#   0.22.1 (2026-10-11): doc — Step 2 wording ("— Step 3 reads it from the tool result"); Step 1 says
+#     `<project>` is read from `pwd` at dispatch time, like `--cwd`.
+#   0.22.0 (2026-10-11): Flow — the prompt and proposal files live under
+#     `<project>/_runs/prompts/` (inside the hardened allowed root; the wrapper's
+#     next-run sweep prunes them under the `dispatch-prompts` role, owner option 1);
+#     Step 2 says Step 3 reads the summary from the tool result.
+#   0.21.1 (2026-10-10): doc — Step 5a: the run-log path is passed on as the wrapper printed it
+#     (the last `run-log:` line); the three path checks are removed (the wrapper prints
+#     its own file); a forged earlier `run-log:` line is a recorded limit.
+#   0.21.0 (2026-10-10): doc — the leader reads the tool result (Step 3 summary token,
+#     5a run-log path, 5c analyzer JSON keys) with no shell parse; files in
+#     /tmp/triad-prompts (prompt and proposal; the OS temporary directory owns expiry).
+#   0.20.0 (2026-10-10): doc — Step 1 and Step 5d: every wrapper / applier call is ONE simple
+#     command with literal arguments; the prompt (Step 1) and the proposal (Step 5d,
+#     `--proposal-file`) go through files the leader writes with the Write tool.
+#     Measured (Claude Code 2.1.289): a command substitution / heredoc, an array
+#     expansion and a quoted-variable pipe cannot be checked before they run, so the
+#     plugin's grant does not match them; the plugin-root variable is substituted in
+#     the SKILL.md body only, so references carry no runnable bin command. The `AGY_CMD` argv array is gone; the --repair-mode replay is Step 1's literal line with --repair-mode appended; the apply command moved from references/repair-loop.md into Step 5d.
+#   0.19.0 (2026-10-10): doc — Step 5d: the apply step is a plain pipe into `apply_patch.py` (no `if` / `case`: the permission grant matches a plain command only); the leader reads its exit code (0 applied → `--repair-mode` replay in its own call; 3 refused, nothing written).
+#   0.18.0 (2026-10-10): doc — § Headless soft-deny adaptation: the flag rides the first call; the in-loop soft-deny re-run is removed (AGY-05).
+#   0.18.0 (2026-10-10): doc — Step 1 `--pydantic`: one three-way rule (a dict `structured_output` is the answer, anything else falls back to the response text; one repair turn, then 66).
+#   0.17.1 (2026-10-10): doc — Step 4 `unknown` row names the third engine-decided transport failure: an `Exception` raised while waiting on the child (the one cleanup arm).
+#   0.17.0 (2026-10-10): doc — the payload is one byte-safe UTF-8 encode (a lone surrogate leaves as its `\udXXX` escape, exit and token unchanged); the unemittable-payload demotion is removed.
 #   0.16.14 (2026-10-09): doc — § Isolation's durable-file paragraph and references/read-audit.md point to the review skill's leg-contracts for the binding and the gate (one home per mechanism); no rule change.
 #   0.16.13 (2026-10-09): doc — the web-evidence clause is read from the vendored spec (E5-20); no embedded constant.
 #   0.16.12 (2026-10-09): doc — an override call writes no default-dir copy and logs no `read-audit-copy:` line; `read-audit-file:` is the one custody line.
@@ -277,7 +301,7 @@ was admitted `ok` and answered blind. Measured population: 211 of the first
 Build the value from the REAL working directory read at dispatch time
 (`pwd`), never from an assumed session cwd (leader CLAUDE.md Pitfall #5).
 
-**Host setup (once):** `antigravity_wrapper.py --setup-agents` writes
+**Host setup (once):** `python3 ${CLAUDE_PLUGIN_ROOT}/bin/antigravity_wrapper.py --setup-agents` writes
 both agent files under `~/.gemini/config/agents/` (workspace `.agents/` is NOT
 loaded in print mode — K1). A dispatch only CHECKS the file (byte-identical to
 the embedded body); missing or drifted → `config-conflict` (65) naming
@@ -307,8 +331,10 @@ open BY DESIGN (§ Standing residuals in `references/isolation.md`).
 On the permissive baseline (`--sandbox` omitted, non-hardened install) the
 wrapper still inserts `--dangerously-skip-permissions` on every build it
 dispatches (opt out with `AGY_NO_HEADLESS_AUTOAPPROVE=1`), the 2026-07-18
-adaptation to agy 1.1.3's headless soft-deny. The read-only path v2 never
-carries the flag. Facts that still matter for the baseline:
+adaptation to agy 1.1.3's headless soft-deny. The flag rides the first call,
+so a soft-denied run is not re-run (it ends on its own no-answer
+classification). The read-only path v2 never carries the flag. Facts that
+still matter for the baseline:
 
 - on 1.1.17/1.1.18 `permissions.deny` wins over the flag (Deny > dsp: ladder
   arm A `command(*)`, probe G `write_file(*)`); the 1.1.3-era "voids the
@@ -382,45 +408,33 @@ Read-audit binding bullet; § agy read-audit gate).
 
 ## Flow
 
-### Step 1 — Build the wrapper invocation
+### Step 1 — Write the prompt file, build the wrapper invocation
 
-Single-quoted heredoc for the prompt body so Korean / emoji / `$variables` /
-backticks / quotes survive intact, with a collision-resistant terminator: a line
-consisting of exactly the terminator word ends the heredoc early, and a bare
-`PROMPT` is a word real prompt bodies contain. `TRIAD_AGY_PROMPT_EOF` is the
-house terminator. Use `--prompt-file <absolute-path>` INSTEAD of the heredoc
-(the two are mutually exclusive — argparse rejects both together) for either of
-these bodies: **content the leader did not author** (pasted files, vendor
-output, a diff, a packet), or **any body that quotes a dispatch template or a
-SKILL body** — a quoted template carries the house terminator as literal text,
-which is exactly how this defect was first observed. `--prompt-file` removes
-the terminator collision entirely and is the standing path for both.
+Write the prompt body to a file with the Write tool, then run the wrapper as
+ONE simple command on ONE line. The file is new per dispatch:
+`<project>/_runs/prompts/<utc-timestamp>-antigravity.md`, where `<project>` is the
+directory the leader runs in (read from `pwd` at dispatch time, like `--cwd`) — the
+hardened install's allowed root, so the wrapper accepts the path (create the folder
+with the Write tool as needed). The
+wrapper's next-run sweep prunes the folder past the `dispatch-prompts` role's
+floor; add `_runs/` to the project's `.gitignore` if it is not
+already ignored. The file keeps Korean / emoji /
+`$variables` / backticks / quotes intact with no shell quoting at all.
 
-Every path argument (`--cwd`, `--prompt-file`) is ABSOLUTE and is built from
-the REAL working directory read at dispatch time (`pwd`) — never from an
-assumed session cwd. The session cwd resets to the primary working directory
+The `--cwd` argument is ABSOLUTE and is built from the REAL working directory
+read at dispatch time (`pwd`) — never from an assumed session cwd. The session cwd resets to the primary working directory
 around context reinitialization (leader CLAUDE.md Pitfall #5; probe-measured
 2026-08-26), so a path built from the memory of an earlier `cd` silently
 targets the wrong repo.
 
+The command line carries LITERAL values only — no `$(…)`, heredoc, variable,
+pipe, array or `\` continuation: the plugin's permission grant matches one
+simple command, and a command substitution, a variable or an array cannot be
+checked before it runs, so such a call prompts on every dispatch. Fill in the
+bracketed options you need with literal values and drop the rest:
+
 ```bash
-AGY_CMD=(antigravity_wrapper.py \
-  --prompt "$(cat <<'TRIAD_AGY_PROMPT_EOF'
-<leader-prompt-verbatim>
-TRIAD_AGY_PROMPT_EOF
-)" \
-  [--prompt-file /absolute/path/to/prompt.txt] \
-  [--cwd /absolute/path] \
-  [--sandbox read-only] \
-  [--web | --review-web] \
-  [--model <pinned-model-name>] \
-  [--effort low|medium|high] \
-  [--pydantic module:Class] \
-  [--json-schema-file /absolute/path/schema.json] \
-  [--attempt <int>] \
-  [--timeout <seconds>] \
-  [--debug])
-"${AGY_CMD[@]}"
+python3 ${CLAUDE_PLUGIN_ROOT}/bin/antigravity_wrapper.py --prompt-file <project>/_runs/prompts/<utc-timestamp>-antigravity.md [--cwd /absolute/path] [--sandbox read-only] [--web or --review-web] [--model <pinned-model-name>] [--effort <low, medium or high>] [--pydantic module:Class] [--json-schema-file /absolute/path/schema.json] [--attempt <int>] [--timeout <seconds>] [--debug]
 ```
 
 **`--json-schema-file <path>`** hands a CALLER-OWNED JSON schema file
@@ -440,23 +454,17 @@ process-entry cwd, as `--prompt-file`); the check runs BEFORE any vendor work.
 RECORDED on the transport receipt and the summary tail and never interpreted
 — no control flow reads it, it drives no retry. Below 1 is refused pre-spawn.
 
-`--prompt-file` REPLACES the `--prompt` heredoc — argparse rejects both
-together, so delete the heredoc when switching to a file body.
+Keep the command line you ran: Step 5d replays it, unchanged, with
+`--repair-mode` appended.
 
-**Keep the invocation as a quoted argv array** (`AGY_CMD` above): Step 5d
-re-declares Step 1's exact `AGY_CMD=( … )` array in its own invocation and
-replays it with `--repair-mode` appended as a DISTINCT element — never flatten it
-into one string —, and
-an optional bracketed value like `[--cwd /absolute/path]` stops being
-quoting-safe once flattened to a string.
-
-Host setup, once: `antigravity_wrapper.py --setup-agents`
+Host setup, once: `python3 ${CLAUDE_PLUGIN_ROOT}/bin/antigravity_wrapper.py --setup-agents`
 (writes the two read-only agent definitions; § Read-only path v2).
 
 Flags at a glance: `--sandbox read-only` (v2 read-only path, § Read-only path v2) · `--web` (research agent with web tools + the investigation clause; default = review agent without) · `--review-web` (a review round's leg with web: the research agent, no clause)
-· `--prompt-file <abs>` (replaces the heredoc: non-leader-authored bodies,
-or a body quoting a template — Step 1) · `--pydantic
-module:Class` (native `--json-schema`) · `--timeout <s>` (default 600) · `--cwd
+· `--prompt-file <abs>` (the prompt body, written with the Write tool — Step 1) · `--pydantic
+module:Class` (native `--json-schema`; a dict `structured_output` is the
+answer, anything else falls back to the response text; one repair turn, then
+66) · `--timeout <s>` (default 600) · `--cwd
 <abs>` (**REQUIRED with `--sandbox read-only`** — it becomes `--add-dir`, the
 leg's only read grant; § Read-only path v2 caller obligation) · `--model
 <selector>` · `--effort low|medium|high` (both pin-floored at
@@ -468,7 +476,7 @@ rule 7). What each flag actually does, and the wrapper-internal transport note:
 
 Wrapper stderr contains:
 - Timestamped wrapper log lines
-- 1-line summary: `[<timestamp>] [wrapper] antigravity <classification> exit=<int> vendor=<int> elapsed=<s>` followed by the recorded-facts tail ` attempt=<n>`, ` prompt_file=<abs>` when a `--prompt-file` was given, ` model=<slug>` when `--model` was requested and ` reasoning=<tier>` when `--effort` was requested (absent = the CLI's config default) (every wrapper log line, this one included, carries the leading timestamp bracket — the Step 3 grep anchors on it)
+- 1-line summary: `[<timestamp>] [wrapper] antigravity <classification> exit=<int> vendor=<int> elapsed=<s>` followed by the recorded-facts tail ` attempt=<n>`, ` prompt_file=<abs>` when a `--prompt-file` was given, ` model=<slug>` when `--model` was requested and ` reasoning=<tier>` when `--effort` was requested (absent = the CLI's config default) (every wrapper log line, this one included, carries the leading timestamp bracket — Step 3 reads it from the tool result)
 - On every completed call: `[wrapper] antigravity read-audit {…}` (informational digest, § Isolation above), then `read-audit-file: <absolute-path>` (the durable file `emit_read_audit` just wrote — `$TRIAD_READ_AUDIT_FILE` if set, else the wrapper's own default location)
 - On failure: `run-log: <absolute-path>`
 
@@ -476,35 +484,27 @@ Wrapper stdout = agy's final answer (the stream-json terminal `result` event's `
 
 ### Step 3 — Read the classification
 
-Grep the summary line; extract classification. **Use the LAST
-`[wrapper] antigravity <classification> exit=<int> vendor=<int> elapsed=<s>`
-line** from stderr (mirror the codex/gemini dispatch convention — take the last
-emission only):
+Read the classification from the Bash tool result — no shell parse (a
+command substitution or a pipe cannot be checked before it runs, so a parse
+command would prompt). In the stderr, read the LAST line that STARTS with
+`[<timestamp>] [wrapper] antigravity ` (the timestamp bracket, then `[wrapper] antigravity `);
+the classification is the token right after `[wrapper] antigravity ` (e.g. `ok`,
+`unknown`, `extraction-error`). Use the LAST such line (the codex / gemini
+convention — take the last emission only). On a failure, the run-log path is the value after
+`run-log: ` on its line (the last such line).
 
-```bash
-SUMMARY=$(grep -E '^\[[^]]*\] \[wrapper\] antigravity ' <stderr-text> | tail -1)
-CLS=$(printf '%s' "$SUMMARY" | sed -E 's/^\[[^]]*\] \[wrapper\] antigravity ([a-z-]+) .*/\1/')
-```
-
-**BOTH patterns are ANCHORED to the line start** (gate-1 r9 row r9-3). The grep
-always was; the sed used to be greedy
-(`s/.*\[wrapper\] antigravity ([a-z-]+) .*/\1/`), so it took the LAST
-`[wrapper] antigravity <token> ` sequence ANYWHERE in the line — and the summary
-tail carries a FREE-TEXT field (`prompt_file=<abs>`), so a prompt file living
-under a directory literally named `…[wrapper] antigravity ok …` overrode the
-token the wrapper emitted: a demoted `extraction-error` run parsed as `ok`, and
-the MANDATORY repair-agent routing (Step 5) never fired. Since the same row the
-engine ALSO percent-escapes every free-text field of the summary
+Only a line that STARTS with that prefix counts (gate-1 r9 row r9-3): the
+summary tail carries a free-text field (`prompt_file=<abs>`), and a reading that
+took the last `[wrapper] antigravity <token> ` ANYWHERE in the line once let a prompt
+file under a directory named `…[wrapper] antigravity ok …` override the emitted token
+(an `extraction-error` run read as `ok`, and the MANDATORY repair routing never
+fired). The engine also percent-escapes every free-text field of the summary
 (`_common._summary_field` — SPACE and `[` / `]` are outside the safe set, so the
-sequence is unconstructible inside `prompt_file=`; an ordinary POSIX path is
-emitted byte-identically and the audit row keeps the raw value), so the shape
-can no longer occur — but the ANCHORED parse is the CONTRACT here, and the two
-defences are independent. The wrapper's other stderr lines stay out of reach BY
-CONSTRUCTION: `run-log: <abs>`, `read-audit-file: <abs>` and
-`exec cwd=… argv=…` never carry the `[wrapper] antigravity <token> ` prefix AT
-THE LINE START; the read-audit digest line carries `read-audit` (not a token)
-after the cli name, and the demotion note keeps its colon
-(`[wrapper] antigravity: unemittable-payload — …`).
+sequence cannot be built inside `prompt_file=`; an ordinary POSIX path is
+emitted byte-identically and the audit row keeps the raw value) — the two
+defences are independent. The wrapper's other stderr lines (`run-log: <abs>`,
+`read-audit-file: <abs>`, `exec cwd=… argv=…`) never START with the `[wrapper] antigravity <token> ` prefix;
+the read-audit digest line carries `read-audit` (not a token) after the cli name.
 
 Token set:
 `ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | timeout | extraction-error | vendor-error | admission-refused | vendor-timeout | truncated-answer | config-conflict | unknown`
@@ -540,8 +540,8 @@ call, and never spawn the repair agent for it.
 | `vendor-timeout` (65) | agy's OWN turn timeout fired before the wrapper deadline (`result.status` ERROR, `result.error` "timeout waiting for response", empty response, vendor rc 1; live 2026-09-04 at 857 s of a 900 s budget with 33 allowlisted reads). Surface, never repair (the analyzer escalated: no existing class fits). Review-leg callers: re-dispatch ONCE with a narrower read scope (smaller packet / fewer cited sites), then terminally missing. |
 | `truncated-answer` (65) | agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB) and keeps NO full copy anywhere, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader remediation: re-dispatch under the output-file contract** (`references/long-answer.md` — agy's `write_file` is not subject to the fold), which needs the write-capable permissive baseline and is therefore unavailable on a hardened install and forbidden on the cross-family-review agy leg (re-dispatch once read-only for a COMPACT verdict there instead). **NOT** repair-agent territory (deterministic vendor behavior on the answer-present path; a classifier patch cannot express it). Retrying the same stdout-shaped dispatch folds again — do not plain-retry. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already ran the capacity ladder: up to 2 stream-json call re-runs after a 15 s / 45 s backoff, EVERY attempt with the caller's full `--timeout` (the timeout is per attempt, so the leg can take up to 3 × `--timeout` + 60 s wall-clock) — EXCEPT on a read-only run that also called a tool outside the allowlist: that run returns after ONE dispatch (stderr + `extraction_error` name the forbidden tool), the caller's fresh dispatch being the contract's one retry (2026-09-05). |
-| `unknown` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** Includes the engine-decided transport failures the driver FORWARDS at the conformed exit 1 — a vendor-spawn `OSError` (nothing ran) and a reader/writer thread that failed to START (the child was killed and reaped, its stdout kept). Those two are transport defects, not classifier gaps, so expect the analyzer to ESCALATE rather than propose a pattern. |
-| `extraction-error` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** agy ran but the driver found no usable answer — a `SUCCESS` status with an EMPTY `response` (`extraction_error = "empty-answer-body"`, agy self-reports success on a task it did not actually do), a fully empty capture, or garbage/no-result stream text with no matching pattern — **or an UNEMITTABLE PAYLOAD**: the answer (typically a `structured_output` string carrying an escaped LONE SURROGATE) cannot be encoded on the payload channel and has no JSON-equivalent ASCII re-serialization, so `_payload_or_demote` demotes the run BEFORE the audit row and logs `[wrapper] antigravity: unemittable-payload — …` (note the COLON, which keeps the note out of the summary grep above). On THIS route the payload is decided above the result rebuild, so the canonical summary line, the audit row, the run-log and the exit code all agree — no re-emission is needed here, unlike the codex / gemini / claude routes. The repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
+| `unknown` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** Includes the engine-decided transport failures the driver FORWARDS at the conformed exit 1 — a vendor-spawn `OSError` (nothing ran), a reader/writer thread that failed to START, and an `Exception` raised while waiting on the child (in both the child was killed and reaped, its stdout kept). Those three are transport defects, not classifier gaps, so expect the analyzer to ESCALATE rather than propose a pattern. |
+| `extraction-error` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** agy ran but the driver found no usable answer — a `SUCCESS` status with an EMPTY `response` (`extraction_error = "empty-answer-body"`, agy self-reports success on a task it did not actually do), a fully empty capture, or garbage/no-result stream text with no matching pattern. The repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |
 | `timeout` (2) | **Step 5 — repair agent dispatch.** Likely ESCALATE since a hang (the wrapper's own SIGTERM→SIGKILL process-group kill fired against agy's `--print-timeout`-bounded run, or agy's own stderr line `[agy] print timeout after … with turn in progress; returning partial output` at any vendor rc — its partial answer is withheld) is rarely a classifier gap, but route through the same path for uniformity. Wrapper already fail-fasts (no retry on timeout). |
 | arg (3) / binary missing (4) / `schema-fail` (66) | Surface to user with cause (empty prompt / `agy` not on PATH / `--pydantic` output still failed local validation after the one schema-repair re-run — fix the schema or prompt and re-dispatch). |
 
@@ -564,11 +564,14 @@ untrusted-input handler has no write authority; the write path has no LLM. This
 holds for `extraction-error` / `timeout` too — the analyzer just proposes or
 escalates for those.
 
-#### 5a. Extract the run-log path
+#### 5a. Read the run-log path
 
-Grep the wrapper's OWN timestamped `run-log:` line, take the last match, and
-validate the path against the `_logs/antigravity/runs/*.json` shape before using
-it. Shell + rationale: [references/repair-loop.md](references/repair-loop.md) § 5a.
+Take the path from the Bash tool result exactly as the wrapper printed it: the
+value after `run-log: ` on the LAST `run-log:` line of stderr (a file the
+wrapper wrote under its own `_logs/antigravity/runs/`). Recorded limit: a vendor
+child printing a forged `run-log:` line earlier in stderr is a constructed shape
+— the wrapper's own line comes last and the leader reads the last; not guarded.
+More: [references/repair-loop.md](references/repair-loop.md) § 5a.
 The leader passes this PATH to the analyzer and does not read the run-log content
 itself (Hard rule 2).
 
@@ -601,37 +604,52 @@ Example responses (return ONE of these shapes as your entire chat reply):
 Now do the analysis and return the inline JSON.
 ```
 
-#### 5c. Parse the analyzer's inline JSON proposal
+#### 5c. Read the analyzer's inline JSON proposal
 
-The Agent tool returns the analyzer's final chat text, which is the inline JSON object. Parse it with `jq`:
-
-```bash
-AGENT_JSON=$(cat <<'TRIAD_JSON_EOF'
-<paste the analyzer inline JSON reply here>
-TRIAD_JSON_EOF
-)   # quoted heredoc with a collision-resistant terminator: apostrophes/quotes stay literal
-OUTCOME=$(jq -r '.outcome' <<<"$AGENT_JSON")
-REASON=$(jq -r '.reason' <<<"$AGENT_JSON")
-PROPOSAL=$(jq -c '.proposal' <<<"$AGENT_JSON")
-```
-
-Schema top-level keys: `outcome` (`propose` | `escalate`), `reason`, `proposal` (null when escalate).
+The Agent tool returns the analyzer's final chat text, which is the inline JSON
+object. Take `outcome`, `reason` and `proposal` from the analyzer's JSON reply as
+returned — the three top-level keys of Step 5b's `output_schema` — with no
+shell parse. `outcome` is `propose` or `escalate`; `proposal` is null on
+`escalate`. When `outcome` is `propose`, write the `proposal` object verbatim to
+`<project>/_runs/prompts/<utc-timestamp>-antigravity-proposal.json` with the Write tool,
+then run Step 5d's one command. A reply that is not that JSON object
+(conversational text, or nothing) is unparseable output — Step 5d's last branch.
 
 #### 5d. Branch: escalate → surface; propose → leader applies + verifies
 
-5c's parse and the branch run TOGETHER in ONE Bash invocation, after the
-background analyzer's completion notification arrives — shell state does not
-persist across separate Bash calls, and a split run reads an empty `OUTCOME` and
-skips the apply. The same invocation also re-declares Step 1's exact
-`AGY_CMD=( … )` array (never flattened into one string), which the propose
-branch replays with `--repair-mode`.
-On `propose`, `apply_patch.py` re-validates independently (it is the security
-backstop even if the analyzer misbehaves) and a successful apply is verified by
-replaying the Step 1 argv array with `--repair-mode`. The run-log stays in every
-branch (the wrapper's own sweep collects it later); unparseable analyzer output is
-SURFACED, leaves the run-log as the input for manual diagnosis, and applies no
-patch. Control-flow narrative, the
-case block, and the branch-summary table:
+After the background analyzer's completion notification arrives, the leader
+picks the branch from its `outcome` (5c). Every command below is
+ONE simple command with literal arguments — never wrapped in `if` / `case`,
+never fed by a pipe or a variable: the permission grant matches only that, and
+anything else prompts.
+
+- **`propose`** — with the `proposal` object written to
+  `<project>/_runs/prompts/<utc-timestamp>-antigravity-proposal.json` (5c), run the
+  apply step:
+
+  ```bash
+  python3 ${CLAUDE_PLUGIN_ROOT}/bin/apply_patch.py --cli antigravity --proposal-file <project>/_runs/prompts/<utc-timestamp>-antigravity-proposal.json
+  ```
+
+  Read the applier's exit code from the Bash tool result (`apply_patch.py`
+  re-validates independently — the security backstop even if the analyzer
+  misbehaves):
+  - **0** — applied. Verify routing in a separate Bash call: run Step 1's
+    literal command line again, unchanged (same prompt file, flags and values),
+    with `--repair-mode` appended:
+
+    ```bash
+    python3 ${CLAUDE_PLUGIN_ROOT}/bin/antigravity_wrapper.py <the Step 1 arguments, verbatim> --repair-mode
+    ```
+  - **3** — invalid proposal or bad input; nothing was written. Surface
+    `proposal rejected by applier: <REASON>` and treat it as an escalate.
+- **`escalate`** — surface `repair escalated: <REASON>`; no apply.
+- **anything else** — unparseable analyzer output (conversational text, or
+  nothing), or its `outcome` is neither value: SURFACE it; no patch is applied
+  and the run-log is the input for manual diagnosis.
+
+The run-log stays in every branch (the wrapper's own sweep collects it later).
+Control-flow narrative and the branch-summary table:
 [references/repair-loop.md](references/repair-loop.md) § 5d.
 
 ## Outputs (what this skill returns)

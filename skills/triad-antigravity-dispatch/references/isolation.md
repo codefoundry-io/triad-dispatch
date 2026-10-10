@@ -44,8 +44,9 @@ soft-deny window; the 1.1.8 stream-json dispatch floor (2026-07-31).
 ## Read-only path v2 (`--sandbox read-only`, agy >= 1.1.18)
 
 Spec: `docs/superpowers/specs/2026-08-22-agy-readonly-v2-spec.md`. Two
-setup-once agent definitions under `~/.gemini/config/agents/` (written by
-`antigravity_wrapper.py --setup-agents`; bodies embedded in the wrapper;
+setup-once agent definitions under `~/.gemini/config/agents/` (written by the
+wrapper's `--setup-agents` host step — run the command in SKILL.md Step 1, Host
+setup; bodies embedded in the wrapper;
 workspace `.agents/` is NOT loaded in print mode — ladder round 2 K1):
 
 - `triad-readonly-review` — `view_file`, `grep_search`, `list_dir`,
@@ -99,9 +100,7 @@ version is pinned, so updates keep flowing.
 **Floor, not a range — a known over-application.** Once agy eventually RESTORES
 the headless allow-list in some later release, this floor still fires (voiding
 isolation) until a human narrows it to a bounded range. Nothing auto-detects the
-narrow trigger; that is a standing residual. The only
-behavior-adaptive part is the secondary in-loop retry
-(`_is_headless_softdeny`), which fires on the zero-output edge.
+narrow trigger; that is a standing residual.
 
 Opt-out: `AGY_NO_HEADLESS_AUTOAPPROVE=1` for strict deployments — agy then stays
 unusable headless, but nothing is auto-approved. The wrapper is the ONLY caller

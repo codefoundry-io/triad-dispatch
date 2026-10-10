@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run-log prune + audit-rotation policy tests (stdlib-only, no pytest).
 
-Covers: (1) stale run-log prune removes the run-log AND its `.repair.json`
-pair while keeping fresh files; (2) audit() rotates the active audit.jsonl
+Covers: (1) stale run-log prune removes every stale run-log (two here) while
+keeping fresh files; (2) audit() rotates the active audit.jsonl
 past AUDIT_ROTATE_BYTES and bounds archives by AUDIT_MAX_ARCHIVES.
 
 Runs in BOTH layouts: the triad source repo (tests/ beside the wrappers) and the
@@ -43,23 +43,23 @@ def _result(stdout: str = "x") -> "_common.RunResult":
     )
 
 
-def test_stale_run_log_prune_removes_repair_json_pair(tmp_path: Path) -> None:
+def test_stale_run_log_prune_removes_every_stale_run_log(tmp_path: Path) -> None:
     _common._LOG_DIR = tmp_path / "_logs"
     runs_dir = tmp_path / "_logs" / "gemini" / "runs"
     runs_dir.mkdir(parents=True)
     run_log = runs_dir / "old.json"
-    repair = runs_dir / "old.json.repair.json"
+    second = runs_dir / "old2.json"
     fresh = runs_dir / "fresh.json"
-    for path in (run_log, repair, fresh):
+    for path in (run_log, second, fresh):
         path.write_text("{}\n", encoding="utf-8")
     old = time.time() - 2 * 86400  # past the one-day minimum (slice 23b fix 1)
     os.utime(run_log, (old, old))
-    os.utime(repair, (old, old))
+    os.utime(second, (old, old))
 
-    _common.prune_stale_run_logs("gemini", age_floor_s=7200)
+    _common.prune_stale_run_logs("gemini")
 
     assert not run_log.exists()
-    assert not repair.exists()
+    assert not second.exists()
     assert fresh.exists()
 
 
@@ -78,7 +78,7 @@ def test_audit_rotation_prunes_archives_by_count(tmp_path: Path) -> None:
 
 
 TESTS = [
-    test_stale_run_log_prune_removes_repair_json_pair,
+    test_stale_run_log_prune_removes_every_stale_run_log,
     test_audit_rotation_prunes_archives_by_count,
 ]
 
@@ -87,7 +87,10 @@ def main() -> int:
     failed = 0
     for fn in TESTS:
         snapshot = {a: getattr(_common, a) for a in _PATCHED_ATTRS}
+        prompts_env = os.environ.get("TRIAD_DISPATCH_PROMPTS_DIR")
         with tempfile.TemporaryDirectory() as td:
+            # the prompts sweep looks in the test's own folder, never <cwd>/_runs/prompts
+            os.environ["TRIAD_DISPATCH_PROMPTS_DIR"] = str(Path(td) / "prompts")
             try:
                 fn(Path(td))
                 print(f"  PASS  {fn.__name__}")
@@ -98,6 +101,10 @@ def main() -> int:
             finally:
                 for a, v in snapshot.items():
                     setattr(_common, a, v)
+                if prompts_env is None:
+                    os.environ.pop("TRIAD_DISPATCH_PROMPTS_DIR", None)
+                else:
+                    os.environ["TRIAD_DISPATCH_PROMPTS_DIR"] = prompts_env
     print(f"{len(TESTS) - failed}/{len(TESTS)} passed")
     return 1 if failed else 0
 

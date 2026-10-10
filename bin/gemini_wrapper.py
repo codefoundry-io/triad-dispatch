@@ -28,7 +28,6 @@ import json
 import os
 import platform
 import re
-import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -38,11 +37,7 @@ from _common import (
     _emit_payload,
     _guarded_main,
     _investigation_clause,
-    _emit_canonical_summary,
-    _SIGNAL_STATE,
     map_classification_to_exit,
-    _payload_or_demote,
-    _relax_diagnostic_stream,
     _summary_tail,
     _wrapper_hardened,
     validate_wrapper_cwd,
@@ -291,19 +286,14 @@ def main() -> int:
 
 
 def _main(ctx: dict) -> int:
-    # The DIAGNOSTIC stream survives any locale; the PAYLOAD stream is never
-    # re-encoded (gate-1 r7 row r7-c2 — `_common` § payload vs diagnostic).
-    _relax_diagnostic_stream()
-    # SIGTERM/SIGHUP: during the preflight probes (a plain
-    # subprocess.run, no process group) the handler only records the signal and
-    # the run ends as the interrupted-run refusal (`unknown` / 1), written while
-    # the mode is still on. From the first dispatch on it only records too:
+    # SIGTERM/SIGHUP: from the first dispatch on the handler only records:
     # during a dispatch _run_once reaps the vendor group and the run ends as
     # the interrupted-run record (`unknown` / 1), `oauth-env` / 65 on a carrier
     # STOP, or `timeout` / 2 when the run had already timed out (the timeout
     # verdict outranks it); a signal after the last _run_once is not
-    # consumed (the completed answer is published). Outside those windows it
-    # exits 128+signum (spec case C1 / R-TERMINAL).
+    # consumed (the completed answer is published). Before the first dispatch
+    # (the preflight probes are outside it) it exits 128+signum, no record
+    # (spec case C1 / R-TERMINAL).
     install_terminal_signal_handlers()
     p = argparse.ArgumentParser(description="Gemini CLI single-shot wrapper",
                                 allow_abbrev=False)
@@ -518,7 +508,6 @@ def _main(ctx: dict) -> int:
                            prompt_file_resolved=_prompt_file_resolved,
                            requested_model=args.model)
         result.vendor_version = version
-        result.review_web = args.review_web
         log(f"[wrapper] gemini {token} exit={code} "
             f"vendor=-1 elapsed=0.0s"
             + _summary_tail(args.attempt, _prompt_file_resolved, args.model))
@@ -540,29 +529,10 @@ def _main(ctx: dict) -> int:
     # every route (D-GEMINI-FLOOR-20261009), plus the capability check on the
     # review route.
     review_route = args.sandbox == "read-only"
-    # The pre-dispatch vendor probes run in the record-only signal mode a
-    # dispatch uses (C1 / R-TERMINAL): a SIGTERM / SIGHUP during them ends
-    # through the interrupted-run record, never a bare 128 + signum exit.
-    prev_dispatch = _SIGNAL_STATE["dispatch"]
-    _SIGNAL_STATE["dispatch"] = True
-    try:
-        if review_route:
-            refusal, probed_version = _review_preflight(gemini_bin, args.cwd)
-        else:
-            refusal, probed_version = _version_floor(gemini_bin)
-    finally:
-        # a signal recorded during the probe keeps the record-only mode on
-        # until its refusal is written (C1: a second signal never loses it)
-        if _SIGNAL_STATE["signum"] is None:
-            _SIGNAL_STATE["dispatch"] = prev_dispatch
-    probe_signum = None if prev_dispatch else _SIGNAL_STATE["signum"]
-    if probe_signum is not None:
-        _SIGNAL_STATE["signum"] = None
-        why = (f"wrapper interrupted ({signal.Signals(probe_signum).name}) during "
-               f"the {'review' if review_route else 'version'} preflight probe "
-               f"— nothing was dispatched")
-        log(why)
-        return _refuse("unknown", why, probed_version)
+    if review_route:
+        refusal, probed_version = _review_preflight(gemini_bin, args.cwd)
+    else:
+        refusal, probed_version = _version_floor(gemini_bin)
     if refusal is not None:
         log(refusal)
         # The canonical one-line summary the dispatch SKILLs grep, with the
@@ -593,15 +563,13 @@ def _main(ctx: dict) -> int:
         # research dispatch — after every refusal above, so the clause never
         # rescues a dispatch that should not run, and after the caller's own
         # text, because a rule at the START of a long prompt is the one most
-        # likely dropped. `args.prompt` is what audit/run-log record, so the
-        # record shows the prompt AS SENT. The clause is rendered from the
-        # vendored spec (one source); a failure is refused before the spawn.
+        # likely dropped. The clause is rendered from the vendored spec (one
+        # source); a failure is refused before the spawn.
         try:
             web_clause = _investigation_clause("gemini")
         except RuntimeError as e:
             log(str(e))
             return _refuse("config-conflict", str(e), probed_version)
-        args.prompt = args.prompt + "\n\n" + web_clause
 
     pydantic_cls = None
     if args.pydantic:
@@ -657,31 +625,16 @@ def _main(ctx: dict) -> int:
 
     audit_cmd = build_cmd(engine_prompt)
     ctx["cmd"] = audit_cmd
-    # THE PAYLOAD IS DECIDED BEFORE THE AUDIT ROW (gate-1 r7 rows r7-c2 /
-    # r7-k5): an answer this host cannot carry on the payload channel is not
-    # an `ok` run, and the record must say so instead of being written first
-    # and contradicted by a traceback at the tail.
-    _pre_payload_classification = result.classification
+    # The payload: ONE UTF-8 encode; a code point UTF-8 cannot carry (a lone
+    # surrogate) leaves as its `\udXXX` escape, exit and token unchanged.
     if pydantic_cls and result.validated is not None:
-        payload = _payload_or_demote(
-            "gemini", result,
-            json.dumps(result.validated, ensure_ascii=False) + "\n",
-            result.validated)
+        out = json.dumps(result.validated, ensure_ascii=False) + "\n"
     else:
         out = result.final_answer or ""
         if out and not out.endswith("\n"):
             out += "\n"
-        payload = _payload_or_demote("gemini", result, out)
-    # THE SUMMARY LINE IS CORRECTED BY A SECOND EMISSION (gate-1 r8 row
-    # r8-5): the canonical line was printed inside run_cli_with_retry, i.e.
-    # BEFORE the demotion above, so without this the LAST `[wrapper] gemini`
-    # line the dispatch SKILL parses still said `ok exit=0` for a run that
-    # exits 1 with an empty stdout.
-    if result.classification != _pre_payload_classification:
-        _emit_canonical_summary("gemini", result)
+    payload = out.encode("utf-8", "backslashreplace")
 
-    # R-REVIEW-WEB (case C32): a review leg dispatched with web is recorded.
-    result.review_web = args.review_web
     audit("gemini", audit_cmd, args.prompt, result)
     ctx["recorded"] = True
 
@@ -694,7 +647,7 @@ def _main(ctx: dict) -> int:
     if run_log_path is not None:
         log(f"run-log: {run_log_path}")
 
-    # Stdout = the UTF-8 BYTES built above, never a locale re-encoding.
+    # Stdout = the bytes built above, never a locale re-encoding.
     _emit_payload(payload)
     return result.exit_code
 
