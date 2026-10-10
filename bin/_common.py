@@ -900,7 +900,7 @@ class RunResult:
 
 def log(msg: str) -> None:
     """One diagnostic line on stderr (A4 / R-TERMINAL): a failed write drops
-    that line (or its rest), never the answer or the exit, and a dropped line
+    that line, never the answer or the exit, and a dropped line
     is never written later — it goes straight to the descriptor, no buffered
     stream holds it; a stderr closed at start drops every line. A full
     non-blocking pipe drops the line at once and a blocking pipe nobody drains
@@ -922,11 +922,10 @@ def log(msg: str) -> None:
     except (OSError, ValueError):
         pass
     data = line.encode(getattr(stream, "encoding", None) or "utf-8", "backslashreplace")
-    while data:
-        try:
-            data = data[os.write(fd, data):]   # a partial write is continued
-        except OSError:   # a full pipe, a closed reader, a full disk: the rest is dropped
-            return
+    try:
+        os.write(fd, data)
+    except OSError:   # a full pipe, a closed reader, a full disk: the line is dropped
+        pass
 
 
 def _emit_payload(data: bytes) -> None:
@@ -4483,8 +4482,7 @@ def prune_stale_run_logs(cli: str) -> None:
 _DEBUG_CELL_LIMIT = 200
 # Day-dir retention: `_debug/<YYYY-MM-DD>/` dirs older than the wrapper-debug
 # role's floor (the cleanup configuration) are removed after a write
-# (`_prune_debug_days`). Env override `TRIAD_DEBUG_MAX_AGE_DAYS` (1-3650;
-# anything else -> note + the declared floor).
+# (`_prune_debug_days`).
 _DEBUG_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -4558,23 +4556,6 @@ def debug_log(cli: str, prompt: str, result: RunResult) -> None:
             except Exception:
                 pass
     _prune_debug_days(today)
-
-
-def _debug_max_age_days(default: float) -> float:
-    """The declared floor in days, raised (never lowered) by a valid
-    TRIAD_DEBUG_MAX_AGE_DAYS."""
-    raw = os.environ.get("TRIAD_DEBUG_MAX_AGE_DAYS", "")
-    if not raw:
-        return default
-    try:
-        days = int(raw)
-    except ValueError:
-        days = 0
-    if days < 1 or days > 3650:
-        log(f"[wrapper] debug: ignoring invalid TRIAD_DEBUG_MAX_AGE_DAYS "
-            f"{raw!r} (valid: 1-3650 days); using {default:g}")
-        return default
-    return max(days, default)
 
 
 def _debug_day_records(d: Path) -> list[str]:
@@ -4670,7 +4651,7 @@ def _prune_debug_days(today: str) -> None:
                       () if _DEBUG_DIR == _HOST_DEBUG else (_DEBUG_DIR,))
         if role is None:
             return
-        days = _debug_max_age_days(role[1] / 86400)
+        days = role[1] / 86400
         cutoff = time.time() - days * 86400
         removed = 0
         unowned: list[str] = []

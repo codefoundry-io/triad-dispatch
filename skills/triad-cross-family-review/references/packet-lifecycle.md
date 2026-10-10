@@ -457,7 +457,10 @@ both paths unless it names one.
 
 - **The brief is the leader's ONLY per-round authored text**: deployment
   context above one `=====QUESTIONS=====` marker line, suspect questions
-  below it. No other fence-like line is allowed in it (fence forgery).
+  below it. Only that one marker line splits the brief; every other line,
+  a fence-like one included, is transported as written — the fence-forgery
+  check applies to the embedded excerpts and the residual (below), not to
+  the brief.
   It is the SAME for every selected leg (R-PROMPT): no per-leg emphasis or
   persona (the owner superseded them); same-family entries are separate
   invocation identities, and the roster has no lens / focus / prompt field.

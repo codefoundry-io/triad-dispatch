@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1672 — 2026-10-10
+## 0.2.1691 — 2026-10-10
 
 **Cross-family review — one round per packet dir.** `prepare` refuses a packet dir that already holds a round
 and never re-pins it: open a new packet dir for every round, and close each one after the next round is

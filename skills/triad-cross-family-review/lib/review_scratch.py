@@ -1678,15 +1678,6 @@ def _require_clean_relpath(rel: str, flag: str) -> Path:
     return p
 
 
-# Alternate line-boundary characters (everything str.splitlines recognizes
-# beyond \n): a prompt RENDERER or a leg's tokenizer may treat any of them
-# as a line break (r1 codex Critical; r2 codex Critical widened the set to
-# VT/FF/FS/GS/RS). The fence scan uses str.splitlines() itself — this SET
-# exists for the guards that must REFUSE the characters outright (the
-# leader brief, and worktree-relative paths).
-_ALT_LINE_SEPARATORS = "\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"
-
-
 def _require_no_fence_lines(tag: str, content: str, fence_lines: set) -> None:
     """Refuse embedded content carrying ANY of this packet's live fence
     lines or the brief marker, on any renderable line separator (r1
@@ -1715,21 +1706,13 @@ def _fenced_block(tag: str, content: str) -> str:
 
 def _split_brief(brief_text: str, brief_path: Path) -> tuple:
     """(context, questions) — split on exactly ONE `=====QUESTIONS=====`
-    marker line. Zero or multiple markers, or any OTHER fence-like line in
-    the brief (a leader-authored line that could forge a data fence), fail
-    loud.
+    marker line; zero or multiple markers fail loud.
 
     Each part is kept byte-for-byte as supplied between its boundaries
     (R-CONTEXT, case C61) — the context runs from the brief start to the LF
     ending the line before the marker, the questions from the byte after the
     marker line's LF to the brief end — so edge blank lines and a missing
     final LF survive."""
-    bad = sorted({ch for ch in brief_text if ch in _ALT_LINE_SEPARATORS})
-    if bad:
-        _fail(f"brief {brief_path.name} carries alternate line-separator "
-              f"characters ({', '.join('U+%04X' % ord(c) for c in bad)}) — "
-              f"use plain \\n line endings (a hidden separator could smuggle "
-              f"a fence-like line past the \\n-based scan; r2 finding, agy)")
     context_lines = []
     question_lines = []
     seen_marker = 0
@@ -1738,10 +1721,6 @@ def _split_brief(brief_text: str, brief_path: Path) -> tuple:
         if stripped == _QUESTIONS_MARKER:
             seen_marker += 1
             continue
-        if stripped.startswith("=====") and stripped.endswith("=====") and stripped != "=====":
-            _fail(f"brief {brief_path.name} carries a fence-like line "
-                  f"({stripped[:40]}...) — only the {_QUESTIONS_MARKER} "
-                  f"marker is allowed")
         (question_lines if seen_marker else context_lines).append(line)
     if seen_marker != 1:
         _fail(f"brief {brief_path.name} must carry exactly ONE "
