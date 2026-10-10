@@ -26,7 +26,7 @@
     "reference/process.md": "f9ac64873975f3581f1591978204d44cf03002091515895eb06757a58e5156ff",
     "reference/review-rules.md": "c93b67e3ef4ffe62e530e66f7ba49b648fcf2275e8b4ca4ccc4a58ed24242bff",
     "reference/spec-authoring.md": "3aceeb4c3c080962f7104ae23f3c735c214f9d5c55a67f0a8c5a66c2bf9b103f",
-    "review-legs.default.json": "1b6e03138fe186411ae967f4e8c61f078668a8ff55da5e97df39550d70416d53"
+    "review-legs.default.json": "485c545681b74e521570be9d2e759c58b7b5adc2df0df661ef4a4d20e1c6fd05"
   },
   "host_data": [
     "review-legs.default.json"

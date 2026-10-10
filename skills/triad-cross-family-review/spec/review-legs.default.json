@@ -24,7 +24,7 @@
         "reasoning": "high"
       },
       "timeout_s": 3600,
-      "note": "Host A codex leg: codex_wrapper.py with --sandbox read-only, stdin prompt transport; model = the recommended explicit codex ID (spec R-ROSTER; ONE codex leg) so the baseline does not depend on the operator's ~/.codex/config.toml; an explicit null override = the CLI's config default, frozen as null; every v2 round binds review web true under the owner's standing authorization, so this leg runs with --search (R-REVIEW-WEB); the legacy small path keeps its own --web."
+      "note": "Host A codex leg: codex_wrapper.py with --sandbox read-only, stdin prompt transport; model = the recommended explicit codex ID (spec R-ROSTER; ONE codex leg) so the baseline does not depend on the operator's ~/.codex/config.toml; an explicit null override = the CLI's config default, frozen as null; every round binds review_web_authorized true under the owner's standing authorization, so this leg runs with codex's --search (R-REVIEW-WEB)."
     },
     {
       "name": "google",
