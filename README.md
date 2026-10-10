@@ -424,15 +424,16 @@ The classifier learns across plugin updates via
 it **survives plugin updates** (NOT the ephemeral plugin dir). The repair
 sub-agents propose new `error → class` entries and the leader applies them via
 `bin/apply_patch.py`; the engine merges them at runtime. It is portable — a team
-can curate and share it.
+can curate and share it. The maintainers promote a learned phrase into the shipped
+list when you send them the three lines the apply step prints.
 
 ## Security
 
 The durable control is **privilege separation**, not model trust. The classifier
 learns from untrusted vendor run-logs, so the component that reads a run-log has
 ZERO write authority: the in-session repair agent is a READ-ONLY analyzer
-(harness-enforced `Read, Grep, Glob` — no Write/Edit/Bash/network) whose only
-output is an inline proposal, and the leader applies it via the deterministic,
+(harness-enforced `Read, Grep, Glob, WebSearch, WebFetch` — no Write/Edit/Bash;
+the web tools serve a bounded research rule) whose only output is an inline proposal, and the leader applies it via the deterministic,
 zero-LLM `bin/apply_patch.py`. "The model resists injection" is explicitly NOT
 the boundary. The wrapper never manages authentication. Full threat model and
 per-product enforcement: [SECURITY.md](SECURITY.md).

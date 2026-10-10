@@ -29,7 +29,11 @@ that the component exposed to the untrusted run-log has zero write authority:
 - **The analyzer that reads the run-log cannot write.** It is a read-only
   analyzer. Its only output is a fixed-shape structured JSON proposal — one
   classifier delta (a `vendor_exit_map` code→class entry, or a `patterns` list
-  append). It never edits a file, spawns a process, or reaches the network.
+  append). It never edits a file or spawns a process. Its only network reach is
+  bounded research (`WebSearch` / `WebFetch`): a query carries only sanitized
+  error text and version context — never a credential, private prompt or source
+  content, or the full run-log — and a search result never proves an error the
+  run did not show.
 - **The write path is deterministic and LLM-free.** The proposal is applied by
   `apply_patch.py` (over `apply_classifier_patch`), a zero-LLM validator +
   applier. It re-validates every field independently — the class must be a
@@ -49,10 +53,10 @@ that the component exposed to the untrusted run-log has zero write authority:
       the class must be the one that list actually yields; the literal is lowercase-
       normalized (matching how the classifier lowercases the blob) then bounded above
       and floored below a minimum length with alphanumeric signal required.
-  The free-text `reason` is length-bounded, and the per-cli entry count is capped —
-  takes a file lock, and writes atomically. An invalid or hostile proposal leaves the classifier file
-  untouched. The applier is the ONLY writer to the persistent classifier
-  extension (`~/.config/<product>/classifier-patches.json`).
+  The applier takes a file lock and writes atomically. An invalid or hostile
+  proposal leaves the classifier file untouched. The applier is the ONLY writer
+  to the persistent classifier extension
+  (`~/.config/<product>/classifier-patches.json`).
 
 Because the reader has no write authority and the writer runs no model, an
 injected run-log cannot hijack code execution or exfiltration — those are fully
@@ -60,8 +64,8 @@ closed by privilege separation. The validator additionally blocks the worst
 structural abuses on BOTH poison surfaces symmetrically — the L2 substring (length
 floor + alphanumeric signal + lowercase-normalize + pattern↔class match) AND the L1
 `vendor_exit_map` (bounded to the application-specific range `[3, 125]` + restricts
-to vendor-exit-derivable classes), plus mapping a failure to `ok`/`unknown`, an
-exit-0 or negative code, and unbounded growth. What the deterministic validator does NOT fully
+to vendor-exit-derivable classes), plus mapping a failure to `ok`/`unknown` and an
+exit-0 or negative code. What the deterministic validator does NOT fully
 guarantee is fine-grained CORRECTNESS of an in-bounds proposal: a specific, validation-
 passing entry (a plausible substring, or a specific non-generic exit code with a
 vendor-error class) could still assert a wrong-but-plausible mapping and route some
@@ -75,15 +79,16 @@ plus owner review of the applied deltas, not claimed as a hard deterministic con
 The plugin enforces the read/write split with its host's mechanism:
 
 - **claude-host** (Claude Code leader). The repair analyzer runs IN-SESSION as a
-  subagent whose tool allowlist is **harness-enforced** to `Read, Grep, Glob` —
-  no Write, Edit, Bash, or network. It literally cannot write. It returns the
+  subagent whose tool allowlist is **harness-enforced** to `Read, Grep, Glob,
+  WebSearch, WebFetch` — no Write, Edit, Bash, or Agent. It literally cannot write. It returns the
   inline proposal; the leader applies it by running `bin/apply_patch.py`. The
   privilege boundary is the harness tool allowlist plus the deterministic applier.
 
 ## Project-agent shadow (claude-host) — a second confused-deputy path
 
 The claude-host privilege boundary above assumes the repair analyzer that runs
-is the shipped **read-only** plugin agent (`tools: Read, Grep, Glob`). A second
+is the shipped **read-only** plugin agent (`tools: Read, Grep, Glob, WebSearch,
+WebFetch`). A second
 way that assumption can break is **agent-name shadowing**. Claude Code resolves a
 consumer's own project agent at `.claude/agents/<name>.md` **over** a plugin agent
 of the same bare name. So if the dispatch skill spawned the analyzer by the bare
@@ -103,7 +108,8 @@ The mitigation is two-layered:
   what runs.
 - **Confirm read-only before dispatch (product-agnostic).** Because a consumer
   can still install agents the toolkit does not control, the skill also instructs
-  the leader to CONFIRM the resolved analyzer's tools are only `Read, Grep, Glob`
+  the leader to CONFIRM the resolved analyzer's tools are only `Read, Grep, Glob,
+  WebSearch, WebFetch`
   before dispatch and REFUSE if a same-named writable agent shadows it — a check
   that needs no plugin name and also covers the source/dev repo (project agent,
   no scoping).

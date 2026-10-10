@@ -23,8 +23,6 @@ Options:
         Inject a JSON schema block into the prompt and validate the answer
         with `cls.model_validate_json()`. On validation fail, retry once
         with a clarifying suffix; second failure → exit 66.
-  --repair-mode
-        Internal: invoked by Sonnet repair sub-agent (server-cap retry=0).
 """
 from __future__ import annotations
 
@@ -150,11 +148,6 @@ def _main(ctx: dict) -> int:
         action="append",
         default=None,
         help="Image file path for vision input (repeatable) -> codex -i",
-    )
-    p.add_argument(
-        "--repair-mode",
-        action="store_true",
-        help="Internal: invoked by Sonnet repair sub-agent (server-cap retry=0)",
     )
     p.add_argument(
         "--debug",
@@ -359,7 +352,6 @@ def _main(ctx: dict) -> int:
             timeout=args.timeout,
             pydantic_cls=pydantic_cls,
             last_msg_path=last_msg_path,
-            repair_mode=args.repair_mode,
             prompt_via_stdin=True,
             dispatch_attempt=args.attempt,
             prompt_file_resolved=_prompt_file_resolved,

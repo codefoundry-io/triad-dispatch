@@ -745,6 +745,32 @@ def agy_classify_signals(result) -> list:
     return [head[:_AGY_DIGEST_VALUE_CAP]] if head else []
 
 
+def _agy_no_answer_blob(stderr: str, signals: list, status) -> str:
+    """The classify() stderr of an agy run with no usable answer: stderr + each
+    typed stream signal LABELLED (so it never starts a line and cannot
+    impersonate agy's own stderr banner) + a synthetic result-status token.
+    Never the raw stream: it carries the reviewed content (r1/R2). One builder
+    for the driver and for `reclassify_run_record`."""
+    status_tok = f"agy result status={str(status)[:200]}" if status else ""
+    parts = [stderr, *[f"[agy signal] {t}" for t in (signals or []) if t], status_tok]
+    return "\n".join(t for t in parts if t and t.strip())
+
+
+def _agy_no_answer_class(stderr: str, signals: list, status, stdout: str,
+                         vendor_exit_code) -> str:
+    """The agy driver's no-usable-answer decision — the one copy, used by the
+    driver (`antigravity_wrapper._classify_no_answer`) and by
+    `reclassify_run_record`. Nothing structural to classify at vendor exit 0
+    is extraction-error; a nonzero exit still goes through classify() so the
+    extension's vendor-exit map keeps its say. `stdout` (the raw stream)
+    reaches classify() only for its auth rung."""
+    blob = _agy_no_answer_blob(stderr, signals, status)
+    if not blob.strip() and vendor_exit_code == 0:
+        return "extraction-error"
+    return classify("antigravity", stderr=blob, stdout=stdout,
+                    exit_code=EXIT_CLI_FAIL, vendor_exit_code=vendor_exit_code)
+
+
 # ─── Retry policy ─────────────────────────────────────────────────────────
 SERVER_CAP_BACKOFF_S: tuple[int, ...] = (15, 45)
 SERVER_CAP_MAX_RETRIES = len(SERVER_CAP_BACKOFF_S)
@@ -784,8 +810,7 @@ class RunResult:
     stderr: str
     elapsed_s: float
     classification: str = "ok"
-    mode: str = "normal"            # normal | repair | schema_repair
-    repair_attempt: int = 0
+    mode: str = "normal"            # normal | schema_repair
     # Final-answer + schema layer
     final_answer: str = ""
     validated: Optional[dict] = None
@@ -2854,7 +2879,6 @@ def run_cli_with_retry(
     timeout: int,
     pydantic_cls: Any = None,
     last_msg_path: Optional[str] = None,
-    repair_mode: bool = False,
     prompt_via_stdin: bool = False,
     dispatch_attempt: int = 1,
     prompt_file_resolved: Optional[str] = None,
@@ -2865,7 +2889,7 @@ def run_cli_with_retry(
 
     Layers (in order):
     1. Schema injection — if `pydantic_cls`, prepend the schema block to prompt.
-    2. Server-capacity retry — `SERVER_CAP_BACKOFF_S` (skipped if `repair_mode`).
+    2. Server-capacity retry — `SERVER_CAP_BACKOFF_S`.
     3. Answer extraction — cli-aware (JSONL events / single JSON object).
     4. Schema validation — if `pydantic_cls`, validate; on failure, retry once
        (mode = "schema_repair") with a clarifying suffix in the prompt.
@@ -2874,11 +2898,8 @@ def run_cli_with_retry(
     prompt mutation without leaking command construction into this function.
     """
     # Next-run IPC cleanup (owner contract: a subsequent run clears prior
-    # residue). Skipped in repair_mode — the repair agent is actively inspecting
-    # the just-written run-log; the age floor protects it anyway, but skipping
-    # avoids touching the runs dir mid-repair.
-    if not repair_mode:
-        prune_stale_run_logs(cli)
+    # residue); the age floor keeps a run-log the repair step still reads.
+    prune_stale_run_logs(cli)
 
     effective_prompt = (
         inject_schema_to_prompt(prompt, pydantic_cls) if pydantic_cls else prompt
@@ -2937,7 +2958,7 @@ def run_cli_with_retry(
         cmd = cmd_builder(effective_prompt)
 
         # Layer 2: server-cap retry.
-        max_retries = 0 if repair_mode else SERVER_CAP_MAX_RETRIES
+        max_retries = SERVER_CAP_MAX_RETRIES
         result: Optional[RunResult] = None
         for attempt in range(max_retries + 1):
             signum = _SIGNAL_STATE["signum"]
@@ -2958,14 +2979,8 @@ def run_cli_with_retry(
                 requested_model=requested_model,
                 requested_reasoning=requested_reasoning,
             )
-            r.repair_attempt = attempt if repair_mode else 0
             r.schema_repair_attempt = schema_repair_attempt
-            if repair_mode:
-                r.mode = "repair"
-            elif schema_repair_attempt > 0:
-                r.mode = "schema_repair"
-            else:
-                r.mode = "normal"
+            r.mode = "schema_repair" if schema_repair_attempt > 0 else "normal"
             result = r
             cls = r.classification
             if cls == "ok":
@@ -3006,10 +3021,8 @@ def run_cli_with_retry(
             # exit, and the reason the r3-1 defect was agy-only (that driver
             # spawns `_run_once` itself). Do not "re-classify" here — the
             # engine decided from the reader and writer records, which this
-            # layer cannot see. `unknown` and `timeout` surface as
-            # repair-agent territory at the dispatch SKILL layer (timeout =
-            # likely ESCALATE since a hang isn't a classifier gap, but the
-            # SKILL still routes through the same path for uniformity).
+            # layer cannot see. At the dispatch SKILL layer `unknown` routes to
+            # the repair analyzer; a `timeout` surfaces and is never routed.
             return r
 
         assert result is not None
@@ -3059,7 +3072,7 @@ def run_cli_with_retry(
                 "— skipping repair retry")
             return promote_schema_fail(result)
 
-        if schema_repair_attempt >= 1 or repair_mode:
+        if schema_repair_attempt >= 1:
             return promote_schema_fail(result)
 
         # 1 retry — augment prompt with the failure notice and loop.
@@ -3245,7 +3258,6 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
         "elapsed_s": round(result.elapsed_s, 2),
         "classification": result.classification,
         "mode": result.mode,
-        "repair_attempt": result.repair_attempt,
         "schema_repair_attempt": result.schema_repair_attempt,
         "stderr": "<redacted>" if redact else result.stderr,
         "final_answer_head": (result.final_answer or "")[:500],
@@ -3508,21 +3520,14 @@ assert all(
     _c in CLASSIFICATION_TOKENS for _c in PATTERN_LIST_CLASS.values()
 ), "PATTERN_LIST_CLASS maps to a class not in CLASSIFICATION_TOKENS"
 
-# Bound on a proposed substring literal — long enough for real vendor phrases,
-# short enough that a poisoned proposal cannot smuggle a huge blob into the
-# classifier or bloat the extension file.
+# Bound on a proposed substring literal — a match phrase is a short distinctive
+# fragment (R-CLASSIFY).
 _MAX_SUBSTRING_LEN = 200
 # Floor on a proposed substring length (after lowercase-normalize). A defensible
 # floor that rejects the pathological "e"/"the" while allowing real short
 # signatures ("oauth", "quota"). NOT a claim of full semantic specificity — that
 # is the analyzer's + owner's job (see SECURITY.md), only a coarse over-broad guard.
 _MIN_SUBSTRING_LEN = 4
-# Per-cli total entry cap across vendor_exit_map + all pattern lists — bounded
-# growth so a stream of proposals cannot unboundedly bloat the extension.
-_MAX_EXTENSION_ENTRIES = 500
-# Bound on the analyzer's free-text `reason` (untrusted-derived, surfaced into
-# the leader's context — defense-in-depth against an over-long injection blob).
-_MAX_REASON_LEN = 500
 
 # ── fix2/fix3: L1 vendor_exit_map symmetric guard (round-2 + round-3 re-confirm
 # BLOCKERs) ────────────────────────────────────────────────────────────────
@@ -3578,7 +3583,7 @@ def apply_classifier_patch(cli: str, proposal: dict) -> str:
 
     proposal = {
         "classification": <one of REPAIR_CLASSIFICATION_TOKENS>,  # required (NOT ok/unknown)
-        "reason":         <one-line str, <= _MAX_REASON_LEN>,     # required
+        "reason":         <non-empty str>,                        # required
         # exactly one target:
         "vendor_exit_code": <int > 0>,    # append {code: classification} to vendor_exit_map
         "pattern_list":     <one of PATTERN_LIST_NAMES>,  # + "substring": <bounded str>
@@ -3601,9 +3606,7 @@ def apply_classifier_patch(cli: str, proposal: dict) -> str:
         analyzer + owner review, not this coarse floor — see SECURITY.md.)
       - pattern proposals require classification == PATTERN_LIST_CLASS[pattern_list]
         (the class that list actually yields in classify()).
-      - reason length <= _MAX_REASON_LEN.
-      - per-cli total entries (vendor_exit_map + all pattern lists) may not exceed
-        _MAX_EXTENSION_ENTRIES (bounded growth).
+      - reason is a non-empty str.
 
     Returns "applied" on success. Raises ValueError on ANY invalid field and
     leaves the extension file UNTOUCHED. A transient read OSError (EACCES/EMFILE/
@@ -3747,11 +3750,6 @@ def apply_classifier_patch(cli: str, proposal: dict) -> str:
     reason = proposal.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("apply_classifier_patch: reason must be a non-empty str")
-    if len(reason) > _MAX_REASON_LEN:
-        raise ValueError(
-            f"apply_classifier_patch: reason exceeds {_MAX_REASON_LEN} chars "
-            f"({len(reason)})"
-        )
 
     ext_path = _classifier_extension_path()
     ext_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3790,32 +3788,10 @@ def apply_classifier_patch(cli: str, proposal: dict) -> str:
             if not isinstance(entry, dict):
                 entry = {}
 
-            # Bounded growth: count the target cli's total entries across
-            # vendor_exit_map + all pattern lists. Reject only when adding a NEW
-            # entry would exceed the cap (an idempotent re-append of an existing
-            # code/substring is fine — it doesn't grow the file).
-            def _cli_entry_count(e: dict) -> int:
-                total = 0
-                vm = e.get("vendor_exit_map")
-                if isinstance(vm, dict):
-                    total += len(vm)
-                ps = e.get("patterns")
-                if isinstance(ps, dict):
-                    for _lst in ps.values():
-                        if isinstance(_lst, list):
-                            total += len(_lst)
-                return total
-
             if has_exit:
                 vmap = entry.get("vendor_exit_map")
                 if not isinstance(vmap, dict):
                     vmap = {}
-                is_new = str(vendor_exit_code) not in vmap
-                if is_new and _cli_entry_count(entry) + 1 > _MAX_EXTENSION_ENTRIES:
-                    raise ValueError(
-                        f"apply_classifier_patch: per-cli entry cap reached for "
-                        f"{cli!r} ({_MAX_EXTENSION_ENTRIES}); refusing unbounded growth"
-                    )
                 vmap[str(vendor_exit_code)] = classification
                 entry["vendor_exit_map"] = vmap
             else:
@@ -3825,13 +3801,7 @@ def apply_classifier_patch(cli: str, proposal: dict) -> str:
                 lst = pats.get(pattern_list)
                 if not isinstance(lst, list):
                     lst = []
-                is_new = substring not in lst
-                if is_new and _cli_entry_count(entry) + 1 > _MAX_EXTENSION_ENTRIES:
-                    raise ValueError(
-                        f"apply_classifier_patch: per-cli entry cap reached for "
-                        f"{cli!r} ({_MAX_EXTENSION_ENTRIES}); refusing unbounded growth"
-                    )
-                if is_new:
+                if substring not in lst:
                     lst.append(substring)
                 pats[pattern_list] = lst
                 entry["patterns"] = pats
@@ -3863,6 +3833,73 @@ def apply_classifier_patch(cli: str, proposal: dict) -> str:
 
     log(f"[apply] {cli} {classification} — {reason}")
     return "applied"
+
+
+def _run_record_path(record: dict) -> tuple:
+    """The failure path of a stored run-log record, read from its own fields:
+    ("c", agy result) / ("b", None) / ("a", None); a record whose class was
+    decided outside the classifier raises ValueError. The one path decision
+    of `reclassify_run_record` and of the verifier's evidence lines."""
+    refused = ValueError("verify on this stored record is not supported "
+                         "(class decided outside the classifier)")
+    rc = record.get("vendor_exit_code")
+    if (record.get("classification") not in CLASSIFICATION_TOKENS - {"ok", "schema-fail", "task-blocked"}
+            or isinstance(rc, bool) or not isinstance(rc, int)):
+        raise refused
+    timed_out = record.get("exit_code") == EXIT_TIMEOUT
+    if record.get("cli") == "antigravity":
+        if record.get("extraction_error") or timed_out:
+            raise refused
+        try:
+            _events, result = parse_agy_stream(record.get("stdout") or "")
+        except _DuplicateJSONMember:
+            raise refused from None
+        res = result if isinstance(result, dict) else {}
+        answer = res.get("response")
+        if not ((isinstance(answer, str) and answer.strip())
+                or isinstance(res.get("structured_output"), dict)):
+            return "c", result
+    elif rc == 0 and record.get("extraction_error"):
+        return "b", None
+    if rc != 0 or timed_out:
+        return "a", None
+    raise refused
+
+
+def reclassify_run_record(record: dict) -> str:
+    """The class the wrapper's own decision gives a stored failure run-log
+    today (built-ins + extension) — how an applied proposal is verified; the
+    vendor is never called again and nothing is spawned. The failure path
+    (`_run_record_path`) is read from the record's own fields:
+      (c) agy, no usable answer in the stored stream — the driver's own
+          decision (`_agy_no_answer_class`) over stderr + the stream result's
+          typed signal and status;
+      (b) non-agy, vendor exit 0, `extraction_error` set — the extraction
+          reason as stderr, empty stdout; only a terminal or schema-rejected
+          class replaces extraction-error;
+      (a) vendor exit != 0 or a wrapper timeout — stderr, stdout, exit, vendor
+          exit.
+    A class decided outside the classifier is refused (ValueError): a stored
+    class classify() never returns, no stored vendor exit, or an agy record an
+    earlier driver rung decided (`extraction_error` set, or a wrapper
+    timeout)."""
+    path, result = _run_record_path(record)
+    cli, rc = record["cli"], record["vendor_exit_code"]
+    stderr, stdout = record.get("stderr") or "", record.get("stdout") or ""
+    if path == "c":
+        status = result.get("status") if isinstance(result, dict) else None
+        return _agy_no_answer_class(stderr, agy_classify_signals(result), status, stdout, rc)
+    if path == "b":
+        if _auth_carrier_stop(cli, stderr, stdout, rc):
+            return "oauth-env"
+        cls = classify(cli, stderr=record["extraction_error"], stdout="",
+                       exit_code=EXIT_CLI_FAIL, vendor_exit_code=rc)
+        if map_classification_to_exit(cls) == EXIT_TERMINAL or cls == "schema-rejected":
+            return cls
+        return "extraction-error"
+    timed_out = record.get("exit_code") == EXIT_TIMEOUT
+    return classify(cli, stderr, stdout, EXIT_TIMEOUT if timed_out else EXIT_CLI_FAIL,
+                    vendor_exit_code=rc)
 
 
 # ─── Per-execution run-log (dispatch SKILL input) ─────────────────────────
@@ -4267,7 +4304,7 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
         return None
 
 
-def preclear_read_audit_file(repair_mode: bool = False) -> None:
+def preclear_read_audit_file() -> None:
     """STALE-DIGEST close (final-gate fix round, converged codex+claude
     finding). A review leg's packet dir is REUSED across rounds — if a call's
     `emit_read_audit` write silently failed (best-effort, § above), a PRIOR
@@ -4284,19 +4321,6 @@ def preclear_read_audit_file(repair_mode: bool = False) -> None:
     path, including an early arg-validation failure that never reaches
     `emit_read_audit` at all, still leaves the file ABSENT rather than stale.
 
-    `repair_mode=True` SKIPS the clear entirely (re-confirm round 2 / G3,
-    claude Minor): a `--repair-mode` re-run re-executes the wrapper for
-    VERIFICATION purposes (the repair flow's Step 5d), a call unrelated to
-    the review leg's own evidence collection — if that re-run's environment
-    still carries the SAME `TRIAD_READ_AUDIT_FILE` the original leg used,
-    unconditional clearing DELETED the already-completed leg's digest before
-    the repair attempt even started (fail-closed, but a wasted re-dispatch
-    that then has to re-collect evidence it already had). Mirrors
-    `prune_stale_run_logs`'s own `if not repair_mode` skip inside
-    `_run_agy_with_retry` — a sibling next-run-cleanup step with the exact
-    same concern (a repair-mode call must not disturb ambient artifacts a
-    normal dispatch owns).
-
     No-op when `TRIAD_READ_AUDIT_FILE` is unset (the default-dir path uses a
     fresh uuid8-suffixed filename every call, so it can never collide with a
     stale prior file in the first place — nothing to pre-clear there).
@@ -4307,8 +4331,6 @@ def preclear_read_audit_file(repair_mode: bool = False) -> None:
     dispatch over an unlinkable stale file would be worse than the stale-file
     risk it closes.
     """
-    if repair_mode:
-        return
     override = os.environ.get("TRIAD_READ_AUDIT_FILE")
     if not override:
         return
@@ -4351,8 +4373,7 @@ def preclear_read_audit_file(repair_mode: bool = False) -> None:
 # written when its call ends (`emit_run_log`); the one-day floor keeps a
 # run-log the repair step has not read yet out of the deletion window — e.g.
 # a failure early in a ` ; `-joined line of same-family calls, whose repair
-# waits for the later calls, each of which sweeps at its start. repair_mode
-# skips the prune.
+# waits for the later calls, each of which sweeps at its start.
 # The cap prunes — `_prune_run_logs` (`_RUN_LOG_MAX_FILES` / `_RUN_LOG_MAX_BYTES`)
 # and the read-audit default-dir prune in `emit_read_audit`
 # (`_READ_AUDIT_MAX_FILES` / `_READ_AUDIT_MAX_BYTES`) — keep this same floor
@@ -4393,8 +4414,8 @@ def prune_stale_run_logs(cli: str) -> None:
     NEXT run", not at exit — a crashed call must leave its evidence).
 
     Removes `_logs/<cli>/runs/*.json` run-logs
-    whose mtime is older than the floor. Called at the START of every normal
-    (non-repair-mode) dispatch, so a SUBSEQUENT run cleans up the residue a
+    whose mtime is older than the floor. Called at the START of every
+    dispatch, so a SUBSEQUENT run cleans up the residue a
     prior run left on failure — including failure classes (terminal / server-cap
     / schema-rejected / task-blocked) and the run-log a repair
     loop read (no prompt or person deletes one). The cap-based `_prune_run_logs`

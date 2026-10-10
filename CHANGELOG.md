@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1662 — 2026-10-10
+## 0.2.1672 — 2026-10-10
 
 **Cross-family review — one round per packet dir.** `prepare` refuses a packet dir that already holds a round
 and never re-pins it: open a new packet dir for every round, and close each one after the next round is
@@ -206,7 +206,7 @@ via a prompt contract validated by the shipped deterministic
 `lib/validate_verdict.py`. Consolidation maps `findings[]` into
 the residual table mechanically with jq. The read-audit digest
 file gained stale-round hardening: the wrapper pre-clears the
-bound path at call start (skipped on `--repair-mode`), the
+bound path at call start, the
 override write refuses symlinks (O_NOFOLLOW), and dispatch /
 pre-clear / gate all bind one byte-identical packet-relative
 literal. Schema floors: non-SAFE verdicts need >=1 finding,

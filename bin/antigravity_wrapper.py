@@ -149,22 +149,7 @@ def _classify_no_answer(stderr: str, signals, vendor_rc: int,
     classify() ONLY for its auth rung, which reads `result.error` alone
     (R-AUTH (ii)); classify() keeps agy's raw stream out of the L2 blob.
     """
-    status_tok = f"agy result status={str(status)[:200]}" if status else ""
-    # Each stream signal is LABELLED so it never starts a line: it must not
-    # impersonate agy's own stderr banner. agy's own carriers are its real
-    # stderr lines and `result.error` (read from `stdout` by the auth rung).
-    parts = [stderr, *[f"[agy signal] {t}" for t in (signals or []) if t], status_tok]
-    blob = "\n".join(t for t in parts if t and t.strip())
-    if not blob.strip() and vendor_rc == 0:
-        # Nothing structural to classify AND the vendor exited 0. A nonzero rc
-        # still goes through classify() so the L1 vendor-exit map keeps its
-        # say (a silent vendor failure that only signals through its rc must
-        # not be swallowed by this short-circuit).
-        return "extraction-error", _common.EXIT_CLI_FAIL
-    cls = _common.classify(
-        "antigravity", stderr=blob, stdout=stdout,
-        exit_code=_common.EXIT_CLI_FAIL, vendor_exit_code=vendor_rc,
-    )
+    cls = _common._agy_no_answer_class(stderr, signals, status, stdout, vendor_rc)
     return cls, _common.map_classification_to_exit(cls)
 
 
@@ -677,7 +662,7 @@ def _done(rr: _common.RunResult, cls: str, code: int, *, audit, answer=None,
 
 
 def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
-                        repair_mode=False, pydantic_cls=None,
+                        pydantic_cls=None,
                         admission=None,
                         schema_file_mode=False, web=False) -> tuple[_common.RunResult, list]:
     """Dedicated extract-then-classify driver over the stream-json transport.
@@ -687,15 +672,12 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
     one-line summary stay THIS driver's job. Returns the engine's own
     RunResult carrying this driver's verdict (`_done`) and the argv of the
     last attempt that spawned."""
-    if not repair_mode:
-        _common.prune_stale_run_logs("antigravity")
+    _common.prune_stale_run_logs("antigravity")
 
     # F-Q2: the two retry budgets are INDEPENDENT — schema_repaired and the
     # server-capacity budget (max_retries/server_attempt) each gate a
-    # different failure shape and do not share state. In particular, schema
-    # repair fires exactly ONCE regardless of repair_mode; repair_mode only
-    # disables the server-capacity retry (max_retries=0).
-    max_retries = 0 if repair_mode else SERVER_CAP_RETRIES
+    # different failure shape and do not share state.
+    max_retries = SERVER_CAP_RETRIES
     server_attempt = 0
     schema_repaired = False   # one-shot local-validation repair re-run (Task 5)
     # r1/R4: one digest per ATTEMPT, aggregated on every return path. Emitting
@@ -1081,7 +1063,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
             # gate r1 row 8 (2026-09-04): agy's OWN turn timeout fired before
             # the wrapper deadline (`result.error` = "timeout waiting for
             # response", empty response, vendor rc 1) — a typed vendor state
-            # distinct from the wrapper-kill `timeout` (repair-routed) and
+            # distinct from the wrapper-kill `timeout` (surfaced, never repair-routed) and
             # from the answer-present `vendor-error`. Named terminal token,
             # surface-not-repair (the repair analyzer escalated exactly this:
             # no existing class fits; rc 1 is generic). Review-leg callers:
@@ -1180,7 +1162,6 @@ def _dispatch(args, ver, pydantic_cls, agy_bin,
         # --json-schema-file on every other posture, so the permissive call
         # below can never be in it.
         return _run_agy_with_retry(cmd, args.prompt, args.timeout, cwd=args.cwd,
-                                   repair_mode=args.repair_mode,
                                    pydantic_cls=pydantic_cls,
                                    admission=(allowlist, read_set),
                                    schema_file_mode=getattr(
@@ -1193,7 +1174,6 @@ def _dispatch(args, ver, pydantic_cls, agy_bin,
                      effort=args.effort)
     cmd[0] = agy_bin
     return _run_agy_with_retry(cmd, args.prompt, args.timeout, cwd=args.cwd,
-                               repair_mode=args.repair_mode,
                                pydantic_cls=pydantic_cls)
 
 
@@ -1215,12 +1195,7 @@ def _main(ctx: dict) -> int:
     # reaches emit_read_audit's call site at all — leaves TRIAD_READ_AUDIT_FILE
     # ABSENT rather than a prior round's stale digest. See
     # _common.preclear_read_audit_file's own docstring for the full rationale.
-    # `repair_mode` is PEEKED from raw `sys.argv` here (mirrors
-    # `prune_stale_run_logs`'s own repair_mode skip): argparse has not run
-    # yet at this point in main(), so `args.repair_mode` does not exist —
-    # a --repair-mode re-run must skip the clear (G3, re-confirm round 2),
-    # so the peek has to happen BEFORE the parse, not after.
-    _common.preclear_read_audit_file(repair_mode="--repair-mode" in sys.argv)
+    _common.preclear_read_audit_file()
     p = argparse.ArgumentParser(description="Antigravity (agy) single-shot wrapper",
                                 allow_abbrev=False)
     prompt_group = p.add_mutually_exclusive_group(required=True)
@@ -1260,7 +1235,6 @@ def _main(ctx: dict) -> int:
     p.add_argument("--effort", choices=["low", "medium", "high"], default=None,
                    help="agy reasoning effort (--effort passthrough; agy >= 1.1.10)")
     p.add_argument("--timeout", type=int, default=600)
-    p.add_argument("--repair-mode", action="store_true")
     p.add_argument("--debug", action="store_true")
     p.add_argument("--pydantic", default=None,
                    help="pydantic class spec (module:Class) — native "
@@ -1533,7 +1507,6 @@ def _main(ctx: dict) -> int:
     # probed — no second probe; None on a failed/unparseable probe.
     r.vendor_version = _ver_text(ver) if ver is not None else None
     r.elapsed_s = elapsed
-    r.mode = "repair" if args.repair_mode else "normal"
     ctx.update(result=r, cmd=cmd)
 
     # Read-audit digest — emitted BEFORE the canonical summary line, on EVERY

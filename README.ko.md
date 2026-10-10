@@ -415,14 +415,15 @@ leader 와 오너가 실제로 사용하는 방식:
 업데이트에도 살아남습니다** (휘발성 플러그인 디렉터리가 아님). repair
 서브에이전트가 새 `error → class` 엔트리를 제안하고 leader 가
 `bin/apply_patch.py` 로 적용하며, 엔진이 런타임에 병합합니다. 이식 가능 — 팀이
-큐레이션하고 공유할 수 있습니다.
+큐레이션하고 공유할 수 있습니다. 적용 단계가 출력하는 세 줄을 메인테이너에게 보내면
+메인테이너가 학습된 문구를 배포 목록으로 승격합니다.
 
 ## 보안 (Security)
 
 지속적인 control 은 model trust 가 아니라 **privilege separation** 입니다.
 분류기는 untrusted vendor run-log 에서 학습하므로, run-log 를 읽는 컴포넌트는
 write 권한이 0 입니다: 세션 내 repair 에이전트는 READ-ONLY analyzer
-(harness 가 `Read, Grep, Glob` 만 허용 — Write/Edit/Bash/network 없음)로,
+(harness 가 `Read, Grep, Glob, WebSearch, WebFetch` 만 허용 — Write/Edit/Bash 없음, web 도구는 제한된 조사 규칙에만 사용)로,
 유일한 출력은 inline proposal 이고 leader 가 결정적 zero-LLM `bin/apply_patch.py`
 로 적용합니다. "model 이 injection 에 저항한다"는 경계가 **아닙니다**. wrapper 는
 인증을 관리하지 않습니다. 전체 threat model 과 per-product 집행:
