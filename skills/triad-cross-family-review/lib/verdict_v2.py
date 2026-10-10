@@ -223,15 +223,12 @@ def _get_validator() -> tuple[object | None, str | None]:
     if Draft202012Validator is None:
         return None, _JSONSCHEMA_MISSING_MSG
     path = _schema_path()
-    # EVERY WAY THE VENDORED FILE CAN BE UNUSABLE IS A HOST FAULT (gate-1 r8
-    # row r8-4). The read caught OSError only and the parse ValueError only,
-    # so two classes escaped as a TRACEBACK from the one path the collector
-    # relies on for its exit-64 `_HostFault` (row r7-c4): invalid UTF-8
-    # raises UnicodeDecodeError, which is a ValueError and NOT an OSError,
-    # and a document nested past the interpreter's limit raises
-    # RecursionError, which is neither. Both say the same thing every reason
-    # here says — this host cannot admit ANY reply — so both take the
-    # host-fault exit instead of killing the caller mid-collection.
+    # EVERY WAY THE VENDORED FILE CAN BE UNUSABLE IS A HOST FAULT, the path
+    # the collector relies on for its exit-64 `_HostFault`: invalid UTF-8
+    # raises UnicodeDecodeError (a ValueError, NOT an OSError), and a document
+    # nested past the interpreter's limit raises RecursionError (neither).
+    # Every reason here says the same thing — this host cannot admit ANY
+    # reply — so each takes the host-fault exit.
     try:
         raw = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
@@ -347,14 +344,10 @@ def _read_regular_file_no_symlink(path: Path) -> tuple[bytes | None, str | None]
                 break
             chunks.append(chunk)
         return b"".join(chunks), None
-    # THE DESCRIPTOR PHASE ANSWERS IN THE SAME SHAPE (gate-1 r10 row r10-8).
-    # The two arms above convert their OSError into `(None, reason)`; the
-    # fstat and the read loop had none, so an EIO (a failing disk, a stale
-    # NFS handle, a device-backed path that satisfied both S_ISREG checks)
-    # raised out of `admit_file` as a TRACEBACK — out of the one function
-    # `collect_v2._evaluate` calls per entry, so ONE unreadable reply file
-    # killed the whole collection instead of invalidating that entry (the
-    # r5-11 class).
+    # THE DESCRIPTOR PHASE ANSWERS IN THE SAME SHAPE as the two arms above:
+    # an OSError from the fstat or the read loop (a failing disk, a stale NFS
+    # handle) becomes `(None, reason)`, so ONE unreadable reply file
+    # invalidates that entry and never stops the whole collection.
     #
     # The caller maps this reason to EXIT_INVALID (1), which is deliberate:
     # exit 64 is reserved here for `_get_validator`'s reasons — "this host
@@ -437,10 +430,7 @@ def _extract_object_text(text: str, end_marker: str) -> tuple[str | None, str | 
     The marker must be the LITERAL token here. An escaped spelling is not
     accepted at this stage: `_marker_needs_unescape` detects it one level up
     and re-runs the whole pass on `html.unescape(text)`, so by the time this
-    function sees an escaped-transport reply the marker is literal again
-    (gate 1 r3 row r3-8). The earlier form accepted `html.escape(end_marker)`
-    HERE, which admitted the RAW body of a transport that had escaped the
-    angle brackets but not the quotes - entities left inside the strings.
+    function sees an escaped-transport reply the marker is literal again.
     """
     lines = text.split("\n")
     last = None
@@ -472,8 +462,7 @@ def _marker_needs_unescape(text: str, end_marker: str) -> bool:
     It covers every spelling `html.unescape` knows, so the named-entity form
     (`&lt;END-VERDICT&gt;`) and the numeric character references
     (`&#60;...&#62;`, `&#x3C;...`) are one rule instead of the single
-    `html.escape` special case that recognized only the first
-    (gate 1 r3 row r3-8)."""
+    `html.escape` special case that recognized only the first."""
     for line in reversed(text.split("\n")):
         stripped = line.strip()
         if not stripped:
@@ -491,8 +480,7 @@ def _admit_raw_with_text(
     ESCAPED TRANSPORT (the marker itself came through escaped): the whole
     reply is unescaped ONCE and admitted from that. Admitting the raw body of
     such a reply is what let `&lt;`/`&gt;` survive inside the admitted
-    strings when the transport escaped angle brackets but not quotes
-    (gate 1 r3 row r3-8).
+    strings when the transport escaped angle brackets but not quotes.
 
     LITERAL MARKER: RAW FIRST, unchanged. An already-valid reply - including
     one whose string fields legitimately spell HTML entities - is admitted

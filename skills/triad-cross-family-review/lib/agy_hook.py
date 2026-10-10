@@ -101,8 +101,8 @@ _REPORT_CAP = 40   # denied rows printed by `check` — the digest's list cap
 # log comes only with a new round, after the round worktree's hooks.json is
 # checked.
 _REMEDY = "check hooks.json in the round worktree, then prepare a new round"
-# WHY A FILE COULD NOT BE READ, named by the ACTUAL reason (gate-1 r20 row
-# r20-6). `_read_regular` returns one of these; each follows "<the path> " in
+# WHY A FILE COULD NOT BE READ, named by the ACTUAL reason. `_read_regular`
+# returns one of these; each follows "<the path> " in
 # a refusal.
 _WHY_NOT_REGULAR = ("is not a readable regular UTF-8 file: not a regular file "
                     "(a symlink, a FIFO or a directory is refused before it "
@@ -130,7 +130,7 @@ def decide(name, web=False) -> tuple:
 
 
 def _hook_main(log_path: Path, web: bool = False) -> int:
-    # BYTES, decoded as UTF-8 with replacement (S2 gate r1, agy A4 — REPRODUCED):
+    # BYTES, decoded as UTF-8 with replacement:
     # a text-mode read under an ASCII stdio encoding (a legacy locale) raised
     # UnicodeDecodeError on a payload carrying a non-ASCII path, and a crashed
     # hook denies every later call, reads included. Only the tool NAME matters.
@@ -142,7 +142,7 @@ def _hook_main(log_path: Path, web: bool = False) -> int:
         payload = json.loads(raw)
     except (ValueError, RecursionError):
         # RecursionError: a payload nested past the interpreter's recursion
-        # limit is not a ValueError (gate-1 r18 row r18-4) — unreadable, so
+        # limit is not a ValueError — unreadable, so
         # it denies like any other unreadable payload instead of crashing.
         payload = None
     name = conversation = step = None
@@ -272,7 +272,7 @@ def _audit(path: Path) -> tuple:
     """(tool_steps, rows, why) for one read audit; `tool_steps` is None when
     the file carries no readable `digest.tool_steps` — `why` then names the
     ACTUAL reason (the reader's, or `_WHY_NO_TOOL_STEPS` for a file that was
-    read; row r20-6) — and `rows` is a STRING when its `attempts` census
+    read) — and `rows` is a STRING when its `attempts` census
     cannot be attributed (`_census_rows`) — the caller decides what each
     means for the leg it belongs to."""
     text, why = _read_regular(path)
@@ -282,11 +282,9 @@ def _audit(path: Path) -> tuple:
         digest = json.loads(text).get("digest")
         tool_steps = digest.get("tool_steps")
     except (ValueError, AttributeError, RecursionError):
-        # RecursionError (gate-1 r18 row r18-4): a document nested past the
-        # interpreter's recursion limit raises it instead of a ValueError, and
-        # it escaped through the collector's in-process retry guard into its
-        # `collect` / `retry`, aborting the whole command. It is the same
-        # unreadable audit as any other malformed file.
+        # RecursionError: a document nested past the interpreter's recursion
+        # limit raises it instead of a ValueError. It is the same unreadable
+        # audit as any other malformed file.
         return (None, None, _WHY_NO_TOOL_STEPS)
     if not _count(tool_steps):
         return (None, None, _WHY_NO_TOOL_STEPS)
@@ -312,7 +310,7 @@ def check_loaded(read_audit: Path, hook_log: Path) -> tuple:
     hook row with no conversation id attributes nothing (the measured
     PreToolUse payload always carries `conversationId`, DL-6), and rows under
     ids this audit did not record belong to other attempts."""
-    # LEXISTS, NOT `is_file()` (gate-1 r12 row r12-4): only a name that is
+    # LEXISTS, NOT `is_file()`: only a name that is
     # not there at all is ABSENT; anything present goes to `_audit`, which
     # refuses every non-regular type before the open (INCONCLUSIVE below).
     if not os.path.lexists(read_audit):
@@ -348,9 +346,9 @@ def check_loaded(read_audit: Path, hook_log: Path) -> tuple:
                 continue
             try:
                 row = json.loads(line)
-            except (ValueError, RecursionError):   # r18-4: over-nested line
+            except (ValueError, RecursionError):   # an over-nested line
                 row = None
-            # a HOOK row, not any JSON object (S2 gate r1, codex C4): a vendor
+            # a HOOK row, not any JSON object: a vendor
             # stream or `{}` handed to this check must never count as proof
             if (not isinstance(row, dict) or row.get("decision") not in ("allow", "deny")
                     or "tool" not in row):
@@ -366,7 +364,7 @@ def check_loaded(read_audit: Path, hook_log: Path) -> tuple:
             if row.get("decision") == "deny":
                 denied.append(row)
     # the name came from the vendor payload: capped and ASCII-escaped, one line
-    # (S2 gate r2, claude) — a newline or an ANSI sequence in it must not split
+    # — a newline or an ANSI sequence in it must not split
     # or repaint the output the leader greps for `HOOK_LOAD_*`
     def _idx(v):
         return v if isinstance(v, int) and not isinstance(v, bool) else None
@@ -374,7 +372,7 @@ def check_loaded(read_audit: Path, hook_log: Path) -> tuple:
               f"(step {_idx(r.get('step_idx'))})"
               for r in denied[:_REPORT_CAP]]
     if len(denied) > _REPORT_CAP:
-        # the list is bounded like every vendor-driven list (S2 gate r3, claude)
+        # the list is bounded like every vendor-driven list
         report.append(f"[hook] (+{len(denied) - _REPORT_CAP} more)")
     unhooked = [row for row in must if not any(i in named for i in _ids(row))]
     counts = (tool_steps, invocations, len(denied), len(must) - len(unhooked),

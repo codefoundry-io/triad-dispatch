@@ -1,7 +1,7 @@
 ---
 name: triad-cross-family-review
 description: Runs the FINAL pre-merge (or review-worthy / security-or-correctness-critical) cross-family review mandated by the lab's cross-family review rule — prepares ONE frozen round from a named ROSTER of INDEPENDENT cross-family reviewers (a claude fresh-eye sub-agent via Agent + codex via triad-codex-dispatch + the Google-family CLI selected at runtime — agy via triad-antigravity-dispatch, with compatibility for the older gemini CLI via triad-gemini-dispatch — plus any entry the project configured), frames the suspect/omitted/simplified decisions as QUESTIONS, admits every entry's verdict (SAFE TO MERGE / MERGE WITH FIXES / DO NOT MERGE) against the canonical schema, and folds them into ONE outcome (AGREED / BLOCKED / INCOMPLETE) driving a fix→NEW-round loop. Trigger when about to merge review-worthy work, ESPECIALLY when the leader chose to OMIT or SIMPLIFY something from a vetted source, or after a subagent-driven implementation before integration.
-version: 0.50.3
+version: 0.50.5
 # changelog: docs/reviews/2026-09-18-cfr-skill-history.md (every entry; the newest section is last)
 ---
 
@@ -10,13 +10,12 @@ version: 0.50.3
 The leader's standard **final pre-merge review**: the independent reviewers
 of a named roster — by default one per model family — judge a diff/branch,
 the suspect decisions are posed as questions, and findings drive a
-fix→re-review loop. Codifies the lab's standing cross-family review rule.
+fix→re-review loop.
 
 ## When to use
 
 - About to merge review-worthy or security/correctness-critical work.
-- The leader OMITTED or SIMPLIFIED something from a vetted external source
-  (the canonical author-blind-spot case).
+- The leader OMITTED or SIMPLIFIED something from a vetted external source.
 - After a `superpowers:subagent-driven-development` run, before integrating —
   per-task spec+quality reviews are same-family and miss cross-cutting issues.
 
@@ -193,7 +192,7 @@ Five references carry the detail — open one only when its column applies.
    findings every round — fold the CONSTRAINTS and delegate the row-level
    design to the owning unit's own gate (`references/triage.md`
    § Scope-expansion gate).
-6. **Codex-path caveat (cross-family-rule nuance).** When the work being reviewed IS
+6. **Codex-path caveat.** When the work being reviewed IS
    the codex dispatch path itself, codex reviews the *artifact diff*, not its
    own reasoning — cross-family + fresh-eye still holds, so the full set is valid.
 7. **Vendor review legs: READ-only, no-mutation/no-execution, generous

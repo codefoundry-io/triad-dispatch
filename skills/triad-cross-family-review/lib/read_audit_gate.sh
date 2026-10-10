@@ -95,11 +95,10 @@ if [ ! -f "$AGY_READ_AUDIT_FILE" ]; then
   # unset/misbound at dispatch time is empty in exactly the same way as a
   # call that never completed. Check the dispatch env FIRST; only once that
   # is sound does an absent file mean the leg did not run.
-  # The remedy is a NEW round, never a re-dispatch inside it (gate-1 r15 row
-  # r15-2): the attempt stays a sibling of every later attempt of the round,
-  # and the hook load check reads a DISPATCHED attempt with no audit as
-  # INCONCLUSIVE — one that never spawned agy is skipped, so a retry does
-  # clear that case (row r16-4).
+  # The remedy is a NEW round, never a re-dispatch inside it: the attempt
+  # stays a sibling of every later attempt of the round, and the hook load
+  # check reads a DISPATCHED attempt with no audit as INCONCLUSIVE — one that
+  # never spawned agy is skipped, so a retry does clear that case.
   echo "[review] agy leg read-audit ABSENT — no digest file at $AGY_READ_AUDIT_FILE. Cause is EITHER a vendor call that never completed OR TRIAD_READ_AUDIT_FILE was never set at dispatch time. Verify the dispatch env; only once it is sound does this mean the leg did not run — then treat as VOID (leg-not-run). The attempt stays a SIBLING of every later attempt of this round (a dispatched attempt with no read audit is INCONCLUSIVE in the hook load check, which reads every attempt and deletes none), so a re-dispatch inside the round cannot clear it: prepare a NEW round (a fresh hook log) (if the attempt never spawned agy — no \`exec\` line in its stderr.log — the hook check skips it and a retry does clear it)." >&2
   echo "READ_AUDIT_GATE_ABSENT checked=0 pass=0 void=0 inconclusive=0 unevaluated=$#"
   exit 2
@@ -143,7 +142,7 @@ for PACKET_ABS_PATH in "$@"; do
     # jq could not produce a usable answer — a BROKEN reading of the
     # evidence, not evidence. Never silently VOID (or PASS) on it. rc>=2
     # covers every jq failure mode: read, parse, program, or runtime error.
-    # The remedy is a NEW round (gate-1 r15 row r15-2) — the unreadable audit
+    # The remedy is a NEW round — the unreadable audit
     # stays a sibling of every later attempt, INCONCLUSIVE in the hook check.
     echo "[review] agy leg read-audit INCONCLUSIVE — jq could not produce a usable answer from $AGY_READ_AUDIT_FILE (rc=$jq_rc: read, parse, program, or runtime error). Do NOT read this as VOID and do NOT read it as PASS: inspect the file directly. The unreadable audit stays a SIBLING of every later attempt of this round (the hook load check reads it as broken evidence — INCONCLUSIVE — and deletes none), so a re-dispatch inside the round cannot clear it: prepare a NEW round (a fresh hook log)." >&2
     echo "[gate] INCONCLUSIVE $PACKET_ABS_PATH"
@@ -157,12 +156,12 @@ for PACKET_ABS_PATH in "$@"; do
       echo "[gate] INCONCLUSIVE $PACKET_ABS_PATH"
       n_inconclusive=$((n_inconclusive + 1))
     else
-      # RETRY-CLEARABLE, unlike the ABSENT / jq rc>=2 arms
-      # (gate-1 r15 row r15-2): a read-blind attempt wrote a readable audit
+      # RETRY-CLEARABLE, unlike the ABSENT / jq rc>=2 arms: a read-blind
+      # attempt wrote a readable audit
       # with its census, so the hook load check attributes it like any other
       # hooked attempt and a later attempt of the same round can stand beside
       # it — a re-dispatch inside the round CAN clear this one. The message
-      # names that CONDITION (gate-1 r16 row r16-8): a census that is missing
+      # names that CONDITION: a census that is missing
       # or incomplete is refused by the hook check, and then only a NEW round
       # clears it.
       echo "[review] agy leg VOID — packet path not in read_audit.digest.files_read ($PACKET_ABS_PATH); retry the entry once on the unchanged basis — a retry inside the round clears this because the read-blind attempt wrote a readable census with its conversation ids and is attributed like any other attempt; if that census is missing or incomplete the hook check refuses and a NEW round is needed; still VOID after that retry is a missing result and the round stays INCOMPLETE (R-AGREE — no second re-dispatch)" >&2

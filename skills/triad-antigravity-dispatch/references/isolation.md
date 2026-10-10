@@ -215,7 +215,7 @@ Re-confirm against your installed agy with
 | `mcp` (MCP server reach) | `mcp` | denied in read-only |
 | `read_url_content` / `search_web` | `read_url` | never denied by the wrapper; since v2 present ONLY in the research agent (`--web`, or a web review round's `--review-web`) — the review agent has no web tool — agy's search/research advantage; the only web access left even under read-only |
 | `invoke_subagent` / `ask_question` / `schedule` | (no resource permission) | not gated by `permissions.deny` |
-| `open_browser_url` / `read_browser_page` / `execute_browser_javascript` / `browser_*` (~20 tools in the 1.1.17 `init.tools` inventory, probe F4) | (no MEASURED action) | never probed against any deny rule; absent from the `triad-readonly-review` allowlist, so under agent mode = detection-only via the census (gate r8) |
+| `open_browser_url` / `read_browser_page` / `execute_browser_javascript` / `browser_*` (~20 tools in the 1.1.17 `init.tools` inventory, probe F4) | (no MEASURED action) | never probed against any deny rule; absent from the `triad-readonly-review` allowlist, so under agent mode = detection-only via the census |
 | `notebook_edit` / `notebook_execution` / `send_message` / `generate_image` | (no resource permission reported) | detection-only under the agent-mode census (disclosed residual) |
 
 The write path is exactly write_to_file / replace_file_content /

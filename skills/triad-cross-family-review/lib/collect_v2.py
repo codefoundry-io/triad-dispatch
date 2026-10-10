@@ -4,7 +4,7 @@ allocation, host A side (plan `2026-09-21-host-a-v2-implementation`, S5).
 
 It reads the round record `<packet-dir>/.roster-r<N>.json` that
 `review_scratch.py prepare --v2` wrote, takes each enabled non-skipped
-entry's RECORDED attempt (the one that record names — row r10-2), and folds
+entry's RECORDED attempt (the one that record names), and folds
 the whole roster into ONE outcome.
 
 What "counts" (PRD § Agreement, correction and retry; `reference/review-rules.md`
@@ -113,14 +113,14 @@ OUTCOME_EXIT = {
 }
 SAFE_VERDICT = "SAFE TO MERGE"
 LIB_DIR = Path(__file__).resolve().parent
-# THE CUSTODY LINE, AS THE PRODUCER WRITES IT (row r11-6). The agy wrapper
+# THE CUSTODY LINE, AS THE PRODUCER WRITES IT. The agy wrapper
 # emits `read-audit-file: <abs path>` through `_common.log`, which prefixes
 # every line with `[<ISO-8601 timestamp>] `. Those two are the whole
 # tolerance: the prefix is stripped and the REST of the line must equal the
 # marker plus the audit path's filesystem bytes, PERCENT-ESCAPED (below).
 _CUSTODY_MARKER = b"read-audit-file: "
 _LOG_PREFIX = re.compile(rb"^\[[^\]]*\] ")
-# THE VALUE IS PERCENT-ESCAPED FILESYSTEM BYTES (gate-1 r13 row r13-5): the
+# THE VALUE IS PERCENT-ESCAPED FILESYSTEM BYTES: the
 # wrapper emits `_common._summary_field(<path>)`, so this side compares the
 # SAME encoding. Re-implemented here because this module may not import
 # `_common`; t15 axis 66 pins the safe set and the output equal to it.
@@ -133,7 +133,7 @@ def _custody_field(raw: bytes) -> bytes:
 # The exit BOTH agy evidence tools reserve for "this invocation could not RUN
 # at all" (`read_audit_gate.sh` usage, `agy_hook.py check` usage). It is the
 # same 64 `verdict_v2` uses for a host fault, and it is treated the same way
-# here (row r8-9).
+# here.
 _EVIDENCE_TOOL_HOST_RC = 64
 # The run-log directory each WRAPPER route's wrapper writes its receipt under
 # (the `cli` its `emit_run_log` call passes), keyed by the binding's route
@@ -542,13 +542,10 @@ def _result_filename(family: str) -> str:
 
 
 def _run(cmd: list) -> subprocess.CompletedProcess:
-    # UTF-8 IS PINNED, NEVER TAKEN FROM THE LOCALE (gate-1 r6 row r6-12).
-    # `text=True` alone decodes with `locale.getpreferredencoding()`, so on a
-    # host running under an ASCII locale the gate's own em-dash diagnostics
-    # raised UnicodeDecodeError out of `_agy_evidence_reason` — a traceback
-    # where the agy entry owed a one-line reason, taking the WHOLE collection
-    # with it. `errors="replace"` keeps a byte nobody can decode from doing
-    # the same. Same pin `_common.py` applies to every vendor pipe.
+    # UTF-8 IS PINNED, NEVER TAKEN FROM THE LOCALE: `text=True` alone decodes
+    # with `locale.getpreferredencoding()`, and the gate's own diagnostics are
+    # UTF-8. `errors="replace"` keeps a byte nobody can decode from raising.
+    # Same pin `_common.py` applies to every vendor pipe.
     return subprocess.run(cmd, capture_output=True, text=True, check=False,
                           encoding="utf-8", errors="replace")
 
@@ -578,22 +575,16 @@ def _agy_custody_reason(attempt_dir: Path, audit: Path) -> str | None:
     redirects the wrapper's stderr into the same directory, and the wrapper
     logs `read-audit-file: <that absolute path>` there. So an attempt
     directory holding an audit that no dispatch of ITS OWN ever named is an
-    ASSEMBLED directory, not evidence — the r7-13 misfiling class, and the
-    shape a four-leg round makes easy to reach by hand.
+    ASSEMBLED directory, not evidence — the misfiling a four-leg round makes
+    easy to reach by hand.
 
-    A WHOLE LINE, COMPARED IN FILESYSTEM BYTES (gate-1 r11 row r11-6). This
-    was `f"read-audit-file: {audit}" in stderr_text`, and a SUBSTRING test
-    over a replacement-decoded string is defeatable twice over: a line naming
-    a LONGER path that merely CONTAINS this attempt's audit
-    (`…/read-audit.json.bak`, or the same tail under another root) satisfied
-    it, and a path byte that is not valid UTF-8 became U+FFFD on both sides
-    so distinct paths compared equal. The line is now matched WHOLE — the
-    producer's own `_common.log` timestamp prefix REQUIRED and stripped
-    (row r12-7), nothing else tolerated — against `os.fsencode` of the audit
-    path, which is the exact byte sequence the kernel holds, percent-escaped
-    exactly as the producer escapes it (`_custody_field`, row r13-5), so a
-    path carrying a newline or an undecodable byte is still ONE line on both
-    sides.
+    A WHOLE LINE, COMPARED IN FILESYSTEM BYTES: the producer's own
+    `_common.log` timestamp prefix REQUIRED and stripped, nothing else
+    tolerated, against `os.fsencode` of the audit path (the exact byte
+    sequence the kernel holds), percent-escaped exactly as the producer
+    escapes it (`_custody_field`), so a longer path that merely contains
+    this one never matches and a path carrying a newline or an undecodable
+    byte is still ONE line on both sides.
 
     LIMIT, disclosed rather than implied: this ties the audit FILE to this
     attempt's dispatch. It cannot detect a sibling's audit CONTENT written
@@ -613,22 +604,21 @@ def _agy_custody_reason(attempt_dir: Path, audit: Path) -> str | None:
                 f"`{wanted}` line lives, and without it "
                 f"nothing ties the read audit beside it to this entry, which "
                 f"stays a SIBLING of every later attempt — prepare a new round")
-    # THE PREFIX MUST BE THERE (gate-1 r12 row r12-7): `sub(..., count=1)` was
-    # a no-op on a line WITHOUT the prefix, so an untimestamped line matched.
-    # The wrapper's `_common.log` always timestamps, so only a line whose
+    # THE PREFIX MUST BE THERE: the wrapper's `_common.log` always
+    # timestamps, so only a line whose
     # prefix MATCHES at its start is the producer's.
     def _custody(line: bytes) -> bool:
         line = line.rstrip(b"\r")
         m = _LOG_PREFIX.match(line)
         return m is not None and line[m.end():] == want
     if not any(_custody(line) for line in raw.split(b"\n")):
-        # NO AUDIT AT ALL (gate-1 r15 row r15-2). This runs only after a
+        # NO AUDIT AT ALL. This runs only after a
         # valid verdict was admitted, so the attempt RAN and wrote no read
         # audit: the hook load check reads it as a dispatched sibling with no
         # audit (INCONCLUSIVE) for every later attempt of the round, so a
         # re-dispatch inside the round cannot clear it — the remedy is a NEW
-        # round. A PRESENT audit with no custody line is a NEW round too (row
-        # r16-3): a misfiled or foreign audit stays a sibling (ambiguous or
+        # round. A PRESENT audit with no custody line is a NEW round too: a
+        # misfiled or foreign audit stays a sibling (ambiguous or
         # complete-VOID for the whole round) and hand-removal is forbidden;
         # only a genuine audit whose stderr lost its line clears on a retry.
         if not os.path.lexists(audit):
@@ -703,12 +693,11 @@ def _agy_evidence_reason(packet_dir: Path, record: dict,
 
 def _expected_binding(record: dict, entry: dict, attempt: int) -> dict:
     """The SIX values an attempt's `binding.json` must EQUAL, derived from
-    outside the attempt directory (row r5-1): `review_id` / `content_digest`
+    outside the attempt directory: `review_id` / `content_digest`
     from the ROUND RECORD, `family` / `leg_name` / `route` from the round's
     FROZEN ROSTER ENTRY, `attempt` from the DIRECTORY NAME the caller parsed.
 
-    ONE derivation for every reader (gate-1 r6 row r6-3): two copies of one
-    rule is how they diverge; this is the single copy."""
+    ONE derivation for every reader: this is the single copy."""
     return {"review_id": record.get("review_id"),
             "family": entry.get("family", entry["vendor"]),
             "content_digest": record.get("content_digest"),
@@ -719,8 +708,8 @@ def _expected_binding(record: dict, entry: dict, attempt: int) -> dict:
 
 def _sealed_paths(attempt_dir: Path, entry: dict) -> dict:
     """The three files a recorded attempt's seal binds, DERIVED from the
-    round's frozen roster entry (never read back from the seal — the r5-1
-    rule): the RESULT the collector admits, the RECEIPT of the dispatch that
+    round's frozen roster entry (never read back from the seal, the
+    `_expected_binding` rule): the RESULT the collector admits, the RECEIPT of the dispatch that
     produced it (the native leg's verbatim raw reply, a wrapper leg's
     stderr), and the READ EVIDENCE (the agy route's read audit; no other
     route writes any, so None). A wrapper route adds its RUN LOG: the
@@ -1213,16 +1202,11 @@ def _retry_blocked(packet_dir: Path, label: str, record: dict,
                 f"roster entry {name!r} has no attempt directory under "
                 f"{entry_dir} — there is nothing to retry; re-prepare the "
                 f"round")
-    # THE RECORDED ATTEMPT IS ON DISK, OR THIS REFUSES BEFORE IT MUTATES
-    # (gate-1 r11 row r11-8). Wave 10 made the collector evaluate exactly
-    # `attempt-<record.attempt>`; `retry` then writes THAT attempt's
-    # diagnosis into THAT directory after allocating the next one. With the
-    # recorded directory gone, the allocation succeeded and the diagnosis
-    # write then raised ENOENT — so every retry allocated one more attempt
-    # and refused again, an unrecoverable loop in the one recovery command
-    # this round offers, with a reason ("fix the permissions") that named
-    # neither the cause nor the cure. Host B refuses the same shape at its
-    # custody read, BEFORE anything writes (`bin/review_round_v2.py:238`).
+    # THE RECORDED ATTEMPT IS ON DISK, OR THIS REFUSES BEFORE IT MUTATES:
+    # `retry` writes THAT attempt's diagnosis into THAT directory after
+    # allocating the next one, so a missing recorded directory refuses here,
+    # before any allocation. Host B refuses the same shape at its custody
+    # read, BEFORE anything writes (`bin/review_round_v2.py:238`).
     if attempt not in by_number:
         return ("round", head,
                 f"the round record names attempt "
@@ -1248,8 +1232,8 @@ def _retry_blocked(packet_dir: Path, label: str, record: dict,
     broken = _seal_reason(replaced, entry, attempt, own.get(attempt))
     if broken is not None:
         return ("round", head, broken)
-    # AN ATTEMPT ABOVE THE RECORDED ONE ALREADY EXISTS (row r4-9; host B's
-    # rule, `bin/review_round_v2.py:291-294`): `retry` allocates attempt K+1
+    # AN ATTEMPT ABOVE THE RECORDED ONE ALREADY EXISTS (host B's rule,
+    # `bin/review_round_v2.py:291-294`): `retry` allocates attempt K+1
     # first and only then writes the diagnosis and the record, so a retry
     # stopped in between leaves `attempt-<K+1>/` beside a record naming K.
     # Allocating past it would run the numbering away from the record, and
@@ -1339,7 +1323,7 @@ def _evaluate_recorded(packet_dir: Path, record: dict, entry: dict,
                        receipt: bool = True) -> EntryResult:
     """`_evaluate`'s body for the ONE attempt directory the record names.
 
-    Split out so the rules ABOUT which attempt is evaluated (row r10-2) read
+    Split out so the rules ABOUT which attempt is evaluated read
     as one block in the caller. `receipt` False skips the executed-command
     receipt check, for a seal that already recorded a valid answer."""
     attempt = base.attempt
@@ -1361,14 +1345,11 @@ def _evaluate_recorded(packet_dir: Path, record: dict, entry: dict,
     expected = _expected_binding(record, entry, attempt)
     admission = verdict_v2.admit_file(result, expected)
     if not admission.ok:
-        # A HOST FAULT IS NOT A LEG RESULT (gate-1 r7 row r7-c4). verdict_v2
-        # reserves exit 64 for the admission it could not RUN at all — absent
-        # jsonschema, an unreadable or non-Draft-2020-12 vendored contract —
-        # and this branch recorded it as the ENTRY's `invalid`, so the round
-        # folded to INCOMPLETE and told the leader to re-dispatch PAID legs
-        # over a broken install. Nothing about this leg (or any other) is
-        # known, so the collection stops here; `_HostFault`'s docstring
-        # carries the rule.
+        # A HOST FAULT IS NOT A LEG RESULT: verdict_v2 reserves exit 64 for
+        # the admission it could not RUN at all — absent jsonschema, an
+        # unreadable or non-Draft-2020-12 vendored contract. Nothing about
+        # this leg (or any other) is known, so the collection stops here;
+        # `_HostFault`'s docstring carries the rule.
         if admission.exit_code == verdict_v2.EXIT_USAGE:
             raise _HostFault(
                 f"this host cannot admit any reply: {admission.reason} "

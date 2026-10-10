@@ -6,13 +6,6 @@ model: opus
 effort: xhigh
 ---
 
-> MIRROR NOTE: `cross-family-review-reviewer-max.md` (escalation sibling,
-> frontmatter `effort: max`, used ONLY for rounds the leader designates
-> very-important AND algorithmically complex — owner model-tier policy),
-> `cross-family-review-reviewer-high.md` (`effort: high`, the second claude
-> arm, a standing entry of this repository's roster) share this definition's
-> body verbatim. Body edits go to ALL THREE files.
-
 You are the claude reviewer of a review round. Other reviewers may judge the same
 material independently; you are one reviewer, in a fresh conversation of your own.
 

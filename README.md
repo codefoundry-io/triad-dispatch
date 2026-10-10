@@ -54,11 +54,9 @@ Four steps get you a working install. Everything past this section is optional.
    Pick the one you have access to and use its native login — the wrappers never
    manage auth:
    - `codex` (OpenAI) — install, then `codex login`.
-   - **Google family** — `agy` (Antigravity), install + OAuth sign-in, for
-     individual Google access; or `gemini` (Gemini CLI) + your org sign-in for
-     enterprise / organization Gemini access. The Gemini CLI *individual* tier is
-     deprecated (migrated to the Antigravity suite), so use `agy` there; the
-     **enterprise** Gemini tier stays in use.
+   - **Google family** — `agy` (Antigravity), install + OAuth sign-in:
+     agy is the default Google leg. `gemini` (Gemini CLI) + its own sign-in is
+     the compatibility route, for a host that still runs the older CLI.
 
    You also need **`python3 >= 3.12`** on PATH (the wrappers run via
    `#!/usr/bin/env python3`), the
@@ -138,8 +136,8 @@ only when its "do this ONLY if…" line applies to you.
 
 *Do this ONLY if you want cross-family review* (three independent families instead
 of one worker + the claude leg). Install and log in to the other CLIs the same way
-as step 1: `codex login`; `agy` OAuth sign-in; or `gemini` org sign-in
-(enterprise / organization accounts only). `triad-cross-family-review` resolves
+as step 1: `codex login`; `agy` OAuth sign-in; or, on the compatibility route,
+the `gemini` sign-in. `triad-cross-family-review` resolves
 its Google-family leg at runtime (the entry's `google.route` pin, else its single route block, else agy, else gemini)
 and runs claude (`Agent`) + codex + that leg.
 
@@ -325,7 +323,8 @@ otherwise work over public GitHub as-is.
 | Every dispatch prompts for permission, or is denied outright (headless) | The wrapper `Bash(...)` commands are not in your allowlist | Add the entries from [Permission setup](#permission-setup-required) to `.claude/settings.json`, then **restart the session** (the allowlist loads at start). |
 | A new skill/agent doesn't fire after install | Plugin skills load at session start | Restart / reload the Claude Code session once after install + settings edit. |
 | Dispatch fails with `oauth-env` | The worker CLI's login expired or is missing | Re-run that vendor's native login (`codex login`, or `agy` OAuth sign-in). The wrapper never re-authenticates for you — it surfaces the signal so you log in. |
-| The gemini leg fails with `IneligibleTier` (individual account) | The Gemini CLI *individual* tier is deprecated | Use the `agy` (Antigravity) leg instead — it is the Google-family leg for individual users. `gemini` is only for enterprise / org accounts. |
+| The gemini leg fails with `IneligibleTier` | The signed-in Google account has no Gemini CLI tier (measured on an individual account) | Use the `agy` (Antigravity) leg — agy is the default Google leg; `gemini` is the compatibility route. |
+| `claude plugin update triad-dispatch` reports *not found* on an install from before 2026-07-05 (0.1.x) | The marketplace was renamed `triad-internal-tools` → `triad-dispatch` | Run `claude plugin update triad-dispatch@triad-internal-tools` once (keeps the old key), or re-key: `claude plugin marketplace remove triad-internal-tools`, `claude plugin marketplace add <repo-or-path>`, `claude plugin install triad-dispatch`. |
 | A dispatch returns non-zero and you want to know what happened | Each failure has a classification + exit code | See the exit-code legend below and the classification on the `[wrapper] …` stderr line. |
 
 **Exit-code legend** (the wrapper's process exit code; the same failure classes
@@ -354,8 +353,10 @@ Honest boundaries, so you know where the plugin stops:
   [Security](#security)) — but you should periodically review the applied deltas in
   `~/.config/triad-dispatch/classifier-patches.json`.
 - **Wrapper containment is process/permission-level, not OS-level confinement.**
-  The read-only review leg enforces an fs-write denylist for the *known* agy tool
-  surface; it is not a sandbox jail. Isolation ultimately rests on the isolated
+  An agy `--sandbox read-only` call runs the read-only path: the read-only agent
+  `--setup-agents` installs (no write, shell or browser tool), given the call's
+  working directory with `--add-dir`; a tool outside that agent's list voids the
+  answer. It is not a sandbox jail. Isolation ultimately rests on the isolated
   working directory + your review before commit.
 
 ## How it works
@@ -384,16 +385,17 @@ How the leader and the owner actually use the toolkit:
 
 - The Claude Code **leader** dispatches a single-shot worker when it needs an
   answer from outside its own context: `triad-codex-dispatch` (codex),
-  `triad-gemini-dispatch` (gemini), or `triad-antigravity-dispatch` (agy). It
+  `triad-antigravity-dispatch` (agy, the default Google leg), or
+  `triad-gemini-dispatch` (gemini, the compatibility route). It
   does **not** shell out raw — the SKILL handles classification routing and the
   self-improving repair fallback.
 - **agy = the search / research specialist** — its web `read_url` / `search_web`
   is always allowed. Include agy on any web-grounded lookup.
 - Before merging review-worthy or correctness-critical work, the leader runs
-  **`triad-cross-family-review`** (the cross-family review rule): three INDEPENDENT reviewers
+  **`triad-cross-family-review`**: three INDEPENDENT reviewers
   from different model families — a claude fresh-eye subagent (a shipped reviewer
   preset chosen by name; see [Choose the claude review leg's model and effort](#choose-the-claude-review-legs-model-and-effort))
-  + codex + the Google-family CLI (agy or gemini, runtime-selected) — each frames the
+  + codex + the Google-family CLI (agy by default, gemini on the compatibility route) — each frames the
   suspect decisions as questions; the leader consolidates
   verdicts and fixes → re-confirms until the verdict is unanimous SAFE.
 - The classifier **self-improves**: an unrecognized error routes to the
@@ -406,16 +408,16 @@ How the leader and the owner actually use the toolkit:
 1. **Single-shot codex call** — the leader needs codex's answer to a discrete
    prompt → `triad-codex-dispatch`. It returns codex's answer (with classification
    on stderr); an `unknown` failure auto-routes to the `codex-wrapper-repair` agent.
-2. **Single-shot gemini call** — an Android/XML/vision or Google-ecosystem prompt
-   → `triad-gemini-dispatch`.
+2. **Single-shot gemini call (compatibility route)** — a host that still runs the
+   older Gemini CLI → `triad-gemini-dispatch`; agy is the default Google leg.
 3. **Web research via agy** — a web-grounded lookup → `triad-antigravity-dispatch`
    (agy's `read_url` is always allowed). Always include agy on search.
 4. **Structured output** — need validated JSON → the wrapper's
    `--pydantic module:Class` (prompt-instructed JSON + validation + one repair
    retry; exit 66 on schema failure).
 5. **Pre-merge cross-family review** — about to merge a risky change →
-   `triad-cross-family-review` (claude + codex + the Google-family CLI — agy or
-   gemini, runtime-selected; fix → re-confirm until SAFE).
+   `triad-cross-family-review` (claude + codex + the Google-family CLI — agy by
+   default, gemini on the compatibility route; fix → re-confirm until SAFE).
 
 ## Self-improvement (persistent)
 
@@ -458,8 +460,9 @@ live under `bin/_logs/<cli>/` for each wrapper family (`codex`, `gemini`, `antig
   the caps do not keep the disk from filling.
 
 Classifier patches live in `~/.config/triad-dispatch/classifier-patches.json`.
-Repair agents use the adjacent lock file before editing it so concurrent repairs
-do not silently overwrite each other.
+`bin/apply_patch.py` (the leader's applier) takes the lock file beside it before
+writing, so concurrent applies do not silently overwrite each other; the repair
+analyzers are read-only and never write it.
 
 ### Files this plugin writes
 
@@ -560,9 +563,8 @@ they are yours.
    is still installed: when this was your last plugin,
    `~/.claude/plugins/cache/triad-dispatch/` stays. Removing the marketplace
    also uninstalls every plugin installed from it.
-5. **What stays — yours**: the `_runs/review/` and `_runs/worktrees/` lines in `.gitignore`; roster files
-   (`.claude/triad-review-legs.json`, `~/.config/triad/review-legs.json`); review
-   ledgers under `docs/reviews/`.
+5. **What stays — yours**: the `_runs/review/` and `_runs/worktrees/` lines in `.gitignore`; the roster file
+   `.claude/triad-review-legs.json`; review ledgers under `docs/reviews/`.
 
 ## What's inside
 
@@ -575,7 +577,8 @@ they are yours.
 - **tests**: stdlib-only wrapper tests you can run as-is to verify the install:
 
   ```bash
-  python3 tests/test_gemini_sandbox.py   # 6 checks — gemini sandbox argv contract
-  python3 tests/test_log_cleanup.py      # 2 checks — log prune + audit rotation
+  python3 tests/test_gemini_sandbox.py      # gemini sandbox argv contract
+  python3 tests/test_log_cleanup.py         # log prune + audit rotation
+  python3 tests/test_setup_permissions.py   # the setup script's install / remove / uninstall
   ```
 

@@ -53,11 +53,9 @@ Claude 가 `triad-codex-dispatch` skill 을 실행하고, codex wrapper 를 호�
    보유한 것 하나를 골라 vendor 의 native login 으로 로그인합니다 — wrapper 는
    인증을 직접 관리하지 않습니다:
    - `codex` (OpenAI) — 설치 후 `codex login`.
-   - **Google 패밀리** — `agy` (Antigravity) 설치 + OAuth 로그인(개인 Google
-     액세스용); 또는 `gemini` (Gemini CLI) + 조직 로그인(엔터프라이즈 / 조직
-     Gemini 액세스용). Gemini CLI *개인* tier 는 폐지(Antigravity 스위트로 이전)
-     되었으므로 그 경우 `agy` 를 사용하세요. **엔터프라이즈** Gemini tier 는 계속
-     사용됩니다.
+   - **Google 패밀리** — `agy` (Antigravity) 설치 + OAuth 로그인:
+     agy 가 기본 Google 레그입니다. `gemini` (Gemini CLI) + 자체 로그인은 이전
+     CLI 를 아직 쓰는 호스트를 위한 호환 경로입니다.
 
    또한 PATH 에 **`python3 >= 3.12`** (wrapper 는 `#!/usr/bin/env python3` 로
    실행)와, cross-family review 의 **jsonschema** (Draft 2020-12;
@@ -135,7 +133,7 @@ Claude 가 `triad-codex-dispatch` skill 을 실행하고, codex wrapper 를 호�
 
 *크로스-패밀리 리뷰를 원할 때만*(worker 하나 + claude leg 대신 세 독립 패밀리).
 step 1 과 같은 방식으로 다른 CLI 를 설치 + 로그인합니다: `codex login`; `agy`
-OAuth 로그인; 또는 `gemini` 조직 로그인(엔터프라이즈 / 조직 계정 전용).
+OAuth 로그인; 또는 호환 경로인 `gemini` 로그인.
 `triad-cross-family-review` 가 Google-family leg 를 런타임 해소
 (항목의 `google.route` 고정, 없으면 그 항목에 하나뿐인 route 블록, 없으면 agy, 없으면 gemini)하고 claude(`Agent`) +
 codex + 그 leg 를 실행합니다.
@@ -318,7 +316,8 @@ privilege separation 입니다(아래 [보안](#보안-security) 에 요약).
 | 매 디스패치마다 권한 프롬프트가 뜨거나, headless 에서 거부됨 | wrapper `Bash(...)` 명령이 allowlist 에 없음 | [권한 설정](#권한-설정-필수)의 엔트리를 `.claude/settings.json` 에 추가한 뒤 **세션 재시작**(allowlist 는 시작 시 로드). |
 | 설치 뒤 새 skill/agent 가 안 뜸 | 플러그인 skill 은 세션 시작 시 로드 | 설치 + 설정 편집 뒤 Claude Code 세션을 한 번 reload / 재시작. |
 | 디스패치가 `oauth-env` 로 실패 | 워커 CLI 의 로그인이 만료됐거나 없음 | 해당 vendor 의 native login 재실행(`codex login`, 또는 `agy` OAuth 로그인). wrapper 는 대신 재인증하지 않습니다 — 신호만 surface 하니 직접 로그인하세요. |
-| gemini leg 이 `IneligibleTier` 로 실패(개인 계정) | Gemini CLI *개인* tier 폐지 | `agy`(Antigravity) leg 을 대신 사용하세요 — 개인 사용자의 Google-family leg 입니다. `gemini` 는 엔터프라이즈 / 조직 계정 전용. |
+| gemini leg 이 `IneligibleTier` 로 실패 | 로그인한 Google 계정에 Gemini CLI tier 가 없음 (개인 계정에서 측정) | `agy`(Antigravity) leg 을 사용하세요 — agy 가 기본 Google 레그이고, `gemini` 는 호환 경로입니다. |
+| 2026-07-05 이전(0.1.x) 설치에서 `claude plugin update triad-dispatch` 가 *not found* 를 알림 | marketplace 이름이 `triad-internal-tools` → `triad-dispatch` 로 바뀜 | `claude plugin update triad-dispatch@triad-internal-tools` 를 한 번 실행(이전 키 유지)하거나 다시 등록: `claude plugin marketplace remove triad-internal-tools`, `claude plugin marketplace add <repo-or-path>`, `claude plugin install triad-dispatch`. |
 | 디스패치가 non-zero 로 끝났고 원인을 알고 싶음 | 각 실패에는 분류 + exit code 가 있음 | 아래 exit-code 범례 + `[wrapper] …` stderr 줄의 분류를 보세요. |
 
 **Exit-code 범례**(wrapper 프로세스 exit code; 같은 실패 class 가
@@ -347,9 +346,11 @@ privilege separation 입니다(아래 [보안](#보안-security) 에 요약).
   이지만, `~/.config/triad-dispatch/classifier-patches.json` 에 적용된 delta 를
   주기적으로 검토하세요.
 - **wrapper containment 은 프로세스/권한 수준이지 OS 수준 confinement 이 아닙니다.**
-  read-only 리뷰 leg 은 *알려진* agy 도구 표면에 대한 fs-write denylist 를
-  강제하지만, sandbox jail 은 아닙니다. 격리는 궁극적으로 격리된 작업
-  디렉터리 + 커밋 전 사용자 검토에 의존합니다.
+  agy 의 `--sandbox read-only` 호출은 read-only 경로로 돕니다: `--setup-agents` 가
+  설치한 read-only agent(write / shell / browser 도구 없음)에 호출의 작업 디렉터리를
+  `--add-dir` 로 줍니다. 그 agent 의 목록 밖 도구가 쓰이면 답은 무효입니다. sandbox
+  jail 은 아닙니다. 격리는 궁극적으로 격리된 작업 디렉터리 + 커밋 전 사용자 검토에
+  의존합니다.
 
 ## 동작 원리 (How it works)
 
@@ -375,16 +376,17 @@ privilege separation 입니다(아래 [보안](#보안-security) 에 요약).
 leader 와 오너가 실제로 사용하는 방식:
 
 - Claude Code **leader** 는 자기 컨텍스트 밖의 답이 필요할 때 단발 워커를
-  디스패치합니다: `triad-codex-dispatch` (codex), `triad-gemini-dispatch`
-  (gemini), 또는 `triad-antigravity-dispatch` (agy). 직접 raw 로 쉘을 띄우지
+  디스패치합니다: `triad-codex-dispatch` (codex), `triad-antigravity-dispatch`
+  (agy, 기본 Google 레그), 또는 `triad-gemini-dispatch` (gemini, 호환 경로).
+  직접 raw 로 쉘을 띄우지
   **않습니다** — SKILL 이 분류 라우팅과 자기개선 repair fallback 을 처리합니다.
 - **agy = 검색 / 리서치 특화** — agy 의 웹 `read_url` / `search_web` 는 항상
   허용됩니다. 웹 기반 조회에는 반드시 agy 를 포함하세요.
 - 리뷰 가치가 있거나 정확성이 중요한 작업을 머지하기 전, leader 는
-  **`triad-cross-family-review`** 를 실행합니다 (the cross-family review rule): 서로 다른
+  **`triad-cross-family-review`** 를 실행합니다: 서로 다른
   모델 패밀리의 독립 리뷰어 셋 — claude fresh-eye 서브에이전트 (이름으로 고르는
   제공 reviewer preset; 위 "claude 리뷰 leg 의 모델과 effort 고르기" 참고) + codex
-  + Google-family CLI (agy 또는 gemini, 런타임 선택) — 가 각각 의심 결정을
+  + Google-family CLI (기본은 agy, 호환 경로는 gemini) — 가 각각 의심 결정을
   질문 형태로 제기하고, leader 가 판정을 종합해
   수정 → 재확인을 만장일치 SAFE 가 될 때까지 반복합니다.
 - 분류기는 **자기개선**합니다: 인식되지 않은 에러는 읽기 전용 wrapper-repair
@@ -397,16 +399,16 @@ leader 와 오너가 실제로 사용하는 방식:
 1. **codex 단발 호출** — leader 가 개별 프롬프트에 대한 codex 의 답이 필요할 때
    → `triad-codex-dispatch`. codex 의 답(분류는 stderr)을 반환하며, `unknown`
    실패는 `codex-wrapper-repair` 에이전트로 자동 라우팅됩니다.
-2. **gemini 단발 호출** — Android/XML/vision 또는 Google 생태계 프롬프트 →
-   `triad-gemini-dispatch`.
+2. **gemini 단발 호출 (호환 경로)** — 이전 Gemini CLI 를 아직 쓰는 호스트 →
+   `triad-gemini-dispatch`; 기본 Google 레그는 agy 입니다.
 3. **agy 를 통한 웹 리서치** — 웹 기반 조회 → `triad-antigravity-dispatch`
    (agy 의 `read_url` 은 항상 허용). 검색에는 항상 agy 를 포함하세요.
 4. **구조화된 출력** — 검증된 JSON 이 필요할 때 → wrapper 의
    `--pydantic module:Class` (프롬프트로 JSON 지시 + 검증 + 1회 repair 재시도;
    스키마 실패 시 exit 66).
 5. **머지 전 크로스-패밀리 리뷰** — 위험한 변경을 머지하기 직전 →
-   `triad-cross-family-review` (claude + codex + Google-family CLI — agy 또는
-   gemini, 런타임 선택; SAFE 가 될 때까지 수정 → 재확인).
+   `triad-cross-family-review` (claude + codex + Google-family CLI — 기본은 agy,
+   호환 경로는 gemini; SAFE 가 될 때까지 수정 → 재확인).
 
 ## 자기개선 (영속)
 
@@ -449,8 +451,8 @@ Wrapper telemetry는 로컬에 남고, 정리 설정(`bin/cleanup-roots.default.
   않습니다.
 
 Classifier patch는 `~/.config/triad-dispatch/classifier-patches.json`에 남습니다.
-repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 병렬 repair 간
-덮어쓰기가 일어나지 않습니다.
+`bin/apply_patch.py`(leader 의 적용기)가 쓰기 전에 옆의 lock file을 잡으므로 동시
+적용이 서로를 덮어쓰지 않습니다. repair analyzer 는 읽기 전용이라 이 파일을 쓰지 않습니다.
 
 ### 이 플러그인이 쓰는 파일
 
@@ -544,8 +546,8 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
    지우는데, 이 정리는 설치된 플러그인이 하나 이상 남아 있을 때만 돕니다. 이것이
    마지막 플러그인이었다면 `~/.claude/plugins/cache/triad-dispatch/` 는
    남습니다. marketplace 를 제거하면 거기서 설치한 플러그인도 모두 제거됩니다.
-5. **남는 것 — 사용자의 것**: `.gitignore` 의 `_runs/review/` 와 `_runs/worktrees/` 줄; roster 파일 (`.claude/triad-review-legs.json`,
-   `~/.config/triad/review-legs.json`); `docs/reviews/` 아래 리뷰 ledger.
+5. **남는 것 — 사용자의 것**: `.gitignore` 의 `_runs/review/` 와 `_runs/worktrees/` 줄; roster 파일
+   `.claude/triad-review-legs.json`; `docs/reviews/` 아래 리뷰 ledger.
 
 ## 구성 (What's inside)
 
@@ -558,7 +560,8 @@ repair agent는 이 파일을 고치기 전 옆의 lock file을 사용하므로 
 - **tests**: stdlib-only wrapper 테스트 — 설치 검증에 그대로 사용:
 
   ```bash
-  python3 tests/test_gemini_sandbox.py   # 6 checks — gemini sandbox argv 계약
-  python3 tests/test_log_cleanup.py      # 2 checks — log prune + audit rotation
+  python3 tests/test_gemini_sandbox.py      # gemini sandbox argv 계약
+  python3 tests/test_log_cleanup.py         # log prune + audit rotation
+  python3 tests/test_setup_permissions.py   # 설정 스크립트의 install / remove / uninstall
   ```
 

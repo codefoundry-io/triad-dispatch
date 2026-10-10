@@ -1737,9 +1737,8 @@ _PACKET_DIFF_FLAGS = tuple(f for f in _DIFF_FLAGS
 
 
 def _qualify_claude_agent_id(agent: str, remedy: str) -> str:
-    """`agent` QUALIFIED by the layout this lib is installed in (gate r1,
-    2-leg; generalized from one default to any agent id at gate-1 r4, row
-    r4-1). In a plugin install the bare name is shadowable by a consumer's
+    """`agent` QUALIFIED by the layout this lib is installed in. In a plugin
+    install the bare name is shadowable by a consumer's
     same-named project agent, so the id is scoped with the plugin's OWN
     manifest name — READ from the manifest at this file's parents[3], never a
     plugin-name literal in this file (the export's distribution-clean ban). In
@@ -1756,10 +1755,10 @@ def _qualify_claude_agent_id(agent: str, remedy: str) -> str:
         plugin_dir = here.parents[3] / ".claude-plugin"
         manifest = plugin_dir / "plugin.json"
         # The DIST layout is identified by the manifest DIRECTORY, not by a
-        # readable manifest (gate r2, 3-family): an unreadable / non-JSON /
-        # name-less manifest inside a plugin install used to fall through to
-        # the bare name, printing an id a consumer's same-named project agent
-        # silently shadows. In a dist layout the scope is not optional.
+        # readable manifest: an unreadable / non-JSON / name-less manifest
+        # inside a plugin install never falls through to the bare name, an id
+        # a consumer's same-named project agent silently shadows. In a dist
+        # layout the scope is not optional.
         if plugin_dir.is_dir():
             try:
                 name = json.loads(manifest.read_text(encoding="utf-8"))["name"]
@@ -1788,7 +1787,7 @@ def _wrapper_command_path(basename: str) -> str:
     for the PRINTED command line, from the TWO shipped layouts ONLY — dist
     first (`<plugin-root>/bin/` at this file's parents[3]), then dev
     (`<repo-root>/<wrappers-package>/wrappers/` at parents[4]).
-    Explicit levels, never an unbounded ancestor walk (gate r1, 2-leg): a walk
+    Explicit levels, never an unbounded ancestor walk: a walk
     with a `*/wrappers/` glob binds the first same-named wrapper in ANY
     ancestor tree, so an unrelated checkout above the install silently becomes
     this round's dispatch command. `len(parents)` is guarded so a shallow or
@@ -2650,12 +2649,11 @@ def _v2_agy_web_refusal(web: bool, routes) -> str | None:
 
 
 def _v2_dispatch_json(dispatch) -> dict:
-    # LAYOUT QUALIFICATION of the claude identity (gate-1 r4 row r4-1). The
-    # roster DATA carries a BARE agent id — the shared schema puts no pattern
-    # on `claude.agent`, and the shipped default roster is host-agnostic — but
-    # in a plugin install a consumer's same-named PROJECT agent SHADOWS the
-    # read-only plugin reviewer, the confused deputy guarded against since
-    # gate r1. Qualification is therefore a HOST RENDER
+    # LAYOUT QUALIFICATION of the claude identity. The roster DATA carries a
+    # BARE agent id — the shared schema puts no pattern on `claude.agent`, and
+    # the shipped default roster is host-agnostic — but in a plugin install a
+    # consumer's same-named PROJECT agent SHADOWS the read-only plugin
+    # reviewer. Qualification is therefore a HOST RENDER
     # step, applied here so the RECORD and `v2_print_dispatch` (which reads
     # this record) cannot disagree by construction. Every id the claude leg
     # may name is a preset this install ships (`roster_v2.CLAUDE_WEB_TWINS`),
@@ -2770,7 +2768,7 @@ def v2_write_attempt(alloc: dict) -> Path:
     """ALLOCATE the attempt directory and write its IMMUTABLE records.
 
     This is the whole mutation of one attempt, so a caller can put it after
-    its own pre-mutation boundary (gate-1 r2 row r2-1). The `mkdir` is
+    its own pre-mutation boundary. The `mkdir` is
     EXCLUSIVE: one entry + one attempt number is one allocation, and a retry
     allocates the NEXT number. `_write_new_file` is exclusive-create too, so
     a second write of any record still fails loud.
@@ -2838,10 +2836,9 @@ def _v2_expected_flags(binding: dict, packet_dir: Path, label: str) -> str:
     hex. The round record (`binding.json`) keeps the literal digest, so the
     collector still binds on a frozen value.
 
-    EVERY interpolated value is `shlex.quote`d (gate-1 r6 row r6-3, the x
-    amendment). `family`, `attempt` and `route` were pasted raw into a
-    command line the operator copies into a shell, so a value carrying a
-    space or a metacharacter split into two arguments — or ran. The values
+    EVERY interpolated value is `shlex.quote`d: the operator copies this
+    command line into a shell, so a value carrying a space or a
+    metacharacter stays one argument. The values
     themselves are DERIVED by the caller (the round record, the frozen roster
     entry, the directory name), never read back from the attempt's own
     binding; quoting is the second half of that rule, not a substitute."""
@@ -2886,19 +2883,14 @@ def v2_print_dispatch(alloc: dict, packet_dir: Path, worktree: Path,
     verdict_v2 = q(_v2_lib_path("verdict_v2.py"))
 
     if dispatch["kind"] == "native":
-        # Read the id OUT OF THE RECORD (row r4-1): `_v2_dispatch_json` has
-        # already applied the layout qualification, so the printed line and
-        # `dispatch.json` name the same identity by construction. Re-deriving
-        # it from `entry` here is what let the print say the bare roster value
-        # while the round record said something else.
+        # Read the id OUT OF THE RECORD: `_v2_dispatch_json` has already
+        # applied the layout qualification, so the printed line and
+        # `dispatch.json` name the same identity by construction.
         #
-        # NO DEFAULT SUBSTITUTION (gate-1 r5 row r5-8). The `or
-        # _default_claude_agent_id()` tail re-opened row r4-1's hole from the
-        # other side: a record carrying no `subagent_type` printed the
-        # LAYOUT DEFAULT, i.e. the GATING reviewer, under whatever leg's name
-        # the record belongs to — the exact confusion `roster_v2` refuses a
-        # null `claude.agent` to prevent. A record that cannot name its own
-        # agent is a broken record, not a leg to spawn by guess.
+        # NO DEFAULT SUBSTITUTION: the layout default is the GATING reviewer,
+        # so a record carrying no `subagent_type` is a broken record, not a
+        # leg to spawn by guess (the confusion `roster_v2` refuses a null
+        # `claude.agent` to prevent).
         agent = (dispatch.get("native") or {}).get("subagent_type")
         if not isinstance(agent, str) or not agent.strip():
             _fail(f"the dispatch record for {name!r} attempt "
@@ -2948,12 +2940,10 @@ def v2_print_dispatch(alloc: dict, packet_dir: Path, worktree: Path,
                   f"{env_prefix}{argv} > "
                   f"{q(dispatch['stdout_path'])} "
                   f"2> {q(dispatch['stderr_path'])} )\n")
-    # `.get()`, never `[...]` (gate-1 r7 row r7-c3). The record printed here
-    # is the one this helper just rendered, so a missing `read_audit_path`
-    # key should be unreachable — an index raised a KeyError AFTER the
-    # diagnosis was written, which is exactly the half-done state the r6-5
-    # ordering exists to prevent, so the print declines to be the place that
-    # finds out.
+    # `.get()`, never `[...]`: the record printed here is the one this helper
+    # just rendered, so a missing `read_audit_path` key should be
+    # unreachable, and a KeyError here would come AFTER the diagnosis was
+    # written.
     if dispatch.get("read_audit_path"):
         # The read-audit gate and the hook LOAD check are the agy leg's
         # contract, not optional extras: a leg that is dispatched but never
@@ -2976,9 +2966,8 @@ def _v2_print_hook_check(packet_dir: Path, label: str, audit) -> None:
     ALONE on its `hook:` line (`agy_hook.py check <attempt audit> <round hook
     log>`), its note on the line after.
 
-    COPY-RUNNABLE (gate-1 r12 row r12-5). The note used to ride the END of
-    the command line, and `bash` refuses its parenthesis, so the leader's
-    mechanical checks script died at that line. `prepare` and both
+    COPY-RUNNABLE: the note rides its own line, never the END of the command
+    line (`bash` refuses its parenthesis). `prepare` and both
     `retry` printers (`collect_v2`) print through this one function, so the
     shape cannot drift between them."""
     q = shlex.quote
@@ -3135,7 +3124,7 @@ def cmd_collect(packet_arg: str, label: str) -> None:
     try:
         collection = collector.collect(packet_dir, label)
     except collector._HostFault as exc:
-        # A HOST FAULT IS NOT A ROUND REFUSAL (gate-1 r7 row r7-c4): the
+        # A HOST FAULT IS NOT A ROUND REFUSAL: the
         # admission could not RUN, nothing about any leg is known, and the
         # collector's own host/usage exit is 64 — `_fail`'s 2 would read as
         # "this round is malformed" and send the leader to re-prepare.

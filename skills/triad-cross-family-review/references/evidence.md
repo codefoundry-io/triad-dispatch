@@ -86,7 +86,7 @@ The hook load check (`lib/agy_hook.py check`) rests on these measurements:
   row, which is what lets the check attribute hook rows to the run that made
   them and NAME an unhooked run.
 
-## Escaped transport on the claude Agent route (MEASURED, gate-1 r3 2026-09-21)
+## Escaped transport on the claude Agent route (MEASURED 2026-09-21)
 
 The Agent completion notification ENTITY-ESCAPES the reply. Measured in host-A
 gate-1 round r3: BOTH claude-family entries (`claude` and the advisory

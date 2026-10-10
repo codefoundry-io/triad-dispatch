@@ -466,37 +466,38 @@ The authoritative list of entries is `.roster-r<N>.json` — open it with Read
 and take the entries in `entries` whose `enabled` is true and whose
 `skipped_reason` is null — and each entry's object is
 `results-r<N>/<name>/attempt-<K>/verdict.json` (a wrapper route) or
-`…/admitted.json` (the claude route — the `--admitted-out` product). Open
-that file with Read and take `verdict` and each `findings[]` item's fields by
-name. Never read the raw marker-bearing `raw.json` as the verdict: it is the
-leg's unadmitted reply, not the admitted object. `collect-r<N>.json` already
-carries the folded per-entry result, so read the entry list from the RECORD
-rather than from memory or a glob. The round's
-OUTCOME is the exit code and stdout of the LATEST `collect`, never this file:
-a refused `collect` (exit 2 — an integrity or basis refusal) leaves the file
-untouched, so it is then the EARLIER collection's record (it may still say
-`AGREED`), not the current outcome. The
-finding's location field is `path`.
+`…/admitted.json` (the claude route — the `--admitted-out` product). Open that
+file with Read and take `verdict` and each `findings[]` item's fields by name.
+Never read the raw marker-bearing `raw.json` as the verdict: it is the leg's
+unadmitted reply, not the admitted object. `collect-r<N>.json` already carries
+the folded per-entry result, so read the entry list from the RECORD rather
+than from memory or a glob. The round's OUTCOME is the exit code and stdout of
+the LATEST `collect`, never this file: a refused `collect` (exit 2 — an
+integrity or basis refusal) leaves the file untouched, so it is then the
+EARLIER collection's record (it may still say `AGREED`), not the current
+outcome. The finding's location field is `path`.
 
-Each row mapped from an admitted object is a residual-table row PREFILLED from the leg's own
-structured fields (finding location, raising leg, round, leg severity +
-verdict, one-sentence summary as the rationale seed, disposition `open`); the
-leader still fills in the two fields the schema cannot supply — the triage
-class (REAL / REACHABLE-UNOBSERVED / SPECULATIVE, rule 4's leader-owned
-judgment, never mechanical) and the probe/repro evidence once obtained. The
-`path`/`line` fields also make the cite-verification step (Consolidation duty
-1 — "read the cited lines and reproduce the claim") mechanical to START: Read
-the file with an offset / limit at that line to open exactly the cited line
-instead of the leader hunting for it in prose, though confirming the claim itself still requires
-reading the surrounding code, and `references/leg-contracts.md` § agy leg
-still requires verifying an agy cite before it enters the table (its cites
-were fabricated in most traced runs even inside a schema-shaped reply).
+Each row mapped from an admitted object is a residual-table row PREFILLED from
+the leg's own structured fields (finding location, raising leg, round, leg
+severity + verdict, one-sentence summary as the rationale seed, disposition
+`open`); the leader still fills in the two fields the schema cannot supply —
+the triage class (REAL / REACHABLE-UNOBSERVED / SPECULATIVE, rule 4's
+leader-owned judgment, never mechanical) and the probe/repro evidence once
+obtained. The `path`/`line` fields also make the cite-verification step
+(Consolidation duty 1 — "read the cited lines and reproduce the claim")
+mechanical to START: Read the file with an offset / limit at that line to open
+exactly the cited line instead of the leader hunting for it in prose, though
+confirming the claim itself still requires reading the surrounding code, and
+`references/leg-contracts.md` § agy leg still requires verifying an agy cite
+before it enters the table (its cites were fabricated in most traced runs even
+inside a schema-shaped reply).
 
 **Fallback (stated, not hypothetical).** An entry with no admitted object —
 its reply failed admission (not sealed — `references/leg-contracts.md`
-§ Attempt seal), or it never answered — keeps the round `INCOMPLETE` (§ Collect outcomes); its prose
-findings may still be read by hand and triaged as leader-probed evidence
-(direction asymmetry: findings only add work) — except an agy entry the
-read-audit gate or the hook load check refused: its answer is UNVERIFIED and is
-not read this way (`references/leg-contracts.md` § agy read-audit gate). One entry's admitted object and
-another entry's prose can both feed the SAME residual table in the SAME round.
+§ Attempt seal), or it never answered — keeps the round `INCOMPLETE`
+(§ Collect outcomes); its prose findings may still be read by hand and triaged
+as leader-probed evidence (direction asymmetry: findings only add work) —
+except an agy entry the read-audit gate or the hook load check refused: its
+answer is UNVERIFIED and is not read this way (`references/leg-contracts.md`
+§ agy read-audit gate). One entry's admitted object and another entry's prose
+can both feed the SAME residual table in the SAME round.

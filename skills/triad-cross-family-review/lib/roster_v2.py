@@ -130,8 +130,7 @@ SCALAR_LEG_FIELDS = ("vendor", "enabled", "acceptance", "timeout_s", "note")
 # Adapter capability vocabularies — the wrappers' own choice lists, not model
 # catalogs: codex_wrapper.py `--reasoning` and antigravity_wrapper.py
 # `--effort`. There is no claude tier list: host A cannot apply one, so
-# `claude.effort` is REFUSED rather than validated against a vocabulary
-# (gate-1 r3 row r3-4).
+# `claude.effort` is REFUSED rather than validated against a vocabulary.
 CODEX_REASONING = ("low", "medium", "high", "xhigh", "max")
 AGY_EFFORT = ("low", "medium", "high")
 
@@ -220,7 +219,7 @@ class DispatchCtx:
     # The dispatch attempt number this invocation IS (prepare: 1; the Kth
     # retry: K+1). It rides every wrapper argv as `--attempt`, so the
     # wrapper's audit row and run-log record the real attempt instead of
-    # defaulting to 1 on every retry (gate 1 r2 row r2-4).
+    # defaulting to 1 on every retry.
     attempt: int = 1
     # The round's BOUND review-web condition (R-REVIEW-WEB, case C32): true
     # selects each route's web launch switch, false keeps the no-web argv.
@@ -246,7 +245,7 @@ class Dispatch:
     # pre-mutation boundary). The ONE writer is
     # `review_scratch.v2_write_attempt`, which allocates the attempt directory
     # exclusively and writes every record through `_write_new_file`; this
-    # module has no writer of its own (gate-1 r3 row r3-11).
+    # module has no writer of its own.
     schema_file: Path | None = None
     schema_text: str | None = None
 
@@ -312,14 +311,11 @@ def _read_json(path: Path, label: str) -> dict:
         raise RosterError(f"{label} {path} is not UTF-8: {exc}") from exc
     try:
         doc = json.loads(raw)
-    # EVERY WAY THE PARSE CAN FAIL IS A REFUSAL (gate-1 r9 row r9-7).
-    # `json.loads` raises more than ValueError: a document nested past the
-    # interpreter's recursion limit raises RecursionError, which is NOT a
-    # ValueError, so it escaped `main()`'s `RosterError` arm as a traceback
-    # at exit 1 — from the loader whose every other failure is one refusal
-    # line at exit 2. UnicodeDecodeError IS a ValueError and is named anyway:
-    # the tuple is the rule, not a reader's memory of the class hierarchy.
-    # Same tuple `collect_v2._read_record` already carries (row r7-k3).
+    # EVERY WAY THE PARSE CAN FAIL IS A REFUSAL: `json.loads` raises more
+    # than ValueError — a document nested past the interpreter's recursion
+    # limit raises RecursionError, which is NOT a ValueError.
+    # UnicodeDecodeError IS a ValueError and is named anyway: the tuple is the
+    # rule. Same tuple `collect_v2._read_record` carries.
     except (ValueError, RecursionError, UnicodeDecodeError) as exc:
         raise RosterError(f"{label} {path} is not JSON: {_flat(exc)}") from exc
     if not isinstance(doc, dict):
@@ -534,7 +530,7 @@ def _check_capabilities(leg: dict) -> None:
                 f"from the route's catalog or remove the entry")
     if leg.get("vendor") == "claude":
         # An exact member of the closed list: a trailing newline or any other
-        # byte (gate-1 r5 row r5-4) is not a member, so it never rides into
+        # byte is not a member, so it never rides into
         # the spawn instruction.
         try:
             _claude_web_twin((leg.get("claude") or {}).get("agent"), False)
@@ -561,24 +557,19 @@ def _check_capabilities(leg: dict) -> None:
         # Agent spawn, and that spawn has no effort parameter — the effort
         # tier is pinned INSIDE the named agent preset (owner model-tier
         # policy: effort has no per-invocation override, so a different tier
-        # is a different agent id). Accepting
-        # the field validated it, recorded it in `Dispatch.native` and then
-        # dropped it on the floor, which reads as a configured tier that
-        # silently never applied (gate-1 r3 row r3-4).
+        # is a different agent id), so a configured tier would silently never
+        # apply.
         raise RosterError(
             f"roster entry '{name}': claude.effort is not applicable on host A "
             f"— the effort tier is pinned by the named agent preset (a "
             f"different tier is a different agent id); set claude.effort to "
             f"null")
     if claude.get("model") is not None:
-        # The SIBLING field (gate-1 r4 row r4-3). The Agent tool DOES take a
-        # per-call `model`, and it outranks the subagent's `model`
-        # frontmatter; host A's dispatch passes none (the printed native line
-        # says so), so the MODEL rides in the named agent preset's
-        # frontmatter exactly as the effort tier does.
-        # Accepting the field validated it, recorded it in `Dispatch.native`
-        # and then dropped it on the floor — a configured model that silently
-        # never applied, which is the r3-4 defect one field over.
+        # The SIBLING field. The Agent tool DOES take a per-call `model`, and
+        # it outranks the subagent's `model` frontmatter; host A's dispatch
+        # passes none (the printed native line says so), so the MODEL rides in
+        # the named agent preset's frontmatter exactly as the effort tier
+        # does, and a configured model would silently never apply.
         raise RosterError(
             f"roster entry '{name}': claude.model is not applicable on host A "
             f"— the model is pinned by the named agent preset's frontmatter "
@@ -669,8 +660,8 @@ def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
     # BEFORE the resolved-schema validation: an override that re-vendors a
     # shipped entry leaves that entry's SHIPPED adapter block in place, and
     # the schema reports only "'codex' is a required property" — the missing
-    # block, never the inherited one that is the actual defect (gate 1 r2
-    # row r2-7). `_check_blocks` names it. An unknown vendor has no block
+    # block, never the inherited one that is the actual defect.
+    # `_check_blocks` names it. An unknown vendor has no block
     # table, so it falls through to the schema, which owns that vocabulary.
     for leg in legs:
         _check_blocks(leg)
@@ -718,7 +709,7 @@ def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
 # ---------------------------------------------------------------------------
 # dispatch rendering (built, never executed, here — and never WRITTEN here:
 # every function below is pure, so a caller can refuse a bad roster entry
-# with nothing created; gate 1 r2 row r2-1)
+# with nothing created)
 # ---------------------------------------------------------------------------
 def _token(value, what: str, *, absolute: bool = False) -> str:
     text = str(value)
@@ -773,7 +764,7 @@ def projected_schema_text() -> str:
 
     PURE: it reads the vendored contract and returns text. `render_dispatch`
     calls it so a Dispatch can carry the bytes without touching the
-    filesystem (gate 1 r2 row r2-1); `review_scratch.v2_write_attempt` is the
+    filesystem; `review_scratch.v2_write_attempt` is the
     one writer that puts them on disk.
     """
     schema = _read_json(VERDICT_SCHEMA_PATH, "vendored verdict contract")
@@ -829,8 +820,8 @@ def render_dispatch(entry: Entry, ctx: DispatchCtx) -> Dispatch:
             # `effort` is recorded, and on host A it is ALWAYS null:
             # `_check_capabilities` refuses any other value, because the tier
             # rides in the named agent preset and this dispatch passes no
-            # effort and no `model` parameter (row r3-4; a per-call model
-            # would override the preset's pin). The key stays so the record shape
+            # effort and no `model` parameter (a per-call model would
+            # override the preset's pin). The key stays so the record shape
             # does not differ between hosts.
             native={"subagent_type": agent,
                     "model": block.get("model"),

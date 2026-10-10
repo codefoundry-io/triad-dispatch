@@ -164,11 +164,9 @@ def _main(ctx: dict) -> int:
              "on it and no control flow reads it",
     )
     args = p.parse_args()
-    # ONE NORMALIZED MODEL REQUEST (gate-1 r12 row r12-3). The argv build
-    # dropped an empty `--model` by truthiness while the engine recorded
-    # `requested_model=''`, and a whitespace-only value reached the vendor as
-    # `-c model="   "`. Empty or whitespace-only = NO request; both sites
-    # below read this one value.
+    # ONE NORMALIZED MODEL REQUEST: empty or whitespace-only = NO request;
+    # the argv build and the engine's `requested_model` record read this one
+    # value.
     if args.model is not None and not args.model.strip():
         args.model = None
     ctx.update(attempt=args.attempt, model=args.model, reasoning=args.reasoning)
@@ -215,8 +213,8 @@ def _main(ctx: dict) -> int:
         # C28 (spec ccf168a): a relative path is rebased on the process-entry
         # cwd like --prompt-file (codex itself would resolve it against the
         # child --cwd), then the same runtime-roots containment --image gets
-        # (gate-1 r2 row r2-5: under TRIAD_WRAPPER_ALLOWED_ROOTS an out-of-root
-        # schema is an uncontained file-read -> vendor channel). codex reads
+        # (under TRIAD_WRAPPER_ALLOWED_ROOTS an out-of-root schema is refused).
+        # codex reads
         # exactly the RESOLVED file validated here, and the argv the audit row
         # records carries that absolute path.
         try:

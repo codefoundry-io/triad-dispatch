@@ -1,103 +1,8 @@
 ---
 name: triad-codex-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Codex CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 codex_wrapper.py` raw; the user asks to call codex once, have codex handle a task, or run a one-shot codex analysis; a higher-level orchestration SKILL needs the Codex leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Gemini (`triad-gemini-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.17.1
-# changelog:
-#   0.17.1 (2026-10-11): Step 5 points at the procedure § 5a-5e (5e promotes a
-#     verified phrase to the shared contract; DL-104).
-#   0.17.0 (2026-10-11): Step 5 — one apply line verifies the proposal on the
-#     failed run's stored record (the applier's `--verify-run-log <run-log path as
-#     printed>`: exit 0 routes to the proposal, 4 applied but not routed, 3 refused);
-#     the separate verify re-run line is gone with its wrapper flag (DL-104).
-#   0.16.0 (2026-10-11): Step 5 — one procedure for the three dispatch skills
-#     (`references/repair-loop.md`, § 5a-5e; the export ships a copy inside each
-#     dispatch skill); the apply and verify lines stay in this body, the only place
-#     the plugin path is filled in. The analyzer is one body rendered to
-#     three names, with a bounded web research rule (`tools: Read, Grep, Glob,
-#     WebSearch, WebFetch`, C76).
-#   0.15.2 (2026-10-11): doc — a wrapper `timeout` (2) surfaces to the user and is never routed to the repair analyzer; the routed set is `unknown` / `extraction-error` (DL-104).
-#   0.15.1 (2026-10-11): doc — Step 2 wording only ("— Step 3 reads it from the tool result").
-#   0.15.0 (2026-10-11): Flow — the prompt and proposal files live under
-#     `<project>/_runs/prompts/` (inside the hardened allowed root; the wrapper's
-#     next-run sweep prunes them under the `dispatch-prompts` role, owner option 1);
-#     Step 2 says Step 3 reads the summary from the tool result.
-#   0.14.1 (2026-10-10): doc — Step 5a: the run-log path is passed on as the wrapper
-#     printed it (the last `run-log:` line); no reading rule restates a former shell
-#     check; a forged earlier `run-log:` line is a recorded limit.
-#   0.14.0 (2026-10-10): doc — the leader reads the tool result (Step 3 summary token,
-#     5a run-log path, 5c analyzer JSON keys) with no shell parse; files in
-#     /tmp/triad-prompts (prompt and proposal; the OS temporary directory owns expiry).
-#   0.13.0 (2026-10-10): doc — Step 1 and Step 5d: every wrapper / applier call is ONE simple
-#     command with literal arguments; the prompt (Step 1) and the proposal (Step 5d,
-#     `--proposal-file`) go through files the leader writes with the Write tool.
-#     Measured (Claude Code 2.1.289): a command substitution / heredoc, an array
-#     expansion and a quoted-variable pipe cannot be checked before they run, so the
-#     plugin's grant does not match them; the plugin-root variable is substituted in
-#     the SKILL.md body only, so references carry no runnable bin command.
-#   0.12.0 (2026-10-10): doc — Step 5d: the apply step is a plain pipe into
-#     `apply_patch.py` (no `if` / `case`: the permission grant matches a plain
-#     command only); the leader reads its exit code (0 applied → `--repair-mode`
-#     re-run in its own call; 3 refused, nothing written).
-#   0.11.0 (2026-10-10): doc — the payload is one byte-safe UTF-8 encode (a lone
-#     surrogate leaves as its `\udXXX` escape, exit and token unchanged); the
-#     unemittable-payload demotion and its summary re-emission are removed.
-#   0.10.0 (2026-10-05): the `--task` mode is removed (the fan-out worker
-#     layer and `--task code`; exits 68 / 69 and the tokens
-#     `fanout-spawn-error` / `fanout-partial` / `task-blocked` leave codex).
-#     A write call is a plain `--sandbox workspace-write` dispatch (it requires
-#     `--cwd`). The no-op `--format` option is removed.
-#   0.9.5 (2026-09-21): Step 1 gains two engine flags (host A v2 slices
-#     S6/S7/S11). `--attempt <int>` (>= 1, default 1; below 1 = exit 3
-#     pre-spawn) is RECORDED on the transport receipt and the summary tail
-#     and never interpreted — no retry reads it. `--output-schema-file <abs>`
-#     passes a CALLER-OWNED JSON schema file straight to codex
-#     `--output-schema`: transport only (the wrapper validates nothing and
-#     retries nothing), mutually exclusive with `--pydantic`, and it is the
-#     flag the cross-family-review v2 path uses for its per-attempt producer
-#     schema projection. Also recorded: C28 — a RELATIVE `--prompt-file` /
-#     `--cwd` is no longer refused, it resolves against the wrapper's
-#     process-entry cwd and the resolved absolute path is recorded; ABSOLUTE
-#     stays the form this SKILL prints. Doc-only.
-#   0.9.4 (2026-09-18): `input-delivery-failed` (65) — the shared engine's
-#     stdin prompt transport (codex `prompt_via_stdin`) now fails CLOSED: a
-#     codex child that exited 0 while the wrapper's stdin writer failed
-#     (write / flush / pre-spawn UTF-8 encode) or had not finished within the
-#     bounded join gets exit 65 with the answer BLANKED, never `ok`; an
-#     unencodable prompt is refused pre-spawn (exit 3); `stdin_delivery`
-#     rides the audit record and the failure run-log. Wrapper-SET token (the
-#     agy `vendor-error` precedent): not a classify() result, not a repair
-#     proposal. Step 4 gains its row. Origin: codex maintainer handoff
-#     2026-09-18 (synthetic probe: 1-byte read + early close + success-shaped
-#     answer returned rc 0). Tests: t48 (seam) + f12 (end to end).
-#   0.9.3 (2026-08-26): doc-only — § Leader procedure step 3's wrapper
-#     invocation now carries the absolute wrapper path (was relative,
-#     resolvable from exactly one directory; contradicted the Step-1
-#     template's absolute shape). Session-cwd hazard rationale: leader
-#     CLAUDE.md Pitfall #5.
-#   0.9.2 (2026-08-08): `--model <catalog-slug>` dispatch-time model pin
-#     (free-form passthrough to `-c model="<slug>"`; config-alive when
-#     omitted; no slug ever hardcoded). Origin: config-alive default moved
-#     review legs off the recorded review policy silently.
-#   0.9.1 (2026-08-01): Step 1 heredoc terminator is now collision-resistant
-#     (`TRIAD_CODEX_PROMPT_EOF`, replacing the bare `PROMPT`) and
-#     `--prompt-file <absolute-path>` is the STANDING path for content the
-#     leader did not author AND for any body that QUOTES a dispatch template
-#     or a SKILL body (quoted text carries the house terminator verbatim —
-#     that is how this defect was first observed); it REPLACES the heredoc,
-#     the two being argparse-mutually-exclusive. A bare `PROMPT`
-#     line inside the body closed the heredoc early, and because the heredoc
-#     sits inside `$( … )` the remainder of the prompt then parsed as SHELL in
-#     the leader's own session — outside every worker-side sandbox. The prior
-#     wording asked the leader to predict whether pasted content might contain
-#     such a line, which is a gate that fails silently. Same fix as
-#     `triad-antigravity-dispatch` 0.13.0 (terminator) + 0.13.1 (the widened
-#     rule above), found by its skill-prompt-review round: the review packet
-#     quoting this very template tripped it.
-#   0.9.0: Step 5b SECURITY note — address the read-only repair analyzer by its
-#     plugin-scoped identity (`triad-dispatch:codex-wrapper-repair`, export-
-#     injected) so a same-named project `agents/` agent cannot shadow the
-#     read-only plugin agent and act on the untrusted run-log; plus a product-
-#     agnostic read-only-verify-before-dispatch guard.
+version: 0.17.2
+# changelog: docs/reviews/2026-10-08-dispatch-skill-history.md (every entry; the newest section is last)
 ---
 
 # triad-codex-dispatch
@@ -221,12 +126,10 @@ the classification is the token right after `[wrapper] codex ` (e.g. `ok`,
 second emission corrects. On a failure, the run-log path is the value after
 `run-log: ` on its line (the last such line).
 
-Only a line that STARTS with that prefix counts (gate-1 r9 row r9-3): the
-summary tail carries a free-text field (`prompt_file=<abs>`), and a reading that
-took the last `[wrapper] codex <token> ` ANYWHERE in the line once let a prompt
-file under a directory named `…[wrapper] codex ok …` override the emitted token
-(an `extraction-error` run read as `ok`, and the MANDATORY repair routing never
-fired). The engine also percent-escapes every free-text field of the summary
+Only a line that STARTS with that prefix counts: the summary tail carries a
+free-text field (`prompt_file=<abs>`), so a reading that takes the last
+`[wrapper] codex <token> ` ANYWHERE in the line could read a token the wrapper
+never emitted. The engine also percent-escapes every free-text field of the summary
 (`_common._summary_field` — SPACE and `[` / `]` are outside the safe set, so the
 sequence cannot be built inside `prompt_file=`; an ordinary POSIX path is
 emitted byte-identically and the audit row keeps the raw value) — the two

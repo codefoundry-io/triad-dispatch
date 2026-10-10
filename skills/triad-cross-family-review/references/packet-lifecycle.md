@@ -361,8 +361,7 @@ Canonical for EVERY leg, inline or file:
 **Per-round excerpt policy.** Every
 round's packet — every full re-review round included — carries the code
 excerpts its questions ride on: a packet-only leg goes blind exactly where
-they are absent (`docs/reviews/2026-09-18-cfr-skill-history.md` records the
-incident). The marginal size of two or three functions is noise; the blind spot is
+they are absent. The marginal size of two or three functions is noise; the blind spot is
 not. The codex leg's READ-GRANT (leg-contracts § codex leg) is the
 verification channel, not a substitute for carrying the evidence.
 

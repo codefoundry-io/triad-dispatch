@@ -939,7 +939,10 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   `subagent_type: triad-dispatch:cross-family-review-reviewer` — the dedicated
   read-only reviewer agent (`agents/cross-family-review-reviewer.md`,
   frontmatter `tools: Read, Grep, Glob`), so rule 7's no-execute contract rides
-  the agent's tool allowlist rather than the prompt directive alone. The `Agent`
+  the agent's tool allowlist rather than the prompt directive alone. The presets
+  list `Read, Grep, Glob` and no `Bash`, the shape that returns the dedicated
+  search tools on macOS / Linux / WSL (vendor tools reference, read 2026-10-09;
+  PR #13 R-AGENT-ROLES). The `Agent`
   tool exposes no per-call `tools` allowlist, so a plain
   `subagent_type: general-purpose` Agent would fall back to that advisory
   directive; the frontmatter pin IS the mechanism. (The shipped claude-host

@@ -1,218 +1,8 @@
 ---
 name: triad-antigravity-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Antigravity CLI (`agy`) call via the wrapper framework. Triggering signals — leader is about to run `python3 antigravity_wrapper.py` raw; the user asks to call agy (antigravity) once, have agy handle a task, or run a one-shot agy analysis; a higher-level orchestration SKILL needs the agy leg of a fan-out (the Google-family leg; `triad-gemini-dispatch` exists for legacy compatibility with the older gemini CLI); the task needs web grounding — vendor / API / CLI documentation research, "what does the latest X say", recent-issue triage — since agy is the toolkit's search/research leg; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Codex (use `triad-codex-dispatch`), Gemini (use `triad-gemini-dispatch`).
-version: 0.24.1
-# changelog:
-#   0.24.1 (2026-10-11): Step 5 points at the procedure § 5a-5e (5e promotes a
-#     verified phrase to the shared contract; DL-104).
-#   0.24.0 (2026-10-11): Step 5 — one apply line verifies the proposal on the
-#     failed run's stored record (the applier's `--verify-run-log <run-log path as
-#     printed>`: exit 0 routes to the proposal, 4 applied but not routed, 3 refused);
-#     the separate verify re-run line is gone with its wrapper flag (DL-104).
-#   0.23.0 (2026-10-11): Step 5 — one procedure for the three dispatch skills
-#     (`references/repair-loop.md`, § 5a-5e; the export ships a copy inside each
-#     dispatch skill); the apply and verify lines stay in this body, the only place
-#     the plugin path is filled in. The analyzer is one body rendered to
-#     three names, with a bounded web research rule (`tools: Read, Grep, Glob,
-#     WebSearch, WebFetch`, C76).
-#   0.22.2 (2026-10-11): doc — a wrapper `timeout` (2) surfaces to the user and is never routed to the repair analyzer; the routed set is `unknown` / `extraction-error` (DL-104).
-#   0.22.1 (2026-10-11): doc — Step 2 wording ("— Step 3 reads it from the tool result"); Step 1 says
-#     `<project>` is read from `pwd` at dispatch time, like `--cwd`.
-#   0.22.0 (2026-10-11): Flow — the prompt and proposal files live under
-#     `<project>/_runs/prompts/` (inside the hardened allowed root; the wrapper's
-#     next-run sweep prunes them under the `dispatch-prompts` role, owner option 1);
-#     Step 2 says Step 3 reads the summary from the tool result.
-#   0.21.1 (2026-10-10): doc — Step 5a: the run-log path is passed on as the wrapper printed it
-#     (the last `run-log:` line); the three path checks are removed (the wrapper prints
-#     its own file); a forged earlier `run-log:` line is a recorded limit.
-#   0.21.0 (2026-10-10): doc — the leader reads the tool result (Step 3 summary token,
-#     5a run-log path, 5c analyzer JSON keys) with no shell parse; files in
-#     /tmp/triad-prompts (prompt and proposal; the OS temporary directory owns expiry).
-#   0.20.0 (2026-10-10): doc — Step 1 and Step 5d: every wrapper / applier call is ONE simple
-#     command with literal arguments; the prompt (Step 1) and the proposal (Step 5d,
-#     `--proposal-file`) go through files the leader writes with the Write tool.
-#     Measured (Claude Code 2.1.289): a command substitution / heredoc, an array
-#     expansion and a quoted-variable pipe cannot be checked before they run, so the
-#     plugin's grant does not match them; the plugin-root variable is substituted in
-#     the SKILL.md body only, so references carry no runnable bin command. The `AGY_CMD` argv array is gone; the --repair-mode replay is Step 1's literal line with --repair-mode appended; the apply command moved from references/repair-loop.md into Step 5d.
-#   0.19.0 (2026-10-10): doc — Step 5d: the apply step is a plain pipe into `apply_patch.py` (no `if` / `case`: the permission grant matches a plain command only); the leader reads its exit code (0 applied → `--repair-mode` replay in its own call; 3 refused, nothing written).
-#   0.18.0 (2026-10-10): doc — § Headless soft-deny adaptation: the flag rides the first call; the in-loop soft-deny re-run is removed (AGY-05).
-#   0.18.0 (2026-10-10): doc — Step 1 `--pydantic`: one three-way rule (a dict `structured_output` is the answer, anything else falls back to the response text; one repair turn, then 66).
-#   0.17.1 (2026-10-10): doc — Step 4 `unknown` row names the third engine-decided transport failure: an `Exception` raised while waiting on the child (the one cleanup arm).
-#   0.17.0 (2026-10-10): doc — the payload is one byte-safe UTF-8 encode (a lone surrogate leaves as its `\udXXX` escape, exit and token unchanged); the unemittable-payload demotion is removed.
-#   0.16.14 (2026-10-09): doc — § Isolation's durable-file paragraph and references/read-audit.md point to the review skill's leg-contracts for the binding and the gate (one home per mechanism); no rule change.
-#   0.16.13 (2026-10-09): doc — the web-evidence clause is read from the vendored spec (E5-20); no embedded constant.
-#   0.16.12 (2026-10-09): doc — an override call writes no default-dir copy and logs no `read-audit-copy:` line; `read-audit-file:` is the one custody line.
-#   0.16.11 (2026-10-08): doc — the claude host never writes, locks or heals the agy settings (DL-112); § Self-healing names one layer.
-#   0.16.10 (2026-10-08): doc — the daily drift check is removed (owner 2026-10-08 item 9); § Self-healing names two layers.
-#   0.16.9 (2026-10-03): doc — Step 4 `timeout` row names agy's own stderr
-#     line `[agy] print timeout after … returning partial output` (any vendor
-#     rc, partial answer withheld; R-CLASSIFY / C43) as a cause; routing unchanged.
-#   0.16.8 (2026-10-03): doc — `--review-web` (a review round's leg with web,
-#     R-REVIEW-WEB / C32: research agent, no investigation clause, needs
-#     `--cwd`) beside `--web`; the summary tail names ` model=` / ` reasoning=`.
-#   0.16.7 (2026-09-28): admission ADDS one admitted case (C40): a degraded
-#     run whose errored steps are allowed reads or an answer submission
-#     (`finish`) a LATER successful `finish` follows is admitted; the
-#     disclosure line carries the admission reason. Every refusal stands.
-#   0.16.6 (2026-09-26): doc resync. Step 4 `server-capacity` row states the
-#     per-attempt ladder: up to 2 re-runs after a 15 s / 45 s backoff, every
-#     attempt with the caller's full `--timeout` (timeout_s is per attempt).
-#     The gemini route is described as legacy compatibility with the older
-#     gemini CLI only. Doc-only.
-#   0.16.5 (2026-09-21): Step 1 gains two engine flags (host A v2 slices
-#     S6/S11). `--json-schema-file <abs>` passes a CALLER-OWNED schema file
-#     straight to agy `--json-schema` — transport only (no local validation,
-#     no repair re-run), read-only route only, mutually exclusive with
-#     `--pydantic`; it is the flag `triad-cross-family-review` v2 rounds use
-#     for their per-attempt producer schema projection. `--attempt <int>`
-#     (>= 1, default 1) is RECORDED on the transport receipt and the summary
-#     tail and never interpreted. Doc-only.
-#   0.16.4 (2026-09-19): research dispatches (`--web`) carry the wrapper's
-#     web-evidence clause (since 0.16.13 loaded from the vendored spec
-#     through `prompts_v2.py`) at the END of the prompt (spec case C29 /
-#     R-INVEST): a `search_web` result is a pointer, never a citation; every
-#     cited web fact comes from a `read_url_content` fetch with the page's own
-#     date or version; unfetched / placeholder URLs and bare years are
-#     forbidden; a failed or undated fetch is UNSURE. The audit row and run-log
-#     record the prompt as sent. Origin: host-parity rounds r1/r2 — 0 fetches
-#     in both rounds, placeholder URLs in r2 (t49). § Routing gains one sentence.
-#   0.16.3 (2026-09-04): `admission-refused` (65) is its OWN classification
-#     for the ALLOWLIST class (a tool outside the agent's allowlist in the
-#     stream) — previously folded into `vendor-error`; framing /
-#     unexplained-degraded / read-blind refusals stay `vendor-error`. Also
-#     `vendor-timeout` (65): agy's own turn timeout (typed `result.error`
-#     "timeout waiting for response", empty answer) — was `unknown`, which
-#     mandated a futile repair dispatch (analyzer escalated 2026-09-04). The
-#     no-answer branch classifies a forbidden-tool run `admission-refused`
-#     (was `extraction-error`); early framing/result-count refusals still
-#     name the forbidden tool. 2026-09-05 residual slice: a forbidden run with
-#     NO result event and a recognised RUN-LEVEL vendor class (stderr /
-#     standalone error_message — never a tool-step echo) keeps that class,
-#     returned after one dispatch with the forbidden tool named; with a result
-#     event the token stays `admission-refused`, annotated with the vendor
-#     class (incl. `vendor-timeout`). Agent
-#     bodies gain the TOOL ALLOWLIST rule (`_allowlist_rule`; agy advertises
-#     the full registry regardless of `tools:` — init.tools = 57): re-run
-#     `--setup-agents` on every host. Wrapper t38 + t28 pins.
-#   0.16.2 (2026-08-26): review-agent `--cwd` guard ENFORCED (owner ruling) —
-#     a `--sandbox read-only` review dispatch (no `--web`) without `--cwd` is
-#     now refused EXIT_ARG_ERROR by the wrapper BEFORE any vendor work
-#     (previously a caller obligation only; the 0.16.1 "does not yet refuse"
-#     clause is superseded). The `--web` research agent stays exempt.
-#     § Read-only path v2 caller obligation + references/invocation.md
-#     resynced. Wrapper: antigravity_wrapper.py main() precondition;
-#     t16 axes V7/V8.
-#   0.16.1 (2026-08-26): doc-only — `--cwd` DECLARED MANDATORY on the read-only
-#     path as a CALLER obligation (the wrapper derives `--add-dir`, the leg's
-#     only read grant, from it and does not yet refuse its absence; audit
-#     census: 211/421 `--agent` dispatches ran grant-less in the 2026-08-22
-#     pre-fix window, 94 admitted ok). Step 1 now requires path args built
-#     from the REAL cwd read at dispatch time (`pwd`), never an assumed
-#     session cwd (Pitfall #5 — reset probe-tied to context reinitialization
-#     2026-08-26, not to background dispatch itself). Host-setup line now
-#     carries the absolute wrapper path (was bare, resolvable from exactly
-#     one directory); references/invocation.md `--cwd` entry resynced to the
-#     same obligation. No wrapper/contract change.
-#   0.16.0 (2026-08-22): READ-ONLY PATH v2 (spec docs/superpowers/specs/
-#     2026-08-22-agy-readonly-v2-spec.md; three-family consultation). `--sandbox
-#     read-only` on agy >= 1.1.18 = setup-once tools-allowlisted agents
-#     (`triad-readonly-review` without web tools; `triad-readonly-research`
-#     under --web) + `--add-dir <cwd>` for reads; NO danger flag, NO settings
-#     deny transaction, NO agy --sandbox on this path; admission by what the
-#     stream shows (framing, one result, allowlist census, errored steps only
-#     on allowed reads) — a status=ERROR run with a valid answer is ADMITTED.
-#     New `--setup-agents` (host setup step), `--web`; `TRIAD_AGY_READONLY_MODE`
-#     and the legacy path removed; floor 1.1.18 fail-closed. The permissive
-#     baseline (no --sandbox) is unchanged.
-#   0.15.1 (2026-08-22): gate r8 doc resync — Hard rule 7 no longer carries
-#     the 1.1.3-era "voids the deny transaction" sentence (measured on
-#     1.1.17: Deny > dsp); the non-deniable enumeration names the browser_*
-#     family (no measured permission action) and the indistinguishable
-#     no-forbidden-call fallback; references/isolation.md § Containment
-#     posture / § What the flag costs / tool map and references/long-answer.md
-#     resynced to the same measurement. Wrapper: admission census is
-#     fail-closed over unparseable raw stream lines / payload-less steps,
-#     capped with an omitted counter; guard-entry failure audits a
-#     placeholder argv.
-#   0.15.0 (2026-08-22): READ-ONLY AGENT MODE (spec docs/superpowers/specs/
-#     2026-08-22-agy-readonly-agent-mode-spec.md). `--sandbox read-only` on
-#     agy >= 1.1.17 runs the wrapper-managed custom primary agent
-#     `triad-readonly-review` (`--agent`; tools allowlist view_file /
-#     grep_search / list_dir / find_by_name / read_url_content / search_web /
-#     finish, commandExecutionPolicy: off). v1.2 (gate r2, probes F1-F5):
-#     the settings deny transaction and the headless auto-approve flag are
-#     RETAINED (belt + read-tool approval on preset-less hosts); agy --sandbox
-#     and the soft-deny retry are dropped; admission = fail-closed
-#     forbidden-tool census over every attempt (init.agent is NOT a proof:
-#     agy echoes the requested name on fallback). The former path is the
-#     LEGACY path (`TRIAD_AGY_READONLY_MODE=deny`; agy < 1.1.17 downgrades
-#     to it with a logged line). New § Read-only agent mode; § Headless
-#     soft-deny adaptation and § Isolation re-titled LEGACY; Hard rule 7
-#     scoped to the legacy path. Evidence: docs/spikes/2026-08-22-agy-
-#     permission-ladder/; ledger docs/agy-vendor-workarounds.md W-28.
-#   0.14.2 (2026-08-19): fix wave W1 (telemetry gate r1 findings) — the
-#     `read-audit-file:` adjacency claims (the § Isolation read-audit
-#     paragraph and the Step 2 stderr-contract bullet; content anchors --
-#     line numbers drift) are corrected: under `TRIAD_READ_AUDIT_FILE`
-#     a `read-audit-copy:` line now sits BETWEEN the digest line and
-#     `read-audit-file:` (logged from inside `emit_read_audit`, before it
-#     returns). `references/read-audit.md` gains the copy's `copied_from`
-#     provenance note and its 0600 write mode.
-#   0.14.1 (2026-08-19): `references/read-audit.md` notes the engine-side
-#     default-location copy `emit_read_audit` now writes under
-#     `TRIAD_READ_AUDIT_FILE` (agy telemetry slice, task-1) — a courtesy
-#     for a consumer that always looks in the default dir. The consumer
-#     CONTRACT is unchanged: a gate still binds to the override path, never
-#     the copy (whose filename the caller cannot predict a priori).
-#   0.13.1 (2026-08-01): Step 1 prompt-transport rule widened and the
-#     `--prompt-file` relationship stated. The 0.13.0 rule routed only content
-#     the leader did NOT author to `--prompt-file`, but the defect's own
-#     observed trigger was a LEADER-authored review packet that QUOTED this
-#     template — quoted text carries the house terminator verbatim, so that
-#     case still collided. The rule now also covers any body quoting a
-#     dispatch template or a SKILL body, and a line after the flag block says
-#     `--prompt-file` REPLACES the heredoc (argparse rejects both together)
-#     rather than reading as one more additive option. Applied identically to
-#     the three sibling dispatch skills (codex 0.9.1 / gemini 0.6.1 /
-#     claude 0.4.1), which took the 0.13.0 terminator fix in the same change.
-#   0.13.0 (2026-08-01): body split into one-level `references/` after an
-#     overlap/dead-content audit, plus a tone and provenance de-scope pass (plan
-#     `docs/superpowers/plans/2026-07-31-agy-post-migration-followups.md` item
-#     3), then a 6-leg skill-prompt-review round (round 2, post-split) whose PART
-#     A fix list landed in this same unreleased version: `--prompt-file` named as
-#     the standing path for non-leader-authored content plus a collision-resistant
-#     heredoc terminator, the classification token confirmed as the single branch
-#     key, the shadow-agent guard given its procedure, and the remaining mechanism
-#     detail moved out of the body. The
-#     version chronology and deny-model detail consolidated into the extended
-#     `references/isolation.md` (now the single home for the containment story);
-#     Step 5a/5d shell moved to `references/repair-loop.md`; the long-answer
-#     contract to `references/long-answer.md`. Changelog entries older than the
-#     three kept here were dropped (git history is the archive), as were
-#     provenance dates and version pins inside rule text. No contract changed
-#     meaning: the classification token set, exit codes, deny/sandbox rules,
-#     repair-agent routing, and the `read-audit-file:` stderr line are the
-#     v0.12.0 ones.
-#   0.12.0 (2026-07-31): the wrapper also writes the read-audit digest to a
-#     durable file via `_common.emit_read_audit`, on every completed call
-#     (success or failure), and emits one stderr line after the informational
-#     digest line: `read-audit-file: <path>`. `TRIAD_READ_AUDIT_FILE` overrides
-#     the default path — which is what lets `triad-cross-family-review`'s gate
-#     know the path a priori and read it with `jq` instead of text-extracting
-#     stderr. The existing digest stderr line, the run-log's `read_audit` key,
-#     exit codes and the classification token set are unchanged.
-#   0.11.0 (2026-07-31): stream-json migration — the pty + completion-sentinel +
-#     agy-transcript-read transport is RETIRED (git history has it); the wrapper
-#     drives agy >= 1.1.8 via `--output-format stream-json` through the SAME
-#     shared `_common._run_once` subprocess core codex/gemini/claude use. `main()`
-#     fails CLOSED with `config-conflict` below `_STREAM_JSON_FLOOR` (1.1.8) — no
-#     vendor dispatch, `agy update` remediation. `--pydantic` is now NATIVE
-#     `--json-schema`. A REPORT-ONLY read-audit stderr line + run-log `read_audit`
-#     key is new. The driver decision table adds a status gate alongside the rc
-#     gate for `vendor-error`, and `SUCCESS`+empty-response surfaces as
-#     `extraction-error` (`empty-answer-body`). Token set / exit codes / Hard
-#     rules / Self-healing structure unchanged.
+version: 0.24.4
+# changelog: docs/reviews/2026-10-08-dispatch-skill-history.md (every entry; the newest section is last)
 ---
 
 # triad-antigravity-dispatch
@@ -225,7 +15,7 @@ exists through `triad-gemini-dispatch` (legacy compatibility).
 
 ## Use when
 
-- Leader has a discrete prompt and needs agy's answer (or a structured failure signal). agy is preferred for Android domain (XML / Compose / Material), Google-ecosystem queries — the gemini successor.
+- Leader has a discrete prompt and needs agy's answer (or a structured failure signal). agy is the default Google leg; gemini is the legacy compatibility route.
 - A higher-level SKILL (e.g. `triad-cross-family-review`) wants the agy leg of a fan-out.
 - **The work needs web grounding** — vendor / API / CLI doc research, "what does
   the latest X say", recent-issue triage: agy is the search/research leg, and the
@@ -254,7 +44,6 @@ only when its column applies.
 | `references/read-audit.md` | wiring a caller that consumes the read-audit digest — shape, caps, retry-merge, the durable file |
 | `references/terminal-causes.md` | a call classified terminal (65) and you are deciding what to tell the user |
 | `references/repair-loop.md` | a dispatch routed to repair — the Step 5 procedure (run-log path, analyzer prompt and read-only check, reply, branch) |
-| `references/long-answer.md` | an answer may exceed ~3KB, or a call returned `truncated-answer` (65) |
 
 ## Routing — agy is the search/research specialist (pass `--web`)
 
@@ -336,8 +125,8 @@ model corrected its first submission — C40, 0.16.7) — logged as
 fallback). Below 1.1.18 the dispatch is `config-conflict` ("run `agy update`");
 there is no legacy path (`TRIAD_AGY_READONLY_MODE` is gone). Evidence:
 `docs/spikes/2026-08-22-agy-permission-ladder/` (rounds 1-3); ledger
-`docs/agy-vendor-workarounds.md` W-28 (W-05/W-06 now permissive-baseline only,
-W-11 retired on this path). Reads and — for the research agent — network stay
+`docs/agy-vendor-workarounds.md` W-28 (W-05 now permissive-baseline only, W-06
+removed, W-11 retired on this path). Reads and — for the research agent — network stay
 open BY DESIGN (§ Standing residuals in `references/isolation.md`).
 
 ## Headless soft-deny adaptation (PERMISSIVE baseline only)
@@ -504,12 +293,10 @@ the classification is the token right after `[wrapper] antigravity ` (e.g. `ok`,
 convention — take the last emission only). On a failure, the run-log path is the value after
 `run-log: ` on its line (the last such line).
 
-Only a line that STARTS with that prefix counts (gate-1 r9 row r9-3): the
-summary tail carries a free-text field (`prompt_file=<abs>`), and a reading that
-took the last `[wrapper] antigravity <token> ` ANYWHERE in the line once let a prompt
-file under a directory named `…[wrapper] antigravity ok …` override the emitted token
-(an `extraction-error` run read as `ok`, and the MANDATORY repair routing never
-fired). The engine also percent-escapes every free-text field of the summary
+Only a line that STARTS with that prefix counts: the summary tail carries a
+free-text field (`prompt_file=<abs>`), so a reading that takes the last
+`[wrapper] antigravity <token> ` ANYWHERE in the line could read a token the wrapper
+never emitted. The engine also percent-escapes every free-text field of the summary
 (`_common._summary_field` — SPACE and `[` / `]` are outside the safe set, so the
 sequence cannot be built inside `prompt_file=`; an ordinary POSIX path is
 emitted byte-identically and the audit row keeps the raw value) — the two
@@ -527,11 +314,9 @@ actions. Codes: `0` ok / `1` unknown or extraction-error / `2` timeout / `3` arg
 / `4` binary missing / `64` server-capacity exhausted / `65` terminal or
 truncated-answer / `66` schema fail. **`unknown` is ALWAYS exit 1**: exit `3`
 means an ARGUMENT error only. A vendor-spawn failure (Popen `OSError`) inside
-the shared engine classifies `unknown`, and since gate-1 r4 the agy driver
-CONFORMS every forwarded engine verdict through `map_classification_to_exit`,
-so that shape arrives as `unknown` / 1 and routes to the repair branch — it
-used to be forwarded verbatim as `unknown` at exit 3, a pairing the exit-token
-contract does not bind and this legend never carried. The stream is read like
+the shared engine classifies `unknown`, and the agy driver CONFORMS every
+forwarded engine verdict through `map_classification_to_exit`, so that shape
+arrives as `unknown` / 1 and routes to the repair branch. The stream is read like
 the codex host reads its own: a line that does not decode is skipped, two
 result events read the last one, and a stream cut mid-line is recorded
 (`truncated_tail`), never refused; on the read-only route the admission's own
@@ -549,7 +334,7 @@ call, and never spawn the repair agent for it.
 | terminal (65) — cli-subscription-cap / token-limit / config-conflict / vendor-error | Surface to the user with the cause, and name the run-log path when there is one. Per-class causes and what the leader may say about each — including why `vendor-error` keeps the answer OUT of stdout and why none of these route to repair — [references/terminal-causes.md](references/terminal-causes.md). |
 | `admission-refused` (65) | The v2 admission census found a tool OUTSIDE the agent's allowlist in the stream (`manage_task` / `run_command` / `send_message` …) — the allowlist class only; framing / unexplained-degraded / read-blind refusals stay `vendor-error` (an errored `finish` that a later successful `finish` — a `step_type: finish` DONE update without `tool_info.error` — follows EXPLAINS a degraded status and is admitted; one with no later success still refuses as `vendor-error`). The COMPLETE answer is quarantined (run-log copy only, `quarantined answer (N chars)`). Surface, never repair. Review-leg callers: one retry, then terminally missing. If it recurs after 0.16.3, check the host re-ran `--setup-agents` (agent body carries the allowlist rule) — the model is TOLD the five permitted tools; agy still advertises 57. |
 | `vendor-timeout` (65) | agy's OWN turn timeout fired before the wrapper deadline (`result.status` ERROR, `result.error` "timeout waiting for response", empty response, vendor rc 1; live 2026-09-04 at 857 s of a 900 s budget with 33 allowlisted reads). Surface, never repair (the analyzer escalated: no existing class fits). Review-leg callers: re-dispatch ONCE with a narrower read scope (smaller packet / fewer cited sites), then terminally missing. |
-| `truncated-answer` (65) | agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB) and keeps NO full copy anywhere, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader remediation: re-dispatch under the output-file contract** (`references/long-answer.md` — agy's `write_file` is not subject to the fold), which needs the write-capable permissive baseline and is therefore unavailable on a hardened install and forbidden on the cross-family-review agy leg (re-dispatch once read-only for a COMPACT verdict there instead). **NOT** repair-agent territory (deterministic vendor behavior on the answer-present path; a classifier patch cannot express it). Retrying the same stdout-shaped dispatch folds again — do not plain-retry. |
+| `truncated-answer` (65) | agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB) and keeps NO full copy anywhere, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader remediation: re-dispatch once asking for a shorter answer; the ~4 KB fold is unmeasured since agy 1.1.9.** **NOT** repair-agent territory (deterministic vendor behavior on the answer-present path; a classifier patch cannot express it). Retrying the same prompt unchanged folds again — do not plain-retry. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already ran the capacity ladder: up to 2 stream-json call re-runs after a 15 s / 45 s backoff, EVERY attempt with the caller's full `--timeout` (the timeout is per attempt, so the leg can take up to 3 × `--timeout` + 60 s wall-clock) — EXCEPT on a read-only run that also called a tool outside the allowlist: that run returns after ONE dispatch (stderr + `extraction_error` name the forbidden tool), the caller's fresh dispatch being the contract's one retry (2026-09-05). |
 | `unknown` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** Includes the engine-decided transport failures the driver FORWARDS at the conformed exit 1 — a vendor-spawn `OSError` (nothing ran), a reader/writer thread that failed to START, and an `Exception` raised while waiting on the child (in both the child was killed and reaped, its stdout kept). Those three are transport defects, not classifier gaps, so expect the analyzer to ESCALATE rather than propose a pattern. |
 | `extraction-error` (1) | **Step 5 — repair agent dispatch; never skip it (Hard rule 8).** agy ran but the driver found no usable answer — a `SUCCESS` status with an EMPTY `response` (`extraction_error = "empty-answer-body"`, agy self-reports success on a task it did not actually do), a fully empty capture, or garbage/no-result stream text with no matching pattern. The repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |

@@ -161,10 +161,7 @@ def _classify_no_answer(stderr: str, signals, vendor_rc: int,
 # text is NOT preserved anywhere agy-side -> a marker-carrying answer is LOSSY
 # and unrecoverable at this layer. Own-line anchor keeps a mid-sentence QUOTE
 # of the marker from tripping the gate (observed folds are always own-line).
-# Loophole route: agy's write_file is NOT subject to the fold (verified: 24KB
-# file intact) -> the SKILL's absolute-path output-file contract, which needs
-# the write-capable permissive baseline (unavailable on a hardened install and
-# forbidden on the cross-family-review leg -> compact re-dispatch there).
+# The leader re-dispatches once asking for a shorter answer (dispatch SKILL).
 # The marker line may end LF or CRLF (C43).
 _AGY_TRUNCATION_MARKER_RE = re.compile(r"(?m)^[ \t]*<truncated \d+ (?:bytes|lines)>[ \t]*\r?$")
 
@@ -181,13 +178,10 @@ def _add_skip_permissions(cmd):
 
 # Version at/after which agy's headless (-p) mode soft-denies tools that need a
 # confirmation. Floor, not a pin: the gate below fires for this version and up.
-# STATUS 2026-08-22 (gate r5 resync): on 1.1.17 the PREMISE is dead — headless
-# DOES honour permissions.allow (probe F3) — but the flag is still needed on
-# hosts WITHOUT a read_file(*) allow preset (probe F1), and it does NOT void the
-# deny transaction (Deny > dsp: arm A command, probe G write_file). Retiring the
-# flag for good = the allow-merge follow-up slice (ledger W-05); until then this
-# floor stays, and the flag is harmless under the allowlist agent (no dangerous
-# tool exists to auto-approve).
+# On 1.1.17 headless honours permissions.allow (probe F3), but the flag is
+# still needed on hosts WITHOUT a read_file(*) allow preset (probe F1), so this
+# floor stays (ledger W-05); the flag is harmless under the allowlist agent (no
+# dangerous tool exists to auto-approve).
 _HEADLESS_SOFTDENY_FLOOR = (1, 1, 3)
 
 
@@ -358,7 +352,7 @@ def check_agent_file(d: Path, name: str) -> bool:
     if body is None:
         return False
     try:
-        return (d / f"{name}.md").read_bytes() == body.encode("utf-8")   # bytes, not text (gate r2)
+        return (d / f"{name}.md").read_bytes() == body.encode("utf-8")   # bytes, not text
     except OSError:
         return False
 
@@ -403,17 +397,14 @@ def _census(events, allowlist, read_set):
     denied: list = []
     errored_reads: list = []
     errored_other: list = []
-    # The TERMINAL update decides each call (S2 gate r1, codex C2 + claude —
-    # REPRODUCED against the spike streams): the vendor emits an ACTIVE update
-    # before every DONE/ERROR, so counting it as an occurrence made every
-    # hook-DENIED call "executed" too and the effect-based split never fired on
-    # a real stream. An ACTIVE update is suppressed ONLY by a TRUSTWORTHY
-    # matching identity — an INTEGER step_index shared with a terminal update
-    # of the same name (S2 gate r2, codex: two distinct STRING indices used to
-    # collapse to None, so a denied write's terminal key hid a second,
-    # ACTIVE-only write). An ACTIVE record with no integer index, or one that
-    # never reached a terminal update (a cut stream), still counts — its effect
-    # is UNKNOWN, so fail-closed.
+    # The TERMINAL update decides each call: the vendor emits an ACTIVE update
+    # before every DONE/ERROR (measured on the spike streams), so counting it as
+    # an occurrence would make every hook-DENIED call "executed" too. An ACTIVE
+    # update is suppressed ONLY by a TRUSTWORTHY matching identity — an INTEGER
+    # step_index shared with a terminal update of the same name (two distinct
+    # STRING indices never collapse to one key). An ACTIVE record with no
+    # integer index, or one that never reached a terminal update (a cut
+    # stream), still counts — its effect is UNKNOWN, so fail-closed.
     # A SUCCESSFUL submission (C40, fix wave 1) is the MEASURED shape only
     # (agy 1.2.11, 2026-09-26 — `_common.digest_agy_stream`'s open-step note):
     # a `step_type: finish` update in state DONE without `tool_info.error`. A
@@ -477,11 +468,10 @@ def _census(events, allowlist, read_set):
 
 def _early_census(events, allowlist, read_set, prior_forbidden, prior_omitted=0) -> tuple:
     """(errored_reads, forbidden, omitted) for an admission REFUSED before the
-    census would normally run (framing / result-count defects — gate r1
-    2026-09-04, claude): a run that also called a forbidden tool must still
-    classify `admission-refused` and name the tool, never fall back to
-    `vendor-error`; the counters ride along so the refusal loses no
-    diagnostic (gate r2 row 12)."""
+    census would normally run (framing / result-count defects): a run that
+    also called a forbidden tool must still classify `admission-refused` and
+    name the tool, never fall back to `vendor-error`; the counters ride along
+    so the refusal loses no diagnostic."""
     forbidden, omitted, errored_reads, _eo, _blocked, _rs = _census(events or [], allowlist, read_set)
     for n in prior_forbidden:
         if n not in forbidden:
@@ -517,13 +507,13 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
        an off-list call that EXECUTED (or errored for a non-denial reason)
        is FORBIDDEN and refuses the answer as before.
     5. Status: SUCCESS with vendor rc 0 -> ok; anything else (a non-SUCCESS
-       status OR a non-zero vendor rc, gate r1) is admitted ONLY when at least
+       status OR a non-zero vendor rc) is admitted ONLY when at least
        one errored tool step EXPLAINS it and every errored step named an
        allowed READ tool (`read_set`) — an errored read (paging overshoot,
        nonexistent path, root-grep timeout) is a prompt-quality signal, not a
        discard; an errored non-read step rejects, and a degraded run with NO
-       errored step (run-level error / cancel / cut) rejects too (gate r3:
-       never admit a possibly partial answer on nothing). ADDED (C40): an
+       errored step (run-level error / cancel / cut) rejects too (never
+       admit a possibly partial answer on nothing). ADDED (C40): an
        errored submission (`finish`) that a LATER successful submission of
        the same attempt follows is a resubmission and explains the
        degradation like an errored read; an errored submission with no later
@@ -531,7 +521,7 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
        (The caller adds the read-blind guard: such a run must also have read
        something — `files_read` non-empty in the digest.)
     Every vendor-controlled string on the reason is capped at
-    `_AGY_DIGEST_KEY_CAP` (gate r1, claude: the engine closed that class).
+    `_AGY_DIGEST_KEY_CAP`.
     (Rule 3 — local validation of the answer — is the caller's existing
     `_validate_structured_detail` path.)"""
     for idx, line in enumerate((stream_text or "").split("\n"), 1):
@@ -542,15 +532,15 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
             obj = json.loads(s)
         except (ValueError, RecursionError):
             # RecursionError joins ValueError here for the same reason the
-            # parser skips it (gate-1 r6 row r6-8): a line nested past the
+            # parser skips it: a line nested past the
             # interpreter's limit is UNDECODABLE, and the framing rule is one
             # blanket rule — a line that does not decode to a JSON object
             # makes the run unusable. Without this the refusal the parser
             # hands us was re-raised as a traceback one line later.
             obj = None
         if not isinstance(obj, dict):
-            # name the offending line so a stray vendor stdout line is diagnosable
-            # (gate r2, claude); the excerpt is capped and ASCII-escaped
+            # name the offending line so a stray vendor stdout line is diagnosable;
+            # the excerpt is capped and ASCII-escaped
             excerpt = json.dumps(s[:_common._AGY_DIGEST_KEY_CAP], ensure_ascii=True)
             return Admission(False, f"stream line {idx} is not a JSON object (unusable run): {excerpt}",
                              *_early_census(events, allowlist, read_set, prior_forbidden, prior_omitted))
@@ -587,7 +577,7 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
             return Admission(True, f"{tag} admitted: every errored step is {' or '.join(clauses)}",
                              errored_reads, [], omitted, blocked)
         # nothing in the stream explains the degradation (run-level error / cancel /
-        # cut / bare rc!=0): a possibly partial answer is not admitted (gate r3).
+        # cut / bare rc!=0): a possibly partial answer is not admitted.
         # A BLOCKED call does not explain it either — it never ran (Gate B untouched).
         return Admission(False, f"{tag} with no errored tool step in the stream — nothing "
                                 f"explains the degradation; answer quarantined", [], [], omitted,
@@ -717,7 +707,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                          audit=_common.merge_agy_digests(attempt_digests),
                          err=rr.extraction_error), argv
         if rr.spawned:
-            # the REAL argv of the attempt that ran (gate r3, codex); a turn
+            # the REAL argv of the attempt that ran; a turn
             # that spawned nothing (above, or a spawn OSError) keeps the
             # previous one (C1)
             argv, spawned_rr = list(cmd), rr
@@ -736,22 +726,21 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                     forbidden_seen.append(_n)
             forbidden_omitted_seen = max(forbidden_omitted_seen, _om)   # MAX: a repeated set never over-counts
         attempt_digest = _common.digest_agy_stream(events, result)
-        # PER-ATTEMPT capture evidence (gate-1 r6 row r6-1): the merged audit
+        # PER-ATTEMPT capture evidence: the merged audit
         # unions every attempt's reads, so it has to be able to say WHICH
         # attempt's transcript was a prefix. `merge_agy_digests` carries the
         # flag into `attempts[]` under the omit-when-default rule.
         attempt_digest["capture_complete"] = bool(rr.capture_complete)
-        # THE TRANSCRIPT WAS CUT MID-LINE (gate-1 r9 row r9-10): recorded,
+        # THE TRANSCRIPT WAS CUT MID-LINE: recorded,
         # never refused — an answer before the cut is read like any other
         # (E5-11), and a no-answer run keeps its own diagnosis.
         if _common._agy_tail_fragment(stream):
             attempt_digest["truncated_tail"] = True
-        # THE RUN WAS INTERRUPTED, SO ITS TRANSCRIPT IS A KNOWN PREFIX (gate-1
-        # r17 row r17-1). A run killed at the wrapper deadline whose capture
-        # happens to end on a line boundary carries none of the markers above
-        # — `capture_complete` comes from reader failures only and
-        # `truncated_tail` from a malformed fragment — yet the timeout return
-        # below itself calls the stream "a partial prefix". The engine exposes
+        # THE RUN WAS INTERRUPTED, SO ITS TRANSCRIPT IS A KNOWN PREFIX. A run
+        # killed at the wrapper deadline whose capture ends on a line boundary
+        # carries none of the markers above — `capture_complete` comes from
+        # reader failures only and `truncated_tail` from a malformed fragment.
+        # The engine exposes
         # no `timed_out` field on the RunResult: EXIT_TIMEOUT is set on
         # exactly its `timed_out` arm, so that exit IS the evidence. Any other
         # NEGATIVE vendor rc is a child that died on a signal (POSIX
@@ -839,19 +828,12 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                          err="agy print timeout: turn in progress, "
                              "partial output withheld"), argv
         if not rr.capture_complete:
-            # THE CAPTURE IS A PREFIX — TERMINAL, ABOVE EVERY BRANCH BELOW
-            # (gate-1 r5 row r5-2, HOISTED at r6 row r6-1). The engine's own
-            # reader gate fails a run closed only at `rc == 0` (a genuine
-            # vendor failure keeps its own diagnosis), so a rc != 0 run whose
-            # reader died arrives here looking like an ordinary degraded run.
-            # The r5-2 refusal sat INSIDE the answer-present admission arm,
-            # which left the NO-ANSWER shape open: a fragment carrying a
-            # capacity phrase reached `_classify_no_answer`, took the
-            # automatic `server-capacity` retry, and the next iteration
-            # replaced `rr` — only the FINAL attempt's flag propagated, while
-            # the MERGED read audit still carried the knowingly incomplete
-            # earlier transcript under an `ok` result. An attempt whose
-            # transcript is a fragment never earns a retry: the wrapper
+            # THE CAPTURE IS A PREFIX — TERMINAL, ABOVE EVERY BRANCH BELOW.
+            # The engine's own reader gate fails a run closed only at
+            # `rc == 0` (a genuine vendor failure keeps its own diagnosis), so
+            # a rc != 0 run whose reader died arrives here looking like an
+            # ordinary degraded run. An attempt whose transcript is a fragment
+            # never earns a retry, with or without an answer: the wrapper
             # stops here and the LEADER re-dispatches (the contract's one
             # retry), exactly as for every other terminal class.
             #
@@ -891,13 +873,10 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
         answer = raw_answer if isinstance(raw_answer, str) else ""
         bad_answer_type = (raw_answer is not None
                            and not isinstance(raw_answer, str))
-        # THE STRUCTURED CHANNEL IS THE ANSWER on the two structured routes
-        # (gate-1 r4 row r4-10). The whole arm below used to be gated on a
-        # non-blank `response`, so a result carrying a schema-checked
-        # `structured_output` and an EMPTY `response` fell through to the
-        # no-answer section and was discarded as `extraction-error` /
-        # `empty-answer-body` — the authoritative channel thrown away because
-        # the incidental one was blank. The widening is scoped to the routes
+        # THE STRUCTURED CHANNEL IS THE ANSWER on the two structured routes:
+        # a result carrying a schema-checked `structured_output` and an EMPTY
+        # `response` is answered from the structured channel. This is scoped
+        # to the routes
         # that HAVE a structured channel (`--json-schema-file` /
         # `--pydantic`): on a plain call an empty response stays the no-answer
         # failure it has always been. Admission still runs first, because the
@@ -924,9 +903,9 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                             vendor_rc=rr.vendor_exit_code)
                 degraded = status != "SUCCESS" or rr.vendor_exit_code != 0
                 read_evidence = (audit.get("files_read") or audit.get("files_read_omitted")
-                                 or audit.get("web") or audit.get("web_omitted"))   # web reads count (gate r2, 3 legs)
-                if adm.ok and (degraded or adm.errored_reads) and not read_evidence:   # gate r3: not keyed on the vendor's status flip alone
-                    # READ-BLIND guard (gate r1, agy must-fix + claude): a degraded
+                                 or audit.get("web") or audit.get("web_omitted"))   # web reads count
+                if adm.ok and (degraded or adm.errored_reads) and not read_evidence:   # not keyed on the vendor's status flip alone
+                    # READ-BLIND guard: a degraded
                     # run whose every read errored — no --add-dir / no allow
                     # preset — produced its answer without reading anything.
                     remedy = ("pass --cwd so --add-dir grants repository reads, or allow "
@@ -1060,7 +1039,7 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
         if forbidden_seen and admission is not None:
             return _refuse_no_answer(), argv
         if result is not None and status == "ERROR" and _is_vendor_turn_timeout(result):
-            # gate r1 row 8 (2026-09-04): agy's OWN turn timeout fired before
+            # agy's OWN turn timeout fired before
             # the wrapper deadline (`result.error` = "timeout waiting for
             # response", empty response, vendor rc 1) — a typed vendor state
             # distinct from the wrapper-kill `timeout` (surfaced, never repair-routed) and
@@ -1255,8 +1234,7 @@ def _main(ctx: dict) -> int:
     # NOTE: --dangerously-* are intentionally NOT defined -> argparse rejects
     # them (danger flags are banned).
     args = p.parse_args()
-    # ONE NORMALIZED MODEL REQUEST (gate-1 r13 row r13-4 — the codex shape of
-    # row r12-3, generalized: the C35 / DL-3 sentence covers every leg).
+    # ONE NORMALIZED MODEL REQUEST (the C35 / DL-3 sentence covers every leg).
     # Empty or whitespace-only = NO request; the argv build and the record
     # (`requested_model` on the summary tail, the audit row and the run-log)
     # read this one value. Surrounding whitespace is stripped (a padded value
@@ -1272,19 +1250,13 @@ def _main(ctx: dict) -> int:
         except OSError as e:
             _common.log(f"--setup-agents failed: {e}")
             return _common.EXIT_ARG_ERROR
-        # THE PRINTED PATHS ARE PAYLOAD, NOT OPERATOR PROSE (gate-1 r8 row
-        # r8-8; the rule r7-x2 set for the dispatch lines one library over).
-        # `print()` uses this process's STRICT stdout handler, so under a
-        # non-UTF-8 locale a non-ASCII agents dir raised UnicodeEncodeError
-        # HERE — after the agent files had already been written — and the
-        # command died at exit 1 on a setup that had SUCCEEDED, printing
-        # neither the paths nor the hint. `os.fsencode` reproduces the
-        # on-disk bytes exactly (it reverses the surrogateescape a
-        # non-UTF-8 filesystem decode introduces), so the path the operator
-        # copies is the path that exists.
+        # THE PRINTED PATHS ARE PAYLOAD, NOT OPERATOR PROSE: written as bytes
+        # (`print()`'s strict stdout handler fails on a non-ASCII path under a
+        # non-UTF-8 locale). `os.fsencode` reproduces the on-disk bytes
+        # exactly, so the path the operator copies is the path that exists.
         for path in written:
             _common._emit_payload(os.fsencode(path) + b"\n")
-        # Same channel, same rule (row r8-8): this line is operator-copied
+        # Same channel, same rule: this line is operator-copied
         # text on the payload stream, so it goes out as UTF-8 bytes too.
         _common._emit_payload(
             b"hint: research dispatches (--web) and review legs with web "
@@ -1337,7 +1309,7 @@ def _main(ctx: dict) -> int:
         return _common.EXIT_ARG_ERROR
 
     if (args.web or args.review_web) and args.sandbox != "read-only":
-        # never silently ignored (gate r1, claude): only the read-only path
+        # never silently ignored: only the read-only path
         # selects an agent, so --web / --review-web mean nothing elsewhere
         flag = "--web" if args.web else "--review-web"
         _common.log(f"{flag} selects the research agent on the read-only path only — "
@@ -1387,7 +1359,7 @@ def _main(ctx: dict) -> int:
         # C28 (spec ccf168a): a relative path is rebased on the process-entry
         # cwd like --prompt-file (agy itself would resolve it against its own
         # cwd), then the same runtime-roots containment `--cwd` and
-        # `--prompt-file` get (gate-1 r2 row r2-5). The resolved path is what
+        # `--prompt-file` get. The resolved path is what
         # agy then reads, so the file validated here is the file used, and
         # the argv the audit row records carries that absolute path.
         try:
@@ -1530,12 +1502,9 @@ def _main(ctx: dict) -> int:
         # r.exit_code/classification.
         read_audit_path = _common.emit_read_audit("antigravity", r)
         if read_audit_path is not None:
-            # THE VALUE IS PERCENT-ESCAPED FILESYSTEM BYTES (gate-1 r13 row
-            # r13-5). Written raw, a NEWLINE in the path split the line and
-            # an undecodable byte was rewritten by the `backslashreplace`
-            # diagnostic stream, so the custody check (`collect_v2.
-            # _agy_custody_reason`, which compares the SAME encoding) could
-            # never match a legitimate attempt. `_summary_field` is the
+            # THE VALUE IS PERCENT-ESCAPED FILESYSTEM BYTES, on ONE line, the
+            # encoding the custody check (`collect_v2._agy_custody_reason`)
+            # compares. `_summary_field` is the
             # summary tail's escaping: an ordinary POSIX path is emitted
             # byte-identically, anything else is escaped onto ONE line.
             _common.log(f"read-audit-file: {_common._summary_field(str(read_audit_path))}")
@@ -1545,7 +1514,7 @@ def _main(ctx: dict) -> int:
     # so the two fields are attached to the RunResult here instead.
     r.dispatch_attempt = args.attempt
     r.prompt_file_resolved = _prompt_file_resolved
-    # C35 / DL-3 (gate-1 r13 row r13-4): the normalized model request rides
+    # C35 / DL-3: the normalized model request rides
     # the same record — audit row and run-log, omit-when-None.
     r.requested_model = args.model
     # C35 as amended: the requested effort tier rides the same record.

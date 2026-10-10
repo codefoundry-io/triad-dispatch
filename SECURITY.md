@@ -1,30 +1,30 @@
 # Security model
 
-This toolkit dispatches vendor CLIs (codex / gemini / agy / claude) as single-shot
-workers and grows a shared error classifier over time. The classifier learns from
-**vendor run-logs**, and that learning loop is the one place where an attacker's
-input meets a component that could write. This document states the threat, the
-control that actually stops it, and — explicitly — what is NOT the control.
+This toolkit runs on the Claude Code host: the Claude Code session is the leader,
+and it dispatches the vendor CLIs codex, gemini and agy as single-shot workers. It
+also grows a shared error classifier over time from the **vendor run-logs**. This
+document states the threat model, the control that keeps that learning loop from
+writing anything it should not, and — explicitly — what is NOT the control.
 
-## Threat model — the run-log is untrusted
+## Threat model — one operator, and vendor output is not ours
+
+The toolkit serves one operator, and there is no malicious actor. Its guards defend
+against ordinary failures: a full disk, a stop at any point, a wrong argument, a
+bad vendor answer a run has shown, an operation started from another folder (or by
+the other host's toolkit) meeting the same machine-level files, and a reviewer's
+or the leader's mistake.
 
 When a dispatch fails in a way the classifier does not yet recognize, a repair
 step reads the failing call's **run-log** (the vendor CLI's stderr / stdout /
-exit code) to propose one new classifier entry. That run-log is **untrusted
-vendor output**: its contents are whatever the model emitted, and a prompt or a
-compromised upstream can plant arbitrary text in it.
-
-A repair component that both READS that untrusted run-log AND has WRITE authority
-is a classic confused deputy. An injected run-log could try to:
-
-- hijack the write to reach the caller's workspace (code execution via build
-  scripts, git hooks, or a poisoned config the next tool run honors), or
-- exfiltrate — write learned state or secrets somewhere it can be read back.
+exit code) to propose one new classifier entry. The run-log is vendor output the
+toolkit did not write: a model's answer, a quoted web page or a vendor message can
+put any text in it, and a misreading of that text must never become a write
+anywhere but the classifier file.
 
 ## The control — privilege separation, not model trust
 
-The durable control is **privilege separation between reading and writing**, so
-that the component exposed to the untrusted run-log has zero write authority:
+The durable control is **privilege separation between reading and writing**: the
+component that reads the run-log has zero write authority.
 
 - **The analyzer that reads the run-log cannot write.** It is a read-only
   analyzer. Its only output is a fixed-shape structured JSON proposal — one
@@ -34,85 +34,40 @@ that the component exposed to the untrusted run-log has zero write authority:
   error text and version context — never a credential, private prompt or source
   content, or the full run-log — and a search result never proves an error the
   run did not show.
-- **The write path is deterministic and LLM-free.** The proposal is applied by
-  `apply_patch.py` (over `apply_classifier_patch`), a zero-LLM validator +
-  applier. It re-validates every field independently — the class must be a
-  meaningful-failure enum value (not `ok`/`unknown`). The validator bounds BOTH
-  poison surfaces symmetrically:
-    - **L1 `vendor_exit_map`** — a `vendor_exit_code` must be a positive int,
-      bounded to the application-specific range `[3, 125]` (`{0,1,2}`=generic,
-      `{126,127}`=shell, `>=128`=signal-death/reserved are too broad to auto-route,
-      since the classifier consults the vmap before the substrings and returns
-      immediately, so a poisoned code would misroute every unrelated future
-      failure carrying it — a sound range, not an enumeration, so no signal-death
-      code such as SIGSEGV/SIGPIPE/SIGABRT can slip through an incomplete list),
-      AND its class must be vendor-exit-DERIVABLE (a wrapper/status class such as
-      `timeout`/`schema-fail`/`task-blocked` cannot be inferred from a raw vendor
-      exit code).
-    - **L2 `patterns` substring** — the pattern-list name must be a known list AND
-      the class must be the one that list actually yields; the literal is lowercase-
-      normalized (matching how the classifier lowercases the blob) then bounded above
-      and floored below a minimum length with alphanumeric signal required.
-  The applier takes a file lock and writes atomically. An invalid or hostile
-  proposal leaves the classifier file untouched. The applier is the ONLY writer
-  to the persistent classifier extension
-  (`~/.config/<product>/classifier-patches.json`).
+- **The write path is deterministic and LLM-free.** The leader applies the
+  proposal with `bin/apply_patch.py`, a zero-LLM validator + applier and the only
+  writer of the classifier extension (`~/.config/<product>/classifier-patches.json`).
+  It holds the lock file beside that file for the whole read-validate-write cycle
+  and writes atomically. It refuses every `oauth-env` proposal (authentication is
+  the operator's to fix through the vendor CLI's own login), a class of `ok` or
+  `unknown`, an exit code outside `[3, 125]` or paired with a class a vendor exit
+  code cannot carry, and a fragment that is not 4 to 200 characters long with a
+  letter or digit in it or that names a pattern list yielding another class. A
+  refused proposal leaves the file untouched.
 
-Because the reader has no write authority and the writer runs no model, an
-injected run-log cannot hijack code execution or exfiltration — those are fully
-closed by privilege separation. The validator additionally blocks the worst
-structural abuses on BOTH poison surfaces symmetrically — the L2 substring (length
-floor + alphanumeric signal + lowercase-normalize + pattern↔class match) AND the L1
-`vendor_exit_map` (bounded to the application-specific range `[3, 125]` + restricts
-to vendor-exit-derivable classes), plus mapping a failure to `ok`/`unknown` and an
-exit-0 or negative code. What the deterministic validator does NOT fully
-guarantee is fine-grained CORRECTNESS of an in-bounds proposal: a specific, validation-
-passing entry (a plausible substring, or a specific non-generic exit code with a
-vendor-error class) could still assert a wrong-but-plausible mapping and route some
-genuine failures to the wrong (already-valid) class. That residual worst case is a
-persistent routing MIS-classification — an integrity/robustness issue, NOT code
-execution or exfiltration — and it is bounded by the read-only analyzer's judgment
-plus owner review of the applied deltas, not claimed as a hard deterministic control.
+Because the reader has no write authority and the writer runs no model, a run-log
+cannot turn into code execution or a write outside the classifier file. What the
+validator does not guarantee is that an in-bounds proposal is RIGHT: a plausible
+fragment or a specific exit code can still map some failures to the wrong
+(already-valid) class. That worst case is a persistent routing MIS-classification
+— an integrity issue, not code execution — bounded by the analyzer's judgment and
+the operator's review of the applied deltas.
 
-## Per-product enforcement
+## Enforcement on the Claude Code host
 
-The plugin enforces the read/write split with its host's mechanism:
+The repair analyzer runs IN-SESSION as a subagent whose tool allowlist is
+**harness-enforced** to `Read, Grep, Glob, WebSearch, WebFetch` — no Write, Edit,
+Bash, or Agent. It returns the inline proposal; the leader applies it by running
+`bin/apply_patch.py`. The privilege boundary is the harness tool allowlist plus
+the deterministic applier.
 
-- **claude-host** (Claude Code leader). The repair analyzer runs IN-SESSION as a
-  subagent whose tool allowlist is **harness-enforced** to `Read, Grep, Glob,
-  WebSearch, WebFetch` — no Write, Edit, Bash, or Agent. It literally cannot write. It returns the
-  inline proposal; the leader applies it by running `bin/apply_patch.py`. The
-  privilege boundary is the harness tool allowlist plus the deterministic applier.
-
-## Project-agent shadow (claude-host) — a second confused-deputy path
-
-The claude-host privilege boundary above assumes the repair analyzer that runs
-is the shipped **read-only** plugin agent (`tools: Read, Grep, Glob, WebSearch,
-WebFetch`). A second
-way that assumption can break is **agent-name shadowing**. Claude Code resolves a
-consumer's own project agent at `.claude/agents/<name>.md` **over** a plugin agent
-of the same bare name. So if the dispatch skill spawned the analyzer by the bare
-`subagent_type` (`codex-wrapper-repair`), a consumer who happens to have — or is
-tricked into adding — a same-named **writable** project agent would have THAT
-agent, with its own tools, read the untrusted run-log: the confused deputy
-re-opens, this time through the harness's agent-resolution order rather than the
-analyzer's own grants.
-
-The mitigation is two-layered:
-
-- **Address the plugin agent by its plugin-scoped identity.** The shipped
-  dispatch skills spawn the analyzer as `triad-dispatch:<name>-wrapper-repair`
-  (the export injects the `triad-dispatch:` scope; the source repo, which has no
-  plugin, keeps the bare project-agent name). The scoped identity resolves to the
-  plugin's read-only agent unambiguously, so a same-named project agent cannot be
-  what runs.
-- **Confirm read-only before dispatch (product-agnostic).** Because a consumer
-  can still install agents the toolkit does not control, the skill also instructs
-  the leader to CONFIRM the resolved analyzer's tools are only `Read, Grep, Glob,
-  WebSearch, WebFetch`
-  before dispatch and REFUSE if a same-named writable agent shadows it — a check
-  that needs no plugin name and also covers the source/dev repo (project agent,
-  no scoping).
+**Agent-name collision.** Claude Code resolves a project's own agent at
+`.claude/agents/<name>.md` over a plugin agent of the same bare name. The shipped
+dispatch skills therefore spawn the analyzer by its plugin-scoped name
+(`triad-dispatch:<name>-wrapper-repair`), which resolves to the plugin's read-only
+agent, and they have the leader confirm, before the dispatch, that the resolved
+analyzer's tools are only `Read, Grep, Glob, WebSearch, WebFetch` — a same-named
+agent with other tools is refused.
 
 ## Intent-gated broad-capability surface (accepted residual)
 
@@ -129,17 +84,15 @@ capability the user did not already have. Hardening this surface would therefore
 restrict the **user's own legitimate use** more than it protects them: it blocks
 often, protects rarely. So we do not split, gate, or auto-revoke the capability.
 
-What this residual is NOT is a free pass for *untrusted* input. The durable,
-always-on controls below are the defense-in-depth layers that DO apply — and
-they are aimed at the real distributed threats (untrusted content injected into
-the leader, and a poisoned parent-start environment), not at the user:
+The always-on layers below are what DOES apply; they guard against ordinary
+mistakes and odd vendor output, not against the user:
 
 - **Privilege separation** on the repair path (above) — the component that reads
-  the untrusted run-log has zero write authority.
+  the run-log has zero write authority.
 - **Wrapper roots-containment** — `--prompt-file` / `--image` / `--cwd` are
-  confined to the configured workspace roots by the shared engine, regardless of
-  which product runs it.
-- **claude-host** — no layer of its own. The plugin-path Bash grant
+  confined to the configured workspace roots under the hardening env
+  (`TRIAD_WRAPPER_HARDENED=1`) that the setup writes.
+- **The Bash grants** — no layer of their own. The plugin-path Bash grant
   (`Bash(python3 <plugin>/*/bin/codex_wrapper.py *)`, `<plugin>` = the installed
   plugin's directory in the plugin cache, `*` = its version) runs the plugin's own
   file without asking; so do the review library's leg lines
@@ -156,15 +109,11 @@ the leader, and a poisoned parent-start environment), not at the user:
   limit: an env-prefixed grant's `=*` matches any text up to the plugin path, so
   a line with a second assignment before `python3` (for example `PYTHONPATH=…`)
   would also run without asking — the same class as the version `*`; not
-  measured live; the threat model below is unchanged. The plugin's environment
-  assumes one operator. The
-  wrappers contain `--prompt-file` / `--image` / `--cwd` in the allowed roots under
-  the hardening env (`TRIAD_WRAPPER_HARDENED=1`) that the setup writes.
+  measured live; the plugin's environment assumes one operator.
 
 Those layers are the security posture. The broad promptless capability is the one
-item we accept and document rather than harden, because its only reachable abuse
-is via untrusted-content injection into the leader — for which the layers above
-are the defense — and hardening it would over-restrict the user's own intent.
+item we accept and document rather than harden: hardening it would over-restrict
+the user's own intent.
 
 ## What is NOT the control
 
@@ -174,8 +123,8 @@ are the defense — and hardening it would over-restrict the user's own intent.
   the analyzer "behaving" — it holds because the analyzer has no write authority
   and the writer runs no model.
 - **The toolkit never manages authentication.** It issues no tokens, refreshes no
-  credentials, and injects no API keys. Vendor login is the owner's, done with
-  each vendor CLI's native login. An auth-shaped error is surfaced for the owner
+  credentials, and injects no API keys. Vendor login is the operator's, done with
+  each vendor CLI's native login. An auth-shaped error is surfaced for the operator
   to re-login; the toolkit never tries to re-authenticate on its behalf. Keeping
   credentials entirely outside the toolkit is itself a safety boundary.
 

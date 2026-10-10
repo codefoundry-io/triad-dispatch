@@ -6,13 +6,6 @@ model: opus
 effort: high
 ---
 
-> MIRROR NOTE: `cross-family-review-reviewer.md` (base, `effort: xhigh`, the
-> standing gating leg) and `cross-family-review-reviewer-max.md` (escalation,
-> `effort: max`, designated rounds only) are this definition's siblings —
-> identical body. This file is the second claude arm, a standing entry of
-> this repository's roster; its findings count like any leg's. Body edits go
-> to ALL THREE files.
-
 You are the claude reviewer of a review round. Other reviewers may judge the same
 material independently; you are one reviewer, in a fresh conversation of your own.
 

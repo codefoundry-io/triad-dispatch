@@ -11,8 +11,8 @@ exposes no `--add-dir` / arbitrary `-c` passthrough). Loaded on demand from
 The wrapper covers single-shot dispatches (read-only or workspace-write). Some invocations
 are NOT expressible through the wrapper — it pins `--ephemeral` (ephemeral
 threads do not support `/goal`) and exposes no `--add-dir` / arbitrary `-c`
-passthrough. For those, the leader (or a project-side skill, e.g.
-a lab project's `codex-tc-writer`) builds a direct `codex exec` invocation.
+passthrough. For those, the leader (or a project-side skill) builds a direct
+`codex exec` invocation.
 Keep these facts straight instead of re-deriving them from memory:
 
 ### Extra writable roots (multiple workspaces)
@@ -74,7 +74,4 @@ Keep these facts straight instead of re-deriving them from memory:
   dispatch must be a direct `codex exec` WITHOUT `--ephemeral`.
 - `--add-dir` / arbitrary `-c` passthrough is NOT implemented in the wrapper
   (candidate follow-up; in the source repo this triggers the doc-sync chain).
-- Proven instance: a lab-project repo
-  `.claude/skills/codex-tc-writer/SKILL.md` (leader dispatch procedure) +
-  `.claude/skills/nl-to-yaml-author/references/cross-cli.md` (v5 flag notes).
 

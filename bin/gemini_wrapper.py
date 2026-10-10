@@ -12,7 +12,8 @@ Audit log: _logs/gemini/audit.jsonl (gitignored).
 
 Options:
   --model <name>
-        Pin a specific model (free-form). Default = CLI Auto router.
+        Pin a specific model (free-form). Omit = no `--model` flag (the CLI's
+        own default); a review round passes the roster model.
         Use sparingly — model names rot; verify with `/model manage`.
   --pydantic module.path:ClassName
         Inject a JSON schema block into the prompt and validate the answer
@@ -344,7 +345,10 @@ def _main(ctx: dict) -> int:
     p.add_argument(
         "--model",
         default=None,
-        help="Pin a specific model (free-form). Default = CLI Auto router.",
+        help=(
+            "Pin a specific model (free-form). Omit = no `--model` flag (the "
+            "CLI's own default); a review round passes the roster model."
+        ),
     )
     p.add_argument(
         "--pydantic",
@@ -366,8 +370,7 @@ def _main(ctx: dict) -> int:
              "on it and no control flow reads it",
     )
     args = p.parse_args()
-    # ONE NORMALIZED MODEL REQUEST (gate-1 r13 row r13-4 — the codex shape of
-    # row r12-3, generalized: the C35 / DL-3 sentence covers every leg).
+    # ONE NORMALIZED MODEL REQUEST (the C35 / DL-3 sentence covers every leg).
     # Empty or whitespace-only = NO request; the argv build and the record
     # (`requested_model` on the summary tail, the audit row and the run-log)
     # read this one value.
@@ -533,17 +536,12 @@ def _main(ctx: dict) -> int:
         # terminal class (EXIT_TERMINAL 65): the operator changes the
         # install or the posture — a retry would fail identically.
         #
-        # THE TAIL COMES FROM THE SHARED FORMATTER (gate-1 r10 row
-        # r10-11). This line was hand-built and carried `attempt=` only,
-        # so it dropped the C28 `prompt_file=` field although the
-        # resolved absolute path was already in hand — and this refusal
-        # is PRE-SPAWN, so its own records are the only ones the dispatch
+        # THE TAIL COMES FROM THE SHARED FORMATTER: this refusal is
+        # PRE-SPAWN, so its own records are the only ones the dispatch
         # writes (`_refuse` writes this line, an audit row and the failure
-        # run-log), and this line is the one the dispatch SKILLs read. The
-        # one question C28 exists to answer went unrecorded on the line
-        # where the caller looks. `_summary_tail` also owns the redaction
-        # rule and the free-text escaping (row r9-3), so building the tail
-        # by hand here silently opted out of both.
+        # run-log), and the line carries the C28 `prompt_file=` field.
+        # `_summary_tail` also owns the redaction rule and the free-text
+        # escaping.
         return _refuse("config-conflict", refusal, probed_version)
 
     # The engine gets the caller's text alone; build_cmd appends the clause

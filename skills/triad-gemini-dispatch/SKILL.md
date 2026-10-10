@@ -1,90 +1,8 @@
 ---
 name: triad-gemini-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Gemini CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 gemini_wrapper.py` raw; the user asks to call gemini once, have gemini handle a task, or run a one-shot gemini analysis; a higher-level orchestration SKILL needs the Gemini leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Codex (`triad-codex-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.14.1
-# changelog:
-#   0.14.1 (2026-10-11): Step 5 points at the procedure § 5a-5e (5e promotes a
-#     verified phrase to the shared contract; DL-104).
-#   0.14.0 (2026-10-11): Step 5 — one apply line verifies the proposal on the
-#     failed run's stored record (the applier's `--verify-run-log <run-log path as
-#     printed>`: exit 0 routes to the proposal, 4 applied but not routed, 3 refused);
-#     the separate verify re-run line is gone with its wrapper flag (DL-104).
-#   0.13.0 (2026-10-11): Step 5 — one procedure for the three dispatch skills
-#     (`references/repair-loop.md`, § 5a-5e; the export ships a copy inside each
-#     dispatch skill); the apply and verify lines stay in this body, the only place
-#     the plugin path is filled in. The analyzer is one body rendered to
-#     three names, with a bounded web research rule (`tools: Read, Grep, Glob,
-#     WebSearch, WebFetch`, C76).
-#   0.12.2 (2026-10-11): doc — a wrapper `timeout` (2) surfaces to the user and is never routed to the repair analyzer; the routed set is `unknown` / `extraction-error` (DL-104).
-#   0.12.1 (2026-10-11): doc — Step 2 wording only ("— Step 3 reads it from the tool result").
-#   0.12.0 (2026-10-11): Flow — the prompt and proposal files live under
-#     `<project>/_runs/prompts/` (inside the hardened allowed root; the wrapper's
-#     next-run sweep prunes them under the `dispatch-prompts` role, owner option 1);
-#     Step 2 says Step 3 reads the summary from the tool result.
-#   0.11.1 (2026-10-10): doc — Step 5a: the run-log path is passed on as the wrapper
-#     printed it (the last `run-log:` line); no reading rule restates a former shell
-#     check; a forged earlier `run-log:` line is a recorded limit.
-#   0.11.0 (2026-10-10): doc — the leader reads the tool result (Step 3 summary token,
-#     5a run-log path, 5c analyzer JSON keys) with no shell parse; files in
-#     /tmp/triad-prompts (prompt and proposal; the OS temporary directory owns expiry).
-#   0.10.0 (2026-10-10): doc — Step 1 and Step 5d: every wrapper / applier call is ONE simple
-#     command with literal arguments; the prompt (Step 1) and the proposal (Step 5d,
-#     `--proposal-file`) go through files the leader writes with the Write tool.
-#     Measured (Claude Code 2.1.289): a command substitution / heredoc, an array
-#     expansion and a quoted-variable pipe cannot be checked before they run, so the
-#     plugin's grant does not match them; the plugin-root variable is substituted in
-#     the SKILL.md body only, so references carry no runnable bin command.
-#   0.9.0 (2026-10-10): doc — Step 5d: the apply step is a plain pipe into
-#     `apply_patch.py` (no `if` / `case`: the permission grant matches a plain
-#     command only); the leader reads its exit code (0 applied → `--repair-mode`
-#     re-run in its own call; 3 refused, nothing written).
-#   0.8.0 (2026-10-10): doc — the payload is one byte-safe UTF-8 encode (a lone
-#     surrogate leaves as its `\udXXX` escape, exit and token unchanged); the
-#     unemittable-payload demotion and its summary re-emission are removed.
-#   0.7.0 (2026-10-10): doc — `--review-web` is no longer recorded as an audit
-#     key (`review_web` is written nowhere; the recorded argv shows the launch).
-#   0.6.5 (2026-10-09): doc — one Gemini CLI floor `>= 0.63.0` on EVERY route
-#     (raw, write, `--web`, review; owner decision D-GEMINI-FLOOR-20261009),
-#     `cli_version` recorded on every route; `--help` stays review-route only.
-#   0.6.4 (2026-10-03): doc — `--review-web` (a review round's leg with web,
-#     R-REVIEW-WEB / C32: the complete review web profile, no investigation
-#     clause) beside `--web`; the summary tail names ` model=`.
-#   0.6.3 (2026-09-21): Step 1 records the flags S10/S6 landed — `--web` (the
-#     INVESTIGATION route: research policy + the shared web-evidence clause
-#     LAST; refused with `--sandbox`, with `auto_edit`, and with a
-#     verdict-schema `--pydantic`) and `--attempt <int>` (recorded on the
-#     transport receipt, never interpreted) — plus the C16 review-route
-#     preflight (version floor, `--help` capability probe, auth
-#     class) as pre-spawn refusals. NOT RUN live: gemini is not in service at
-#     the leaders' site, so these are implementation facts (t57/t58), not
-#     measured runtime behaviour. Doc-only.
-#   0.6.2 (2026-08-26): write-posture `--cwd` guard ENFORCED (owner ruling,
-#     closing the codex/claude symmetry gap) — `--sandbox workspace-write` or
-#     `--approval-mode auto_edit` without `--cwd` is refused EXIT_ARG_ERROR
-#     before any vendor spawn (gemini was the one write-capable wrapper
-#     without the guard). Defaults paragraph documents it; wrapper:
-#     gemini_wrapper.py main() precondition; test_gemini_sandbox.py +3 cases
-#     (existing workspace-write axis now passes --cwd, intent unchanged).
-#   0.6.1 (2026-08-01): Step 1 heredoc terminator is now collision-resistant
-#     (`TRIAD_GEMINI_PROMPT_EOF`, replacing the bare `PROMPT`) and
-#     `--prompt-file <absolute-path>` is the STANDING path for content the
-#     leader did not author AND for any body that QUOTES a dispatch template
-#     or a SKILL body (quoted text carries the house terminator verbatim —
-#     that is how this defect was first observed); it REPLACES the heredoc,
-#     the two being argparse-mutually-exclusive. A bare `PROMPT`
-#     line inside the body closed the heredoc early, and because the heredoc
-#     sits inside `$( … )` the remainder of the prompt then parsed as SHELL in
-#     the leader's own session — outside every worker-side sandbox. The prior
-#     wording asked the leader to predict whether pasted content might contain
-#     such a line, which is a gate that fails silently. Same fix as
-#     `triad-antigravity-dispatch` 0.13.0 (terminator) + 0.13.1 (the widened
-#     rule above), found by its skill-prompt-review round: the review packet
-#     quoting this very template tripped it.
-#   0.6.0: Step 5b SECURITY note — address the read-only repair analyzer by its
-#     plugin-scoped identity (`triad-dispatch:gemini-wrapper-repair`, export-
-#     injected) so a same-named project `agents/` agent cannot shadow the
-#     read-only plugin agent and act on the untrusted run-log; plus a product-
-#     agnostic read-only-verify-before-dispatch guard.
+version: 0.14.3
+# changelog: docs/reviews/2026-10-08-dispatch-skill-history.md (every entry; the newest section is last)
 ---
 
 # triad-gemini-dispatch
@@ -94,7 +12,7 @@ self-improving repair loop. The leader's standard "call gemini once" path.
 
 ## Use when
 
-- Leader has a discrete prompt and needs Gemini's answer (or a structured failure signal). Gemini is preferred for Android domain (XML / Compose / Material), vision tasks, Google-ecosystem queries.
+- Leader has a discrete prompt and needs Gemini's answer (or a structured failure signal). gemini is the legacy compatibility route; agy is the default Google leg.
 - Lane note: this leg targets an environment with a working Gemini CLI credential (enterprise/business tier, or wherever `gemini` still authenticates) or an explicit user request for gemini; the DEFAULT Google-family leg for individual-tier environments is `triad-antigravity-dispatch` (agy, the individual-tier successor).
 - A higher-level SKILL (e.g. `triad-cross-family-review`) wants the Gemini leg of a fan-out.
 - The user asks for a single gemini call on a discrete task.
@@ -115,7 +33,7 @@ makes the `unknown`-classification path correctly route to the repair sub-agent.
 3. **Leave the run-log in place.** Never delete the run-log or anything else under `_logs/`: the wrapper's own sweep collects it later. Passing its path to the analyzer (rule 2) is the leader's only act on it.
 4. **Repair agent ONLY on `unknown` / `extraction-error`.** Every other classification carries actionable meaning at the wrapper layer — dispatching the agent on them wastes the call.
 5. **Test isolation — dispatch prompt = production-shape only.** Use the § 5b prompt of the Step 5 procedure VERBATIM. No meta-context, no test framing, no "this is a verification" / "treat as fake" disclaimers, even when the dispatch is a sample/test scenario. Reasoning: any test framing leaks into the vendor model's behavior and corrupts both the sample and the repair agent's accumulated memory.
-6. **No model name pinning.** Gemini model names rot every few weeks. Use vendor's Auto router by default; `--model <name>` only when the user explicitly named the model. Date-anchor any pinned model usage.
+6. **No model name pinning.** Without a user-named model no `--model` is passed; a review round passes the roster's model (R-MODEL, C18).
 7. **Always spawn the repair agent in parallel — surfacing a failure is not repairing it.** When Step 4 routes a failure (`unknown` / `extraction-error`), spawn the `gemini-wrapper-repair` sub-agent with the `Agent` tool's `run_in_background: true`, so it runs alongside your foreground work; parse its inline proposal (§ 5c), and apply it (§ 5d) when it completes. The payoff is future routing, not this call — the analyzer grows the classifier so the same vendor error auto-routes next time, so a skipped spawn is a silent regression that keeps the error failing un-routed. Reporting the failure to the user is a separate obligation and does not discharge this one. Mechanism: the agent is a read-only analyzer that returns a JSON patch proposal; the leader applies it via the deterministic `apply_patch.py` (no LLM on the write path), which verifies routing on the failed run's stored record. Rule 4 scopes *which* classes route here; this rule says always follow through when they do.
 8. **No plan/yolo approval modes.** The wrapper argparse accepts only `--approval-mode default|auto_edit`. Read-only dispatch uses `--sandbox read-only`, which attaches the per-call Policy Engine file instead of Gemini plan mode. `yolo` is not a permitted mode in this repo.
 
@@ -217,12 +135,10 @@ the classification is the token right after `[wrapper] gemini ` (e.g. `ok`,
 second emission corrects. On a failure, the run-log path is the value after
 `run-log: ` on its line (the last such line).
 
-Only a line that STARTS with that prefix counts (gate-1 r9 row r9-3): the
-summary tail carries a free-text field (`prompt_file=<abs>`), and a reading that
-took the last `[wrapper] gemini <token> ` ANYWHERE in the line once let a prompt
-file under a directory named `…[wrapper] gemini ok …` override the emitted token
-(an `extraction-error` run read as `ok`, and the MANDATORY repair routing never
-fired). The engine also percent-escapes every free-text field of the summary
+Only a line that STARTS with that prefix counts: the summary tail carries a
+free-text field (`prompt_file=<abs>`), so a reading that takes the last
+`[wrapper] gemini <token> ` ANYWHERE in the line could read a token the wrapper
+never emitted. The engine also percent-escapes every free-text field of the summary
 (`_common._summary_field` — SPACE and `[` / `]` are outside the safe set, so the
 sequence cannot be built inside `prompt_file=`; an ordinary POSIX path is
 emitted byte-identically and the audit row keeps the raw value) — the two

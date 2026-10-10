@@ -72,7 +72,7 @@ EXIT_CLI_FAIL = 1
 EXIT_TIMEOUT = 2
 EXIT_ARG_ERROR = 3
 EXIT_BINARY_MISSING = 4
-EXIT_RATE_GIVE_UP = 64   # transient retry exhausted → Sonnet repair sub-agent
+EXIT_RATE_GIVE_UP = 64   # transient retry exhausted → the leader waits and retries or surfaces (not repair-routed)
 EXIT_TERMINAL = 65       # cli-sub-cap / token-limit / oauth-env → user escalate
 EXIT_SCHEMA_FAIL = 66    # pydantic validation failed even after 1 retry
 EXIT_SCHEMA_REJECTED = 67  # codex refused --output-schema at submit (massage/strict-rule drift)
@@ -98,7 +98,7 @@ _EXIT_BY_CLASSIFICATION: dict[str, int] = {
         "vendor-error": EXIT_TERMINAL,  # agy: rc!=0 but a non-empty answer — surface, NOT repair
         "admission-refused": EXIT_TERMINAL,  # agy: a tool OUTSIDE the agent allowlist in the stream (v2 census) — surface, NOT repair
         "vendor-timeout": EXIT_TERMINAL,  # agy: the vendor's OWN turn timeout (result.error "timeout waiting for response", empty answer) — surface, NOT repair
-        "truncated-answer": EXIT_TERMINAL,  # agy: CLI-side mid-answer fold (driver hardcodes 65 too; the row keeps the map and the registry comment in agreement — gate r2 row 17)
+        "truncated-answer": EXIT_TERMINAL,  # agy: CLI-side mid-answer fold (driver hardcodes 65 too; the row keeps the map and the registry comment in agreement)
         "input-delivery-failed": EXIT_TERMINAL,  # wrapper-SET, never a classify() result: the stdin prompt was not confirmed delivered (write/flush/encode failed or unconfirmed) while the child exited 0 — surface, NOT repair (codex handoff 2026-09-18; t48/f12)
         "unknown": EXIT_CLI_FAIL,
 }
@@ -350,20 +350,20 @@ def _agy_tool_name(info, su) -> str:
 # headless permission denial ("User denied permission to run command:\n<the
 # model's command line>") or a PreToolUse hook's refusal ("tool call denied
 # by pre-tool hook: <reason>", measured 2026-09-17 on agy 1.2.5; the run stays
-# SUCCESS and the call never executes). ANCHORED on purpose (S2 gate r1, codex
-# C3 + agy A1, two families): typed error messages echo model-authored
-# arguments AFTER a newline (r2/N2), and a diagnostic can QUOTE the phrase
-# mid-message ("command exited 1: sh: echo denied by pre-tool hook …") — such a
-# call RAN, its effect is unknown, and it must stay an ordinary error.
+# SUCCESS and the call never executes). ANCHORED on purpose: typed error
+# messages echo model-authored arguments AFTER a newline, and a diagnostic can
+# QUOTE the phrase mid-message ("command exited 1: sh: echo denied by pre-tool
+# hook …") — such a call RAN, its effect is unknown, and it must stay an
+# ordinary error.
 _AGY_DENIAL_PREFIXES = ("tool call denied by pre-tool hook",
                         "user denied permission")
 # The vendor's headless denial as CAPTURED (docs/spikes/2026-08-22-agy-
-# permission-ladder/out/*.stream.jsonl; S2 gate r2, claude): `permission check
+# permission-ladder/out/*.stream.jsonl): `permission check
 # failed for <verb> "<arg>": user denied permission …` — the model-authored
 # argument sits INSIDE the quotes, so the head is judged at position 0 and
 # the denial tail AFTER the last double quote; a quoted phrase cannot forge it.
 _AGY_PERMISSION_HEAD = "permission check failed for "
-# EVERY captured tail (S2 gate r3, codex): the headless user denial and the
+# EVERY captured tail: the headless user denial and the
 # retired v1.2 settings deny-rule shape (`Permission denied for <verb>(…).
 # Matches user-configured deny rule.`, ladder F4 + G). A head followed by any
 # other tail (#826 `invalid_args`) is not a denial.
@@ -391,8 +391,8 @@ def _agy_step_denied(su) -> bool:
         return True
     if first.startswith(_AGY_PERMISSION_HEAD):
         # after the LAST `": ` — the tail echoes the argument, which may itself
-        # carry a double quote (S2 gate r3, claude); a bare last-quote split
-        # landed inside that echo
+        # carry a double quote; a bare last-quote split would land inside that
+        # echo
         tail = first.rsplit('": ', 1)[-1] if '": ' in first else ""
         return tail.startswith(_AGY_PERMISSION_TAILS)
     return False
@@ -411,7 +411,7 @@ def _agy_tool_class(name: str) -> str:
 
 def _agy_conversation_ids(values) -> tuple:
     """(ids, omitted) — the ORDERED, DEDUPED vendor conversation ids among
-    `values`, bounded by the list cap (gate-1 r13 row r13-2, spec case C23).
+    `values`, bounded by the list cap (spec case C23).
 
     The hook load check attributes each PreToolUse hook row to the run that
     made it BY THIS ID, so an id is recorded WHOLE or not at all: a
@@ -490,7 +490,7 @@ def digest_agy_stream(events: list, result=None) -> dict:
     read_attempts: list = []
     tool_steps = 0
     error_steps = 0
-    # WHOSE run this was (gate-1 r13 row r13-2, spec case C23): the vendor
+    # WHOSE run this was (spec case C23): the vendor
     # conversation id on the `init` event (top level) and on EVERY
     # `step_update` — MEASURED 2026-09-26 to be the id the PreToolUse hook
     # logs. Collected before any step filter, so a run whose only call was a
@@ -635,8 +635,8 @@ def merge_agy_digests(digests) -> Optional[dict]:
         omitted += max(0, len(union) - _AGY_DIGEST_LIST_CAP)
         merged[key] = union[:_AGY_DIGEST_LIST_CAP]
         merged[key + "_omitted"] = omitted
-    # The UNION of every attempt's conversation ids (gate-1 r13 row r13-2),
-    # bounded like the lists above; each attempt's own ids ride on its
+    # The UNION of every attempt's conversation ids, bounded like the lists
+    # above; each attempt's own ids ride on its
     # `attempts[]` row below, which is what the hook load check attributes.
     conv_all: list = []
     conv_omitted = 0
@@ -662,19 +662,19 @@ def merge_agy_digests(digests) -> Optional[dict]:
         entry: dict = {"attempt": i + 1, "status": d.get("status"),
                        "tool_steps": d.get("tool_steps", 0),
                        "error_steps": d.get("error_steps", 0)}
-        # WHICH attempt's transcript was a prefix (gate-1 r6 row r6-1). The
+        # WHICH attempt's transcript was a prefix. The
         # driver stamps the engine's reader outcome onto each attempt's own
         # digest, so a merged audit can never present a knowingly incomplete
         # earlier attempt as ordinary evidence. Omit-when-DEFAULT.
         if d.get("capture_complete") is False:
             entry["capture_complete"] = False
-        # WHETHER this attempt's transcript was CUT MID-LINE (gate-1 r9 row
-        # r9-10). Same omit-when-default rule: a cut tail does not refuse
+        # WHETHER this attempt's transcript was CUT MID-LINE. Same
+        # omit-when-default rule: a cut tail does not refuse
         # the attempt, so the merged audit is the only place a reader can
         # see that the transcript stops short of the vendor's last event.
         if d.get("truncated_tail"):
             entry["truncated_tail"] = True
-        # WHETHER this attempt's run was INTERRUPTED (gate-1 r17 row r17-1):
+        # WHETHER this attempt's run was INTERRUPTED:
         # the driver stamps `timeout` (the wrapper killed it at its deadline)
         # or `signal` (a negative vendor rc). Same omit-when-default rule: a
         # transcript that ends on a line boundary carries neither marker
@@ -689,10 +689,10 @@ def merge_agy_digests(digests) -> Optional[dict]:
             vals = d.get(key)
             entry[key] = (len(vals) if isinstance(vals, list) else 0) \
                 + int(d.get(key + "_omitted") or 0)
-        # THIS attempt's own conversation ids (gate-1 r13 row r13-2, spec
-        # case C23) — ALWAYS present, possibly empty, so the hook load check
-        # can attribute hook rows to the run that made them. The omitted
-        # count follows the omit-when-default rule of this row.
+        # THIS attempt's own conversation ids (spec case C23) — ALWAYS
+        # present, possibly empty, so the hook load check can attribute hook
+        # rows to the run that made them. The omitted count follows the
+        # omit-when-default rule of this row.
         vals = d.get("conversation_ids")
         entry["conversation_ids"], over = _agy_conversation_ids(
             vals if isinstance(vals, list) else [])
@@ -1407,41 +1407,20 @@ _SUMMARY_FIELD_SAFE = "/._-~+=@,:"
 
 
 def _summary_field(value: str) -> str:
-    """One FREE-TEXT value, escaped so it cannot forge a summary line
-    (gate-1 r9 row r9-3).
+    """One FREE-TEXT value, percent-escaped for the summary line.
 
     The dispatch SKILLs read the classification off this line with a GREEDY
-    regex — `sed -E 's/.*\\[wrapper\\] <cli> ([a-z-]+) .*/\\1/'` — which takes
-    the LAST `[wrapper] <cli> <token> ` occurrence ANYWHERE in the line. The
-    tail's only free-text member is a vendor- or caller-supplied PATH, and a
-    path is allowed to contain spaces and brackets, so a prompt file living
-    under a directory literally named `…[wrapper] codex ok …` overrode the
-    token the wrapper emitted: an `extraction-error` run parsed as
-    `ok`, and the mandatory repair-agent routing never fired.
+    regex that takes the LAST `[wrapper] <cli> <token> ` occurrence in the
+    line, and the tail's only free-text member is a PATH. The safe set below
+    excludes SPACE and `[` / `]`, so that sequence cannot appear inside the
+    field, and the field is ASCII. An ordinary POSIX path is emitted
+    BYTE-IDENTICALLY (the C28 receipt an operator reads); the audit row keeps
+    the raw value.
 
-    `shlex.quote` does NOT close this — it wraps the value in single quotes
-    and leaves every inner byte alone, so the forged sequence survives
-    inside the quotes. Percent-escaping does: the safe set below excludes
-    SPACE and `[` / `]`, so `[wrapper] <cli> <token> ` is unconstructible
-    inside the field, and the whole field is ASCII (a U+2028 a
-    `splitlines()` reader would honour as a line break cannot survive
-    either). An ordinary POSIX path — alphanumerics plus the safe
-    punctuation — is emitted BYTE-IDENTICALLY, so the C28 receipt an
-    operator reads is unchanged; only an exotic path is visibly escaped, and
-    the audit row keeps the raw value either way.
-
-    THE VALUE IS FILESYSTEM BYTES, NOT TEXT (gate-1 r10 row r10-5).
-    `quote()` on a `str` encodes it STRICTLY as UTF-8, and a path is bytes:
-    Python hands an undecodable byte back as a lone surrogate
-    (`surrogateescape`, the documented `os.fsdecode` round-trip), so a
-    prompt file under such a name raised `UnicodeEncodeError` here — inside
-    the summary emission, i.e. AFTER the vendor had answered and BEFORE the
-    audit row and the answer were written. A completed dispatch lost its
-    answer, its record and its receipt to a filename. `os.fsencode`
-    reproduces the filesystem's own bytes exactly (it is the inverse of the
-    decode that produced the surrogate) and `quote` percent-escapes any
-    byte outside the safe set, so an ordinary POSIX path is still emitted
-    byte-identically and an exotic one is escaped rather than fatal.
+    THE VALUE IS FILESYSTEM BYTES, NOT TEXT: `os.fsencode` reproduces the
+    filesystem's own bytes (an undecodable byte arrives as a lone surrogate)
+    and `quote` percent-escapes any byte outside the safe set, so an exotic
+    name is escaped rather than fatal.
     """
     if isinstance(value, str):
         value = os.fsencode(value)
@@ -1455,8 +1434,8 @@ def _summary_tail(dispatch_attempt: int, prompt_file_resolved: Optional[str],
 
     Appended AFTER `elapsed=` so the dispatch SKILLs' prefix grep
     (`[wrapper] <cli> <classification> …`) and `tests/lib/dispatch.sh`'s sed
-    extraction are unaffected. The path is escaped by `_summary_field` (row
-    r9-3); the REDACTION sentinel is wrapper-authored ASCII and is emitted
+    extraction are unaffected. The path is escaped by `_summary_field`; the
+    REDACTION sentinel is wrapper-authored ASCII and is emitted
     as it is. `model=` (spec C35 / DL-3) follows `prompt_file=` only when a
     model was REQUESTED; it is escaped by the same `_summary_field` and never
     redacted (a catalog slug is not prompt-bearing). Absent = the CLI's config
@@ -1478,12 +1457,10 @@ def _summary_tail(dispatch_attempt: int, prompt_file_resolved: Optional[str],
 def _emit_canonical_summary(cli: str, result) -> None:
     """Re-emit the canonical one-line summary from a RunResult's CURRENT state.
 
-    EVERY PROMOTION RE-EMITS THROUGH THIS FUNCTION (gate-1 r12 row r12-3).
-    `run_cli_with_retry`'s promotions (schema-fail, the terminal classes,
-    schema-rejected, the capacity give-up, extraction-error) used to
-    hand-build the line WITHOUT `_summary_tail`, so the LAST line of a
-    promoted result carried no `attempt=` / `prompt_file=` / `model=` and
-    "absent model = the CLI default" was wrong exactly on failure paths.
+    EVERY PROMOTION RE-EMITS THROUGH THIS FUNCTION: `run_cli_with_retry`'s
+    promotions (schema-fail, the terminal classes, schema-rejected, the
+    capacity give-up, extraction-error) carry the same `attempt=` /
+    `prompt_file=` / `model=` tail as any other last line.
 
     BYTE-FORMAT IDENTICAL to `_run_once`'s own line, `_summary_tail`
     included, so one grep + sed reads either emission."""
@@ -2830,7 +2807,7 @@ def _run_once(
     result.prompt_file_resolved = prompt_file_resolved
     result.requested_model = requested_model
     result.requested_reasoning = requested_reasoning
-    # Row r5-2: the reader outcome as EVIDENCE, independent of the rung that
+    # The reader outcome as EVIDENCE, independent of the rung that
     # consumed it. `reader_failed` above is gated on `rc == 0`; this is not.
     result.capture_complete = not reader_failures and not interrupted
     if classify_and_log:
@@ -3017,8 +2994,8 @@ def run_cli_with_retry(
             # `_run_once` ALREADY judged (exit 65, the answer blanked), and
             # this rung returns that RunResult UNCHANGED: it is where the
             # two shared-driver wrappers honour an engine-decided terminal
-            # exit, and the reason the r3-1 defect was agy-only (that driver
-            # spawns `_run_once` itself). Do not "re-classify" here — the
+            # exit (the agy driver spawns `_run_once` itself and honours it
+            # there). Do not "re-classify" here — the
             # engine decided from the reader and writer records, which this
             # layer cannot see. At the dispatch SKILL layer `unknown` routes to
             # the repair analyzer; a `timeout` surfaces and is never routed.
@@ -3337,17 +3314,17 @@ def audit(cli: str, cmd: list[str], prompt: str, result: RunResult) -> None:
     with lock_path.open("a", encoding="utf-8") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            # errors="backslashreplace" (gate r1 fix, codex must-fix + claude,
-            # converged 2026-09-18): the record may carry a prompt head that
-            # is NOT UTF-8-encodable (argv is decoded with surrogateescape, so
-            # an invalid byte in `--prompt` becomes a lone surrogate — exactly
-            # the input `_run_once` now refuses pre-spawn at exit 3). A strict
-            # writer re-raised UnicodeEncodeError HERE, killing the wrapper at
-            # rc 1 with a traceback and losing the refusal's exit code, this
-            # record and the run-log. The escape (`\udcff`) is valid JSON;
-            # Python's json round-trips it to the same code point, while jq
-            # (1.7.1 measured, gate r2) DISPLAYS it as U+FFFD — the file itself
-            # stays intact. Every encodable record is byte-identical.
+            # errors="backslashreplace": the record may carry a prompt head
+            # that is NOT UTF-8-encodable (argv is decoded with
+            # surrogateescape, so an invalid byte in `--prompt` becomes a lone
+            # surrogate — exactly the input `_run_once` refuses pre-spawn at
+            # exit 3). A strict writer would raise UnicodeEncodeError HERE,
+            # killing the wrapper at rc 1 with a traceback and losing the
+            # refusal's exit code, this record and the run-log. The escape
+            # (`\udcff`) is valid JSON; Python's json round-trips it to the
+            # same code point, while jq (1.7.1 measured) DISPLAYS it as U+FFFD
+            # — the file itself stays intact. Every encodable record is
+            # byte-identical.
             with path.open("a", encoding="utf-8", errors="backslashreplace") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 # Flush the record while the audit lock is held so append and
@@ -3563,7 +3540,8 @@ _VENDOR_EXIT_CODE_MAX = 125
 # JSON validation — EXIT_SCHEMA_FAIL, not in classify()); task-blocked (a shared
 # contract row with no producer on this host — an envelope reading, not an exit);
 # config-conflict
-# (wrapper/config condition via CONFIG_CONFLICT_PATTERNS + agy settings txn).
+# (wrapper/config condition via CONFIG_CONFLICT_PATTERNS and the wrappers' own
+# pre-dispatch checks; this host runs no agy settings transaction).
 # Verified against classify() + the wrapper exit-code semantics (2026-07-06).
 # This applies ONLY to the vendor_exit_map path — the PATTERN path already
 # enforces classification == PATTERN_LIST_CLASS[pattern_list].
@@ -4001,7 +3979,7 @@ def emit_run_log(
     # plus the full wrapper argv (an inline `--prompt` rides there whole), so
     # a lone surrogate from a surrogateescape-decoded `--prompt` (the input the
     # pre-spawn refusal exists for) must not turn this write into a traceback
-    # (gate r1 fix 2026-09-18; the audit writer carries the same guard).
+    # (the audit writer carries the same guard).
     with path.open("w", encoding="utf-8", errors="backslashreplace") as f:
         json.dump(rec, f, ensure_ascii=False, indent=2)
 
@@ -4177,7 +4155,7 @@ _READ_AUDIT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB total cap, same policy shape a
 
 
 def _publish_json(path: Path, doc: dict, mode: int) -> None:
-    """Publish `doc` at `path` ATOMICALLY (gate-1 r19 row r19-4): the JSON is
+    """Publish `doc` at `path` ATOMICALLY: the JSON is
     written to a temp file in the SAME directory
     (`<final-name>.tmp-<pid>-<uuid8>`, created O_EXCL | O_NOFOLLOW with
     `mode`), fsync'd, then `os.replace`d over the final name — so the final path is always either absent (or its
@@ -4188,9 +4166,8 @@ def _publish_json(path: Path, doc: dict, mode: int) -> None:
     so the caller's best-effort handling is unchanged. A symlink at the final
     name is replaced, never written through (`os.replace` renames over the
     link itself)."""
-    # the uuid nonce (gate-1 r20 row r20-5): a process killed between create
-    # and replace leaves its temp behind, and a later wrapper that got the
-    # SAME pid failed O_EXCL on `<name>.tmp-<pid>` and emitted NO audit
+    # the uuid nonce: a temp left by a process killed between create and
+    # replace never collides with a later wrapper that got the SAME pid
     tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL
                  | getattr(os, "O_NOFOLLOW", 0), mode)
@@ -4231,8 +4208,8 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
     default dir), and a symlink already at the override path is replaced by
     the atomic publish, never written through.
 
-    EVERY write here is an ATOMIC PUBLISH (`_publish_json`, gate-1 r19 row
-    r19-4): temp file in the same directory, fsync, `os.replace` — the final
+    EVERY write here is an ATOMIC PUBLISH (`_publish_json`): temp file in
+    the same directory, fsync, `os.replace` — the final
     path is absent (or its previous complete content) or the new complete
     document, never a partial one a concurrent reader could see.
 
@@ -4283,7 +4260,7 @@ def emit_read_audit(cli: str, result: RunResult) -> Optional[Path]:
             },
             "digest": result.read_audit,
         }
-        # ATOMIC PUBLISH (gate-1 r19 row r19-4) — `_publish_json`. The
+        # ATOMIC PUBLISH — `_publish_json`. The
         # override keeps its 0600 mode; the default-dir file keeps the plain
         # `open("w")` mode (0666 less the umask).
         _publish_json(path, rec, 0o600 if override else 0o666)
@@ -4520,7 +4497,7 @@ def debug_log(cli: str, prompt: str, result: RunResult) -> None:
     # errors="backslashreplace": the debug dump stores a truncated prompt CELL
     # (`_debug_cell`); a lone surrogate (surrogateescape-decoded argv) in that
     # head must not abort the dump with a
-    # traceback (gate r1 fix 2026-09-18; same guard as audit / run-log).
+    # traceback (same guard as audit / run-log).
     with path.open("a", encoding="utf-8", errors="backslashreplace") as f:
         try:
             fcntl.flock(f, fcntl.LOCK_EX)
