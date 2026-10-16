@@ -576,16 +576,23 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
     Hosts re-run `python3 <plugin bin>/antigravity_wrapper.py
     --setup-agents` (the `triad-antigravity-dispatch` Host setup line) after
     an upgrade that changes the agent body.
-- **Model.** The entry's `agy.model` is passed as
-  `--model=<value>` to `antigravity_wrapper.py` (the Pro/High
-  variant — agy's catalog encodes effort in the model slug, so the slug stays
-  this leg's pinned mechanism; the wrapper also passes `--effort` through on
-  agy >= 1.1.10, but the catalog lists effort-suffixed selectors, so the
-  leg does not add a separate `--effort`). The wrapper fail-closes a `--model`
-  dispatch on agy < 1.1.10 (`config-conflict` 65 — the pin was silently VOID
-  there, see the pin-floor note above): treat that exit as leg-not-run and
-  surface "run `agy update`", never re-dispatch pinless to squeeze a verdict
-  out of the shallow default.
+- **Model.** The entry's `agy.model` is passed as `--model=<value>` to
+  `antigravity_wrapper.py`, and a non-null `agy.effort` as
+  `--effort=<value>` (the shipped rosters set `high`); a null `agy.effort`
+  adds no `--effort`. agy refuses a pinned model / effort PAIR it does not
+  accept — `config-conflict` 65, no retry. The one measured
+  `--effort is not supported for model "<m>"` refusal was for a model agy
+  no longer lists (the same pin without `--effort` printed `is not
+  recognized as a known model or custom model in settings`), so the FIRST
+  remedy is another model agy lists (`agy models`, run by the operator) in
+  the roster entry, on a NEW round; `agy.effort` null is the remedy only
+  for a model agy lists that refuses `--effort` — no run shows that case
+  yet. The wrapper
+  fail-closes a `--model` / `--effort` dispatch on agy < 1.1.10
+  (`config-conflict` 65 — the pin was silently VOID there, see the
+  pin-floor note above): treat that exit as leg-not-run and surface "run
+  `agy update`", never re-dispatch pinless to squeeze a verdict out of the
+  shallow default.
 - **Read-audit binding.** The agy dispatch line binds the attempt's own audit
   path: `prepare` / `retry` render `env
   TRIAD_READ_AUDIT_FILE=<attempt>/read-audit.json` into it, so no two entries

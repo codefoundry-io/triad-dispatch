@@ -117,7 +117,8 @@ def _main(ctx: dict) -> int:
         "--model",
         default=None,
         help="Override model for this dispatch (`-c model=\"<slug>\"`); free-form "
-             "catalog slug from `codex debug models` (default: config-alive model). "
+             "pin passed to the CLI as written, no catalog lookup (default: "
+             "config-alive model); a model codex refuses ends config-conflict. "
              "No slug is ever hardcoded here — dispatch-time pin only. "
              "Recorded as `model=<slug>` on the `[wrapper] codex` summary line and "
              "as `requested_model` in the audit row; absent = the CLI's config "

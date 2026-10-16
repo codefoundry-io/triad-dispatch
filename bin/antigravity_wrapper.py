@@ -1404,22 +1404,24 @@ def _main(ctx: dict) -> int:
         # (2026-07-31 migration). Surface as config-conflict (user runs
         # `agy update`), audited like every other terminal outcome.
         found = _ver_text(ver) if ver else "unprobeable"
+        floor_err = (f"agy {found} < 1.1.8 — the stream-json transport "
+                     f"requires agy >= 1.1.8; run `agy update`")
+        _common.log(floor_err)
         r = _common.RunResult(_common.EXIT_TERMINAL, "", "", 0.0,
                               classification="config-conflict", spawned=False,
-                              extraction_error=(
-                                  f"agy {found} < 1.1.8 — the stream-json transport "
-                                  f"requires agy >= 1.1.8; run `agy update`"))
+                              extraction_error=floor_err)
     elif (args.model or args.effort) and ver < _MODEL_FLAG_FLOOR:
         # Fail-CLOSED pin floor (see _MODEL_FLAG_FLOOR): below 1.1.10 these
         # flags were silently IGNORED (default-model fallback) — dispatching
         # would void the requested tier with no error.
         found = _ver_text(ver)
+        floor_err = (f"agy {found} < 1.1.10 — --model/--effort were "
+                     f"silently ignored (default-model fallback) before "
+                     f"1.1.10; run `agy update` or drop the pin")
+        _common.log(floor_err)
         r = _common.RunResult(_common.EXIT_TERMINAL, "", "", 0.0,
                               classification="config-conflict", spawned=False,
-                              extraction_error=(
-                                  f"agy {found} < 1.1.10 — --model/--effort were "
-                                  f"silently ignored (default-model fallback) before "
-                                  f"1.1.10; run `agy update` or drop the pin"))
+                              extraction_error=floor_err)
     elif args.sandbox == "read-only" and ver < AGY_V2_FLOOR:
         # Fail-CLOSED v2 floor: `--add-dir` read auto-allow and the allowlist
         # agent were measured on 1.1.18; there is no legacy path (v2).

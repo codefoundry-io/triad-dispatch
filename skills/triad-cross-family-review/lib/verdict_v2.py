@@ -627,8 +627,8 @@ def _write_admission_seal(target: Path, receipt: Path, receipt_sha: str,
             tmp.unlink(missing_ok=True)
     except OSError as e:
         return (f"--admitted-out: the reply was admitted but the attempt "
-                f"could not be sealed ({e}) - re-run this same admission once "
-                f"the cause is fixed")
+                f"could not be sealed ({e}) - run `collect`, which judges and "
+                f"seals the admitted reply")
     return None
 
 

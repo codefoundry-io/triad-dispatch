@@ -117,8 +117,11 @@ anything else prompts.
     Report the three lines, then promote the phrase (§ 5e).
   - **3** — the proposal or the run-log was refused (an invalid proposal, a
     run-log that cannot be read or names another CLI, or a record whose class
-    was decided outside the classifier); nothing was written. Surface
-    `proposal rejected by applier: <REASON>` and treat it as an escalate.
+    was decided outside the classifier), or the extension could not be written
+    (`[apply_patch] could not update the classifier extension: <reason>` — a
+    full disk, an unwritable config home, a symlink at the lock path); nothing
+    was written. Surface `proposal rejected by applier: <REASON>` and treat it
+    as an escalate.
   - **4** — applied, but the stored record does not route to the proposed class
     (or already did). The entry stays applied. Surface `applied, but the stored
     record does not route to the proposed class` with the three lines, and treat
@@ -192,7 +195,7 @@ shipped list.
 | OUTCOME | Next action |
 |---|---|
 | propose → applier exit 0 | Applied and verified on the stored record — report the `verify:` / `evidence:` / `sentence:` lines, then promote the phrase (§ 5e). The framework now catches future identical errors. |
-| propose → applier exit 3 | Proposal or run-log refused, nothing written — surface REASON, treat as escalate. |
+| propose → applier exit 3 | Proposal or run-log refused, or the extension could not be written; nothing written — surface REASON, treat as escalate. |
 | propose → applier exit 4 | Applied, but the stored record does not route to the proposed class — surface it with the three lines, treat as escalate. |
 | escalate | Surface REASON. Manual diagnosis needed; no apply. |
 | anything else | Surface "repair skipped — unparseable analyzer output"; no apply. |

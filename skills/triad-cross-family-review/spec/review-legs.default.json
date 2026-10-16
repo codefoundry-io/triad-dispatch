@@ -24,7 +24,7 @@
         "reasoning": "high"
       },
       "timeout_s": 3600,
-      "note": "Host A codex leg: codex_wrapper.py with --sandbox read-only, stdin prompt transport; model = the recommended explicit codex ID (spec R-ROSTER; ONE codex leg) so the baseline does not depend on the operator's ~/.codex/config.toml; an explicit null override = the CLI's config default, frozen as null; every round binds review_web_authorized true under the owner's standing authorization, so this leg runs with codex's --search (R-REVIEW-WEB)."
+      "note": "Host A codex leg: codex_wrapper.py with --sandbox read-only, stdin prompt transport; model = the recommended explicit codex ID (spec R-ROSTER; ONE codex leg) so the baseline does not depend on the operator's ~/.codex/config.toml; an explicit null override = the CLI's config default, frozen as null; the leg runs with codex's `--search` when the round's bound `review_web_authorized` is true, which the owner's standing authorization makes every round (R-REVIEW-WEB); absent on a false round."
     },
     {
       "name": "google",
@@ -35,7 +35,7 @@
         "route": null
       },
       "agy": {
-        "model": "gemini-3.1-pro-high",
+        "model": "gemini-4-argon-high",
         "effort": "high"
       },
       "gemini": {

@@ -98,7 +98,7 @@ _EXIT_BY_CLASSIFICATION: dict[str, int] = {
         "vendor-error": EXIT_TERMINAL,  # agy: rc!=0 but a non-empty answer — surface, NOT repair
         "admission-refused": EXIT_TERMINAL,  # agy: a tool OUTSIDE the agent allowlist in the stream (v2 census) — surface, NOT repair
         "vendor-timeout": EXIT_TERMINAL,  # agy: the vendor's OWN turn timeout (result.error "timeout waiting for response", empty answer) — surface, NOT repair
-        "truncated-answer": EXIT_TERMINAL,  # agy: CLI-side mid-answer fold (driver hardcodes 65 too; the row keeps the map and the registry comment in agreement)
+        "truncated-answer": EXIT_TERMINAL,  # two origins: agy's CLI-side mid-answer fold (driver hardcodes 65 too; the row keeps the map and the registry comment in agreement), and for EVERY CLI the transport origin — an output reader that failed or did not finish after vendor exit 0
         "input-delivery-failed": EXIT_TERMINAL,  # wrapper-SET, never a classify() result: the stdin prompt was not confirmed delivered (write/flush/encode failed or unconfirmed) while the child exited 0 — surface, NOT repair (codex handoff 2026-09-18; t48/f12)
         "unknown": EXIT_CLI_FAIL,
 }
@@ -138,6 +138,9 @@ CLI_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
         "SCHEMA_REJECTED_PATTERNS": (
             "invalid schema for response_format",  # codex error event, code invalid_json_schema: "Invalid schema for response_format 'codex_output_schema': …" — 2 real rows (_logs/codex/audit.jsonl, 2026-09-20)
         ),
+        "CONFIG_CONFLICT_PATTERNS": (
+            "model is not supported when using codex with a chatgpt account",  # a refused model pin (R-MODEL): "The '<model>' model is not supported when using Codex with a ChatGPT account." — the JSONL `type: error` event's message under --json (codex 0.160.0, run-log 20261010T121717Z-22396; spec DL-155)
+        ),
     },
     "gemini": {
         "SERVER_CAPACITY_PATTERNS": (
@@ -158,6 +161,10 @@ CLI_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
         ),
         "CLI_SUB_CAP_PATTERNS": (
             "your ai credits balance is too low to continue",  # agy "Your AI credits balance is too low to continue." — agy changelog 1.2.15 (vendor source); contracts/vendor-failure-lines.json agy row; stream position not captured
+        ),
+        "CONFIG_CONFLICT_PATTERNS": (
+            "is not recognized as a known model or custom model in settings",  # a refused model pin (R-MODEL): stderr "error: invalid model selection (…): model <m> is not recognized as a known model or custom model in settings" (agy 1.3.3, run-log 20261010T121723Z-22698; spec DL-155)
+            "--effort is not supported for model",  # a refused model/effort pair (R-MODEL): stderr "error: invalid model selection (--model \"<m>\" --effort \"<e>\"): --effort is not supported for model \"<m>\"" (agy 1.3.5, run-log 20261015T151222Z-23378-83ff86c4; lib PR #12 row)
         ),
     },
 }
@@ -946,11 +953,23 @@ def _emit_payload(data: bytes) -> None:
 
 
 def require_binary(name: str) -> str:
+    """The vendor CLI resolved from PATH, as an ABSOLUTE path.
+
+    A relative PATH entry makes `shutil.which` return a path relative to this
+    process's cwd, while the dispatch spawns the binary under another cwd
+    (`Popen(cwd=...)`), where POSIX would resolve it again. A relative hit is
+    PREFIXED with the cwd `which` searched, components preserved: no
+    `normpath` (a lexical `..` collapse names another file when a component
+    before it is a symlink; the kernel resolves `..` after the link), no
+    symlink following, no pin (PATH only, DL-105). An absolute hit is returned
+    unchanged. Absent from PATH -> EXIT_BINARY_MISSING."""
     path = shutil.which(name)
     if not path:
         log(f"binary '{name}' not found on PATH")
         sys.exit(EXIT_BINARY_MISSING)
-    return path
+    if os.path.isabs(path):
+        return path
+    return os.path.join(os.getcwd(), path)
 
 
 def _classifier_extension_path() -> Path:
@@ -1796,6 +1815,12 @@ def classify(
     # NOT routed to the repair agent.
     if any(p in blob for p in _p("SCHEMA_REJECTED_PATTERNS")):
         return "schema-rejected"
+    # codex --json writes a turn's error to stdout: the typed carrier is each
+    # `type: error` event's message, never the whole output (R-CLASSIFY)
+    if cli == "codex":
+        stderr_blob += "\n" + "\n".join(
+            o["message"] for o in _json_lines(stdout)
+            if o.get("type") == "error" and isinstance(o.get("message"), str)).lower()
     if any(p in stderr_blob for p in _p("CONFIG_CONFLICT_PATTERNS")):
         return "config-conflict"
     return "unknown"
@@ -3554,6 +3579,38 @@ assert (
 ), "VENDOR_EXIT_PROPOSAL_CLASSES must be a subset of REPAIR_CLASSIFICATION_TOKENS"
 
 
+def _lock_classifier_patches(ext_path: Path) -> int:
+    """Open the extension's `.lock` sidecar and flock it exclusively; returns
+    the held descriptor. A machine uninstall sweeps the lock file, the
+    extension and its directory while it holds the lock, so a run that waited
+    on a lock file that is then unlinked opens the path again (the directory
+    too) — every holder locks the file the path names now (the installer's
+    `_open_lock` rule). Opened O_NOFOLLOW: a symlink at the lock path is
+    refused (OSError), never followed."""
+    lock_path = ext_path.parent / (ext_path.name + ".lock")
+    while True:
+        ext_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                         0o600)
+        except FileNotFoundError:
+            continue  # the directory went away between mkdir and open (an uninstall sweep): recreate it
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            held = os.fstat(fd)
+            try:
+                now = os.lstat(lock_path)
+            except FileNotFoundError:
+                now = None
+        except BaseException:
+            os.close(fd)
+            raise
+        if now and (now.st_dev, now.st_ino) == (held.st_dev, held.st_ino):
+            return fd
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def apply_classifier_patch(cli: str, proposal: dict) -> str:
     """Validate + atomically merge a repair-analyzer proposal into the classifier
     extension JSON. The SINGLE trusted write path (zero LLM here).
@@ -3729,12 +3786,9 @@ def apply_classifier_patch(cli: str, proposal: dict) -> str:
         raise ValueError("apply_classifier_patch: reason must be a non-empty str")
 
     ext_path = _classifier_extension_path()
-    ext_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = ext_path.parent / (ext_path.name + ".lock")
-
-    with lock_path.open("a", encoding="utf-8") as lock:
+    lock_fd = _lock_classifier_patches(ext_path)
+    with os.fdopen(lock_fd, "a", encoding="utf-8") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX)
 
             # Read-or-{} defensively. Order matters (Q6a fix):
             #   FileNotFoundError → {}   (first patch — no file yet, fine)

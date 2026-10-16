@@ -37,14 +37,19 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import errno
+import fcntl
 import importlib.util
 import io
 import json
 import os
 import re
+import select
 import stat
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -754,13 +759,18 @@ def test_install_remove_leaves_no_sidecar():
             assert (tmp / "proj" / ".claude").is_dir(), "the user's .claude/ must stay"
 
 
-def test_install_leaves_no_lock_sidecar():
+def test_install_leaves_a_lock_sidecar_that_remove_takes_out():
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         with _Env(tmp) as e:
             target = tmp / "proj" / ".claude" / "settings.json"
             assert e.install(target) == 0
-            assert sorted(os.listdir(target.parent)) == [".triad-dispatch-managed.json", "settings.json"], os.listdir(target.parent)
+            assert sorted(os.listdir(target.parent)) == [
+                ".triad-dispatch-managed.json", ".triad-dispatch.lock",
+                "settings.json"], os.listdir(target.parent)
+            assert e.remove(target) == 0
+            assert sorted(os.listdir(target.parent)) == ["settings.json"], \
+                os.listdir(target.parent)
 
 
 def test_remove_with_a_hand_deleted_record_prints_only_the_plain_result():
@@ -1161,7 +1171,7 @@ def test_install_dry_run_names_the_hook_path_it_would_remove():
 
 
 # ── (W6-2) a preview of the install writes nothing ──────────────────────────
-def test_install_dry_run_creates_no_directory_and_no_file():
+def test_install_dry_run_creates_no_directory_and_no_lock_file():
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         with _Env(tmp) as e, _Machine(tmp) as m:
@@ -1176,7 +1186,7 @@ def test_install_dry_run_creates_no_directory_and_no_file():
                    f"{target}:\n" in out, out
             assert _snapshot(tmp) == before, out
             assert not (proj / ".claude").exists(), out
-            # an existing, empty .claude/: the preview creates nothing in it
+            # a .claude/ without a lock file: the preview creates none
             target.parent.mkdir()
             rc, out = m.run(*e.install_args(target), "--dry-run")
             assert rc == 0, out
@@ -1444,6 +1454,327 @@ def test_symlinked_record_is_read():
             assert not any(k.startswith("TRIAD_") for k in data["env"]), data
 
 
+# ── (A7) an unlinked lock file cannot split the lock ─────────────────────────
+def _same_inode(fd: int, path: Path) -> bool:
+    st, fst = os.stat(path, follow_symlinks=False), os.fstat(fd)
+    return (st.st_dev, st.st_ino) == (fst.st_dev, fst.st_ino)
+
+
+def test_open_lock_follows_an_unlinked_lock_file():
+    with tempfile.TemporaryDirectory() as t:
+        target = Path(t) / "proj" / ".claude" / "settings.json"
+        lock = target.parent / setup_permissions.LOCK_NAME
+        # a released, unlinked lock: a fresh open takes the path's inode
+        fd1 = setup_permissions._open_lock(target)
+        setup_permissions._release_lock(fd1, lock)
+        fd2 = setup_permissions._open_lock(target)
+        try:
+            assert _same_inode(fd2, lock)
+        finally:
+            setup_permissions._release_lock(fd2)
+        # a waiter blocked on the old inode while the holder unlinks and releases
+        # ends up on the inode the path names now, not on the unlinked one
+        holder = setup_permissions._open_lock(target)
+        blocking = threading.Event()
+        real = setup_permissions.fcntl
+
+        class _Shim:
+            LOCK_EX, LOCK_UN = real.LOCK_EX, real.LOCK_UN
+
+            @staticmethod
+            def flock(fd, op):
+                if op == real.LOCK_EX:
+                    blocking.set()
+                real.flock(fd, op)
+
+        def _unlink_and_release():
+            blocking.wait()
+            setup_permissions._release_lock(holder, lock)
+
+        worker = threading.Thread(target=_unlink_and_release)
+        worker.start()
+        setup_permissions.fcntl = _Shim
+        try:
+            waiter = setup_permissions._open_lock(target)
+        finally:
+            setup_permissions.fcntl = real
+            worker.join()
+        try:
+            assert lock.exists(), "the waiter holds a lock on an unlinked file"
+            assert _same_inode(waiter, lock)
+        finally:
+            setup_permissions._release_lock(waiter)
+
+
+# ── (A8) a lock file --remove created is removed when the run errors ─────────
+def test_remove_error_removes_only_a_lock_it_created():
+    for lock_before in (False, True):
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with _Env(tmp) as e, _Machine(tmp) as m:
+                target = tmp / "proj" / ".claude" / "settings.json"
+                assert e.install(target) == 0
+                target.write_text("{ not json", encoding="utf-8")
+                lock = target.parent / setup_permissions.LOCK_NAME
+                if not lock_before:
+                    lock.unlink()
+                rc, out = m.run("--remove", "--target", str(target))
+                assert rc == 1, out
+                assert lock.exists() == lock_before, (lock_before, out)
+
+
+# ── (F6-3) the lock opener says whether THIS call created the sidecar ───────
+def test_open_lock_ex_reports_whether_it_created_the_lock_file():
+    with tempfile.TemporaryDirectory() as t:
+        target = Path(t) / "proj" / ".claude" / "settings.json"
+        lock = target.parent / setup_permissions.LOCK_NAME
+        fd, created = setup_permissions._open_lock_ex(target)
+        try:
+            assert created is True, "an absent sidecar was created by this call"
+            assert _same_inode(fd, lock)
+        finally:
+            setup_permissions._release_lock(fd)
+        assert lock.exists()
+        fd, created = setup_permissions._open_lock_ex(target)
+        try:
+            assert created is False, "an existing sidecar was not created by this call"
+            assert _same_inode(fd, lock)
+        finally:
+            setup_permissions._release_lock(fd)
+
+
+def _install_naming_another_file(e: "_Env", tmp: Path) -> tuple[Path, Path]:
+    """An install into a directly named settings.local.json; --remove of the
+    directory's settings.json then fails (the record names the other file)."""
+    local = tmp / "machine" / "settings.local.json"
+    assert e.install(local) == 0
+    return local, local.parent / "settings.json"
+
+
+def test_failed_remove_of_a_record_naming_another_file_removes_only_its_own_lock():
+    for lock_before in (False, True):
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with _Env(tmp) as e, _Machine(tmp) as m:
+                local, other = _install_naming_another_file(e, tmp)
+                lock = local.parent / setup_permissions.LOCK_NAME
+                if not lock_before:
+                    lock.unlink()
+                rc, out = m.run("--remove", "--target", str(other))
+                assert rc == 1, out
+                assert f"the install wrote {local}" in out, out
+                assert lock.exists() == lock_before, (lock_before, out)
+
+
+# ── (A9) two runs on one settings file from two folders are serialized ──────
+# The child runs the installer with `fcntl.flock` wrapped. Before any lock
+# call (every call but LOCK_UN) it writes `op=<flags> <st_dev> <st_ino>` (the flags the run passed
+# and the locked file) to a pipe, then tries the same file with
+# LOCK_EX | LOCK_NB itself: `blocked` = the child observed the holder's lock,
+# `unexpected-free` = nobody held it. Then it makes the run's own call and
+# writes `acquired` once that call RETURNED. The pipe is the observation point,
+# not a clock: the op line means the run reached its lock (and wrote nothing
+# before it); `op` must be exactly LOCK_EX — a lock call that cannot block
+# (LOCK_NB) or a shared one (LOCK_SH) is caught without timing; `acquired`
+# must not appear while the holder still holds the lock; end of file with no
+# line means the run ended without taking any lock.
+# Limit: the holding DURATION is not proven here — a run that released the
+# lock before its write would pass. No sleep margin is added to cover it.
+_FLOCK_PROBE = """
+import fcntl, os, runpy, sys
+sig = int(sys.argv[1])
+real = fcntl.flock
+def flock(fd, op):
+    if not op & fcntl.LOCK_UN:
+        st = os.fstat(fd)
+        os.write(sig, f"op={op} {st.st_dev} {st.st_ino}\\n".encode())
+        try:
+            real(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.write(sig, b"blocked\\n")
+        else:
+            os.write(sig, b"unexpected-free\\n")
+        rv = real(fd, op)
+        os.write(sig, b"acquired\\n")
+        return rv
+    return real(fd, op)
+fcntl.flock = flock
+sys.argv = sys.argv[2:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+_HARNESS_GUARD_S = 60  # bounds a hung child; never the expectation
+
+
+def _read_signal_line(fd: int, data: bytes = b"") -> tuple[str, bytes]:
+    """The child's next signal line after `data` (what an earlier read left)
+    — or "" at end of file: the child exited without one — and whatever
+    followed it. Bounded by the harness guard only."""
+    deadline = time.monotonic() + _HARNESS_GUARD_S
+    while b"\n" not in data:
+        left = deadline - time.monotonic()
+        ready, _, _ = select.select([fd], [], [], max(left, 0))
+        if not ready:
+            raise AssertionError("harness guard: the child neither reached a "
+                                 f"lock nor exited in {_HARNESS_GUARD_S} s")
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            return "", b""
+        data += chunk
+    first, rest = data.split(b"\n", 1)
+    return first.decode(), rest
+
+
+def _assert_probe_blocked(fd: int, line: str, after: bytes,
+                          held: os.stat_result, what: str) -> bytes:
+    """Check the probe's op line (exactly LOCK_EX, on the held file) and wait
+    for its own non-blocking try: `blocked` must follow (`after` = what the
+    first read left). Returns what the pipe held after it."""
+    op, _, inode = line.partition(" ")
+    assert op == f"op={fcntl.LOCK_EX}", (
+        f"{what}'s lock call can return without waiting for the holder "
+        f"(flags other than LOCK_EX)", line)
+    assert inode == f"{held.st_dev} {held.st_ino}", (
+        f"{what} locked another file than the held one", line)
+    seen, rest = _read_signal_line(fd, after)
+    assert seen == "blocked", (
+        f"the probe found {what}'s lock file free while the holder held it",
+        seen)
+    return rest
+
+
+def _drain_now(fd: int) -> bytes:
+    """Whatever the pipe holds at this instant, without waiting."""
+    data = b""
+    while select.select([fd], [], [], 0)[0]:
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def test_a_second_install_from_another_folder_waits_for_the_lock():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e:
+            # a settings file named directly, as a user-scope one is
+            target = tmp / "machine" / "settings.json"
+            target.parent.mkdir()
+            prov = setup_permissions.provenance_path(target)
+            folder_b = tmp / "folder-b"
+            folder_b.mkdir()
+            script = setup_permissions.__file__
+            holder = os.open(target.parent / ".triad-dispatch.lock",
+                             os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            held = os.fstat(holder)
+            r, w = os.pipe()
+            proc = None
+            released = False
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, "-c", _FLOCK_PROBE, str(w), script,
+                     *e.install_args(target)],
+                    cwd=folder_b, pass_fds=(w,), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True,
+                    env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                os.close(w)
+                w = None
+                line, after = _read_signal_line(r)
+                assert line, ("the install ended without taking a lock while "
+                              "another run held it", proc.wait(_HARNESS_GUARD_S),
+                              target.exists(), prov.exists())
+                after = _assert_probe_blocked(r, line, after, held, "the install")
+                assert not target.exists(), "settings written while the lock was held"
+                assert not prov.exists(), "record written while the lock was held"
+                assert proc.poll() is None, "the install ended while the lock was held"
+                # the lock call must not have RETURNED while the holder holds it
+                after += _drain_now(r)
+                assert b"acquired" not in after, (
+                    "the install's lock call returned while another run held "
+                    "the lock", after)
+                fcntl.flock(holder, fcntl.LOCK_UN)
+                released = True
+                out, err = proc.communicate(timeout=_HARNESS_GUARD_S)
+                after += _drain_now(r)
+                assert b"acquired\n" in after, (
+                    "the install never reported its lock call returning after "
+                    "the release", after)
+            finally:
+                if not released:
+                    fcntl.flock(holder, fcntl.LOCK_UN)
+                os.close(holder)
+                if w is not None:
+                    os.close(w)
+                os.close(r)
+                if proc is not None and proc.poll() is None:
+                    proc.kill()     # teardown of a failed run: reap the child
+                    proc.communicate()
+            assert proc.returncode == 0, (out, err)
+            data = json.loads(target.read_text(encoding="utf-8"))
+            grants = setup_permissions.wrapper_grant_entries(e.bin)
+            assert set(grants) <= set(data["permissions"]["allow"]), data
+            record = json.loads(prov.read_text(encoding="utf-8"))
+            assert record["settings_file"] == "settings.json", record
+            assert set(grants) <= set(record["allow"]), record
+
+
+# ── (F6-3) a failed --remove that re-created the sidecar removes it ─────────
+# The test holds the sidecar's lock; the --remove (failing: the record names
+# another settings file) blocks on it under the probe. The test then unlinks
+# the file and releases (as a finishing run does), so the --remove re-opens the
+# path and CREATES a new sidecar — its second op line — and then fails. The
+# sidecar it created must be gone, though one existed when it started.
+def test_failed_remove_that_recreated_the_lock_file_removes_it():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Env(tmp) as e, _Machine(tmp):
+            local, other = _install_naming_another_file(e, tmp)
+            lock = local.parent / setup_permissions.LOCK_NAME
+            holder = os.open(lock, os.O_RDWR)
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            held = os.fstat(holder)
+            r, w = os.pipe()
+            proc = None
+            released = False
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, "-c", _FLOCK_PROBE, str(w),
+                     setup_permissions.__file__, "--remove", "--target", str(other)],
+                    cwd=tmp, pass_fds=(w,), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True,
+                    env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                os.close(w)
+                w = None
+                line, after = _read_signal_line(r)
+                assert line, ("the remove ended without taking a lock while "
+                              "another run held it", proc.wait(_HARNESS_GUARD_S))
+                after = _assert_probe_blocked(r, line, after, held, "the remove")
+                assert proc.poll() is None, "the remove ended while the lock was held"
+                lock.unlink()
+                fcntl.flock(holder, fcntl.LOCK_UN)
+                released = True
+                out, err = proc.communicate(timeout=_HARNESS_GUARD_S)
+                after += _drain_now(r)
+            finally:
+                if not released:
+                    fcntl.flock(holder, fcntl.LOCK_UN)
+                os.close(holder)
+                if w is not None:
+                    os.close(w)
+                os.close(r)
+                if proc is not None and proc.poll() is None:
+                    proc.kill()     # teardown of a failed run: reap the child
+                    proc.communicate()
+            assert proc.returncode == 1, (out, err)
+            assert f"the install wrote {local}" in err, (out, err)
+            reopened = [ln for ln in after.decode().splitlines() if ln.startswith("op=")]
+            assert len(reopened) == 1, ("the remove did not re-open the unlinked "
+                                        "path", after)
+            assert not os.path.lexists(lock), (
+                "the failed remove kept the lock sidecar it re-created", after)
+
+
 # ── (B1) --uninstall-machine removes every machine item and says so ──────────
 def test_uninstall_machine_removes_every_item():
     with tempfile.TemporaryDirectory() as t:
@@ -1464,6 +1795,229 @@ def test_uninstall_machine_removes_every_item():
                 assert not gone.exists(), f"{gone} not removed\n{out}"
             for kept in foreign:
                 assert kept.exists(), f"a file that is not the plugin's was removed: {kept}"
+
+
+# ── (B1b) the machine uninstall waits for a running classifier-patch apply ───
+# An apply holds `classifier-patches.json.lock` while it reads and replaces the
+# extension; an uninstall that swept the directory meanwhile would let a second
+# apply lock a new file and drop the first one's entry. The child runs the
+# uninstall under the A9 probe: its lock call must target the held inode,
+# nothing is removed while the test holds it, everything is removed after.
+def test_uninstall_machine_waits_for_the_classifier_patch_lock():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Machine(tmp) as m:
+            items = _plant_machine(m)
+            d = m.config / "triad-dispatch"
+            holder = os.open(items["patches_lock"], os.O_RDWR)
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            held = os.fstat(holder)
+            r, w = os.pipe()
+            proc = None
+            released = False
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, "-c", _FLOCK_PROBE, str(w),
+                     setup_permissions.__file__, "--uninstall-machine"],
+                    cwd=tmp, pass_fds=(w,), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True,
+                    env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                os.close(w)
+                w = None
+                line, after = _read_signal_line(r)
+                assert line, ("the uninstall ended without taking the patches "
+                              "lock", proc.wait(_HARNESS_GUARD_S), d.exists())
+                after = _assert_probe_blocked(r, line, after, held, "the uninstall")
+                for name in ("patches", "patches_lock", "patches_tmp"):
+                    assert items[name].exists(), f"{name} removed while the lock was held"
+                assert proc.poll() is None, "the uninstall ended while the lock was held"
+                after += _drain_now(r)
+                assert b"acquired" not in after, (
+                    "the uninstall's lock call returned while an apply held "
+                    "the lock", after)
+                fcntl.flock(holder, fcntl.LOCK_UN)
+                released = True
+                out, err = proc.communicate(timeout=_HARNESS_GUARD_S)
+                after += _drain_now(r)
+                assert b"acquired\n" in after, (
+                    "the uninstall never reported its lock call returning "
+                    "after the release", after)
+            finally:
+                if not released:
+                    fcntl.flock(holder, fcntl.LOCK_UN)
+                os.close(holder)
+                if w is not None:
+                    os.close(w)
+                os.close(r)
+                if proc is not None and proc.poll() is None:
+                    proc.kill()     # teardown of a failed run: reap the child
+                    proc.communicate()
+            assert proc.returncode == 0, (out, err)
+            assert not d.exists(), f"{d} not removed after the release\n{out}"
+
+
+# ── (B1c) with no lock file present, the machine uninstall still takes it ────
+# An apply that created and locked the sidecar between an uninstall's look and
+# its sweep would have its lock and directory removed under it, so the
+# uninstall creates the lock file in an EXISTING config directory and holds it
+# for the whole sweep. The test holds nothing. To read the inode at the lock
+# path while the file is still there, the signal pipe is filled first: the
+# child's op line then waits for room in the pipe, after its open created the
+# file and before its sweep can remove it. The test reads the path's inode,
+# drains the filler and compares it with the op line — an observation point,
+# not a clock (the wait for the file is bounded by the harness guard only).
+_PIPE_FILLER = b"filler\n"
+
+
+def _fill_pipe(w: int) -> None:
+    """Fill the pipe behind `w` with whole filler lines until one more would
+    not fit (each write is below PIPE_BUF, so it lands whole or not at all);
+    the descriptor is left blocking for the child."""
+    flags = fcntl.fcntl(w, fcntl.F_GETFL)
+    fcntl.fcntl(w, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    try:
+        while True:
+            try:
+                os.write(w, _PIPE_FILLER)
+            except BlockingIOError:
+                return
+    finally:
+        fcntl.fcntl(w, fcntl.F_SETFL, flags)
+
+
+def _next_signal_line(fd: int, data: bytes) -> tuple[str, bytes]:
+    """The child's next signal line, the filler lines skipped."""
+    while True:
+        line, data = _read_signal_line(fd, data)
+        if line != _PIPE_FILLER.decode().rstrip("\n"):
+            return line, data
+
+
+def test_uninstall_machine_takes_the_patches_lock_when_none_exists():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        with _Machine(tmp) as m:
+            d = m.config / "triad-dispatch"
+            _touch(d / "classifier-patches.json", "{}")
+            lock = d / "classifier-patches.json.lock"
+            assert not os.path.lexists(lock)
+            r, w = os.pipe()
+            proc = None
+            locked = None
+            try:
+                _fill_pipe(w)
+                proc = subprocess.Popen(
+                    [sys.executable, "-c", _FLOCK_PROBE, str(w),
+                     setup_permissions.__file__, "--uninstall-machine"],
+                    cwd=tmp, pass_fds=(w,), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True,
+                    env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                os.close(w)
+                w = None
+                deadline = time.monotonic() + _HARNESS_GUARD_S
+                while proc.poll() is None:
+                    try:
+                        locked = os.stat(lock, follow_symlinks=False)
+                        break
+                    except FileNotFoundError:
+                        pass
+                    if time.monotonic() > deadline:
+                        raise AssertionError("harness guard: the uninstall "
+                                             "neither created a lock file nor "
+                                             f"exited in {_HARNESS_GUARD_S} s")
+                    time.sleep(0.01)
+                line, after = _next_signal_line(r, b"")
+                assert line, ("the uninstall took no lock while no lock file "
+                              "existed", proc.wait(_HARNESS_GUARD_S), d.exists())
+                assert locked is not None, (
+                    "harness: the child's op line did not wait for room in "
+                    "the pipe", line)
+                op, _, inode = line.partition(" ")
+                assert op == f"op={fcntl.LOCK_EX}", (
+                    "the uninstall's lock call is not exactly LOCK_EX", line)
+                assert inode == f"{locked.st_dev} {locked.st_ino}", (
+                    f"the uninstall locked another file than {lock}", line)
+                seen, after = _next_signal_line(r, after)
+                assert seen == "unexpected-free", (
+                    "the probe found the lock taken while nobody held it", seen)
+                seen, after = _next_signal_line(r, after)
+                assert seen == "acquired", (
+                    "the uninstall's lock call never returned", seen)
+                out, err = proc.communicate(timeout=_HARNESS_GUARD_S)
+            finally:
+                if w is not None:
+                    os.close(w)
+                os.close(r)
+                if proc is not None and proc.poll() is None:
+                    proc.kill()     # teardown of a failed run: reap the child
+                    proc.communicate()
+            assert proc.returncode == 0, (out, err)
+            assert f"removed {lock}" in out, out
+            assert not d.exists(), f"{d} not removed\n{out}"
+
+
+# ── (B1d) the patches sweep runs only while the uninstall holds the lock ─────
+# An absent directory is not swept (an apply that creates and locks it after
+# the look would have its held lock unlinked); a real directory whose lock
+# cannot be taken is left with one line. `_sweep` is wrapped by a recorder
+# that calls the real one, so an unlocked sweep shows as a call AND a removal.
+def _record_sweeps(calls: list):
+    real = setup_permissions._sweep
+
+    def recorder(d, *args, **kwargs):
+        calls.append(Path(d))
+        return real(d, *args, **kwargs)
+
+    return real, recorder
+
+
+def _uninstall_in_process() -> tuple[int, str]:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        rc = setup_permissions.do_uninstall_machine(False)
+    return rc, buf.getvalue()
+
+
+def test_uninstall_machine_does_not_sweep_an_absent_patches_directory():
+    with tempfile.TemporaryDirectory() as t:
+        with _Machine(Path(t)) as m:
+            dirs = {m.config / "triad-dispatch", m.home / ".config" / "triad-dispatch"}
+            calls: list = []
+            real, recorder = _record_sweeps(calls)
+            setup_permissions._sweep = recorder
+            try:
+                rc, out = _uninstall_in_process()
+            finally:
+                setup_permissions._sweep = real
+            assert rc == 0, out
+            swept = [c for c in calls if c in dirs]
+            assert not swept, f"an absent patches directory was swept: {swept}\n{out}"
+
+
+def test_uninstall_machine_leaves_a_directory_whose_lock_cannot_be_taken():
+    with tempfile.TemporaryDirectory() as t:
+        with _Machine(Path(t)) as m:
+            d = m.config / "triad-dispatch"
+            ext = _touch(d / "classifier-patches.json", "{}")
+            calls: list = []
+            real, recorder = _record_sweeps(calls)
+            real_open_lock = setup_permissions._open_lock
+
+            def open_lock(*args, **kwargs):
+                raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+
+            setup_permissions._sweep = recorder
+            setup_permissions._open_lock = open_lock
+            try:
+                rc, out = _uninstall_in_process()
+            finally:
+                setup_permissions._sweep = real
+                setup_permissions._open_lock = real_open_lock
+            assert rc == 0, out
+            assert d not in calls, f"the patches directory was swept unlocked\n{out}"
+            assert (f"left {d}: could not take the patches lock "
+                    f"({os.strerror(errno.EACCES)})\n") in out, out
+            assert ext.exists() and d.is_dir(), out
 
 
 # ── (B2) nothing present -> nothing created, rc 0 ────────────────────────────
@@ -1599,6 +2153,10 @@ def test_uninstall_machine_continues_past_an_item_it_cannot_remove():
     with tempfile.TemporaryDirectory() as t:
         with _Machine(Path(t)) as m:
             stuck = _touch(m.config / "triad-dispatch" / "classifier-patches.json", "{}")
+            # the lock file exists, so the lock is taken in the read-only
+            # directory and the sweep reaches the item it cannot remove (a
+            # lock that cannot be taken leaves the directory unswept: B1d)
+            _touch(stuck.parent / "classifier-patches.json.lock", "")
             later = _touch(m.home / ".gemini" / "config" / "agents"
                            / "triad-readonly-review.md")
             stuck.parent.chmod(0o500)
@@ -1953,7 +2511,7 @@ TESTS = [
     test_remove_empty_record_deletes_provenance,
     test_remove_with_absent_settings_does_not_create_it,
     test_install_remove_leaves_no_sidecar,
-    test_install_leaves_no_lock_sidecar,
+    test_install_leaves_a_lock_sidecar_that_remove_takes_out,
     test_remove_with_a_hand_deleted_record_prints_only_the_plain_result,
     test_remove_dry_run_changes_nothing,
     test_remove_other_target_is_refused,
@@ -1969,7 +2527,7 @@ TESTS = [
     test_a_users_own_hook_is_left,
     test_remove_of_a_record_without_entries_that_names_another_file_is_refused,
     test_install_dry_run_names_the_hook_path_it_would_remove,
-    test_install_dry_run_creates_no_directory_and_no_file,
+    test_install_dry_run_creates_no_directory_and_no_lock_file,
     test_install_beside_a_record_without_entries_that_names_another_file_is_refused,
     test_a_run_that_changes_the_record_alone_says_so,
     test_a_run_that_changes_the_record_alone_leaves_the_settings_file_as_it_is,
@@ -1979,7 +2537,17 @@ TESTS = [
     test_remove_keeps_the_settings_file,
     test_remove_of_a_hand_emptied_file_keeps_it,
     test_symlinked_record_is_read,
+    test_open_lock_follows_an_unlinked_lock_file,
+    test_remove_error_removes_only_a_lock_it_created,
+    test_open_lock_ex_reports_whether_it_created_the_lock_file,
+    test_failed_remove_of_a_record_naming_another_file_removes_only_its_own_lock,
+    test_a_second_install_from_another_folder_waits_for_the_lock,
+    test_failed_remove_that_recreated_the_lock_file_removes_it,
     test_uninstall_machine_removes_every_item,
+    test_uninstall_machine_waits_for_the_classifier_patch_lock,
+    test_uninstall_machine_takes_the_patches_lock_when_none_exists,
+    test_uninstall_machine_does_not_sweep_an_absent_patches_directory,
+    test_uninstall_machine_leaves_a_directory_whose_lock_cannot_be_taken,
     test_uninstall_machine_nothing_present_creates_nothing,
     test_uninstall_machine_leaves_env_override_locations,
     test_uninstall_machine_leaves_agy_settings_files,

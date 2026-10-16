@@ -217,7 +217,7 @@ each layer.*
 `scripts/setup_permissions.py`.* Add these entries to `.claude/settings.json`
 (or `.claude/settings.local.json`) — these are the `permissions.allow` entries
 the script merges in; the script also writes `sandbox.excludedCommands`, the
-hardening `env` block and a sidecar file (see
+hardening `env` block and two sidecar files (see
 [Files this plugin writes](#files-this-plugin-writes)):
 
 ```json
@@ -475,6 +475,7 @@ nothing there: what the wrappers wrote there stays and is yours.
 |---|---|---|---|
 | project | `.claude/settings.json` — `permissions.allow`, `sandbox.excludedCommands`, `env` (and the file itself when it was absent; `--install` and `--remove` also take out the `hooks.PreToolUse` entry an earlier version wrote and its record lists; `--remove` takes out the recorded entries and rewrites the file — the file and its emptied containers stay; a hook group you emptied by hand is left) | `scripts/setup_permissions.py` | `setup_permissions.py --remove` with the same `--target` as the install |
 | project | `.claude/.triad-dispatch-managed.json` (the record of what the setup wrote, naming the one settings file it wrote; written before the settings file and completed after it, so a run that stops between the two is repaired by running the setup again; a run that changes only the record writes the record alone) | `scripts/setup_permissions.py` | `setup_permissions.py --remove` with the same `--target` as the install |
+| project | `.claude/.triad-dispatch.lock` (an advisory lock beside the settings file: two runs on one settings file — a user-scope one named from two folders — take turns) | each `setup_permissions.py --install` (a `--dry-run` preview creates none); a `--remove` holds it while it runs | `setup_permissions.py --remove` with the same `--target` as the install |
 | project | `_runs/review/<date>-<slug>/` review packets and their per-round git worktrees | each `triad-cross-family-review` gate | `review_scratch.py close <packet-dir>`; a stale packet is pruned by the next `open`; the empty `_runs/review/` directory stays |
 | project | `_runs/worktrees/<name>/` git worktrees for codex write calls (`triad-codex-dispatch` § Write calls; keep `_runs/worktrees/` in the project's `.gitignore`, so a commit never stages a tree as an embedded repository) | the leader, per that paragraph; an empty folder a stopped `cleanup.py remove code-worktrees` leaves stays; it is harmless; a later `git worktree add` of the same name succeeds (measured on git 2.43.0 and 2.50.1 — the git-worktree manual does not state it) | `python3 <plugin-dir>/bin/cleanup.py remove code-worktrees _runs/worktrees/<name>` from the project's top level, after everything in the tree is committed to its branch (a tree with uncommitted or untracked changes is refused) |
 | project | `_runs/prompts/<utc-timestamp>-<cli>.md` and `…-<cli>-proposal.json` — the prompt and proposal files the leader writes for a dispatch and an applied repair proposal (keep `_runs/` in the project's `.gitignore`) | the leader, with the Write tool (dispatch Step 1, Step 5c) | the wrappers' next-run sweep, once a file is older than the `dispatch-prompts` role's floor (when `TRIAD_DISPATCH_PROMPTS_DIR` names an absolute folder, that folder is swept instead) |
@@ -533,9 +534,7 @@ they are yours.
    settings file and in no record (the record was deleted, or an earlier version
    wrote it) is treated as yours, and neither command removes it: edit it out
    of the settings file yourself. A record that lists nothing is removed by
-   `--remove` also when the settings file cannot be read. An empty
-   `.claude/.triad-dispatch.lock` an earlier plugin version left beside the
-   settings file is not touched by `--remove` any more; it is yours to delete.
+   `--remove` also when the settings file cannot be read.
    Do this BEFORE the host uninstall, which deletes this script. A project an EARLIER version
    set up holds a `hooks.PreToolUse` entry pinned to that version's directory;
    once the host deletes that directory, every shell command of the project
@@ -545,9 +544,15 @@ they are yours.
 3. **ONCE per machine, after the last project**:
    `python3 <plugin-dir>/scripts/setup_permissions.py --uninstall-machine`. It
    prints `removed <path>` or `left <path>: <reason>` per item; `--dry-run`
-   previews it. It removes and lists nothing in the shared temporary directory,
+   previews it. It waits for a running classifier-patch apply (seconds) before
+   it sweeps the patches directory. It removes and lists nothing in the shared temporary directory,
    which holds no record of what is the plugin's: the entries of the wrappers'
-   shapes there stay; they are yours.
+   shapes there stay; they are yours. It also leaves what an EARLIER version
+   wrote beside the agy settings — `~/.gemini/antigravity-cli/.agy_settings.lock`
+   and the `.agy_settings.holders/` folder — and the two daily-check folders
+   `~/.gemini/antigravity-cli/triad-daily/` and `~/.gemini/triad-daily/`: no
+   command of this version removes them, and they are yours (the lock may be
+   shared with the codex host).
 4. **The host steps.** From a shell:
 
    ```

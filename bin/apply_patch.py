@@ -29,7 +29,9 @@ Exit codes:
      class, which differs from its pre-apply re-classification)
   3  invalid proposal (ValueError) or bad input (arg / JSON parse), or a run-log
      that is missing, empty, unreadable, not JSON, of another cli or refused for
-     verification — file untouched
+     verification — file untouched; or the extension could not be updated
+     (OSError: one `[apply_patch] could not update the classifier extension: …`
+     line; the extension file untouched)
   4  applied, but the stored record does not route to the proposed class (or did
      already): the entry stays applied
 """
@@ -134,6 +136,13 @@ def main() -> int:
         result = apply_classifier_patch(args.cli, proposal)
     except ValueError as e:
         print(f"[apply_patch] rejected: {e}", file=sys.stderr)
+        return EXIT_INVALID
+    except OSError as e:
+        # A write failure (a full disk, an unwritable config home, a symlink at
+        # the lock path): the extension is untouched — the applier removes its
+        # own temp file — so it is one line and exit 3, never a traceback.
+        print(f"[apply_patch] could not update the classifier extension: "
+              f"{e.strerror or e}", file=sys.stderr)
         return EXIT_INVALID
 
     print(result)

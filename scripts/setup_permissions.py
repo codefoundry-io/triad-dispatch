@@ -32,7 +32,10 @@ hook: it takes out the `hooks.PreToolUse` handlers an earlier version wrote and
 its record lists, and the recorded entries this version no longer writes. An
 entry in no record is yours and stays. The record is written before the settings
 file and completed after it, so an interrupted run is repaired by running
---install again. A symlinked settings path is refused, the file is written
+--install again. The whole read-merge-write of an --install or a --remove runs
+under an advisory `flock` on a `.triad-dispatch.lock` sidecar beside the settings
+file, so two runs on one settings file (a user-scope one named from two folders)
+take turns. A symlinked settings path is refused, the file is written
 atomically (temp + os.replace), and a malformed settings list is a clean error.
 
 Usage:
@@ -46,8 +49,10 @@ Usage:
                     --target of that directory is refused (exit 1). A record of
                     an older version names no file: while none of its entries
                     is in the target it is kept and the run exits 1.
-    --remove        Take out the recorded entries and the record. The settings
-                    file is rewritten, never deleted; nothing is created.
+    --remove        Take out the recorded entries, the record and the lock
+                    sidecar. The settings file is rewritten, never deleted;
+                    nothing is created (a lock sidecar it had to create while it
+                    ran is removed again, also on an error).
     --uninstall-machine
                     After --remove in every project: delete the plugin's files
                     outside any project (the classifier patches, the two agy
@@ -61,6 +66,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import fcntl
 import fnmatch
 import json
 import os
@@ -100,6 +106,7 @@ SANDBOX_EXCLUDE_PATTERNS = tuple(
     ))
 
 PROVENANCE_NAME = ".triad-dispatch-managed.json"
+LOCK_NAME = ".triad-dispatch.lock"
 PROVENANCE_VERSION = 2
 
 # --uninstall-machine: the two agy agent definitions `antigravity_wrapper.py
@@ -219,7 +226,7 @@ def _retire_unwanted(box: dict | list | None, recorded: list[str],
     return dropped, removed
 
 
-# ── settings IO (symlink-refusing read, atomic write) ───────────────────────
+# ── settings IO (symlink-refusing read, flock, atomic write) ────────────────
 def read_settings_nofollow(target: Path) -> dict:
     """Read settings.json, refusing a symlinked path.
 
@@ -249,6 +256,72 @@ def read_settings_nofollow(target: Path) -> dict:
             f"top-level JSON in {target} is not an object; refusing to modify"
         )
     return data
+
+
+def _open_lock(target: Path, create: bool = True,
+               name: str = LOCK_NAME) -> int | None:
+    """`_open_lock_ex` without the created flag."""
+    return _open_lock_ex(target, create, name)[0]
+
+
+def _open_lock_ex(target: Path, create: bool = True,
+                  name: str = LOCK_NAME) -> tuple[int | None, bool]:
+    """Open an advisory lock file next to the settings (`name`, in the
+    target's directory) and flock it; returns the descriptor and whether THIS
+    call created the file.
+
+    The lock is a sidecar so it never disturbs the settings file's own read /
+    atomic replace. Opened O_NOFOLLOW so a planted symlink at the lock path is
+    refused rather than followed. With `create=False` (a `--remove --dry-run`
+    or an `--install --dry-run`, which create nothing) an absent lock file is
+    not created and (None, False) is returned. A run that waited on a lock
+    file another run then unlinked opens the path again, so every holder locks
+    the file the path names now; `created` describes the file finally held
+    (each attempt tries O_CREAT | O_EXCL first, then a plain open; a file unlinked between those two opens makes the attempt start over).
+    """
+    flags = os.O_RDWR | os.O_NOFOLLOW
+    if create:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.parent / name
+    while True:
+        created = False
+        try:
+            if create:
+                try:
+                    fd = os.open(lock_path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+                    created = True
+                except FileExistsError:
+                    fd = os.open(lock_path, flags)
+            else:
+                fd = os.open(lock_path, flags)
+        except FileNotFoundError:
+            if not create:
+                return None, False
+            if not target.parent.is_dir():
+                raise
+            continue    # unlinked between the two opens: try again
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        held = os.fstat(fd)
+        try:
+            now = os.stat(lock_path, follow_symlinks=False)
+        except FileNotFoundError:
+            now = None
+        if now and (now.st_dev, now.st_ino) == (held.st_dev, held.st_ino):
+            return fd, created
+        os.close(fd)
+
+
+def _release_lock(fd: int | None, unlink: Path | None = None) -> None:
+    """Release the lock; with `unlink`, remove the lock file FIRST, while the
+    descriptor is still held (unlink-then-close), so no sidecar is left."""
+    if fd is None:
+        return
+    try:
+        if unlink is not None:
+            unlink.unlink(missing_ok=True)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def write_atomic(target: Path, settings: dict) -> None:
@@ -455,173 +528,188 @@ def do_install(target: Path, bin_dir: Path, allowed_roots: str,
     patterns = _sandbox_patterns(bin_dir)
     desired_env = hardening_env(allowed_roots)
 
-    prior = read_provenance(target)
-    named = prior["settings_file"]
-    if named and named != target.name:
-        wrote = target.parent / named
-        print(f"this directory's install record names {wrote}: run --install "
-              f"--target {wrote}, or --remove --target {wrote} first",
-              file=sys.stderr)
-        return 1
-    settings = read_settings_nofollow(target)
-    # A record of an older version names no file: adopt this target only
-    # when it holds an entry of the record (checked on a copy).
-    if (not named and _has_entries(prior)
-            and not remove_authored(copy.deepcopy(settings), prior)):
-        print("the install record of an earlier version lists entries that "
-              f"are not in {target}: if that install wrote another settings "
-              "file of this directory, run --install --target <that file>; "
-              f"the record {provenance_path(target)} names no settings file, "
-              "so it is kept: entries taken out by hand cannot be told from "
-              "entries in another file; the kept record is yours", file=sys.stderr)
-        return 1
+    lock_fd = _open_lock(target, create=not dry_run)
+    try:
+        prior = read_provenance(target)
+        named = prior["settings_file"]
+        if named and named != target.name:
+            wrote = target.parent / named
+            print(f"this directory's install record names {wrote}: run --install "
+                  f"--target {wrote}, or --remove --target {wrote} first",
+                  file=sys.stderr)
+            return 1
+        settings = read_settings_nofollow(target)
+        # A record of an older version names no file: adopt this target only
+        # when it holds an entry of the record (checked on a copy).
+        if (not named and _has_entries(prior)
+                and not remove_authored(copy.deepcopy(settings), prior)):
+            print("the install record of an earlier version lists entries that "
+                  f"are not in {target}: if that install wrote another settings "
+                  "file of this directory, run --install --target <that file>; "
+                  f"the record {provenance_path(target)} names no settings file, "
+                  "so it is kept: entries taken out by hand cannot be told from "
+                  "entries in another file; the kept record is yours", file=sys.stderr)
+            return 1
 
-    permissions = _require_dict(settings.setdefault("permissions", {}),
-                                "settings['permissions']")
-    added_allow = merge_list_entries(
-        permissions, "allow", grants, "settings['permissions']['allow']")
+        permissions = _require_dict(settings.setdefault("permissions", {}),
+                                    "settings['permissions']")
+        added_allow = merge_list_entries(
+            permissions, "allow", grants, "settings['permissions']['allow']")
 
-    sandbox = _require_dict(settings.setdefault("sandbox", {}), "settings['sandbox']")
-    added_sandbox = merge_list_entries(
-        sandbox, "excludedCommands", patterns,
-        "settings['sandbox']['excludedCommands']")
+        sandbox = _require_dict(settings.setdefault("sandbox", {}), "settings['sandbox']")
+        added_sandbox = merge_list_entries(
+            sandbox, "excludedCommands", patterns,
+            "settings['sandbox']['excludedCommands']")
 
-    prior_env_keys = set(prior.get("env", []))
-    added_env, updated_env, foreign_env = merge_env(
-        settings, desired_env, prior_env_keys)
-    # the entries an earlier version wrote and this one no longer writes
-    dropped_allow, removed_allow = _retire_unwanted(
-        permissions.get("allow"), prior["allow"], grants)
-    dropped_excl, removed_excl = _retire_unwanted(
-        sandbox.get("excludedCommands"), prior["excludedCommands"], patterns)
-    dropped_env, removed_env = _retire_unwanted(
-        settings["env"], prior["env"], desired_env)
-    removed = removed_allow + removed_excl + removed_env
+        prior_env_keys = set(prior.get("env", []))
+        added_env, updated_env, foreign_env = merge_env(
+            settings, desired_env, prior_env_keys)
+        # the entries an earlier version wrote and this one no longer writes
+        dropped_allow, removed_allow = _retire_unwanted(
+            permissions.get("allow"), prior["allow"], grants)
+        dropped_excl, removed_excl = _retire_unwanted(
+            sandbox.get("excludedCommands"), prior["excludedCommands"], patterns)
+        dropped_env, removed_env = _retire_unwanted(
+            settings["env"], prior["env"], desired_env)
+        removed = removed_allow + removed_excl + removed_env
 
-    # The hook commands an earlier version wrote are pinned inside its
-    # versioned cache dir, which the host deletes later: take them out.
-    replaced_hooks = remove_authored_hooks(
-        settings, set(prior["hooks_pretooluse"]))
+        # The hook commands an earlier version wrote are pinned inside its
+        # versioned cache dir, which the host deletes later: take them out.
+        replaced_hooks = remove_authored_hooks(
+            settings, set(prior["hooks_pretooluse"]))
 
-    # provenance = what the prior record lists plus what THIS run added.
-    # An entry that was already in the file and is not in the prior record
-    # is the user's (a foreign env key likewise), so --remove never
-    # deletes it.
-    our_env_keys = set(desired_env) - set(foreign_env)
-    authored = {
-        "version": PROVENANCE_VERSION,
-        "allow": sorted((set(prior["allow"]) - set(dropped_allow))
-                        | set(added_allow)),
-        "excludedCommands": sorted(
-            (set(prior["excludedCommands"]) - set(dropped_excl))
-            | set(added_sandbox)),
-        "env": sorted((set(prior["env"]) - set(dropped_env)) | our_env_keys),
-        "hooks_pretooluse": [],
-        "settings_file": target.name,
-    }
+        # provenance = what the prior record lists plus what THIS run added.
+        # An entry that was already in the file and is not in the prior record
+        # is the user's (a foreign env key likewise), so --remove never
+        # deletes it.
+        our_env_keys = set(desired_env) - set(foreign_env)
+        authored = {
+            "version": PROVENANCE_VERSION,
+            "allow": sorted((set(prior["allow"]) - set(dropped_allow))
+                            | set(added_allow)),
+            "excludedCommands": sorted(
+                (set(prior["excludedCommands"]) - set(dropped_excl))
+                | set(added_sandbox)),
+            "env": sorted((set(prior["env"]) - set(dropped_env)) | our_env_keys),
+            "hooks_pretooluse": [],
+            "settings_file": target.name,
+        }
 
-    # Every change made to `settings` above is counted here — the entries
-    # added or updated and the earlier hook commands taken out (a container
-    # is created only together with an entry, since the grants and the env
-    # block are never empty) — so the settings file is written only when
-    # `changed` is true.
-    changed = bool(added_allow or added_sandbox or added_env or updated_env
-                   or replaced_hooks or removed)
-    # also (re)write if the provenance record drifted from the desired set
-    prov_drift = _normalize_provenance(authored) != prior
+        # Every change made to `settings` above is counted here — the entries
+        # added or updated and the earlier hook commands taken out (a container
+        # is created only together with an entry, since the grants and the env
+        # block are never empty) — so the settings file is written only when
+        # `changed` is true.
+        changed = bool(added_allow or added_sandbox or added_env or updated_env
+                       or replaced_hooks or removed)
+        # also (re)write if the provenance record drifted from the desired set
+        prov_drift = _normalize_provenance(authored) != prior
 
-    if not changed and not prov_drift:
-        print(f"already up to date: all wrapper entries present in {target}")
-        return 0
+        if not changed and not prov_drift:
+            print(f"already up to date: all wrapper entries present in {target}")
+            return 0
 
-    if dry_run:
+        if dry_run:
+            _report_install(target, added_allow, added_sandbox,
+                            added_env, updated_env, foreign_env,
+                            verb="would add")
+            if removed:
+                print(f"{'would remove' if dry_run else 'removed'} {len(removed)} "
+                      f"{'entry' if len(removed) == 1 else 'entries'} an earlier "
+                      f"version of the setup wrote: {', '.join(removed)}")
+            if replaced_hooks:
+                print(f"would remove {replaced_hooks} hook path(s) of a previous version")
+            if not changed:
+                print(f"would update the install record of {target}")
+            return 0
+
+        # The record is written first, so an interrupted run leaves a record
+        # of everything that may be in the settings file: the interim record
+        # still lists the earlier hook commands and the entries this write
+        # takes out.
+        interim = dict(authored, hooks_pretooluse=list(prior["hooks_pretooluse"]),
+                       allow=sorted(set(authored["allow"]) | set(dropped_allow)),
+                       excludedCommands=sorted(
+                           set(authored["excludedCommands"]) | set(dropped_excl)),
+                       env=sorted(set(authored["env"]) | set(dropped_env)))
+        _write_provenance(target, interim)
+        if changed:     # a run that changes the record alone leaves the file as it is
+            write_atomic(target, settings)
+        if interim != authored:
+            _write_provenance(target, authored)
         _report_install(target, added_allow, added_sandbox,
                         added_env, updated_env, foreign_env,
-                        verb="would add")
+                        verb="added")
         if removed:
             print(f"{'would remove' if dry_run else 'removed'} {len(removed)} "
                   f"{'entry' if len(removed) == 1 else 'entries'} an earlier "
                   f"version of the setup wrote: {', '.join(removed)}")
         if replaced_hooks:
-            print(f"would remove {replaced_hooks} hook path(s) of a previous version")
+            print(f"removed {replaced_hooks} hook path(s) of a previous version")
         if not changed:
-            print(f"would update the install record of {target}")
+            print(f"updated the install record of {target}")
         return 0
-
-    # The record is written first, so an interrupted run leaves a record
-    # of everything that may be in the settings file: the interim record
-    # still lists the earlier hook commands and the entries this write
-    # takes out.
-    interim = dict(authored, hooks_pretooluse=list(prior["hooks_pretooluse"]),
-                   allow=sorted(set(authored["allow"]) | set(dropped_allow)),
-                   excludedCommands=sorted(
-                       set(authored["excludedCommands"]) | set(dropped_excl)),
-                   env=sorted(set(authored["env"]) | set(dropped_env)))
-    _write_provenance(target, interim)
-    if changed:     # a run that changes the record alone leaves the file as it is
-        write_atomic(target, settings)
-    if interim != authored:
-        _write_provenance(target, authored)
-    _report_install(target, added_allow, added_sandbox,
-                    added_env, updated_env, foreign_env,
-                    verb="added")
-    if removed:
-        print(f"{'would remove' if dry_run else 'removed'} {len(removed)} "
-              f"{'entry' if len(removed) == 1 else 'entries'} an earlier "
-              f"version of the setup wrote: {', '.join(removed)}")
-    if replaced_hooks:
-        print(f"removed {replaced_hooks} hook path(s) of a previous version")
-    if not changed:
-        print(f"updated the install record of {target}")
-    return 0
+    finally:
+        _release_lock(lock_fd)
 
 
 def do_remove(target: Path, dry_run: bool) -> int:
     """Remove what --install authored. Never creates anything: an absent
-    parent directory is a no-op, and on success the record and this script's
-    stray temp files are gone too."""
+    parent directory is a no-op, and on success the lock sidecar, the record
+    and this script's stray temp files are gone too."""
     if not target.parent.is_dir():
         print(f"nothing to remove: no managed entries at {target}")
         return 0
-    if not dry_run:
-        for stray in _listing(target.parent) or ():
-            if STRAY_RE.fullmatch(stray.name):
-                stray.unlink(missing_ok=True)
-    record = read_provenance(target)
-    named = record["settings_file"]
-    if named and named != target.name:
-        wrote = target.parent / named
-        print(f"the install wrote {wrote}: run --remove --target {wrote}",
-              file=sys.stderr)
-        return 1
-    if not _has_entries(record):
-        print(f"nothing to remove: no managed entries at {target}")
-        _drop_stale_record(target, dry_run)
-        return 0
-    settings = read_settings_nofollow(target)
-    removed = remove_authored(settings, record)
-    verb = "would remove" if dry_run else "removed"
-    if not removed:
-        # The record names this file and none of its entries is left in
-        # it: the record is stale. A record of an older version names no
-        # file, so the entries may be in another one: keep it.
-        if not named:
-            print(f"nothing recorded was found in {target}; the record does "
-                  "not name its settings file — run --remove with the "
-                  "--target the install used; the record "
-                  f"{provenance_path(target)} is kept (entries taken out by "
-                  "hand cannot be told from entries in another file); the "
-                  "kept record is yours", file=sys.stderr)
+    lock_path = target.parent / LOCK_NAME
+    lock_fd, lock_created = _open_lock_ex(target, create=not dry_run)
+    done = False
+    try:
+        if not dry_run:
+            for stray in _listing(target.parent) or ():
+                if STRAY_RE.fullmatch(stray.name):
+                    stray.unlink(missing_ok=True)
+        record = read_provenance(target)
+        named = record["settings_file"]
+        if named and named != target.name:
+            wrote = target.parent / named
+            print(f"the install wrote {wrote}: run --remove --target {wrote}",
+                  file=sys.stderr)
             return 1
-        print(f"nothing to remove: no managed entries at {target}")
+        if not _has_entries(record):
+            print(f"nothing to remove: no managed entries at {target}")
+            _drop_stale_record(target, dry_run)
+            done = True
+            return 0
+        settings = read_settings_nofollow(target)
+        removed = remove_authored(settings, record)
+        verb = "would remove" if dry_run else "removed"
+        if not removed:
+            # The record names this file and none of its entries is left in
+            # it: the record is stale. A record of an older version names no
+            # file, so the entries may be in another one: keep it.
+            if not named:
+                print(f"nothing recorded was found in {target}; the record does "
+                      "not name its settings file — run --remove with the "
+                      "--target the install used; the record "
+                      f"{provenance_path(target)} is kept (entries taken out by "
+                      "hand cannot be told from entries in another file); the "
+                      "kept record is yours", file=sys.stderr)
+                return 1
+            print(f"nothing to remove: no managed entries at {target}")
+            _drop_stale_record(target, dry_run)
+            done = True
+            return 0
+        if not dry_run:
+            write_atomic(target, settings)
+        print(f"{verb} {removed} authored entr"
+              f"{'y' if removed == 1 else 'ies'} from {target}")
         _drop_stale_record(target, dry_run)
+        done = True
         return 0
-    if not dry_run:
-        write_atomic(target, settings)
-    print(f"{verb} {removed} authored entr"
-          f"{'y' if removed == 1 else 'ies'} from {target}")
-    _drop_stale_record(target, dry_run)
-    return 0
+    finally:
+        # a finished run takes the sidecar out; a failed one only a lock it created
+        _release_lock(lock_fd, lock_path
+                      if (done or lock_created) and not dry_run else None)
 
 
 def _write_provenance(target: Path, record: dict) -> None:
@@ -717,11 +805,16 @@ def _sweep(d: Path, patterns, dry_run: bool, rmdir: bool, keep=()) -> None:
 
 def do_uninstall_machine(dry_run: bool) -> int:
     """Remove what the plugin wrote OUTSIDE any project, by fixed plugin-named
-    paths only. Creates nothing, leaves an item or a plugin-named directory
-    that is a symlink (a symlinked parent such as ~/.gemini is the user's
-    layout and is removed through), and leaves every location an environment
-    variable moved (those are the user's). One item that cannot be removed is
-    reported and the run goes on; nothing in the shared temp dir is touched."""
+    paths only. Leaves nothing behind that it created (the patches lock file
+    it takes in an existing directory is swept with it), leaves an item or a
+    plugin-named directory that is a symlink (a symlinked parent such as
+    ~/.gemini is the user's layout and is removed through), and leaves every
+    location an environment variable moved (those are the user's). The
+    classifier-patches directory is swept only while this run holds its lock,
+    or not at all: an absent directory is skipped, and a real directory whose
+    lock cannot be taken is left with one `could not take the patches lock`
+    line. One item that cannot be removed is reported and the run goes on;
+    nothing in the shared temp dir is touched."""
     home = Path.home()
     # The engine's rule: XDG_CONFIG_HOME when set, else ~/.config. Both are
     # swept (a value set later leaves patches under the default); a relative
@@ -734,9 +827,45 @@ def do_uninstall_machine(dry_run: bool) -> int:
     ext = os.environ.get("TRIAD_CLASSIFIER_EXTENSION")
     keep = {os.path.abspath(ext)} if ext else set()
     for config in configs:
-        _sweep(config / "triad-dispatch", ("classifier-patches.json",
-               "classifier-patches.json.lock", "classifier-patches.json.*.tmp"),
-               dry_run, rmdir=True, keep=keep)
+        # A classifier-patch apply holds `classifier-patches.json.lock` while it
+        # reads and replaces the extension: wait for it, sweep while holding.
+        # The sweep of a real directory runs ONLY while this run holds the
+        # lock (created when absent, so an apply that starts during the sweep
+        # waits for it; the sweep removes it while held). An absent directory
+        # is not swept at all: an apply that creates it afterwards is ordered
+        # after the uninstall. A real directory whose lock cannot be taken is
+        # left with one line. A symlinked or non-directory parent, or one that
+        # cannot be examined, goes to _sweep, which reports and leaves it. A
+        # dry run takes no lock and only reports.
+        patches = config / "triad-dispatch" / "classifier-patches.json"
+        lock_fd = None
+        if not dry_run:
+            try:
+                mode = os.lstat(patches.parent).st_mode
+            except FileNotFoundError:  # nothing to remove: no sweep
+                continue
+            except OSError:  # not examinable: _sweep reports it
+                mode = None
+            if mode is not None and stat.S_ISDIR(mode):
+                try:
+                    lock_fd = _open_lock(patches, create=True,
+                                         name=patches.name + ".lock")
+                except OSError as exc:  # never sweep a real directory unlocked
+                    print(f"left {patches.parent}: could not take the patches "
+                          f"lock ({exc.strerror or exc})")
+                    continue
+            elif mode is not None:
+                try:
+                    lock_fd = _open_lock(patches, create=False,
+                                         name=patches.name + ".lock")
+                except OSError:  # not a lockable file (a symlink...): _sweep reports it
+                    lock_fd = None
+        try:
+            _sweep(patches.parent, ("classifier-patches.json",
+                   "classifier-patches.json.lock", "classifier-patches.json.*.tmp"),
+                   dry_run, rmdir=True, keep=keep)
+        finally:
+            _release_lock(lock_fd)
     _sweep(gemini / "config" / "agents",
            [f"{n}.md" for n in AGY_AGENT_NAMES] + ["triad-readonly-*.md.*.tmp"],
            dry_run, rmdir=False)

@@ -1228,6 +1228,12 @@ def _retry_blocked(packet_dir: Path, label: str, record: dict,
     broken = _seal_reason(replaced, entry, attempt, own.get(attempt))
     if broken is not None:
         return ("round", head, broken)
+    # A PINNED MODEL THE CLI REFUSED (R-MODEL) is refused again on the same
+    # basis: the remedy is the roster entry, a new round.
+    refused = (_model_refusal(replaced, entry.get("route"))
+               if entry.get("family", entry["vendor"]) != "claude" else None)
+    if refused is not None:
+        return ("round", head, refused)
     # AN ATTEMPT ABOVE THE RECORDED ONE ALREADY EXISTS (host B's rule,
     # `bin/review_round_v2.py:291-294`): `retry` allocates attempt K+1
     # first and only then writes the diagnosis and the record, so a retry
@@ -1314,6 +1320,36 @@ def _receipt_reason(attempt_dir: Path, route) -> str | None:
     return None
 
 
+def _model_refusal(attempt_dir: Path, route) -> str | None:
+    """R-MODEL: the remedy sentence when a wrapper run-log in this attempt's
+    own namespace records the vendor CLI refusing the pinned model —
+    `config-conflict` after a vendor exit (a wrapper's own pre-spawn refusal
+    has none) with the requested model named in what the CLI printed — else
+    None. An unreadable run-log is the receipt check's to report."""
+    runs = attempt_dir / "logs" / _RUN_LOG_CLI[route] / "runs"
+    try:
+        logs = sorted(Path(e.path) for e in os.scandir(runs)
+                      if e.name.endswith(".json"))
+    except OSError:
+        return None
+    for path in logs:
+        try:
+            ran = json.loads(_read_regular_file(path, "the run-log"))
+        except (CollectError, ValueError, RecursionError):
+            continue
+        if not isinstance(ran, dict):
+            continue
+        model, rc = ran.get("requested_model"), ran.get("vendor_exit_code")
+        printed = f"{ran.get('stderr') or ''}\n{ran.get('stdout') or ''}"
+        if (ran.get("classification") == "config-conflict"
+                and isinstance(model, str) and model and model in printed
+                and type(rc) is int and rc > 0):
+            return (f"the CLI refused the pinned model {model} "
+                    f"(config-conflict 65): change the roster entry — a new "
+                    f"basis, prepare a new round (R-MODEL)")
+    return None
+
+
 def _evaluate_recorded(packet_dir: Path, record: dict, entry: dict,
                        attempt_dir: Path, base: EntryResult,
                        receipt: bool = True) -> EntryResult:
@@ -1332,8 +1368,11 @@ def _evaluate_recorded(packet_dir: Path, record: dict, entry: dict,
                               "reason": f"no result file at {result}",
                               "result_path": str(result)})
     if size == 0:
+        refused = (_model_refusal(attempt_dir, base.route)
+                   if base.family != "claude" else None)
         return EntryResult(**{**base.__dict__,
-                              "reason": f"the result file {result} is empty",
+                              "reason": (refused or
+                                         f"the result file {result} is empty"),
                               "result_path": str(result)})
     verdict_v2 = _load_sibling("verdict_v2")
     # The six expected values are DERIVED (round record, frozen roster entry,

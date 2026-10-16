@@ -196,9 +196,9 @@ audited agy wrapper calls, so `--sandbox` now takes only `read-only`, and the
 write-mode deny set plus the app-level `--cwd` requirement went with it.
 Upstream lock issues google-antigravity/antigravity-cli #573/#627 remain open.
 
-Reasoning tier = `--model` passthrough (no-pin default when omitted) — pass a
-CATALOG selector read from `agy models` at dispatch time (the roster or config
-supplies it); never a display label.
+Reasoning tier = `--model` passthrough (no-pin default when omitted) — pass the
+user's pinned model as written (no `agy models` lookup; a model agy refuses ends
+`config-conflict` (65) naming the model, R-MODEL).
 Owl subagents are not currently used by the wrapper.
 
 ## Tool to permission-action map

@@ -18,7 +18,7 @@
       "acceptance": "participating",
       "timeout_s": 3600,
       "google": {"route": "agy"},
-      "agy": {"model": "gemini-3.1-pro-high", "effort": "high"},
+      "agy": {"model": "gemini-4-argon-high", "effort": "high"},
       "note": "A separate invocation identity of the Google family; same shared prompt as every leg (no per-leg emphasis)."
     },
     {
@@ -28,7 +28,7 @@
       "acceptance": "participating",
       "timeout_s": 3600,
       "google": {"route": "agy"},
-      "agy": {"model": "gemini-3.1-pro-high", "effort": "high"},
+      "agy": {"model": "gemini-4-argon-high", "effort": "high"},
       "note": "A separate invocation identity of the Google family; same shared prompt as every leg (no per-leg emphasis)."
     },
     {
@@ -38,7 +38,7 @@
       "acceptance": "participating",
       "timeout_s": 3600,
       "google": {"route": "agy"},
-      "agy": {"model": "gemini-3.1-pro-high", "effort": "high"},
+      "agy": {"model": "gemini-4-argon-high", "effort": "high"},
       "note": "A separate invocation identity of the Google family; same shared prompt as every leg (no per-leg emphasis)."
     }
   ]

@@ -1,7 +1,7 @@
 ---
 name: triad-gemini-dispatch
 description: Use when the leader (Triad orchestrator) needs to dispatch a single-shot Gemini CLI call via the wrapper framework. Triggering signals — leader is about to run `python3 gemini_wrapper.py` raw; the user asks to call gemini once, have gemini handle a task, or run a one-shot gemini analysis; a higher-level orchestration SKILL needs the Gemini leg of a fan-out; classification-aware routing with self-improving repair-agent fallback is needed instead of raw subprocess. Symptoms of skipping this SKILL — unknown classification failures don't reach the repair sub-agent, the framework's self-improving classifier never grows. Do NOT use for Codex (`triad-codex-dispatch`), Antigravity (`triad-antigravity-dispatch`), or an isolated Claude worker (served in this plugin by the in-session `Agent` tool).
-version: 0.14.3
+version: 0.14.4
 # changelog: docs/reviews/2026-10-08-dispatch-skill-history.md (every entry; the newest section is last)
 ---
 
@@ -146,9 +146,9 @@ defences are independent. The wrapper's other stderr lines (`run-log: <abs>`,
 `exec cwd=… argv=…`) never START with the `[wrapper] gemini <token> ` prefix.
 
 Token set:
-`ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | timeout | extraction-error | unknown`
+`ok | server-capacity | cli-subscription-cap | token-limit | oauth-env | schema-fail | config-conflict | truncated-answer | timeout | extraction-error | unknown`
 
-Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) / `4` (binary missing) / `64` (server-cap exhausted) / `65` (terminal) / `66` (schema fail).
+Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) / `4` (binary missing) / `64` (server-cap exhausted) / `65` (terminal — SHARED by the three terminal causes (`cli-subscription-cap`, `token-limit`, `config-conflict`), `oauth-env` and `truncated-answer`, so at 65 read the TOKEN from the summary line before picking a Step 4 row) / `66` (schema fail).
 
 ### Step 4 — Branch on classification
 
@@ -156,7 +156,8 @@ Or branch on wrapper exit code: `0` / `1` / `2` (timeout) / `3` (arg) / `4` (bin
 |---|---|
 | `ok` (0) | Return wrapper stdout (Gemini's `response` field text or pydantic-validated JSON). |
 | `oauth-env` (65) | STOP. The login is missing or expired (gemini's own exit 41 included), or the CLI used an API-key / Vertex / ADC class. Do not retry, do not try another route or credential, and never read or change the credential store; tell the owner to re-log in through the CLI's own browser flow (run `gemini`, choose Login with Google). A same-basis re-dispatch runs only after the owner reports the re-login. **NOT** repair-agent territory. |
-| terminal (65) — cli-subscription-cap / token-limit | Surface to user with cause (Code Assist license daily-quota or API-key RPM-tier reset / prompt size — see the Lane note in § Use when). **NOT** repair-agent territory. |
+| terminal (65) — cli-subscription-cap / token-limit / config-conflict | Surface to user with cause (Code Assist license daily-quota or API-key RPM-tier reset / prompt size — see the Lane note in § Use when / the preflight's refusal, § Preflight; gemini has no measured refused-model sentence yet, so a pinned model gemini refuses ends `unknown` and takes Step 5). **NOT** repair-agent territory. |
+| `truncated-answer` (65) | The wrapper's OWN output capture did not complete: gemini exited 0, but an output reader failed or did not finish within its bounded join, so what was captured is a prefix. The cause is the wrapper's stderr line right before the summary — `exit=0 … but the output readers did not complete (…); failing closed`. The answer is BLANKED (stdout empty) and the raw vendor rc is kept. **Leader: re-dispatch once, unchanged; if it recurs, surface it with the run-log path.** **NOT** repair-agent territory (a wrapper transport defect, not a classifier gap). This is the token's only origin on gemini; the CLI-side answer fold is agy's. |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper retried per backoff (plus Gemini's own internal retries). |
 | `unknown` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 7). Spawn it even when you are busy or also surfacing the failure — never skip.** |
 | `extraction-error` (1) | **Step 5 — repair agent dispatch (MANDATORY + parallel; Hard rule 7).** Vendor returned rc=0 but extractor found no answer (empty `response` field, unparseable JSON, vendor refusal text). Repair agent inspects whether the cause is a vendor refusal pattern worth a classifier patch, or a true extraction bug → ESCALATE. |

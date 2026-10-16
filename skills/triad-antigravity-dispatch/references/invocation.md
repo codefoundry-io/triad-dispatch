@@ -25,7 +25,7 @@ file, one simple command with literal arguments) stays in Step 1 itself.
   ONE schema-repair re-run (a text hint appended to the `-p` prompt), then exits
   `EXIT_SCHEMA_FAIL=66`. e2e-verified against real agy
   (`tests/e2e/wrappers/agy-stream/s1-real-stream.sh` case 3).
-- `--timeout` default is `600` seconds. The wrapper derives agy's `--print-timeout` from it (`max(timeout - 10, 5)s`); the wrapper's own SIGTERM→SIGKILL process-group kill (shared with codex/gemini/claude) is the backstop.
+- `--timeout` default is `600` seconds. The wrapper derives agy's `--print-timeout` from it (`max(timeout - 10, 5)s`); the wrapper's own SIGTERM→SIGKILL process-group kill (shared with the codex and gemini wrappers) is the backstop.
 - `--prompt-file <absolute-path>` reads the prompt body from a file INSTEAD of
   `--prompt` (the two are mutually exclusive — argparse rejects both together).
   Step 1 always uses it: the leader writes the body with the Write tool, so the
@@ -41,8 +41,9 @@ file, one simple command with literal arguments) stays in Step 1 itself.
   against its own scratch project rather than `--cwd` (isolation.md § Tool
   to permission-action map, closing note; ledger W-21), so prompt-cited
   paths stay absolute regardless.
-- `--model <selector>` passes a CATALOG selector from `agy models` (no-pin
-  default when omitted). **Pin floor: agy >= 1.1.10** — before 1.1.10 the
+- `--model <model>` passes the user's pinned model as written (no `agy models`
+  lookup; a model agy refuses ends `config-conflict` (65) naming the model,
+  R-MODEL; no-pin default when omitted). **Pin floor: agy >= 1.1.10** — before 1.1.10 the
   vendor applied `--model`/`--effort` after model configuration had already
   initialized, so `-p` runs silently fell back to the persisted/default model
   (vendor changelog, 1.1.10 2026-08-03). The wrapper fail-closes a pinned
@@ -59,7 +60,7 @@ Still **no `--dangerously-*`** (Hard rule 7).
 
 The leader just calls the wrapper. agy at or above `_STREAM_JSON_FLOOR` emits
 typed NDJSON via `--output-format stream-json`, so the wrapper
-spawns it through the SAME shared subprocess core codex/gemini/claude use
+spawns it through the SAME shared subprocess core the codex and gemini wrappers use
 (`_common._run_once`) — no pty, no completion sentinel, no prompt mutation — and
 fails CLOSED with `config-conflict` on a build below that floor. The
 earlier pty + sentinel + transcript-read transport is RETIRED; git history has
