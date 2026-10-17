@@ -162,30 +162,46 @@ so the printed lines are the record.
 
 | `field=` | `carrier` |
 |---|---|
-| `stderr` | `stderr of a failed run` |
+| `stderr` | codex: `a stderr line of a failed run` (the parity test reads a codex carrier that starts with `a stderr line` or `stderr line` as stderr; any other wording is tested as a stdout event); any other CLI: `stderr of a failed run` |
 | `stdout` | codex: `codex error / turn.failed message`; gemini: `the gemini error object on stdout`; any other CLI: `stdout of a failed run` |
 | `result.error` | `the typed result.error of the terminal result event` |
 | `extraction_error` | `the extraction reason of a run at vendor exit 0` |
 | `vendor_exit_code` | no row: the contract has no column for a vendor exit code. Promote nothing; report the three lines. |
 | `none` | no row: no line the classifier read carries the substring. Promote nothing; report the three lines. |
 
-**In the lab** (this repository, in the spec repository worktree the lab's
-instruction file names — never an absolute path in this text):
+**In the lab** (this repository, and the lab's working clone of
+`codefoundry-io/triad-dispatch-lib` — its path is recorded in
+`docs/setting_vs.md` § 6.4b; never an absolute path in this text):
 
-1. On the spec branch, append the row `{"cli", "line", "match", "carrier",
-   "token", "observed"}` with the values above to `lines` in
-   `contracts/vendor-failure-lines.json`, and add a row to
-   `authoring/shared-dev-log.md` that cites `run_log`, `ts` and
-   `vendor_version` exactly as printed. The new row's id is the highest DL id
-   visible on any branch (local and remote) + 1. Keep the footer lists and the spec tests
-   green. Do not push: publication is owner-gated.
+1. In the library clone, on a request branch cut from the library's fetched
+   `main` (never a detached checkout at the pinned tag), append the row
+   `{"cli", "line", "match", "carrier", "token", "observed"}` with the values
+   above to `lines` in `spec/contracts/vendor-failure-lines.json`, and add a row
+   to `spec/authoring/shared-dev-log.md` written as that file's § How a row is
+   written requires (an existing R-CLASSIFY case id such as C43 in the case
+   cell; the host cell names `spec` (row added), `A` (change) and `B (check)`,
+   or `B (change)` when the codex host's classifier lacks the phrase; a status
+   from its vocabulary) that cites `ts` and `vendor_version` exactly as printed
+   and the run-log by its file STEM (the name without the directory and
+   `.json` — never the path). The new row's id is the highest DL id
+   visible on any branch (local and remote) + 1. Keep the footer lists and the
+   spec tests green (the library's own entry point, its `AGENTS.md`: `uv run
+   --locked pytest -q`). Push the request branch and open the PR in the same turn —
+   a standing owner approval, the named exception to the lab's sign-off rule;
+   the merge stays the owner's, and never merge into another host's branch.
 2. In this repository, add `match` to `CLI_PATTERNS[<cli>][<pattern_list>]` in
    `bin/_common.py` (the proposal's `pattern_list`; the CLI key
-   is `antigravity` for agy), with a comment citing the contract row
-   (`the contracts/vendor-failure-lines.json <cli> row, observed <date>`). The
-   classifier-extension entry stays: a harmless duplicate.
+   is `antigravity` for agy), with a comment citing the contract row, the
+   `vendor_version` and the run-log by its file STEM — never the path, which
+   is a host path the exporter refuses
+   (`the spec/contracts/vendor-failure-lines.json <cli> row, observed <date>
+   (<cli> <vendor_version>, run-log <stem>)`), so the evidence resolves in the
+   lab before the row is published. The classifier-extension entry stays: a
+   harmless duplicate. This is an engine change: re-export the plugin
+   (`the source repo's consistency table` § Plugin re-deploy; the plugin push needs the owner's
+   OK) so the deployed toolkit does not fall behind the source.
 
-**In an installed plugin** (no spec branch, no engine source): the extension
+**In an installed plugin** (no library clone, no engine source): the extension
 entry stays and is the whole fix on this machine. Give the user the three lines
 to send to the plugin's maintainers, who promote learned phrases into the
 shipped list.

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1778 — 2026-10-16
+## 0.2.1959 — 2026-10-17
 
 This release removes the agy and gemini daily checks, the agy settings handling, the v1 and the small review paths, the old verdict schema, the starter CLAUDE.md under `migration/` and the `TRIAD_DEBUG_MAX_AGE_DAYS` environment knob.
 

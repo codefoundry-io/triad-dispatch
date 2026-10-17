@@ -19,7 +19,9 @@ fence, only numbered items `N. <name>` with an optional parenthetical; `common:<
 `investigation.md`) prose after a clause's fence, and an `## order` section of prose, are renderer notes to the host and
 are never rendered. A renderer fills `<review-kind>`, `<review-date>` (the UTC date `YYYY-MM-DD` on which the round was
 prepared, a member of the bound basis) and the binding placeholders, and never sends a clause or note it did not take from
-a fenced block. Any change to these files is a payload change: each host re-vendors the bytes and re-renders.
+a fenced block. On A, `<brief-file>` and `<gated-patch-file>` render as absolute paths because A's read-audit gate
+compares paths exactly (DL-127); this is A's rendering mechanism, not a common per-file read list or leader audit.
+Any change to these files is a payload change: each host re-vendors the bytes and re-renders.
 
 Seed state (rev-0 draft): host A's shipped text, dumped verbatim and split into clauses — no text appears twice. Host B's
 counterpart (codex `render_review_prompt` / `render_worktree_review_prompt`, `references/review-prompt-contract.md`) is

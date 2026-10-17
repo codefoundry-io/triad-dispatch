@@ -254,11 +254,20 @@ class Dispatch:
 # schema / data loading
 # ---------------------------------------------------------------------------
 def _require_jsonschema():
+    # The remedy literal is `verdict_v2._JSONSCHEMA_MISSING_MSG`'s (keep the
+    # two byte-identical).
     if jsonschema is None:
-        print("roster_v2: python3 jsonschema (Draft 2020-12) is required — "
-              "Mac: pip3 install --user --break-system-packages 'jsonschema>=4'"
-              " | Ubuntu 24.04: sudo apt install python3-jsonschema",
-              file=sys.stderr)
+        print("roster_v2: " + (
+            "{what} — the review library needs jsonschema>=4.26,<5 and "
+            "referencing>=0.37,<1 — Mac: pip3 install --user --break-system-packages "
+            "'jsonschema>=4.26,<5' 'referencing>=0.37,<1' | Ubuntu: run under the "
+            "~/.venvs/triad interpreter (activate it in the shell that launches Claude "
+            "Code, as the plugin README says) and install there with "
+            "~/.venvs/triad/bin/pip install 'jsonschema>=4.26,<5' "
+            "'referencing>=0.37,<1' (offline: add --no-index --find-links <wheelhouse>)"
+            " | this interpreter: {exe}"
+        ).format(what="python3 jsonschema (Draft 2020-12) is not importable",
+                 exe=sys.executable), file=sys.stderr)
         raise SystemExit(EXIT_NO_JSONSCHEMA)
     return jsonschema
 
@@ -480,17 +489,56 @@ def _claude_preset(named: str, web: bool) -> dict:
 
 def _toolkit_map() -> dict[str, str]:
     """`{relpath: sha256}` of this install's review toolkit — every regular
-    file directly under `lib/` (`.py` and `.sh`), the vendored `spec/**` and
-    the six shipped reviewer presets — relpaths relative to `_LAYOUT_ROOT`,
-    keys sorted, `__pycache__` / `*.pyc` skipped, or a RosterError naming an
+    file directly under `lib/` (`.py`, `.sh`, the adoption record
+    `lib-adoption.json`), the vendored package `lib/triad_dispatch_lib/**`, the
+    vendored `spec/**` and the six shipped reviewer presets — relpaths
+    relative to `_LAYOUT_ROOT`, keys sorted, `__pycache__` / `*.pyc` / `*.pyo`
+    / `.DS_Store` skipped on every arm alike, or a RosterError naming an
     unreadable file (R-PREPARE, R-RETRY; case C19). `prepare` records it;
-    `collect` and `retry` compare it with this one."""
+    `collect` and `retry` compare it with this one.
+
+    The package must be exactly what its adoption record lists: a symlink
+    (the package directory included) or non-regular entry, a file the record's
+    `files` lists that is missing or one it does not list, a file whose sha256
+    differs from the record, or a malformed record is a RosterError naming the
+    path — a damaged install, never a round's basis."""
     skill = Path(__file__).resolve().parents[1]
+    pkg = skill / "lib" / "triad_dispatch_lib"
+    record = skill / "lib" / "lib-adoption.json"
+    want = _read_json(record, "the adoption record").get("files")
+    if not (isinstance(want, dict)
+            and all(isinstance(v, str) for v in want.values())):
+        raise RosterError(f"the adoption record {record} carries no `files` "
+                          f"object of sha256 strings — reinstall this host")
+    if pkg.is_symlink():
+        raise RosterError(f"the vendored package {pkg} is a symlink — "
+                          f"reinstall this host")
+    vendored = {}
+    for path in sorted(pkg.rglob("*")):
+        rel = path.relative_to(pkg)
+        if ("__pycache__" in rel.parts or path.suffix in (".pyc", ".pyo")
+                or path.name == ".DS_Store"):
+            continue
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            raise RosterError(f"the vendored package entry {path} is a symlink "
+                              f"or not a regular file — reinstall this host")
+        if path.is_file():
+            vendored[rel.as_posix()] = path
+    differ = sorted(vendored.keys() ^ want.keys())
+    if differ:
+        rel = differ[0]
+        state = ("is not listed in" if rel in vendored
+                 else "is missing, yet listed in")
+        raise RosterError(f"the vendored package file {pkg / rel} {state} the "
+                          f"adoption record {record} — reinstall this host")
     files = [*(p for p in skill.joinpath("lib").iterdir()
-               if p.is_file() and p.suffix != ".pyc"),
+               if p.is_file() and p.suffix not in (".pyc", ".pyo")
+               and p.name != ".DS_Store"),
+             *vendored.values(),
              *(p for p in skill.joinpath("spec").rglob("*")
                if p.is_file() and "__pycache__" not in p.parts
-               and p.suffix != ".pyc"),
+               and p.suffix not in (".pyc", ".pyo")
+               and p.name != ".DS_Store"),
              *(_LAYOUT_ROOT / "agents" / f"{agent}.md"
                for pair in CLAUDE_WEB_TWINS.items() for agent in pair)]
     found = {}
@@ -505,6 +553,11 @@ def _toolkit_map() -> dict[str, str]:
                               f"this host") from exc
         found[path.relative_to(_LAYOUT_ROOT).as_posix()] = \
             hashlib.sha256(data).hexdigest()
+    for rel, digest in sorted(want.items()):
+        if found.get((pkg / rel).relative_to(_LAYOUT_ROOT).as_posix()) != digest:
+            raise RosterError(f"the vendored package file {pkg / rel} differs "
+                              f"from its adoption record {record} — reinstall "
+                              f"this host")
     return dict(sorted(found.items()))
 
 

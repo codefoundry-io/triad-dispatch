@@ -170,8 +170,13 @@ class _HostFault(CollectError):
     """THIS HOST is broken, and nothing about any leg is known (row r7-c4).
 
     `verdict_v2` exits 64 for exactly one class: the admission could not RUN
-    — jsonschema absent, the vendored contract unreadable / corrupt / not
-    Draft 2020-12, the target refused as a host fault. Recording that as the
+    — `jsonschema` / `referencing` absent or outside its range, the two unable
+    to build a Draft 2020-12 validator with a registry, the vendored contract
+    unusable, the vendored package not importable or not the vendored copy
+    (`verdict_v2._get_validator`), an expected pair the library refuses
+    (`invalid_expected` / a library `ContractError`, `verdict_v2._admit_obj`),
+    the target refused as a host fault; `retry`'s render adds the data-side
+    identity fault (`prompts_v2._check_identity`). Recording that as the
     entry's `invalid` folded the round to INCOMPLETE, which is the leader's
     instruction to RE-DISPATCH the paid legs — over an install that cannot
     judge any reply. The collection STOPS instead, with its own usage/host
@@ -871,15 +876,21 @@ def _recorded_seals(packet_dir: Path, label: str) -> dict:
 
 def _raw_admissible(attempt_dir: Path, expected: dict) -> bool:
     """True when the native admission, re-run on raw.json as it is now,
-    admits it against `expected`."""
+    admits it against `expected`. An admission that could not RUN (exit 64:
+    the host question, the expected pair the library refuses) is `_HostFault`,
+    never a refused reply."""
     try:
+        verdict_v2 = _load_sibling("verdict_v2")
         with contextlib.redirect_stderr(io.StringIO()):
-            return _load_sibling("verdict_v2")._admit_raw_with_text(
+            admission = verdict_v2._admit_raw_with_text(
                 _read_regular_file(attempt_dir / "raw.json", "the native "
                                    "reply").decode("utf-8"), expected,
-                _load_sibling("review_scratch")._V2_END_MARKER)[0].ok
+                _load_sibling("review_scratch")._V2_END_MARKER)[0]
     except (CollectError, UnicodeDecodeError):
         return False
+    if admission.exit_code == verdict_v2.EXIT_USAGE:
+        raise _HostFault(f"{attempt_dir}: {admission.reason}")
+    return admission.ok
 
 
 def _saved_not_admitted(attempt_dir: Path, expected: dict) -> str | None:
@@ -1381,8 +1392,11 @@ def _evaluate_recorded(packet_dir: Path, record: dict, entry: dict,
     admission = verdict_v2.admit_file(result, expected)
     if not admission.ok:
         # A HOST FAULT IS NOT A LEG RESULT: verdict_v2 reserves exit 64 for
-        # the admission it could not RUN at all — absent jsonschema, an
-        # unreadable or non-Draft-2020-12 vendored contract. Nothing about
+        # the admission it could not RUN at all — `_get_validator`'s host
+        # question (a dependency absent or outside its range, the registry
+        # probe, the vendored contract, the vendored package) or an expected
+        # pair the library refuses (`_admit_obj`: `invalid_expected` / a
+        # library `ContractError`). Nothing about
         # this leg (or any other) is known, so the collection stops here;
         # `_HostFault`'s docstring carries the rule.
         if admission.exit_code == verdict_v2.EXIT_USAGE:
@@ -1485,12 +1499,20 @@ def _check_toolkit(record: dict, what: str) -> None:
     or allocated.
 
     The HOST question comes first: `_get_validator` reserves its reason for
-    "this install cannot admit ANY reply" (absent jsonschema, an unreadable /
-    corrupt / non-Draft-2020-12 contract), a `_HostFault` at exit 64, never
+    "this install cannot admit ANY reply" (`jsonschema` / `referencing`
+    absent or outside its range, the registry probe, an unusable vendored
+    contract, the vendored package not importable or not the vendored copy),
+    a `_HostFault` at exit 64, never
     this round's exit-2 refusal. Then the round record's `toolkit_map`
-    (`roster_v2._toolkit_map` at prepare: every file under `lib/`, the
-    vendored `spec/**` and the six shipped presets, each file's sha256) is
-    compared with the installed files; every changed, added or missing file is named, and a
+    (`roster_v2._toolkit_map` at prepare: every file directly under `lib/`
+    including `lib-adoption.json`, every regular file under the vendored
+    package `lib/triad_dispatch_lib/` and the vendored `spec/**` — bytecode
+    and `.DS_Store` skipped on all three — and the six shipped presets, each
+    file's sha256) is
+    compared with the installed files. A live map that cannot be derived —
+    a package file that is not its adoption record, a malformed record, an
+    unreadable or non-regular toolkit entry — is a `_HostFault` (64) before
+    that comparison; every changed, added or missing file is named, and a
     record without a map cannot prove the toolkit, so it is refused."""
     verdict_v2 = _load_sibling("verdict_v2")
     validator, why = verdict_v2._get_validator()
@@ -1749,10 +1771,16 @@ def retry(packet_dir, label: str, name: str, diagnosis: str) -> Path:
 
     review_scratch = _load_sibling("review_scratch")
     worktree = Path(record["worktree"])
-    alloc = review_scratch.v2_render_attempt(
-        packet_dir, worktree, label, record["review_id"],
-        record["content_digest"], entry["leg"], result.attempt + 1,
-        _bound_conditions(packet_dir, label, record, name))
+    prompts = _load_sibling("prompts_v2")
+    try:
+        alloc = review_scratch.v2_render_attempt(
+            packet_dir, worktree, label, record["review_id"],
+            record["content_digest"], entry["leg"], result.attempt + 1,
+            _bound_conditions(packet_dir, label, record, name))
+    except prompts._PromptHostFault as exc:
+        # This install cannot render: a host fault (64), never a refusal
+        # about the round; nothing is allocated, sealed or diagnosed yet.
+        raise _HostFault(str(exc)) from exc
     # THE INSTALLED TOOLKIT was proven unchanged before any evaluation
     # (`_check_toolkit`, cases C19 / C20), and the render above reads the same
     # installed files, so the allocation below re-runs the SAME basis.

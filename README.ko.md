@@ -58,9 +58,13 @@ Claude 가 `triad-codex-dispatch` skill 을 실행하고, codex wrapper 를 호�
      CLI 를 아직 쓰는 호스트를 위한 호환 경로입니다.
 
    또한 PATH 에 **`python3 >= 3.12`** (wrapper 는 `#!/usr/bin/env python3` 로
-   실행)와, cross-family review 의 **jsonschema** (Draft 2020-12;
-   Mac `pip3 install jsonschema`, Ubuntu 24.04 `apt install python3-jsonschema`) — 없으면
-   review helper 가 exit 64 와 그 설치 안내로 멈춥니다 — 그리고 플러그인 마켓플레이스 + 네임스페이스 플러그인 skill 을
+   실행)와, cross-family review 가 vendoring 한 라이브러리의 의존성 **jsonschema** 와
+   **referencing** 을 라이브러리 floor 이상으로 (`'jsonschema>=4.26,<5'`,
+   `'referencing>=0.37,<1'`; Mac:
+   `pip3 install --user --break-system-packages 'jsonschema>=4.26,<5' 'referencing>=0.37,<1'`
+   — brew 의 python 은 PEP 668 externally managed 입니다; Ubuntu 24.04: apt 의
+   `python3-jsonschema` 4.10.3 은 floor 미달이므로 아래 주의를 보세요) — 없으면
+   review helper 가 exit 64 와 설치 안내로 멈춥니다 — 그리고 플러그인 마켓플레이스 + 네임스페이스 플러그인 skill 을
    지원할 만큼 **최신 Claude Code** 가 필요합니다. claude 리뷰 leg 는 세션 내
    `Agent` 이므로 별도 로그인이 필요 없습니다. **pydantic 2.x**
    (`'pydantic>=2,<3'`, 그 `python3` 로 import 가능) 는 wrapper 에
@@ -68,22 +72,35 @@ Claude 가 `triad-codex-dispatch` skill 을 실행하고, codex wrapper 를 호�
    전용 API 를 씁니다).
 
    > **Ubuntu 24.04 주의.** `apt install python3-pydantic` 은 **1.10** 이라 동작하지
-   > 않고, PEP 668 로 시스템 인터프리터가 externally-managed 이므로 `pip3 install
-   > --user` 도 실패합니다. apt 의 `python3-jsonschema` 가 그대로 보이는
-   > venv 를 쓰세요 — `python3 -m venv --system-site-packages ~/.venvs/triad &&
-   > ~/.venvs/triad/bin/pip install 'pydantic>=2,<3'` (venv 의 pydantic 2 가 `sys.path`
-   > 에서 먼저 옵니다) — 그리고 Claude Code 를 띄우는
+   > 않고, apt 의 `python3-jsonschema` 4.10.3 과 `python3-referencing` 0.31.0 은 리뷰
+   > 라이브러리의 floor 미달이며, PEP 668 로 시스템 인터프리터가 externally-managed
+   > 이므로 `pip3 install --user` 도 실패합니다. 둘 다 venv 하나에 설치하세요 —
+   > 먼저 `sudo apt install python3-venv` (기본 Ubuntu 24.04 호스트에는 없습니다), 그다음
+   > `python3 -m venv --system-site-packages ~/.venvs/triad &&
+   > ~/.venvs/triad/bin/pip install 'pydantic>=2,<3'` (venv 의 패키지가 `sys.path`
+   > 에서 먼저 옵니다; 오프라인이면 그 pydantic 명령에 `--no-index --find-links
+   > <wheelhouse>` 를 붙입니다) — 그리고 Claude Code 를 띄우는
    > 셸에서 그 venv 를 activate 해야 `#!/usr/bin/env python3` 가 venv 인터프리터로
-   > 해석됩니다. 인덱스 대신 로컬 wheel 세트로 설치하려면 같은 명령에
-   > `--no-index --find-links <wheel-dir>` 를 붙이세요. **그 세트는 3개가 아니라 5개**
-   > 입니다 — pydantic 2.x 런타임 의존 closure 전부:
+   > 해석됩니다. 리뷰 라이브러리의 의존성도 같은 venv 에 설치합니다 — 인덱스에 접근할 수
+   > 있는 호스트에서는
+   > `~/.venvs/triad/bin/pip install 'jsonschema>=4.26,<5' 'referencing>=0.37,<1' && ~/.venvs/triad/bin/pip check`;
+   > 오프라인에서는 OS/architecture 별 wheelhouse 하나에서:
+   > `~/.venvs/triad/bin/pip install --no-index --find-links <wheelhouse> --only-binary=:all: 'jsonschema>=4.26,<5' 'referencing>=0.37,<1' && ~/.venvs/triad/bin/pip check`.
+   > pydantic 도 인덱스 대신 그 wheelhouse 로 설치하려면 pydantic 명령에
+   > `--no-index --find-links <wheelhouse>` 를 붙이세요. wheelhouse 에는 두 closure 가 모두
+   > 들어갑니다. pydantic 2.x closure 는 3개가 아니라 5개입니다:
    > `pydantic-2.x-py3-none-any.whl` + `pydantic_core-*-cp312-*manylinux*.whl`
-   > (pydantic 릴리스마다 `==` 고정) + `typing_extensions-*.whl` +
-   > `annotated_types-*.whl` (>= 0.6) + `typing_inspection-*.whl` (>= 0.4.2,
-   > pydantic 2.10 부터 필수).
-   > `pip download 'pydantic>=2,<3' --only-binary=:all: --platform
-   > manylinux_2_17_x86_64 --python-version 312 -d <dir>` 가 정확히 그 세트를
-   > 떨굽니다.
+   > (pydantic 릴리스마다 `==` 고정) + `typing_extensions-*.whl` (pydantic 릴리스의
+   > metadata 가 정하는 floor — pydantic 2.14.x 는 `>= 4.16.0`; `pip download` 가
+   > resolve 합니다) +
+   > `annotated_types-*.whl` (>= 0.6) + `typing_inspection-*.whl` (pydantic 릴리스의
+   > metadata 가 정하는 floor — pydantic 2.14.x 는 `>= 0.4.4`; `pip download` 가
+   > resolve 합니다). 리뷰 라이브러리가 `jsonschema-*.whl`,
+   > `referencing-*.whl`, `jsonschema_specifications-*.whl`, `attrs-*.whl`,
+   > `rpds_py-*-cp312-*manylinux*.whl` 를 더합니다. `python3 -m pip download --only-binary=:all:
+   > --platform manylinux_2_17_<arch> --python-version 312 --implementation cp
+   > -d <wheelhouse> 'jsonschema>=4.26,<5' 'referencing>=0.37,<1' 'pydantic>=2,<3'`
+   > (`<arch>` = 대상의 `uname -m`) 가 정확히 그 세트를 떨굽니다.
 
 2. **플러그인 추가.**
 
@@ -561,6 +578,11 @@ Classifier patch는 `~/.config/triad-dispatch/classifier-patches.json`에 남습
   그리고 claude 리뷰 preset 6개 (위 "claude 리뷰 leg 의 모델과 effort 고르기" 참고).
 - **bin**: Python wrapper 들 (codex / gemini / agy) + `policies/gemini-readonly.toml` (gemini `--sandbox
   read-only` 모드가 per-call 로 부착하는 read-only Policy Engine 파일).
+- **vendored 라이브러리**: `skills/triad-cross-family-review/lib/triad_dispatch_lib/` (triad-dispatch-lib,
+  고정한 릴리스의 바이트 그대로), 채택 기록 `lib/lib-adoption.json` (pin, 파일과 sha256), MIT 고지
+  `lib/triad-dispatch-lib.LICENSE`. 이 셋은 손으로 고치지 마세요 — 바뀐 패키지 파일은 거부되고
+  (exit 64), `prepare` 이후 고지나 기록의 `files` 밖이 바뀌면 basis 변경입니다 (exit 2, 새 라운드). 교체는
+  플러그인 재설치로만 합니다.
 - **tests**: stdlib-only wrapper 테스트 — 설치 검증에 그대로 사용:
 
   ```bash

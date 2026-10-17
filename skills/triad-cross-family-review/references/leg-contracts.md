@@ -298,6 +298,15 @@ leg mixups). The leader's obligations, every round, every entry:
    interpreter's limit (`RecursionError` — neither), and a document that is
    not a valid Draft 2020-12 schema — none of them escapes as a TRACEBACK
    out of the one path the collector's exit-64 `_HostFault` depends on.
+   The same `_get_validator` asks the dependency question first —
+   `jsonschema` or `referencing` absent or outside its supported range
+   (`>=4.26,<5`, `>=0.37,<1`), or the two unable to build a Draft 2020-12
+   validator with a registry; the one line then carries both pins, the
+   install lines and `this interpreter: <path>` — and the vendored package
+   last (not importable, or not the vendored copy). `_admit_obj` takes the
+   same exit for an expected binding pair the library refuses
+   (`invalid_expected`, a library `ContractError`): the pair is the host's
+   own, so the reply was never judged.
    Every one of them says the same thing — this host cannot
    judge any reply — so the collection STOPS and writes no per-entry state
    (`references/triage.md` § Collect outcomes).
@@ -610,8 +619,9 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
   moves an audit. Never a bare `$AGY_READ_AUDIT_FILE` (a gate-local name, unset at
   dispatch time) and never a `${TRIAD_READ_AUDIT_FILE:-...}` fallback (it could
   name a leftover another shell left set).
-- **Prompt body.** It is `<attempt>/prompt.txt` (rendered from the vendored
-  clause bytes by `lib/prompts_v2.py`): the round worktree path and its
+- **Prompt body.** It is `<attempt>/prompt.txt` (rendered by the vendored
+  library's `render_review_clauses` behind `lib/prompts_v2.py`'s identity
+  checks): the round worktree path and its
   `brief.md` entry point, the vendored `google-read-grant` clause, the
   severity instruction, the verdict-selection rule and the binding line,
   passed with `--prompt-file <abs>`.

@@ -45,16 +45,22 @@ Exit codes:
       unchanged basis or a new round - a re-ask with a changed prompt is a
       new basis, R-RETRY / R-BIND)
   3   `--end-marker` absent from the raw reply - possible TAIL LOSS
-  64  usage error, `jsonschema` not importable, an unusable canonical
-      schema file, or a REFUSED `--admitted-out` target - the HOST-fault
-      class. A missing, unreadable, non-JSON or non-Draft-2020-12 schema
-      says nothing about the leg's reply, so it must never be reported as
-      "invalid reply" (exit 1); neither does an existing target or an
-      unwritable directory at the path the caller chose to copy an
-      ALREADY-ADMITTED reply into.
+  64  usage error, a dependency (`jsonschema`, `referencing`) absent or
+      outside its range or the two unable to build a Draft 2020-12 validator
+      with a registry, an unusable canonical schema file, the vendored
+      `triad_dispatch_lib` not importable or not the vendored copy (all
+      `_get_validator`), an expected binding pair the library refuses
+      (`invalid_expected` / a library `ContractError`, `_admit_obj`), or a
+      REFUSED `--admitted-out` target - the HOST-fault class. A missing, unreadable, non-JSON or
+      non-Draft-2020-12 schema says nothing about the leg's reply, so it
+      must never be reported as "invalid reply" (exit 1); neither does an
+      existing target or an unwritable directory at the path the caller
+      chose to copy an ALREADY-ADMITTED reply into.
 
 Every stderr reason is ONE line (CR and LF folded), capped at 300
-characters: a schema message may otherwise inline the whole reply.
+characters: a schema message may otherwise inline the whole reply. The
+host-fault reason of `_get_validator` is trusted host text and is printed
+uncapped, so its install remedy survives whole.
 
 Consumers (the collector slice) use `admit_file()` / `admit_raw()`, which
 return an `Admission`. A consumer that loads this file BY PATH rather than
@@ -91,24 +97,23 @@ from __future__ import annotations
 
 import hashlib
 import html
+import importlib
+import importlib.metadata
+import importlib.util
 import json
 import os
+import re
 import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# jsonschema optional at IMPORT time so this module stays importable (and
-# its usage text printable) on a host that lacks it; every entry point calls
-# `_get_validator()` first and turns the absence into the documented usage
-# exit 64 with an install hint. Draft 2020-12 needs jsonschema >= 4.0 -
-# satisfied by both the dev pip build and the Ubuntu 24.04 apt package
-# (python3-jsonschema 4.10.3), so a presence-only gate is enough here; there
-# is no 3.x-shaped fallback to detect.
-try:
-    from jsonschema import Draft202012Validator  # type: ignore
-except ImportError:  # pragma: no cover - exercised by the PYTHONPATH stub axis
-    Draft202012Validator = None  # type: ignore
+# The admission's dependencies (`jsonschema`, `referencing` — the vendored
+# library's floors) are imported LAZILY, inside `_get_validator()`, so this
+# module stays importable (and its usage text printable) on a host that lacks
+# them; every entry point asks `_get_validator()` first and turns an absent or
+# out-of-range dependency, or an unusable vendored package, into the
+# documented usage exit 64 with one host-fault line.
 
 EXIT_OK = 0
 EXIT_INVALID = 1
@@ -121,9 +126,17 @@ EXIT_USAGE = 64
 # (the native route's record step) and refuses a target whose directory has one.
 _SEAL_NAME = "seal.json"
 
+# The dependency remedy, ONE line. The same literal is in
+# `roster_v2._require_jsonschema` (keep the two byte-identical).
 _JSONSCHEMA_MISSING_MSG = (
-    "jsonschema is not importable - v2 verdict admission needs it "
-    "(pip install jsonschema; Ubuntu 24.04: apt install python3-jsonschema)"
+    "{what} — the review library needs jsonschema>=4.26,<5 and "
+    "referencing>=0.37,<1 — Mac: pip3 install --user --break-system-packages "
+    "'jsonschema>=4.26,<5' 'referencing>=0.37,<1' | Ubuntu: run under the "
+    "~/.venvs/triad interpreter (activate it in the shell that launches Claude "
+    "Code, as the plugin README says) and install there with "
+    "~/.venvs/triad/bin/pip install 'jsonschema>=4.26,<5' "
+    "'referencing>=0.37,<1' (offline: add --no-index --find-links <wheelhouse>)"
+    " | this interpreter: {exe}"
 )
 
 # The canonical contract ships INSIDE the skill, one level above this file in
@@ -160,7 +173,10 @@ _USAGE = (
     "digest from the packet bytes and is mutually exclusive with "
     "--expected-content-digest.\n"
     "  exits: 0 admitted; 1 shape/schema/binding; 2 unparseable or duplicate "
-    "member; 3 end marker absent (tail loss); 64 usage"
+    "member; 3 end marker absent (tail loss); 64 usage or host fault "
+    "(jsonschema / referencing absent or outside their ranges, an unusable "
+    "contract, the vendored package not importable or not the vendored "
+    "copy, an expected binding pair the library refuses)"
 )
 
 
@@ -211,17 +227,77 @@ def _succeed(obj: dict) -> Admission:
 _VALIDATOR = None
 
 
+def _library_import() -> tuple[object | None, str | None]:
+    """(the vendored `triad_dispatch_lib` module, reason). The skill's `lib/`
+    directory goes first on `sys.path`, and the imported module must BE the
+    vendored copy: a package already in `sys.modules` from elsewhere, or a
+    directory without `__init__.py` (a namespace package, no `__file__`), is a
+    host fault like an import that fails. Every reason is ONE line."""
+    lib_dir = Path(__file__).resolve().parent
+    vendored = lib_dir / "triad_dispatch_lib"
+    if not sys.path or sys.path[0] != str(lib_dir):
+        sys.path.insert(0, str(lib_dir))
+    try:
+        mod = importlib.import_module("triad_dispatch_lib")
+    except (Exception, RecursionError) as e:
+        if isinstance(e, ModuleNotFoundError) and e.name in (
+                "jsonschema", "referencing", "rpds", "attrs",
+                "jsonschema_specifications", "typing_extensions"):
+            return None, _JSONSCHEMA_MISSING_MSG.format(
+                what=f"host fault: {e.name} is not importable",
+                exe=sys.executable)
+        first = (str(e).splitlines() or [""])[0]
+        return None, (f"host fault: the vendored library lib/triad_dispatch_lib "
+                      f"cannot be imported ({type(e).__name__}: {first}) — "
+                      f"reinstall this host")
+    where = getattr(mod, "__file__", None)
+    if not isinstance(where, str) or not Path(where).resolve().is_relative_to(vendored):
+        shown = Path(where).resolve() if isinstance(where, str) else "no file"
+        return None, (f"host fault: the imported triad_dispatch_lib is {shown}, "
+                      f"not the vendored copy {vendored} — reinstall this host")
+    return mod, None
+
+
 def _get_validator() -> tuple[object | None, str | None]:
-    """(validator, reason). Built once per process. `check_schema` runs on
-    the vendored contract itself before any payload is judged, so a corrupted
-    vendored file is reported as such instead of silently accepting or
-    rejecting every reply. Every reason returned here is a HOST fault (exit
-    64): none of them says anything about the leg's reply."""
+    """(validator, reason). Built once per process. The HOST question, in
+    order: both dependencies present, each inside its declared range, the
+    `registry=` probe, the vendored contract (`check_schema` runs on it before
+    any payload is judged, so a corrupted vendored file is reported as such
+    instead of silently accepting or rejecting every reply), then the vendored
+    package (`_library_import`). Every reason returned here is a HOST fault
+    (exit 64), ONE line: none of them says anything about the leg's reply."""
     global _VALIDATOR
     if _VALIDATOR is not None:
         return _VALIDATOR, None
-    if Draft202012Validator is None:
-        return None, _JSONSCHEMA_MISSING_MSG
+    for name, low, high in (("jsonschema", (4, 26), (5,)),
+                            ("referencing", (0, 37), (1,))):
+        try:
+            found = importlib.util.find_spec(name) is not None
+        except (ImportError, ValueError):
+            found = False
+        try:
+            version = importlib.metadata.version(name) if found else None
+        except importlib.metadata.PackageNotFoundError:
+            version = None
+        if version is None:
+            return None, _JSONSCHEMA_MISSING_MSG.format(
+                what=f"host fault: {name} is not importable", exe=sys.executable)
+        lead = re.match(r"\d+(?:\.\d+)*", version)
+        parts = tuple(int(x) for x in lead.group(0).split(".")) if lead else ()
+        if not (low <= parts < high):
+            return None, _JSONSCHEMA_MISSING_MSG.format(
+                what=f"host fault: {name} {version} is outside its supported range",
+                exe=sys.executable)
+    try:
+        from jsonschema import Draft202012Validator
+        from referencing import Registry
+        Draft202012Validator({}, registry=Registry())
+    except (Exception, RecursionError) as e:
+        first = (str(e).splitlines() or [""])[0]
+        return None, _JSONSCHEMA_MISSING_MSG.format(
+            what=(f"host fault: jsonschema and referencing cannot build a "
+                  f"Draft 2020-12 validator with a registry "
+                  f"({type(e).__name__}: {first})"), exe=sys.executable)
     path = _schema_path()
     # EVERY WAY THE VENDORED FILE CAN BE UNUSABLE IS A HOST FAULT, the path
     # the collector relies on for its exit-64 `_HostFault`: invalid UTF-8
@@ -241,6 +317,9 @@ def _get_validator() -> tuple[object | None, str | None]:
         Draft202012Validator.check_schema(schema)
     except Exception as e:
         return None, f"canonical schema {path} is not a valid Draft 2020-12 schema: {e}"
+    _, why = _library_import()
+    if why is not None:
+        return None, why
     _VALIDATOR = Draft202012Validator(schema)
     return _VALIDATOR, None
 
@@ -350,8 +429,9 @@ def _read_regular_file_no_symlink(path: Path) -> tuple[bytes | None, str | None]
     # invalidates that entry and never stops the whole collection.
     #
     # The caller maps this reason to EXIT_INVALID (1), which is deliberate:
-    # exit 64 is reserved here for `_get_validator`'s reasons — "this host
-    # cannot admit ANY reply" — and a read failure on ONE path is not
+    # exit 64 is reserved here for the host's own faults — `_get_validator`'s
+    # reasons and `_admit_obj`'s refused expected pair, "this host cannot
+    # admit ANY reply" — and a read failure on ONE path is not
     # evidence about the install. At 64 the collector raises `_HostFault`
     # and STOPS the round with no per-entry state written; at 1 the entry
     # is invalid with the OS error named and every other entry still
@@ -386,6 +466,22 @@ def _admit_obj(obj: object, expected: dict, label: str) -> Admission:
     _, host_err = _get_validator()
     if host_err is not None:
         return _fail(EXIT_USAGE, host_err)
+    # The expected pair is the HOST's own (the round record, the frozen entry,
+    # the attempt number): one the library refuses is a host fault, never a
+    # refused reply (`_get_validator` above already imported the package).
+    lib, why = _library_import()
+    if why is not None:
+        return _fail(EXIT_USAGE, why)
+    try:
+        lib.validate_binding(expected)  # type: ignore[union-attr]
+    except lib.AdmissionError as e:  # type: ignore[union-attr]
+        return _fail(EXIT_USAGE, f"host fault: the expected binding pair is "
+                                 f"malformed ({e.code}: {e}) — the reply was "
+                                 f"not judged")
+    except lib.ContractError as e:  # type: ignore[union-attr]
+        return _fail(EXIT_USAGE, f"host fault: the vendored library cannot "
+                                 f"validate the expected binding pair "
+                                 f"(ContractError: {e}) — reinstall this host")
     reason = _schema_reason(obj)
     if reason is not None:
         return _fail(EXIT_INVALID, f"{label}: {reason}")
@@ -788,9 +884,11 @@ def main(argv: list[str]) -> int:
     # A host-fault schema state is decided BEFORE the reply is touched, so
     # the operator is told their install is broken instead of being told the
     # leg produced an invalid reply.
+    # The host-fault reason is TRUSTED host text, not a reply diagnostic: it
+    # is folded onto one line but never capped (the remedy must survive).
     _, schema_err = _get_validator()
     if schema_err is not None:
-        print(_flatten(schema_err), file=sys.stderr)
+        print(schema_err.replace("\r", " ").replace("\n", " "), file=sys.stderr)
         return EXIT_USAGE
 
     expected = parsed["expected"]

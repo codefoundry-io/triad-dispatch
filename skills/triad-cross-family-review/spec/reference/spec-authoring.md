@@ -1,6 +1,13 @@
 # How specs are written in this lab
 
-Adapted from the owner's Spec Rebuild Lab blueprint (2026-09-19) to a documentation-and-contracts repository with no
+Author shared changes in `triad-dispatch-lib/spec/`. Paths below are relative to
+`spec/`; the original lab method and historical decisions remain available.
+See [migration](../MIGRATION.md) for pending cutover and ancestry. Runtime schemas
+and prompts are edited only here, then copied byte-for-byte by the library-root
+`tools/sync_spec_assets.py --write`; verify with `--check`. Never edit generated
+`src/triad_dispatch_lib/data/` payloads or manifests by hand.
+
+Adapted from the owner's Spec Rebuild Lab blueprint (2026-09-19) to the original documentation-and-contracts repository with no
 application code: no UI, no LikeC4, no generated docs (owner Q-V). The point is that a fact is decided once, written
 once, referenced everywhere, and tested by cases that accumulate.
 
@@ -75,13 +82,16 @@ its own `result_channel` field.
 A revision (`rev-N` tag) is the freeze: after it, changing a contract, a prompt file or a normative sentence is a new
 revision with a `CHANGELOG.md` entry naming the anchors, cases and units it touches. The owner tags after the other
 leader has read the change (owner Q-T).
-Hosts adopt explicitly (`SPEC_REVISION`) and may lag; the drift report lists which revision each conforms to and which
-case ids are red.
+Hosts adopt explicitly and may lag; historical `SPEC_REVISION` records retain
+their meaning. New library adoption records the package version, bundle IDs and
+host adapter version under [the adoption guide](../../docs/host-adoption.md).
+The drift report lists each host's adopted inputs and red case IDs. No new spec
+tag or synchronized host release is created by this consolidation.
 
 ### Current-source and cross-host coordination
 
 <a id="R-AUTHORING-SYNC"></a>
-At session start, before changing a shared design or contract, and before final review, fetch this repository's remote
+At session start, before changing a shared design or contract, and before final review, fetch `triad-dispatch-lib`'s remote
 `main`, record its actual commit, and read new changes. A remembered commit or local cache is not evidence of the latest
 specification. If remote verification is unavailable, disclose that limit and defer affected design decisions.
 
@@ -108,7 +118,8 @@ keep prior A source pointers historical, and mark current A behavior unverified.
 specification commit or change the later host-adoption and publication boundaries.
 
 This section is the one normative copy of this authoring protocol. Shared `AGENTS.md`, `CLAUDE.md` and `GEMINI.md` carry the same
-pointer; host instructions also point here. Reading latest authoring `main` does not change a host's adopted revision,
+pointer; host instructions also point here. The old specification repository is ancestry after cutover, not a second authoring source.
+Reading latest authoring `main` does not change a host's adopted revision,
 vendored payload bytes or digest manifest; adoption and publication still follow `README.md` § How a host uses a revision.
 
 <a id="R-DECISION-ORDER"></a>

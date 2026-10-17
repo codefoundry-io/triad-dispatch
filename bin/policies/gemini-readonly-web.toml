@@ -1,7 +1,8 @@
 # Gemini CLI Policy Engine — per-call READ-ONLY policy for host A's gemini REVIEW leg when the bound
 # review_web_authorized condition is true (reference/review-rules.md#R-REVIEW-WEB, owner D-REVIEW-LEGS-20261003).
-# SHARED CONTRACT. A host vendors this FILE byte-for-byte at the revision it adopts (README § How a host uses a
-# revision, step 2). It is a COMPLETE profile, never an overlay: it is host A's no-web profile
+# SHARED CONTRACT. Current authoring source: triad-dispatch-lib/spec/contracts/.
+# A host vendors this FILE byte-for-byte at its adopted pin (spec/README.md, How a host uses a revision;
+# docs/host-adoption.md). It is a COMPLETE profile, never an overlay: it is host A's no-web profile
 # (contracts/gemini-readonly.toml) with ONLY google_web_search and web_fetch moved from deny (200) to allow (100);
 # every other rule is unchanged. Attached via `--policy <this file>` instead of the no-web profile; `--policy`
 # replaces only the USER tier, so system/admin denies still outrank these rows. Explicit allow rows are required

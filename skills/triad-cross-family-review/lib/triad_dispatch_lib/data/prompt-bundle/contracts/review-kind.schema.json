@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/codefoundry-io/triad-dispatch-spec/contracts/review-kind.schema.json",
+  "title": "TRIAD review stage",
+  "description": "Scalar review stage. The host applies the annotated default when the stage is omitted; schema validation does not insert it.",
+  "type": "string",
+  "enum": [
+    "formal-plan",
+    "pre-merge",
+    "implementation-review"
+  ],
+  "default": "pre-merge"
+}

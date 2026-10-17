@@ -17,7 +17,8 @@
         "complete",
         "failed",
         "unexposed"
-      ]
+      ],
+      "description": "complete means the exact full input was made available to the launched CLI, not vendor consumption. Preparation/encoding/spawn failure is not-started; early CLI stdin close alone does not change complete."
     },
     "route": {
       "enum": [
@@ -91,4 +92,3 @@
     }
   ]
 }
-

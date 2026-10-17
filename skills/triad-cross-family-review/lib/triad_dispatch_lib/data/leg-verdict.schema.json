@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/codefoundry-io/triad-dispatch-spec/contracts/leg-verdict.schema.json",
+  "title": "TRIAD LegVerdict v2",
+  "description": "Canonical local admission schema. Duplicate original JSON members and expected invocation binding are checked before admission by the host. A provider producer projection is not this validator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "review_id",
+    "family",
+    "content_digest",
+    "leg_name",
+    "attempt",
+    "route",
+    "verdict",
+    "criteria_checked",
+    "findings",
+    "affected_surfaces_inspected",
+    "open_questions"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "review_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "not": {
+        "pattern": "[\\r\\n]"
+      }
+    },
+    "family": {
+      "enum": [
+        "claude",
+        "codex",
+        "google"
+      ]
+    },
+    "content_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "not": {
+        "pattern": "[\\r\\n]"
+      }
+    },
+    "leg_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "not": {
+        "pattern": "[\\r\\n]"
+      }
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "route": {
+      "enum": [
+        "agy",
+        "gemini",
+        null
+      ]
+    },
+    "verdict": {
+      "enum": [
+        "SAFE TO MERGE",
+        "MERGE WITH FIXES",
+        "DO NOT MERGE"
+      ]
+    },
+    "criteria_checked": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonblank"
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "affected_surfaces_inspected": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/relativePath"
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonblank"
+      }
+    }
+  },
+  "$defs": {
+    "nonblank": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "relativePath": {
+      "type": "string",
+      "pattern": "^(?:(?:[^./\\\\\\x00-\\x1f\\x7f][^/\\\\\\x00-\\x1f\\x7f]*|(?:\\.[^./\\\\\\x00-\\x1f\\x7f][^/\\\\\\x00-\\x1f\\x7f]*|\\.\\.[^/\\\\\\x00-\\x1f\\x7f]+))(?:/(?:[^./\\\\\\x00-\\x1f\\x7f][^/\\\\\\x00-\\x1f\\x7f]*|(?:\\.[^./\\\\\\x00-\\x1f\\x7f][^/\\\\\\x00-\\x1f\\x7f]*|\\.\\.[^/\\\\\\x00-\\x1f\\x7f]+)))+|[^./\\\\\\s\\x00-\\x1f\\x7f][^/\\\\\\x00-\\x1f\\x7f]*|[^\\S\\x00-\\x1f\\x7f]+[^/\\\\\\s\\x00-\\x1f\\x7f][^/\\\\\\x00-\\x1f\\x7f]*|(?:\\.[^./\\\\\\x00-\\x1f\\x7f][^/\\\\\\x00-\\x1f\\x7f]*|\\.\\.[^/\\\\\\x00-\\x1f\\x7f]+))$",
+      "not": {
+        "pattern": "[\\r\\n]"
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "line",
+        "severity",
+        "summary",
+        "trigger",
+        "evidence",
+        "context_known"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "severity": {
+          "enum": [
+            "Critical",
+            "must-fix",
+            "Minor",
+            "HARDENING-SUGGESTION"
+          ]
+        },
+        "summary": {
+          "$ref": "#/$defs/nonblank"
+        },
+        "trigger": {
+          "$ref": "#/$defs/nonblank"
+        },
+        "evidence": {
+          "$ref": "#/$defs/nonblank"
+        },
+        "correction": {
+          "$ref": "#/$defs/nonblank"
+        },
+        "context_known": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "family": {
+            "const": "google"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "route": {
+            "enum": [
+              "agy",
+              "gemini"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "route": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "SAFE TO MERGE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "open_questions": {
+            "maxItems": 0
+          },
+          "findings": {
+            "items": {
+              "properties": {
+                "severity": {
+                  "enum": [
+                    "Minor",
+                    "HARDENING-SUGGESTION"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "anyOf": [
+          {
+            "properties": {
+              "findings": {
+                "minItems": 1
+              }
+            }
+          },
+          {
+            "properties": {
+              "open_questions": {
+                "minItems": 1
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

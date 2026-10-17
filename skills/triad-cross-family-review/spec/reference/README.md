@@ -1,5 +1,10 @@
 # reference/ — common guidance, written once
 
+This map lives under canonical `spec/` in `triad-dispatch-lib`. Paths in the
+table are relative to `spec/`. See [migration](../MIGRATION.md) for pending
+cutover, import ancestry and generated assets, and [host adoption](../../docs/host-adoption.md)
+for new library/bundle/adapter records. Imported host snapshots below are historical.
+
 Every rule has exactly ONE normative location. Everything else — host `CLAUDE.md` / `AGENTS.md`, skill bodies,
 diagrams, tables in plans — points at it. When two places disagree, the location named below wins and the other is a
 bug to fix in the same change.
@@ -21,12 +26,15 @@ the sources below and update the three maps together when a destination changes.
 | Latest-source verification and cross-host change coordination | `reference/spec-authoring.md#R-AUTHORING-SYNC` | shared agent entry files and host instructions point here |
 | The order of deciding a gap found while implementing; what the other host must learn goes into the specification | `reference/spec-authoring.md#R-DECISION-ORDER` | host instructions and the dev-log's cross-check rule point here |
 | PRD/Spec authoring structure and requirement links | `authoring/implementation-map.schema.json`; current bundles in `authoring/maps/` | [Authoring guide and checks](../authoring/README.md); document prose remains at the linked anchors |
-| Prompt text | `prompts/*.md` | vendored copies in host skills (vendoring rule: `README.md` § How a host uses a revision) |
+| Prompt text | `prompts/*.md` | generated package resources and adopted host copies ([adoption](../../docs/host-adoption.md)) |
 | Behavioral cases (inputs, expected results, rule anchor) | `cases/cases.json` | host tests carrying the case ids in their names |
+| Current library rule/case coverage, APIs, tests and host-owned limits | `reference/library-conformance.md` | linked from the library README and adoption guide |
+| Per-case library evidence and remaining ownership | `reference/library-case-coverage.md` | derived from canonical cases and current code/tests; never a replacement for full host case verification |
+| Python package-root API: signatures, results, errors and callback lifecycle | `reference/library-api.md` | library implementation, tests and README examples; wire/rule authority remains in the rows above |
 | Which host file implements which surface; which tests carry which cases | `units.json` | none |
 | Owner decisions | `decisions/owner-register.md` | quotes in plans and ledgers |
 | Revision agreement and signatures | `decisions/rev-N-agreement.md` (rev-1: `decisions/rev-1-agreement.md`) | the relayed round documents point here |
-| Which revision a host conforms to | On A: the host repository's `SPEC_REVISION` file; On B: `source_commit` in the manifest files listed there (`README.md` § How a host uses a revision) | drift reports |
+| Historical host revision records (new adoption: [guide](../../docs/host-adoption.md)) | On A: the host repository's `SPEC_REVISION` file; On B: `source_commit` in the manifest files listed there (`README.md` § How a host uses a revision) | drift reports |
 | Gemini read-only host profiles | no-web: `contracts/gemini-readonly.toml` (A), `contracts/gemini-readonly-b.toml` (B); web (true R-REVIEW-WEB condition): `contracts/gemini-readonly-web.toml` (A), `contracts/gemini-readonly-web-b.toml` (B); selected under R-CONTAIN / D-B1 / R-REVIEW-WEB | exact selected payload and adjacent digest at the host's adopted revision |
 | Defects and drift found while a host implements the common items (which host acts, `file:line @ commit`, status) | `authoring/shared-dev-log.md` (`R-DEV-LOG`) | host checklists and ledgers point at rows by id (`DL-n`); the case a row minted lives in `cases/cases.json` |
 | Measured evidence behind a rule or case change (a spike record: observation with `path:line`, cause chain, the fix on the owning host, the live before/after run, what the other host should touch) | `spikes/<UTC-date>-<slug>.md` | quotes in host plans and ledgers; the case in `cases/cases.json` it produced |

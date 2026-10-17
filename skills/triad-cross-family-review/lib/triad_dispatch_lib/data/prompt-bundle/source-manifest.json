@@ -1,0 +1,15 @@
+{
+  "contract_id": "c332d95688b9db3dac187a0bebac6ddc0eddfdbdc5401a649697d0601455e843",
+  "schema_version": 1,
+  "sha256": {
+    "contracts/review-kind.schema.json": "855807a26cda96102858da345f4888ee8658ee2ecff7584aecf9cf31ba61f724",
+    "prompts/common-clauses.md": "07249974fa9fa6ce9f24ae7b79074b815031358a4e5155920695ac05eddf173f",
+    "prompts/investigation.md": "a92982e6b9a9f82be8c8c2f8ccb8529a8599f3adf97a59250345e10a87f06583",
+    "prompts/leg-claude.md": "4cdc1ee30a048754878ff8e21d44f8aaae430c49c1d5951f84f34ea90ffd214d",
+    "prompts/leg-codex.md": "d7e0e5017f54542e2be4b95f9c3a0f4e867096d432e7bee832ea0f03d80548df",
+    "prompts/leg-google.md": "e17eb874bf6ff023a5ee79bfffb4cca9970c35135d60d3354a8f9593bc0a6415"
+  },
+  "source_path": "spec",
+  "source_repository": "https://github.com/codefoundry-io/triad-dispatch-lib",
+  "status": "candidate"
+}

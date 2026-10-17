@@ -60,9 +60,12 @@ Four steps get you a working install. Everything past this section is optional.
 
    You also need **`python3 >= 3.12`** on PATH (the wrappers run via
    `#!/usr/bin/env python3`), the
-   cross-family review's **jsonschema** (Draft 2020-12;
-   Mac `pip3 install jsonschema`, Ubuntu 24.04 `apt install python3-jsonschema`) — without
-   it the review helper stops with exit 64 and that install hint — and a
+   cross-family review's vendored library dependencies **jsonschema** and **referencing**
+   at the library's floors (`'jsonschema>=4.26,<5'`, `'referencing>=0.37,<1'`; Mac:
+   `pip3 install --user --break-system-packages 'jsonschema>=4.26,<5' 'referencing>=0.37,<1'`
+   — brew's python is PEP 668 externally managed; Ubuntu 24.04: apt's `python3-jsonschema`
+   4.10.3 is below the floor, see the note below) — without them the review helper stops
+   with exit 64 and an install hint — and a
    **recent Claude Code** — new enough for plugin marketplaces and namespaced
    plugin skills. The claude review leg is an in-session `Agent`, so it needs
    no separate login. **pydantic 2.x** (`'pydantic>=2,<3'`), importable by that
@@ -70,21 +73,36 @@ Four steps get you a working install. Everything past this section is optional.
    `--pydantic module:Class` (the schema check uses v2-only APIs).
 
    > **Ubuntu 24.04 note.** `apt install python3-pydantic` gives **1.10**, which
-   > does NOT work, and PEP 668 marks the system interpreter externally-managed
-   > so `pip3 install --user` aborts. Use a venv that still sees apt's
-   > `python3-jsonschema` — `python3 -m venv --system-site-packages ~/.venvs/triad
-   > && ~/.venvs/triad/bin/pip install 'pydantic>=2,<3'` (the venv's pydantic 2
-   > comes first on `sys.path`) — and activate it in the
+   > does NOT work; apt's `python3-jsonschema` 4.10.3 and `python3-referencing` 0.31.0
+   > are below the review library's floor; and PEP 668 marks the system interpreter
+   > externally-managed so `pip3 install --user` aborts. Use ONE venv for both —
+   > `sudo apt install python3-venv` first (a stock Ubuntu 24.04 host lacks it), then
+   > `python3 -m venv --system-site-packages ~/.venvs/triad
+   > && ~/.venvs/triad/bin/pip install 'pydantic>=2,<3'` (the venv's packages
+   > come first on `sys.path`; offline: add `--no-index --find-links <wheelhouse>`
+   > to that pydantic command) — and activate it in the
    > shell that launches Claude Code, so `#!/usr/bin/env python3` resolves to the
-   > venv interpreter. To install from a local wheel set instead of an index,
-   > add `--no-index --find-links <wheel-dir>` to that same command. **That set is FIVE wheels, not three** — pydantic 2.x's
-   > full runtime closure: `pydantic-2.x-py3-none-any.whl` +
+   > venv interpreter. Install the review library's dependencies into the same venv —
+   > on a host with index access:
+   > `~/.venvs/triad/bin/pip install 'jsonschema>=4.26,<5' 'referencing>=0.37,<1' && ~/.venvs/triad/bin/pip check`;
+   > offline, from one wheelhouse per OS/architecture:
+   > `~/.venvs/triad/bin/pip install --no-index --find-links <wheelhouse> --only-binary=:all: 'jsonschema>=4.26,<5' 'referencing>=0.37,<1' && ~/.venvs/triad/bin/pip check`.
+   > To install pydantic from that wheelhouse instead of an index, add
+   > `--no-index --find-links <wheelhouse>` to the pydantic command. The wheelhouse
+   > carries both closures. pydantic 2.x's closure is FIVE wheels, not three:
+   > `pydantic-2.x-py3-none-any.whl` +
    > `pydantic_core-*-cp312-*manylinux*.whl` (pinned `==` by the pydantic release)
-   > + `typing_extensions-*.whl` + `annotated_types-*.whl` (>= 0.6) +
-   > `typing_inspection-*.whl` (>= 0.4.2, required from pydantic 2.10 on).
-   > `pip download 'pydantic>=2,<3' --only-binary=:all:
-   > --platform manylinux_2_17_x86_64 --python-version 312 -d <dir>` produces
-   > exactly that set.
+   > + `typing_extensions-*.whl` (the floor the pydantic release's metadata names —
+   > `>= 4.16.0` for pydantic 2.14.x; `pip download` resolves it) +
+   > `annotated_types-*.whl` (>= 0.6) +
+   > `typing_inspection-*.whl` (the floor the pydantic release's metadata names —
+   > `>= 0.4.4` for pydantic 2.14.x; `pip download` resolves it). The review
+   > library adds `jsonschema-*.whl`, `referencing-*.whl`,
+   > `jsonschema_specifications-*.whl`, `attrs-*.whl` and
+   > `rpds_py-*-cp312-*manylinux*.whl`. `python3 -m pip download --only-binary=:all:
+   > --platform manylinux_2_17_<arch> --python-version 312 --implementation cp
+   > -d <wheelhouse> 'jsonschema>=4.26,<5' 'referencing>=0.37,<1' 'pydantic>=2,<3'`
+   > (`<arch>` = the target's `uname -m`) produces exactly that set.
 
 2. **Add the plugin.**
 
@@ -579,6 +597,12 @@ they are yours.
   and the six claude review presets (see [Choose the claude review leg's model and effort](#choose-the-claude-review-legs-model-and-effort)).
 - **bin**: the Python wrappers (codex / gemini / agy) + `policies/gemini-readonly.toml` (the per-call
   read-only Policy Engine file the gemini `--sandbox read-only` mode attaches).
+- **vendored library**: `skills/triad-cross-family-review/lib/triad_dispatch_lib/` (triad-dispatch-lib,
+  byte-for-byte at its pinned release), its adoption record `lib/lib-adoption.json` (pin, files and
+  sha256) and its MIT notice `lib/triad-dispatch-lib.LICENSE`. Never edit these three by hand — a
+  changed package file is refused (exit 64), and a change to the notice or to the record outside its
+  `files` after `prepare` is a changed basis (exit 2, a new round); a plugin reinstall is the only way
+  to replace them.
 - **tests**: stdlib-only wrapper tests you can run as-is to verify the install:
 
   ```bash

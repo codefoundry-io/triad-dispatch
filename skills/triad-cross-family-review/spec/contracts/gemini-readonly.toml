@@ -1,6 +1,7 @@
 # Gemini CLI Policy Engine — per-call READ-ONLY policy for the gemini leg.
-# SHARED CONTRACT (triad-dispatch-spec rev-1 draft). A host vendors this FILE byte-for-byte at the revision it
-# adopts (README § How a host uses a revision, step 2: payload bytes unchanged, digest in an adjacent manifest); host
+# SHARED CONTRACT. Current authoring source: triad-dispatch-lib/spec/contracts/.
+# A host vendors this FILE byte-for-byte at its adopted pin (spec/README.md, How a host uses a revision;
+# docs/host-adoption.md: payload bytes unchanged, digest in an adjacent manifest); host
 # notes live outside this file. Host A checks byte identity in its test t50; the digest is in gemini-readonly.verify.toml.
 # Attached via `--policy <this file>` when the wrapper is run with
 # `--sandbox read-only`. Allows read tools, denies mutation + shell tools.

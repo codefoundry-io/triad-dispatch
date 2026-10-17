@@ -1,0 +1,10 @@
+{
+  "contract_id": "a99fb58dbd920dfed0d88d8c8b9117bd07633b76b5d2565e05f50a5b5c423ed8",
+  "schema_version": 1,
+  "sha256": {
+    "contracts/review-legs.schema.json": "1611655cda859a6738ec8ff52dd3d3aa08539cc8ba01741c8a72426abda37cb9"
+  },
+  "source_path": "spec",
+  "source_repository": "https://github.com/codefoundry-io/triad-dispatch-lib",
+  "status": "candidate"
+}

@@ -2698,7 +2698,9 @@ def _v2_render_prompt(worktree: Path, review_id: str, digest: str, entry,
     with.
 
     Raises `prompts_v2.PromptSpecError` (and whatever `roster_v2` raises for
-    a malformed entry) — each caller states its own refusal."""
+    a malformed entry) — each caller states its own refusal — and
+    `prompts_v2._PromptHostFault` when this install cannot render (the
+    caller's HOST FAULT, exit 64)."""
     prompts = _load_v2_sibling("prompts_v2")
     return prompts.render_with_manifest(
         entry.vendor,
@@ -2732,7 +2734,11 @@ def v2_render_attempt(packet_dir: Path, worktree: Path, label: str,
     allocation conflict, and reporting it early costs nothing); the exclusive
     `mkdir` and every file live in `v2_write_attempt`, which runs after the
     caller's pre-mutation boundary. The producer schema projection travels as
-    bytes (`Dispatch.schema_text`) and is written beside the other records."""
+    bytes (`Dispatch.schema_text`) and is written beside the other records.
+
+    `prompts_v2._PromptHostFault` is never refused here: it PROPAGATES, so
+    each command converts it once — `cmd_prepare` to its HOST FAULT line,
+    `collect_v2.retry` to `_HostFault` (both exit 64)."""
     roster = _load_v2_sibling("roster_v2")
     prompts = _load_v2_sibling("prompts_v2")
     entry = roster.Entry(**leg)
@@ -2980,13 +2986,19 @@ def _v2_print_hook_check(packet_dir: Path, label: str, audit) -> None:
 
 def _v2_basis_digests() -> dict:
     """The round's toolkit map (`roster_v2._toolkit_map`), derived PURELY,
-    before `prepare`'s first mutation: an unreadable toolkit file refuses
-    before the round tree exists and the label is not burned."""
+    before `prepare`'s first mutation: a toolkit this host cannot map (an
+    unreadable file, a symlink, a vendored package that is not its adoption
+    record) is the one-line HOST FAULT 64 — the exit class `collect` and
+    `retry` give the same refusal — before the round tree exists, so the
+    label is not burned."""
     roster = _load_v2_sibling("roster_v2")
     try:
         return {"toolkit_map": roster._toolkit_map()}
     except roster.RosterError as exc:
-        _fail(f"this round has no provable toolkit basis: {exc}")
+        print(f"review_scratch: prepare HOST FAULT: this round has no provable "
+              f"toolkit basis: {' '.join(str(exc).split())} — nothing was "
+              f"created; repair the install and prepare again", file=sys.stderr)
+        sys.exit(_load_v2_sibling("verdict_v2").EXIT_USAGE)
 
 
 def _v2_record_entries(resolved, allocated: dict, web: bool) -> list:
@@ -3214,9 +3226,21 @@ def cmd_prepare(packet_arg: str, worktree_arg: str, label: str,
     brief_arg, tests_paths, diff_range, diff_paths, excerpt_args, \
         prior_residual_arg, review_conditions = _parse_prepare_args(rest,
                                                                     source)
-    # The roster is resolved FIRST: a malformed registry entry must refuse
-    # before the round exists (R-PREPARE), and `resolve_roster` reads only
-    # files. The bound review-web condition enters preflight here
+    # THE HOST QUESTION FIRST, as `collect` asks it
+    # (`verdict_v2._get_validator`: the library's dependencies and their
+    # ranges, the admission contract, the vendored package): a host that
+    # cannot admit any reply is exit 64 on every roster, before the roster is
+    # resolved, before anything is rendered or created and before any leg runs.
+    verdict_v2 = _load_v2_sibling("verdict_v2")
+    validator, why = verdict_v2._get_validator()
+    if validator is None:
+        print(f"review_scratch: prepare HOST FAULT: this host cannot admit any "
+              f"reply: {' '.join(str(why).split())} — nothing was created; "
+              f"repair the install and prepare again", file=sys.stderr)
+        sys.exit(verdict_v2.EXIT_USAGE)
+    # The roster is resolved next, still before the round exists: a malformed
+    # registry entry must refuse first (R-PREPARE), and `resolve_roster` reads
+    # only files. The bound review-web condition enters preflight here
     # (R-REVIEW-WEB): a route without web support refuses the round.
     resolved_roster = v2_resolve_roster(source)[1]
     # The agy web prerequisite, before the round exists (R-REVIEW-WEB, case
@@ -3574,17 +3598,6 @@ def cmd_prepare(packet_arg: str, worktree_arg: str, label: str,
                      f"delivery={packet_path.name}\nreviewed_sha={sha}\n"
                      f"sha256={digest}\n")
     v2_allocs = []
-    # THE HOST QUESTION FIRST, as `collect` asks it
-    # (`verdict_v2._get_validator`): an admission contract this host cannot
-    # load is exit 64 on every roster, before anything is rendered or created
-    # and before any leg runs.
-    verdict_v2 = _load_v2_sibling("verdict_v2")
-    validator, why = verdict_v2._get_validator()
-    if validator is None:
-        print(f"review_scratch: prepare HOST FAULT: this host cannot admit any "
-              f"reply: {' '.join(str(why).split())} — nothing was created; "
-              f"repair the install and prepare again", file=sys.stderr)
-        sys.exit(verdict_v2.EXIT_USAGE)
 
     # First mutation only now. The worktree is created BEFORE capture's refusal
     # surfaces can be probed (they need the tree to exist); a refusal there
@@ -3606,12 +3619,23 @@ def cmd_prepare(packet_arg: str, worktree_arg: str, label: str,
     # layout or a non-absolute path token (`RosterError`) — are DETERMINISTIC
     # properties of the install and the roster, not of the tree, so they
     # refuse before the round tree exists and the label is not burned.
+    # A render this install cannot perform (`_PromptHostFault`: the vendored
+    # library, a vendored payload or its manifest) is the HOST FAULT line of
+    # the host question above, exit 64, still before anything exists.
+    prompts = _load_v2_sibling("prompts_v2")
     for entry in resolved_roster.legs:
         if not entry.enabled or entry.skipped_reason:
             continue
-        v2_allocs.append(v2_render_attempt(
-            packet_dir, worktree, label, review_id, digest,
-            dataclasses.asdict(entry), 1, review_conditions))
+        try:
+            v2_allocs.append(v2_render_attempt(
+                packet_dir, worktree, label, review_id, digest,
+                dataclasses.asdict(entry), 1, review_conditions))
+        except prompts._PromptHostFault as exc:
+            print(f"review_scratch: prepare HOST FAULT: this host cannot "
+                  f"render the review prompts: {' '.join(str(exc).split())} "
+                  f"— nothing was created; repair the install and prepare "
+                  f"again", file=sys.stderr)
+            sys.exit(verdict_v2.EXIT_USAGE)
     # THE TOOLKIT MAP IS DERIVED HERE TOO. Same boundary rule as the render
     # loop above: a refusal that is a deterministic property of the INSTALL
     # (an unreadable toolkit file) belongs on this side of the first mutation.

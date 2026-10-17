@@ -235,8 +235,20 @@ refusal rather than a traceback that aborts the collection.
 
 **A HOST FAULT stops the collection instead of blaming a leg.** `verdict_v2`
 exit 64 means the admission could not RUN at all on this host — `jsonschema`
-absent, or the vendored contract unusable in ANY way: unreadable, invalid
-UTF-8, not JSON, nested past the interpreter's limit, or not Draft 2020-12.
+or `referencing` absent or outside its supported range (`>=4.26,<5`,
+`>=0.37,<1`) or the two unable to build a Draft 2020-12 validator with a
+registry, the vendored contract unusable in ANY way (unreadable, invalid
+UTF-8, not JSON, nested past the interpreter's limit, or not Draft
+2020-12), the vendored package `lib/triad_dispatch_lib` not importable or
+not the vendored copy (`verdict_v2._get_validator`, in that order), or an
+expected binding pair the library refuses (`invalid_expected` or a library
+`ContractError`, `verdict_v2._admit_obj`): the pair is the host's own, so
+the reply was never judged, and `collect` raises its `_HostFault` for it
+— on the claude entry's saved reply too (`collect_v2._raw_admissible`),
+instead of reporting the attempt not admissible. A `retry` whose render
+this host cannot perform (a vendored bundle payload or its manifest, or
+the adoption record or its `pairs` object; a library `ContractError`) is
+the same host fault.
 The agy entry's two EVIDENCE TOOLS are the same class: `read_audit_gate.sh`
 and `agy_hook.py check` both reserve rc 64 for "this invocation could not
 RUN at all" — a required file the round named is gone, a removed
@@ -258,10 +270,18 @@ canonical number, so two directories would claim one allocation — and an
 same scan itself and refuses too. An attempt's `binding.json` must equal the
 derived binding (`references/leg-contracts.md` § Verdict binding — all legs,
 item 1). The installed toolkit is bound
-by ONE recorded file map (`toolkit_map`): a changed, added or missing toolkit
-file, or a record with no map, refuses with exit 2 — prepare a new round
-(`references/triage.md` § Collect outcomes, the TOOLKIT MAP paragraph); a
-contract this host cannot LOAD at all is the HOST FAULT 64 above instead.
+by ONE recorded file map (`toolkit_map`), checked in a fixed order
+(`references/triage.md` § Collect outcomes, the TOOLKIT MAP paragraph). A round
+record with no map refuses with exit 2 before the live map is derived —
+prepare a new round. The live map is derived with the vendored package checked
+against its own adoption record first: a package file under
+`lib/triad_dispatch_lib/` that is changed, extra, missing, a symlink or not a
+regular file, or a malformed `lib/lib-adoption.json`, is the HOST FAULT 64
+above at `prepare`, `collect` and `retry` — reinstall the package, then run
+again. Only then is the derived map compared with the round's recorded map: a
+changed, added or missing toolkit file (the host's own toolkit files, or the
+record or the LICENSE changed after `prepare`) refuses with exit 2 — prepare a
+new round. A contract this host cannot LOAD at all is the HOST FAULT 64 as well.
 
 **Census rules.** `capture` freezes the files that exist AT capture —
 including each attempt's `binding.json` / `prompt.txt` / `dispatch.json` /
@@ -509,14 +529,20 @@ both paths unless it names one.
   reviewed tree that TRACKS `.agents/hooks.json` is refused before the
   worktree exists; a reviewed repo that gitignores `.agents/` hides the file
   from the fingerprint's untracked arm (disclosed). Each attempt's
-  `prompt.txt` carries the vendored shared clauses (`spec/prompts/`) and its
-  binding values.
+  `prompt.txt` carries the shared clauses the vendored library renders from
+  its own prompt bundle (`lib/triad_dispatch_lib/data/prompt-bundle/`,
+  `render_review_clauses`; byte-equal to the host's `spec/` copies by the
+  one-copy rule) and its binding values.
 - **Pre-mutation boundary: everything that can refuse DETERMINISTICALLY runs
   before the first byte moves.** The order is the admission host check
-  (`verdict_v2._get_validator`: a contract this host cannot load is exit 64
-  here on every roster, before anything is rendered and before any leg runs)
-  → the PURE render of every enabled non-skipped
-  roster entry → the TOOLKIT MAP (`references/triage.md` § Collect outcomes,
+  (`verdict_v2._get_validator`: the library's dependencies and their ranges,
+  the admission contract and the vendored package — a host that fails it is
+  exit 64 here on every roster, before the roster is resolved (a malformed
+  project override included), before anything is rendered and before any
+  leg runs) → the roster → the PURE render of every enabled non-skipped
+  roster entry (`prompts_v2.render_with_manifest`: the data-side identity
+  check is HOST FAULT 64 naming the `lib/` relpath, the spec-side check is
+  exit 2 naming the `spec/` relpath — bundle drift) → the TOOLKIT MAP (`references/triage.md` § Collect outcomes,
   the TOOLKIT MAP paragraph) →
   `_worktree_add` → `_precheck_worktree` (index flags / sparse checkout /
   unborn HEAD, on the fresh checkout, before the record) → the WRITES

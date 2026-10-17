@@ -2,7 +2,7 @@
 # gemini leg. HOST-A-LOCAL FILE, NOT the shared review contract.
 #
 # `policies/gemini-readonly.toml` is the vendored, byte-identical SHARED review
-# policy (triad-dispatch-spec `contracts/gemini-readonly.toml`, checked by t50)
+# policy (triad-dispatch-lib `spec/contracts/gemini-readonly.toml`, checked by t50)
 # and it DENIES `google_web_search` / `web_fetch` — D-9 RULED 2026-09-19: the
 # REVIEW operation has no web on any family. This file is the other side of that
 # rule: an explicitly web-authorized INVESTIGATION (rule R-INVEST, case C29,

@@ -1,87 +1,66 @@
-"""Render v2 review-leg prompts from the VENDORED shared-spec clause files.
+"""Render v2 review-leg prompts through the vendored ``triad_dispatch_lib``.
 
-Slice S3 of the host A v2 implementation. The clause text that a review leg
-receives is no longer a Python string constant: it is the byte-frozen payload
-under ``spec/prompts/`` (``common-clauses.md`` plus one ``leg-<family>.md`` per
-family, plus ``investigation.md``). This module is the only thing that turns
-those bytes into a prompt, and it does exactly four things:
+The clause text a review leg receives is the library's
+``render_review_clauses`` over its own packaged prompt bundle
+(``lib/triad_dispatch_lib/data/prompt-bundle``), host ``A``. This module keeps
+the host's side of that call:
 
-1. parse each clause (``## <name> (<note>)`` followed by ONE fenced block),
-2. concatenate the clauses named by that leg file's ``## order`` list (the
-   agy hook clause only on the agy route),
-3. substitute the frozen invocation's binding placeholders, refusing to emit an
-   unresolved one,
-4. report which clause BYTES were sent (``render_with_manifest`` -> sha256 per
-   clause), so a round record can prove provenance.
+1. its own argument refusals (family, Google route, review stage, the bound
+   strict-boolean web condition and the bound date) -- a ``PromptSpecError``,
+2. the library import (``verdict_v2._library_import``, loaded LAZILY from this
+   file's directory: the wrappers execute this file by path with no ``lib/``
+   on ``sys.path`` for the investigation clause, which must render with no
+   library at all),
+3. the two-stage identity check, by plain file reading: (i) every payload the
+   four vendored bundle manifests list equals its manifest digest -- a
+   missing, unreadable or differing payload, or a missing, unreadable or
+   malformed manifest or adoption record, is a ``_PromptHostFault`` naming the
+   ``lib/`` relpath (the callers' HOST FAULT, exit 64); (ii) every pair of
+   ``lib-adoption.json["pairs"]`` is byte-equal, the host's ``spec/`` copy
+   against the vendored payload -- a missing, unreadable or differing
+   ``spec/`` file is a ``PromptSpecError`` naming the ``spec/`` relpath (the
+   one-copy rule; exit 2),
+4. the mapping of ``RenderCtx`` onto the library's ``replacements`` and the
+   library's errors onto the host's: ``PromptError`` -> ``PromptSpecError``,
+   ``ContractError`` -> ``_PromptHostFault``. The manifest rows
+   ``{name, sha256}`` become ``(name, sha256)`` tuples.
 
-Spec files are read, never written. A malformed spec file (two fenced blocks
-under one header, a header with no block, a duplicate clause name, an unknown
-``order`` reference) is a hard error naming the file -- a partially rendered
-prompt would silently weaken a review leg's contract. Text outside a clause's
-fenced block is never leg text and is not read. Recorded limit: a malformed
-line in a leg file's ``## order`` list (not ``<n>. <ref>``) is skipped, not
-refused; the vendored files are digest-bound (``spec/SPEC_MANIFEST.json``), so
-this is a recorded limit, not a runtime check.
-
-Review stage (R-PROMPT, case C60)
----------------------------------
 ``RenderCtx.review_kind`` is the resolved stage of the round
-(``contracts/review-kind.schema.json``): ``formal-plan`` selects the shared
-``plan-purpose`` clause, ``pre-merge`` and ``implementation-review`` select
-``code-purpose``. The leg files' ``common:<review-purpose>`` order item is
-replaced by exactly that one clause, the manifest names the selected clause,
-and ``<review-kind>`` is filled with the stage. Omission resolves to
+(``contracts/review-kind.schema.json``); omission resolves to
 ``DEFAULT_REVIEW_KIND`` at the invocation boundary only (``review_scratch.py
-prepare``); the library refuses a ``None``, empty or unknown stage instead of
-defaulting it.
+prepare``), and this module refuses a ``None``, empty or unknown stage instead
+of defaulting it. ``RenderCtx.review_web_authorized`` and
+``RenderCtx.review_date`` are the round's BOUND condition and UTC date: a
+``None`` or non-boolean condition and a date that is not ``YYYY-MM-DD`` are
+refused, never defaulted.
 
-Review web (R-REVIEW-WEB, case C32)
------------------------------------
-``RenderCtx.review_web_authorized`` is the round's BOUND strict boolean and
-``RenderCtx.review_date`` its bound UTC date (``YYYY-MM-DD``). Every
-``<review-web-policy>`` is filled with the fenced ``review-web-permission``
-clause for true and the fenced ``review-no-web`` clause for false -- the text
-is taken from ``common-clauses.md``, never from a code constant -- and the
-selected clause joins the manifest right after the clause that carries the
-placeholder, so a re-vendored policy text is a changed basis. ``<review-date>``
-is filled with the bound date. A ``None`` or non-boolean condition and a date
-that is not ``YYYY-MM-DD`` are refused, never defaulted. The investigation
-``web-evidence`` clause (R-INVEST) is never part of a review render.
-
-A-only and B-only clauses
--------------------------
-A clause (or an ``## order`` item) whose note says ``B-only`` renders on host B
-only, so this host skips it. A clause (or an ``## order`` item) whose note
-carries the literal marker ``A-only`` is a host-A clause: the claude leg's
-raw-reply admission clauses render on every route, and the Google leg's hook
-clause renders only when ``ctx.google_route == "agy"`` (the PreToolUse hook
-belongs to the agy review route). Prose that merely mentions the letter A
-(``A's shipped ...``) is not a marker.
-
-Angle tokens
-------------
-Twelve placeholders are SUBSTITUTED: ``<worktree>``, ``<brief-file>``,
-``<packet-files>``, ``<gated-patch-file>``, ``<review-id>``,
-``<content-digest>``, ``<leg-name>``, ``<attempt>``, ``<google-route>``,
-``<review-kind>``, ``<review-date>``, ``<review-web-policy>``.
-Four further angle tokens are LITERAL clause text, not placeholders, and are
-allowed to survive: ``<END-VERDICT>`` (the end marker the claude leg must emit
-for raw-reply admission) and ``<echo>`` / ``<non-empty>`` / ``<repo-relative>``,
-which are part of the JSON-shape template inside ``claude-verdict-shape``.
-Anything else surviving substitution is a hard error.
+The investigation ``web-evidence`` clause (R-INVEST) is never part of a review
+render. ``render_investigation_clause`` reads it from the host's vendored
+``spec/prompts/investigation.md`` with the parser below and imports nothing
+else.
 """
 
 from __future__ import annotations
 
 import datetime
 import hashlib
+import importlib.util
+import json
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_SPEC_DIR = Path(__file__).resolve().parents[1] / "spec" / "prompts"
+_LIB_DIR = Path(__file__).resolve().parent
+_SKILL_DIR = _LIB_DIR.parent
+DEFAULT_SPEC_DIR = _SKILL_DIR / "spec" / "prompts"
+_PACKAGE = "triad_dispatch_lib"
+# The four vendored bundles (relative to the package): each one's
+# `source-manifest.json` lists its payloads and their sha256.
+_BUNDLES = ("data", "data/prompt-bundle", "data/roster-bundle",
+            "data/receipt-bundle")
+_RECORD = "lib-adoption.json"
 
-COMMON_FILE = "common-clauses.md"
 INVESTIGATION_FILE = "investigation.md"
 INVESTIGATION_CLAUSE = "web-evidence"
 LEG_FILES = {
@@ -107,50 +86,26 @@ REVIEW_PURPOSE = {
     "implementation-review": "code-purpose",
 }
 DEFAULT_REVIEW_KIND = "pre-merge"
-PURPOSE_REF = "common:<review-purpose>"
-# R-REVIEW-WEB (case C32): the bound condition -> the ONE shared clause that
-# fills `<review-web-policy>`. The clause TEXT lives in the vendored fence.
-REVIEW_WEB_POLICY = {True: "review-web-permission", False: "review-no-web"}
-WEB_POLICY_PLACEHOLDER = "<review-web-policy>"
 # The bound round date (R-PROMPT): a UTC calendar date YYYY-MM-DD in ASCII
 # digits (`\d` also matches other scripts' digits). `_valid_date` is the ONE
 # validator; `collect_v2` reads a bound date with it too.
 _REVIEW_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
-LITERAL_ANGLE_TOKENS = frozenset(
-    {"<END-VERDICT>", "<echo>", "<non-empty>", "<repo-relative>"}
-)
-
 _HEADER_RE = re.compile(r"^##\s+([A-Za-z0-9][A-Za-z0-9_-]*)\s*(?:\((.*)\))?\s*$")
-_ORDER_RE = re.compile(r"^\s*(\d+)\.\s+(\S+)\s*(?:\((.*)\))?\s*$")
 _FENCE_RE = re.compile(r"^```")
-# The A-only marker: this EXACT phrase inside the header note or the order-line
-# parenthetical (literal containment, case-sensitive).
-A_ONLY_MARKER = "A-only"
-# The other host's marker: its clauses are skipped here (prompts/README.md
-# § Clause-file format).
-B_ONLY_MARKER = "B-only"
-_ANGLE_RE = re.compile(r"<[A-Za-z][A-Za-z0-9_-]*>")
-_PLACEHOLDER_RE = re.compile(
-    r"<(worktree|brief-file|packet-files|gated-patch-file|review-id"
-    r"|content-digest|leg-name|attempt|google-route|review-kind"
-    r"|review-date|review-web-policy)>"
-)
 ORDER_SECTION = "order"
 
 
-def _is_a_only(note: str) -> bool:
-    """True when a header note / order parenthetical carries the A-only marker."""
-    return A_ONLY_MARKER in note
-
-
-def _is_b_only(note: str) -> bool:
-    """True when a header note / order parenthetical marks a host-B-only clause."""
-    return B_ONLY_MARKER in note
-
-
 class PromptSpecError(Exception):
-    """A vendored clause file is malformed, or a render is unresolvable."""
+    """A clause file is malformed, a render is unresolvable, or the host's
+    `spec/` copy differs from the vendored library payload (exit 2)."""
+
+
+class _PromptHostFault(Exception):
+    """This install cannot render: the vendored library cannot be imported,
+    a vendored payload, bundle manifest or the adoption record is missing,
+    unreadable or inconsistent, or the library reports a packaged-contract
+    fault. ONE line; every caller reports it as its HOST FAULT (exit 64)."""
 
 
 @dataclass(frozen=True)
@@ -158,20 +113,6 @@ class Clause:
     name: str
     header_note: str
     body: str
-
-    @property
-    def a_only(self) -> bool:
-        return _is_a_only(self.header_note)
-
-    def sha256(self) -> str:
-        return hashlib.sha256(self.body.encode("utf-8")).hexdigest()
-
-
-@dataclass(frozen=True)
-class OrderItem:
-    ref: str
-    a_only: bool
-    b_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -195,25 +136,9 @@ class RenderCtx:
     review_web_authorized: bool | None = None
     review_date: str | None = None
 
-    def substitutions(self, family: str) -> dict[str, str]:
-        route = self.google_route if family == "google" else None
-        return {
-            "<worktree>": self.worktree,
-            "<brief-file>": self.brief_file,
-            "<packet-files>": ", ".join(self.packet_files),
-            "<gated-patch-file>": self.gated_patch_file,
-            "<review-id>": self.review_id,
-            "<content-digest>": self.content_digest,
-            "<leg-name>": self.leg_name,
-            "<attempt>": str(self.attempt),
-            "<google-route>": route if route else "null",
-            "<review-kind>": str(self.review_kind),
-            "<review-date>": str(self.review_date),
-        }
-
 
 # ---------------------------------------------------------------------------
-# parsing
+# parsing (the investigation clause library only)
 # ---------------------------------------------------------------------------
 def _close_section(
     clauses: dict[str, Clause],
@@ -256,27 +181,21 @@ def _read_spec_text(path: Path, filename: str) -> str:
         ) from exc
 
 
-def _parse_file(
-    filename: str, *, order_list: bool = True
-) -> tuple[dict[str, Clause], list[OrderItem]]:
-    """Parse one clause file. ``order_list`` marks a LEG file, whose ``## order``
-    section is a machine-read list of numbered items. In a clause LIBRARY
-    (``common-clauses.md``, ``investigation.md``) the same header is
-    documentation prose and is not parsed."""
-    path = DEFAULT_SPEC_DIR / filename
+def load_clauses(file: str) -> dict[str, Clause]:
+    """Parse the clause LIBRARY ``DEFAULT_SPEC_DIR/<file>`` into ``clause name
+    -> Clause``: ``## <name> (<note>)`` followed by ONE fenced block. A
+    ``## order`` header documents how the host uses the clauses and is not
+    read. Two fenced blocks under one header, a header with no block, a
+    duplicate name or an unterminated block is a hard error naming the file."""
+    path = DEFAULT_SPEC_DIR / file
     if not path.is_file():
-        raise PromptSpecError(f"{filename}: vendored clause file not found at {path}")
+        raise PromptSpecError(f"{file}: vendored clause file not found at {path}")
     clauses: dict[str, Clause] = {}
-    order: list[OrderItem] = []
     cur: tuple[str, str, int] | None = None
     body: list[str] | None = None
     fence: list[str] | None = None
     fence_start = 0
-    in_order = False
-
-    for lineno, line in enumerate(
-        _read_spec_text(path, filename).split("\n"), start=1
-    ):
+    for lineno, line in enumerate(_read_spec_text(path, file).split("\n"), start=1):
         if fence is not None:
             if _FENCE_RE.match(line):
                 body = fence
@@ -284,85 +203,102 @@ def _parse_file(
             else:
                 fence.append(line)
             continue
-
         header = _HEADER_RE.match(line)
         if header:
-            _close_section(clauses, cur, body, filename)
-            name = header.group(1)
-            cur = (name, (header.group(2) or "").strip(), lineno)
+            _close_section(clauses, cur, body, file)
+            cur = (header.group(1), (header.group(2) or "").strip(), lineno)
             body = None
-            in_order = name == ORDER_SECTION
             continue
-
         if _FENCE_RE.match(line):
             if cur is None:
                 raise PromptSpecError(
-                    f"{filename}:{lineno}: fenced block outside any '## <clause>' section"
+                    f"{file}:{lineno}: fenced block outside any '## <clause>' section"
                 )
             if body is not None:
                 raise PromptSpecError(
-                    f"{filename}:{lineno}: second fenced block under clause "
+                    f"{file}:{lineno}: second fenced block under clause "
                     f"'{cur[0]}' (one clause = exactly one fenced body)"
                 )
             fence = []
             fence_start = lineno
-            continue
-
-        if in_order:
-            if not order_list:
-                continue
-            item = _ORDER_RE.match(line)
-            if item:
-                order.append(
-                    OrderItem(
-                        ref=item.group(2),
-                        a_only=_is_a_only(item.group(3) or ""),
-                        b_only=_is_b_only(item.group(3) or ""),
-                    )
-                )
-
     if fence is not None:
-        raise PromptSpecError(f"{filename}:{fence_start}: unterminated fenced block")
-    _close_section(clauses, cur, body, filename)
-    return clauses, order
-
-
-def load_clauses(file: str) -> dict[str, Clause]:
-    """Parse ``DEFAULT_SPEC_DIR/<file>`` into ``clause name -> Clause``.
-
-    Reads a clause LIBRARY: a ``## order`` header in such a file documents how
-    the host uses the clauses (``investigation.md``) and is not an order list.
-    """
-    return _parse_file(file, order_list=False)[0]
-
-
-def load_order(file: str) -> list[OrderItem]:
-    """Parse the ``## order`` list of ``DEFAULT_SPEC_DIR/<file>``."""
-    return _parse_file(file)[1]
+        raise PromptSpecError(f"{file}:{fence_start}: unterminated fenced block")
+    _close_section(clauses, cur, body, file)
+    return clauses
 
 
 # ---------------------------------------------------------------------------
-# rendering
+# rendering (through the vendored library)
 # ---------------------------------------------------------------------------
-def _resolve(
-    ref: str,
-    own: dict[str, Clause],
-    common: dict[str, Clause],
-    filename: str,
-) -> Clause:
-    if ref.startswith("common:"):
-        name = ref.split(":", 1)[1]
-        clause = common.get(name)
-        if clause is None:
+def _verdict_v2():
+    """The sibling `verdict_v2`, loaded LAZILY by file path (an already-loaded
+    one is reused, as `collect_v2._load_sibling` does)."""
+    mod = sys.modules.get("verdict_v2")
+    if mod is not None:
+        return mod
+    spec = importlib.util.spec_from_file_location(
+        "verdict_v2", _LIB_DIR / "verdict_v2.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["verdict_v2"] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException as exc:
+        sys.modules.pop("verdict_v2", None)
+        if not isinstance(exc, Exception):
+            raise
+        raise _PromptHostFault(
+            f"host fault: lib/verdict_v2.py cannot be loaded "
+            f"({type(exc).__name__}) — reinstall this host") from exc
+    return mod
+
+
+def _check_identity(read) -> None:
+    """Stage (i), the data side against the bundle manifests (host fault),
+    then stage (ii), the nine spec<->data pairs byte for byte (caller fault).
+    `read(path) -> (bytes | None, reason)` is the hardened regular-file reader
+    (lstat, no symlink)."""
+    for bundle in _BUNDLES:
+        mrel = f"{_PACKAGE}/{bundle}/source-manifest.json"
+        raw = read(_LIB_DIR / mrel)[0]
+        try:
+            listed = json.loads(raw)["sha256"] if raw is not None else None
+        except (ValueError, TypeError, KeyError, RecursionError):
+            listed = None
+        if not (isinstance(listed, dict) and listed and all(
+                isinstance(k, str) and isinstance(v, str)
+                for k, v in listed.items())):
+            raise _PromptHostFault(
+                f"host fault: the vendored bundle manifest lib/{mrel} is "
+                f"missing, unreadable or malformed — reinstall this host")
+        for name, digest in sorted(listed.items()):
+            prel = f"{_PACKAGE}/{bundle}/{name}"
+            data = read(_LIB_DIR / prel)[0]
+            if data is None or hashlib.sha256(data).hexdigest() != digest:
+                raise _PromptHostFault(
+                    f"host fault: the vendored payload lib/{prel} is missing, "
+                    f"unreadable or differs from its bundle manifest "
+                    f"lib/{mrel} — reinstall this host")
+    raw = read(_LIB_DIR / _RECORD)[0]
+    try:
+        pairs = json.loads(raw)["pairs"] if raw is not None else None
+    except (ValueError, TypeError, KeyError, RecursionError):
+        pairs = None
+    if not (isinstance(pairs, dict) and pairs and all(
+            isinstance(k, str) and isinstance(v, str) for k, v in pairs.items())):
+        raise _PromptHostFault(
+            f"host fault: the adoption record lib/{_RECORD} is missing, "
+            f"unreadable or carries no `pairs` object — reinstall this host")
+    for data_rel, spec_rel in sorted(pairs.items()):
+        data = read(_LIB_DIR / _PACKAGE / data_rel)[0]
+        if data is None:
+            raise _PromptHostFault(
+                f"host fault: the vendored payload lib/{_PACKAGE}/{data_rel} "
+                f"is missing or unreadable — reinstall this host")
+        if read(_SKILL_DIR / spec_rel)[0] != data:
             raise PromptSpecError(
-                f"{filename}: '## order' names unknown clause '{ref}' "
-                f"(not in {COMMON_FILE})"
-            )
-        return clause
-    clause = own.get(ref)
-    if clause is None:
-        raise PromptSpecError(f"{filename}: '## order' names unknown clause '{ref}'")
-    return clause
+                f"{spec_rel}: the spec copy is missing, unreadable or differs "
+                f"from the vendored library payload lib/{_PACKAGE}/{data_rel} "
+                f"(one-copy rule) — re-vendor the spec from the pinned tag")
 
 
 def render_with_manifest(
@@ -371,9 +307,10 @@ def render_with_manifest(
 ) -> tuple[str, list[tuple[str, str]]]:
     """Render ``family``'s prompt and the ordered ``(clause ref, sha256)`` list.
 
-    The digests are taken over the clause bodies AS VENDORED (before
-    substitution), so a round record can name the exact spec bytes that were
-    sent to the leg.
+    The digests are the library's, over the clause bodies AS VENDORED (before
+    substitution), so a round record can name the exact bytes that were sent
+    to the leg. Raises `PromptSpecError` (caller fault) or `_PromptHostFault`
+    (host fault); see the module docstring for which is which.
     """
     if family not in LEG_FILES:
         raise PromptSpecError(
@@ -400,54 +337,34 @@ def render_with_manifest(
         raise PromptSpecError(
             f"review_date {ctx.review_date!r} is not a UTC date YYYY-MM-DD; "
             f"the round's bound date is refused, never defaulted (R-PROMPT)")
-    filename = LEG_FILES[family]
-    own, order = _parse_file(filename)
-    common = load_clauses(COMMON_FILE)
-    if not order:
-        raise PromptSpecError(f"{filename}: '## order' list is empty")
-    policy_ref = "common:" + REVIEW_WEB_POLICY[ctx.review_web_authorized]
-    policy = _resolve(policy_ref, own, common, filename)
-
-    subs = ctx.substitutions(family)
-    subs[WEB_POLICY_PLACEHOLDER] = policy.body
-    bodies: list[str] = []
-    manifest: list[tuple[str, str]] = []
-
-    for item in order:
-        ref = item.ref
-        if ref == PURPOSE_REF:
-            ref = "common:" + REVIEW_PURPOSE[ctx.review_kind]
-        clause = _resolve(ref, own, common, filename)
-        if item.b_only or _is_b_only(clause.header_note):
-            continue
-        # The Google leg's A-only clause is the agy review route's hook.
-        if ((item.a_only or clause.a_only) and family == "google"
-                and ctx.google_route != "agy"):
-            continue
-        # The leftover check runs on the TEMPLATE, never on the rendered text:
-        # a binding VALUE may legitimately contain an angle token (a worktree
-        # path under a directory named for the review id), and re-scanning the
-        # substituted text would reject it as unresolved.
-        leftover = sorted(
-            {
-                tok
-                for tok in _ANGLE_RE.findall(clause.body)
-                if tok not in LITERAL_ANGLE_TOKENS and tok not in subs
-            }
-        )
-        if leftover:
-            raise PromptSpecError(
-                f"{filename}: unresolved placeholder(s) in the {family} clause "
-                f"'{ref}': {', '.join(leftover)}"
-            )
-        # ONE pass: `re.sub` never re-scans what it inserted, so a value that
-        # itself spells a placeholder is carried through verbatim.
-        bodies.append(_PLACEHOLDER_RE.sub(lambda m: subs[m.group(0)], clause.body))
-        manifest.append((ref, clause.sha256()))
-        if WEB_POLICY_PLACEHOLDER in clause.body:
-            manifest.append((policy_ref, policy.sha256()))
-
-    return "\n\n".join(bodies), manifest
+    verdict_v2 = _verdict_v2()
+    lib, why = verdict_v2._library_import()
+    if lib is None:
+        raise _PromptHostFault(why)
+    _check_identity(verdict_v2._read_regular_file_no_symlink)
+    route = ctx.google_route if family == "google" else None
+    replacements = {
+        "worktree": ctx.worktree, "brief-file": ctx.brief_file,
+        "packet-files": ", ".join(ctx.packet_files),
+        "review-id": ctx.review_id, "content-digest": ctx.content_digest,
+        "leg-name": ctx.leg_name, "attempt": str(ctx.attempt),
+    }
+    if family == "google":
+        replacements["gated-patch-file"] = ctx.gated_patch_file
+    try:
+        text, rows = lib.render_review_clauses(
+            family=family, host="A", review_date=ctx.review_date,
+            review_web_authorized=ctx.review_web_authorized,
+            replacements=replacements, review_kind=ctx.review_kind,
+            route=route, agy_hook_active=route == "agy", with_manifest=True)
+    except lib.PromptError as exc:
+        raise PromptSpecError(
+            f"the review library refused the {family} render: {exc}") from exc
+    except lib.ContractError as exc:
+        raise _PromptHostFault(
+            f"host fault: the vendored review library cannot render the "
+            f"{family} prompt: {exc} — reinstall this host") from exc
+    return text, [(row["name"], row["sha256"]) for row in rows]
 
 
 def _valid_date(value) -> bool:

@@ -48,7 +48,7 @@
           "pattern": "^(marker:[^/\\s]+|alloc-record|inside-owned-packet|git-registered)$"
         },
         "min_age_s": {
-          "description": "The host's age floor for this role, in seconds; nothing younger is deleted, by the sweep or by the deletion command.",
+          "description": "The host's age floor for this role, in seconds, for sweeps and general deletion requests. R-CLEANUP's explicit named-round close and already-started deletion resumption are not held back by the sweep floor; their other checks remain required.",
           "type": "integer",
           "minimum": 0
         }

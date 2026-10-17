@@ -18,7 +18,7 @@ Review whether this plan meets the stated requirements and can be implemented as
 ## code-purpose (R-PROMPT; review_kind=pre-merge or implementation-review)
 
 ```text
-Review this change's correctness and completeness under the stated requirements and target environment. Inspect the diff and relevant source, tests and contracts for actual defects throughout the approved scope. Report findings beyond the leader's selected concerns too; do not turn optional redesign or hypothetical extensibility into requirements.
+Review this change's correctness and completeness under the stated requirements and target environment. Inspect the diff and relevant source, tests and contracts for actual defects throughout the approved scope. For a worktree review, use the diff and packet file list as entry points and discover related unchanged files yourself; individual source files need not be prelisted. Respect explicit exclusions and external/symlink-target boundaries. Report findings beyond the leader's selected concerns too; do not turn optional redesign or hypothetical extensibility into requirements.
 ```
 
 ## current-basis (R-REREVIEW, R-CONTEXT)
