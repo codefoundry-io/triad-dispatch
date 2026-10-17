@@ -243,12 +243,16 @@ UTF-8, not JSON, nested past the interpreter's limit, or not Draft
 not the vendored copy (`verdict_v2._get_validator`, in that order), or an
 expected binding pair the library refuses (`invalid_expected` or a library
 `ContractError`, `verdict_v2._admit_obj`): the pair is the host's own, so
-the reply was never judged, and `collect` raises its `_HostFault` for it
+the reply was never judged (it is checked before the reply is parsed — an
+unparseable reply beside a malformed pair is 64 too; a reply with no end
+marker is 3 first), and `collect` raises its `_HostFault` for it
 — on the claude entry's saved reply too (`collect_v2._raw_admissible`),
 instead of reporting the attempt not admissible. A `retry` whose render
 this host cannot perform (a vendored bundle payload or its manifest, or
 the adoption record or its `pairs` object; a library `ContractError`) is
-the same host fault.
+the same host fault, and so is a library `ContractError` while
+`validate_verdict` judges a reply or `validate_transport_receipt` judges a
+run-log's transport object.
 The agy entry's two EVIDENCE TOOLS are the same class: `read_audit_gate.sh`
 and `agy_hook.py check` both reserve rc 64 for "this invocation could not
 RUN at all" — a required file the round named is gone, a removed

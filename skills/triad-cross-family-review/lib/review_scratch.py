@@ -2594,12 +2594,24 @@ def v2_resolve_roster(source: Path):
     (`_v2_agy_web_refusal`, which reads the settings file agy reads; writes
     and locks nothing) — and is checked by `prepare` before the round
     exists (R-REVIEW-WEB); every preset the claude route may select ships
-    with its web twin."""
+    with its web twin.
+
+    A library `ContractError` on the roster path is the one-line `prepare
+    HOST FAULT`, exit 64 (`cmd_prepare` asked the host question before this
+    call, so the vendored package imports here)."""
     roster = _load_v2_sibling("roster_v2")
+    lib = roster._library()
     try:
         return roster, roster.resolve_roster(source)
     except roster.RosterError as exc:
         _fail(f"v2 roster refused: {exc}")
+    except lib.ContractError as exc:
+        print(f"review_scratch: prepare HOST FAULT: this host cannot resolve "
+              f"a roster: the vendored library's roster contract is unusable "
+              f"(ContractError: {' '.join(str(exc).split())}) — nothing was "
+              f"created; repair the install and prepare again",
+              file=sys.stderr)
+        sys.exit(_load_v2_sibling("verdict_v2").EXIT_USAGE)
 
 
 # THE AGY WEB PREREQUISITE (R-REVIEW-WEB, case C32; spec DL-58). On host A an

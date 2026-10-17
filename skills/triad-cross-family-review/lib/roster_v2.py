@@ -44,7 +44,8 @@ CLI:
     python3 roster_v2.py resolve <abs-worktree>
         -> stdout: one JSON document {source, enabled, startable, skipped,
            families, legs, warnings}
-        -> exit 0 resolved / 2 refused (one stderr line) / 64 jsonschema missing
+        -> exit 0 resolved / 2 refused (one stderr line) / 64 host fault (the
+           host question `verdict_v2._get_validator`, or a library ContractError)
 
 The Google chain probes the real PATH (`shutil.which`); a test controls which
 CLIs are installed through PATH alone.
@@ -62,20 +63,12 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-try:  # presence gate — the canonical contract is Draft 2020-12
-    import jsonschema
-except ImportError:  # pragma: no cover - exercised by the install hint path
-    jsonschema = None
-
 EXIT_REFUSE = 2
-EXIT_NO_JSONSCHEMA = 64
 
 SPEC_DIR = Path(__file__).resolve().parents[1] / "spec"
 DEFAULTS_PATH = SPEC_DIR / "review-legs.default.json"
-SCHEMA_PATH = SPEC_DIR / "contracts" / "review-legs.schema.json"
 VERDICT_SCHEMA_PATH = SPEC_DIR / "contracts" / "leg-verdict.schema.json"
 
-SCHEMA_ID_V2 = "triad-review-legs.v2"
 PROJECT_OVERRIDE_REL = (".claude", "triad-review-legs.json")
 
 # The PRODUCER schema projection (PRD: "the projection aids generation; it
@@ -253,23 +246,68 @@ class Dispatch:
 # ---------------------------------------------------------------------------
 # schema / data loading
 # ---------------------------------------------------------------------------
-def _require_jsonschema():
-    # The remedy literal is `verdict_v2._JSONSCHEMA_MISSING_MSG`'s (keep the
-    # two byte-identical).
-    if jsonschema is None:
-        print("roster_v2: " + (
-            "{what} — the review library needs jsonschema>=4.26,<5 and "
-            "referencing>=0.37,<1 — Mac: pip3 install --user --break-system-packages "
-            "'jsonschema>=4.26,<5' 'referencing>=0.37,<1' | Ubuntu: run under the "
-            "~/.venvs/triad interpreter (activate it in the shell that launches Claude "
-            "Code, as the plugin README says) and install there with "
-            "~/.venvs/triad/bin/pip install 'jsonschema>=4.26,<5' "
-            "'referencing>=0.37,<1' (offline: add --no-index --find-links <wheelhouse>)"
-            " | this interpreter: {exe}"
-        ).format(what="python3 jsonschema (Draft 2020-12) is not importable",
-                 exe=sys.executable), file=sys.stderr)
-        raise SystemExit(EXIT_NO_JSONSCHEMA)
-    return jsonschema
+def _verdict_v2():
+    """The sibling `verdict_v2`, loaded LAZILY by file path (the
+    `collect_v2._load_sibling` rule: an already-loaded one is reused). It
+    carries the review libs' one hardened reader, the host question
+    (`_get_validator`), the vendored package import (`_library_import`) and
+    the strict duplicate-member scan (`_reject_duplicate`)."""
+    verdict_v2 = sys.modules.get("verdict_v2")
+    if verdict_v2 is None:
+        spec = importlib.util.spec_from_file_location(
+            "verdict_v2", Path(__file__).resolve().parent / "verdict_v2.py")
+        verdict_v2 = importlib.util.module_from_spec(spec)
+        sys.modules["verdict_v2"] = verdict_v2
+        try:
+            spec.loader.exec_module(verdict_v2)
+        except BaseException:
+            sys.modules.pop("verdict_v2", None)
+            raise
+    return verdict_v2
+
+
+def _library():
+    """The vendored `triad_dispatch_lib` module. A caller asks the host
+    question (`verdict_v2._get_validator`) first — the CLI and `prepare` do —
+    so a package that cannot be imported here is a programming error, raised
+    as ImportError with the host question's one-line reason."""
+    lib, why = _verdict_v2()._library_import()
+    if lib is None:
+        raise ImportError(why)
+    return lib
+
+
+def _library_refusal(exc, where: str, text: str | None = None) -> "RosterError":
+    """The host's ONE-line RosterError for a library `RosterError` raised at
+    the call site `where` (the document the host names): the library code, its
+    schema path and missing name for `schema_violation`, and the library's own
+    `.document` when it reports one. No instance value enters a schema reason.
+    An `invalid_json` on override text `json.loads` accepted is a strict-JSON
+    refusal: the host's duplicate-member scan names the member when there is
+    one (the library reports no member name)."""
+    code = exc.code
+    if code == "schema_violation":
+        at = "/".join(str(p) for p in (exc.path or ())) or "<root>"
+        missing = f" (missing '{exc.missing}')" if exc.missing else ""
+        doc = (f", library document '{exc.document}'" if exc.document
+               else "")
+        return RosterError(f"{where} is invalid at schema path {at}{missing} "
+                           f"({code}{doc})")
+    if code == "duplicate_name":
+        return RosterError(f"{where} has two entries with the same name "
+                           f"({code}) — the merge key must be unique")
+    if code == "invalid_json" and text is not None:
+        verdict_v2 = _verdict_v2()
+        try:
+            json.loads(text, object_pairs_hook=verdict_v2._reject_duplicate)
+        except verdict_v2._DuplicateMember as dup:
+            return RosterError(f"duplicate member `{_flat(dup.args[0])}` in "
+                               f"the {where} ({code}) — refused")
+        except (ValueError, RecursionError):
+            pass
+        return RosterError(f"the {where} is not strict JSON (a duplicate "
+                           f"member or a non-finite number) ({code}) — refused")
+    return RosterError(f"{where} is refused by the library ({code})")
 
 
 def _flat(text: str) -> str:
@@ -288,19 +326,8 @@ def _read_regular_file(path: Path, label: str) -> bytes:
     including EACCES on the parent directory, becomes this one-line refusal,
     never a traceback.
     """
-    verdict_v2 = sys.modules.get("verdict_v2")
-    if verdict_v2 is None:
-        spec = importlib.util.spec_from_file_location(
-            "verdict_v2", Path(__file__).resolve().parent / "verdict_v2.py")
-        verdict_v2 = importlib.util.module_from_spec(spec)
-        sys.modules["verdict_v2"] = verdict_v2
-        try:
-            spec.loader.exec_module(verdict_v2)
-        except BaseException:
-            sys.modules.pop("verdict_v2", None)
-            raise
     path = Path(path)
-    data, reason = verdict_v2._read_regular_file_no_symlink(path)
+    data, reason = _verdict_v2()._read_regular_file_no_symlink(path)
     if reason is None:
         return data
     unreadable = f"cannot read {path}: "
@@ -313,9 +340,13 @@ def _read_regular_file(path: Path, label: str) -> bytes:
     raise RosterError(f"{label} {path} is not a regular file — refused")
 
 
-def _read_json(path: Path, label: str) -> dict:
+def _read_json(path: Path, label: str, data: bytes | None = None) -> dict:
+    """The JSON object in `path` (or in its already-read bytes `data`), or a
+    RosterError naming it."""
+    if data is None:
+        data = _read_regular_file(path, label)
     try:
-        raw = _read_regular_file(path, label).decode("utf-8")
+        raw = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise RosterError(f"{label} {path} is not UTF-8: {exc}") from exc
     try:
@@ -333,38 +364,22 @@ def _read_json(path: Path, label: str) -> dict:
     return doc
 
 
-def _schema() -> dict:
-    return _read_json(SCHEMA_PATH, "vendored contract")
-
-
-def _validate(doc: dict, schema: dict, label: str) -> None:
-    js = _require_jsonschema()
-    validator = js.Draft202012Validator(schema)
-    errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
-    if errors:
-        err = errors[0]
-        where = "/".join(str(p) for p in err.absolute_path) or "<root>"
-        raise RosterError(f"{label} is invalid at {where}: {_flat(err.message)}")
-
-
-def _resolved_roster_schema(schema: dict) -> dict:
-    """The `$defs/resolvedRoster` sub-schema, re-rooted so its `$ref`s resolve."""
-    resolved = dict(schema["$defs"]["resolvedRoster"])
-    resolved["$defs"] = schema["$defs"]
-    return resolved
-
-
 def load_defaults() -> dict:
-    """Host A's shipped default roster, validated as a COMPLETE resolved roster.
+    """Host A's shipped default roster, validated as a COMPLETE resolved roster
+    by the library (`validate_resolved`).
 
     A corrupt shipped default is a hard failure: nothing downstream may run on a
-    half-readable roster.
+    half-readable roster. The library reports `.document == "resolved"` for a
+    standalone validation, so the attribution is THIS call site's.
     """
     doc = _read_json(DEFAULTS_PATH, "shipped default roster")
+    lib = _library()
     try:
-        _validate(doc, _resolved_roster_schema(_schema()), "shipped default roster")
-    except RosterError as exc:
-        raise RosterError(f"shipped default roster is corrupt — {exc}") from exc
+        lib.validate_resolved(doc)
+    except lib.RosterError as exc:
+        raise RosterError(f"shipped default roster is corrupt — "
+                          f"{_library_refusal(exc, 'shipped default roster')}"
+                          ) from None
     return doc
 
 
@@ -393,19 +408,6 @@ def _override_present(path: Path) -> bool:
 # ---------------------------------------------------------------------------
 # merge + capability refusals
 # ---------------------------------------------------------------------------
-def _merge_leg(base: dict, over: dict) -> dict:
-    """Objects merge field by field; scalars and arrays are REPLACED (PRD)."""
-    merged = dict(base)
-    for key, value in over.items():
-        if (isinstance(value, dict) and isinstance(merged.get(key), dict)):
-            block = dict(merged[key])
-            block.update(value)
-            merged[key] = block
-        else:
-            merged[key] = value
-    return merged
-
-
 def _strings(obj) -> list:
     if isinstance(obj, dict):
         return [s for v in obj.values() for s in _strings(v)]
@@ -667,25 +669,43 @@ def _resolve_google(leg: dict, which) -> tuple:
 
 
 def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
-    """The shipped defaults, merged with the project override, fully validated."""
-    schema = _schema()
+    """The shipped defaults, merged with the project override, fully validated.
+
+    The order: the library validates the defaults (`load_defaults`) → the host
+    reads the override (its "is not UTF-8" / "is not JSON" / "must be a JSON
+    object" lines) → the library merges the override TEXT (`merge_roster`,
+    which validates the override and refuses exact duplicate names) → the
+    host's case-fold duplicate refusal → `_check_required` / `_check_blocks`
+    → the library validates the merged roster (`validate_resolved`) →
+    `_check_capabilities` / placeholders → the Google route. A library
+    `ContractError` propagates: the caller's HOST FAULT (exit 64)."""
+    lib = _library()
     defaults = load_defaults()
-    legs = [dict(leg) for leg in defaults["legs"]]
-    known = {leg["name"] for leg in legs}
+    known = {leg["name"] for leg in defaults["legs"]}
     source = "defaults"
 
-    shipped = {leg["name"]: dict(leg) for leg in legs}
     path = project_override_path(worktree)
+    over = text = None
     if _override_present(path):
-        over = _read_json(path, "project override")
-        _validate(over, schema, f"project override {path}")
+        data = _read_regular_file(path, "project override")
+        over = _read_json(path, "project override", data)
+        text = data.decode("utf-8")  # `_read_json` proved it decodes
+        source = f"defaults+project:{path}"
+    try:
+        merged = lib.merge_roster(defaults, text)
+    except lib.RosterError as exc:
+        where = ("shipped default roster" if exc.document == "defaults"
+                 else f"project override {path}")
+        raise RosterError(_library_refusal(exc, where, text)) from None
+    legs = merged["legs"]
+    if over is not None:
         # An entry name becomes a DIRECTORY name (`results-r<N>/<name>/`) and
         # the macOS default volume folds case, so a repeat that differs only
         # in case would fail partway through `prepare`: refused here, once,
         # over the override document, before anything is created. The walk
         # knows the shipped names: an override spelled exactly like a shipped
         # entry merges into it, one differing only in case is refused.
-        shipped_folded = {name.casefold(): name for name in shipped}
+        shipped_folded = {name.casefold(): name for name in known}
         seen = set()
         for leg in over["legs"]:
             name = leg["name"]
@@ -699,14 +719,6 @@ def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
                                   f"merge key and the results directory name "
                                   f"must be unique")
             seen.add(folded)
-        by_name = {leg["name"]: i for i, leg in enumerate(legs)}
-        for leg in over["legs"]:
-            if leg["name"] in by_name:
-                idx = by_name[leg["name"]]
-                legs[idx] = _merge_leg(legs[idx], leg)
-            else:
-                legs.append(dict(leg))
-        source = f"defaults+project:{path}"
 
     for leg in legs:
         _check_required(leg, known)
@@ -718,8 +730,10 @@ def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
     # table, so it falls through to the schema, which owns that vocabulary.
     for leg in legs:
         _check_blocks(leg)
-    _validate({"schema": SCHEMA_ID_V2, "legs": legs},
-              _resolved_roster_schema(schema), "resolved roster")
+    try:
+        lib.validate_resolved(merged)
+    except lib.RosterError as exc:
+        raise RosterError(_library_refusal(exc, "resolved roster")) from None
 
     entries: list[Entry] = []
     warnings: list[str] = []
@@ -997,11 +1011,25 @@ def main(argv: list | None = None) -> int:
     resolve_cmd.add_argument("worktree", help="absolute worktree path")
     args = parser.parse_args(argv)
 
+    # THE HOST QUESTION FIRST (`verdict_v2._get_validator`: the library's
+    # dependencies and their ranges, the vendored package), as `prepare` asks
+    # it: a host that cannot run the library is exit 64, never a refusal.
+    verdict_v2 = _verdict_v2()
+    host_fault = "roster_v2: HOST FAULT: this host cannot resolve a roster: "
+    validator, why = verdict_v2._get_validator()
+    if validator is None:
+        print(host_fault + _flat(why), file=sys.stderr)
+        return verdict_v2.EXIT_USAGE
+    lib = _library()
     try:
         resolved = resolve_roster(Path(args.worktree), which=shutil.which)
     except RosterError as exc:
         print(f"roster_v2: refused: {_flat(exc)}", file=sys.stderr)
         return EXIT_REFUSE
+    except lib.ContractError as exc:
+        print(host_fault + "the vendored library's roster contract is "
+              f"unusable (ContractError: {_flat(exc)})", file=sys.stderr)
+        return verdict_v2.EXIT_USAGE
     # THE RESOLVED ROSTER IS PRINTED BEFORE DISPATCH (C12, A2): each startable
     # claude entry shows the model and effort its shipped preset pins, read
     # the way prepare reads them from BOTH files a round may spawn — the base

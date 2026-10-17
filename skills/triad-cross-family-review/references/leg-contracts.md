@@ -41,7 +41,11 @@ output files, so `retry` the entry and run the new attempt's printed line
 verbatim. With the log-dir member
 the wrapper writes its run-log on success too, into `<attempt>/logs/<cli>/runs/`
 (`<cli>` = `codex` / `antigravity` / `gemini`), and its `wrapper_cmd` is the
-argv the wrapper actually ran with. `collect` compares every run-log there with
+argv the wrapper actually ran with. `collect` first checks every run-log's
+`transport` object against the receipt contract (`validate_transport_receipt`,
+`spec/contracts/receipt-fields.json`) — a run-log without a transport object,
+or one the contract refuses, makes the entry INVALID with the library's fixed
+message and the log path — and then compares every run-log there with
 `dispatch.json`'s argv before it admits the answer: a missing run-log (the line
 ran without its env) or any differing element — a removed `--search` /
 `--review-web`, a changed `--model` — makes the entry INVALID ("the leg ran
@@ -297,7 +301,10 @@ leg mixups). The leader's obligations, every round, every entry:
    `ValueError`, not an `OSError`), a non-JSON document, one nested past the
    interpreter's limit (`RecursionError` — neither), and a document that is
    not a valid Draft 2020-12 schema — none of them escapes as a TRACEBACK
-   out of the one path the collector's exit-64 `_HostFault` depends on.
+   out of the one path the collector's exit-64 `_HostFault` depends on. The
+   library's own `ContractError` — raised while `validate_verdict` judges a
+   reply or `validate_transport_receipt` judges a run-log's transport object —
+   takes the same exit.
    The same `_get_validator` asks the dependency question first —
    `jsonschema` or `referencing` absent or outside its supported range
    (`>=4.26,<5`, `>=0.37,<1`), or the two unable to build a Draft 2020-12

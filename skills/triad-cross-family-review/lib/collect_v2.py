@@ -82,7 +82,9 @@ Stdlib only. The v2 siblings (`verdict_v2`, and `review_scratch` for the
 attempt allocation a retry reuses) are loaded BY PATH from this file's own
 directory: they use `from __future__ import annotations`, so each module is
 registered in `sys.modules` BEFORE `exec_module` — `dataclasses` resolves
-their field annotations through `sys.modules[cls.__module__]`.
+their field annotations through `sys.modules[cls.__module__]`. The vendored
+library (the run-log receipt contract) is reached only through
+`verdict_v2._library_import`, never imported here by name.
 """
 from __future__ import annotations
 
@@ -175,6 +177,9 @@ class _HostFault(CollectError):
     unusable, the vendored package not importable or not the vendored copy
     (`verdict_v2._get_validator`), an expected pair the library refuses
     (`invalid_expected` / a library `ContractError`, `verdict_v2._admit_obj`),
+    a library `ContractError` while judging the reply (`validate_verdict`)
+    or a run-log's transport object (`validate_transport_receipt`,
+    `_receipt_reason`),
     the target refused as a host fault; `retry`'s render adds the data-side
     identity fault (`prompts_v2._check_identity`). Recording that as the
     entry's `invalid` folded the round to INCOMPLETE, which is the leader's
@@ -889,7 +894,13 @@ def _raw_admissible(attempt_dir: Path, expected: dict) -> bool:
     except (CollectError, UnicodeDecodeError):
         return False
     if admission.exit_code == verdict_v2.EXIT_USAGE:
-        raise _HostFault(f"{attempt_dir}: {admission.reason}")
+        # The documented shape, the same sentence as `_evaluate_recorded`'s arm.
+        raise _HostFault(
+            f"this host cannot admit any reply: {admission.reason} (reached "
+            f"while admitting {attempt_dir}/raw.json) — the collection is "
+            f"STOPPED and no per-entry state was written; nothing about the "
+            f"legs is known, so repair the install and collect again rather "
+            f"than re-dispatching them")
     return admission.ok
 
 
@@ -1295,7 +1306,11 @@ def _receipt_reason(attempt_dir: Path, route) -> str | None:
     """None when the wrapper's run-log receipt in this attempt's own namespace
     records the argv `dispatch.json` recorded; else why the answer does not
     count (R-BIND). Every run-log there must match, and one must exist: the
-    wrapper writes it only when it runs with the recorded env."""
+    wrapper writes it only when it runs with the recorded env. Each log's
+    `transport` object is judged first by the library's receipt contract
+    (`validate_transport_receipt`; its `ReceiptError` carries no member path,
+    so the reason is its fixed text, its code and the log); a library
+    `ContractError` is a `_HostFault`, which no arm here catches."""
     runs = attempt_dir / "logs" / _RUN_LOG_CLI[route] / "runs"
     try:
         argv = json.loads(_read_regular_file(
@@ -1316,15 +1331,38 @@ def _receipt_reason(attempt_dir: Path, route) -> str | None:
     if not logs:
         return (f"no run-log under {runs}: the wrapper writes one there only "
                 f"when it runs with the recorded env — {_RECEIPT_REMEDY}")
+    # `_evaluate_recorded` admitted the answer first, so the vendored package
+    # is importable here (`verdict_v2._get_validator`).
+    lib, why = _load_sibling("verdict_v2")._library_import()
+    if why is not None:
+        raise _HostFault(why)
     for path in logs:
         try:
             ran = json.loads(_read_regular_file(path, "the run-log"))
-            ran = ran.get("wrapper_cmd") if isinstance(ran, dict) else None
         except (CollectError, ValueError, RecursionError) as exc:
             return (f"the run-log {path} cannot be read "
                     f"({' '.join(str(exc).split())}) — retry this entry "
                     f"(R-BIND)")
-        if ran != argv:
+        transport = ran.get("transport") if isinstance(ran, dict) else None
+        if not isinstance(transport, dict):
+            return (f"the run-log {path} carries no transport object — "
+                    f"{_RECEIPT_REMEDY}")
+        try:
+            lib.validate_transport_receipt(transport)
+        except lib.ReceiptError as exc:
+            return (f"the run-log {path}'s transport object is refused by the "
+                    f"receipt contract ({exc}, {exc.code}) — "
+                    f"{_RECEIPT_REMEDY}")
+        except lib.ContractError as exc:
+            raise _HostFault(
+                f"this host cannot judge any receipt: the vendored receipt "
+                f"contract is unusable (ContractError: "
+                f"{' '.join(str(exc).split())}) (reached while judging "
+                f"{path}) — the collection is STOPPED and no per-entry state "
+                f"was written; nothing about the legs is known, so repair "
+                f"the install and collect again rather than re-dispatching "
+                f"them") from exc
+        if ran.get("wrapper_cmd") != argv:
             return (f"the run-log {path} records an executed command that is "
                     f"not {attempt_dir}/dispatch.json's argv — "
                     f"{_RECEIPT_REMEDY}")

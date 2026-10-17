@@ -39,11 +39,12 @@ Exit codes:
       contains spaces, so an unquoted one in the middle made the line
       ambiguous to a field-splitting reader.
   1   shape / schema / binding failure (also: unreadable reply)
-  2   unparseable, a duplicate JSON member, a reply that does not begin
-      with `{`, or nesting past the interpreter's recursion limit (leader:
-      the entry is invalid; a new answer comes only from `retry` on the
-      unchanged basis or a new round - a re-ask with a changed prompt is a
-      new basis, R-RETRY / R-BIND)
+  2   unparseable, a duplicate JSON member, a non-finite number (`NaN`,
+      `Infinity`, an overflowing literal such as `1e999`), a reply that does
+      not begin with `{`, or nesting past the interpreter's recursion limit
+      (leader: the entry is invalid; a new answer comes only from `retry` on
+      the unchanged basis or a new round - a re-ask with a changed prompt is
+      a new basis, R-RETRY / R-BIND)
   3   `--end-marker` absent from the raw reply - possible TAIL LOSS
   64  usage error, a dependency (`jsonschema`, `referencing`) absent or
       outside its range or the two unable to build a Draft 2020-12 validator
@@ -126,8 +127,9 @@ EXIT_USAGE = 64
 # (the native route's record step) and refuses a target whose directory has one.
 _SEAL_NAME = "seal.json"
 
-# The dependency remedy, ONE line. The same literal is in
-# `roster_v2._require_jsonschema` (keep the two byte-identical).
+# The dependency remedy, ONE line. `roster_v2`'s CLI prints `_get_validator`'s
+# reason (no second copy since LIB-ADOPT 2); t12 axis 45 pins its line to
+# this template.
 _JSONSCHEMA_MISSING_MSG = (
     "{what} — the review library needs jsonschema>=4.26,<5 and "
     "referencing>=0.37,<1 — Mac: pip3 install --user --break-system-packages "
@@ -172,9 +174,9 @@ _USAGE = (
     "v2 admission never runs shape-only. --expected-packet derives the "
     "digest from the packet bytes and is mutually exclusive with "
     "--expected-content-digest.\n"
-    "  exits: 0 admitted; 1 shape/schema/binding; 2 unparseable or duplicate "
-    "member; 3 end marker absent (tail loss); 64 usage or host fault "
-    "(jsonschema / referencing absent or outside their ranges, an unusable "
+    "  exits: 0 admitted; 1 shape/schema/binding; 2 unparseable, duplicate "
+    "member or non-finite number; 3 end marker absent (tail loss); 64 "
+    "usage or host fault (jsonschema / referencing absent or outside their ranges, an unusable "
     "contract, the vendored package not importable or not the vendored "
     "copy, an expected binding pair the library refuses)"
 )
@@ -199,7 +201,10 @@ def _schema_path() -> Path:
 @dataclass
 class Admission:
     """Result of one admission attempt. `verdict` is the parsed object on
-    success only; `reason` is a one-line string on failure only."""
+    success only; `reason` is a one-line string on failure only. `retryable`
+    is True only for a refusal of the JSON-syntax class (`invalid_json`,
+    `nesting_limit`) — the one class the raw reply's entity-unescape retry
+    may attempt."""
 
     ok: bool
     exit_code: int
@@ -207,6 +212,7 @@ class Admission:
     verdict: dict | None
     blocking: int
     open_questions: int
+    retryable: bool = False
 
 
 def _fail(exit_code: int, reason: str) -> Admission:
@@ -324,30 +330,6 @@ def _get_validator() -> tuple[object | None, str | None]:
     return _VALIDATOR, None
 
 
-def _schema_reason(obj: object) -> str | None:
-    """None when `obj` satisfies the canonical schema, else a one-line
-    reason. The DEEPEST error wins: a root `allOf`/`anyOf` failure knows only
-    that "the whole object is wrong" and jsonschema renders it by inlining
-    the entire reply, while a sibling error one level down names the field
-    that actually broke."""
-    validator, err = _get_validator()
-    if err is not None:
-        return err
-    errors = sorted(
-        validator.iter_errors(obj),  # type: ignore[union-attr]
-        key=lambda e: (
-            -len(e.absolute_path),
-            [str(p) for p in e.absolute_path],
-            e.message,
-        ),
-    )
-    if not errors:
-        return None
-    first = errors[0]
-    path = "/".join(str(p) for p in first.absolute_path) or "<root>"
-    return f"schema validation failed at {path}: {first.message}"
-
-
 # ── duplicate-member rejection at the ORIGINAL text ───────────────────────
 class _DuplicateMember(Exception):
     """The first repeated member name `_reject_duplicate` met."""
@@ -364,28 +346,20 @@ def _reject_duplicate(pairs: list[tuple[str, object]]) -> dict:
     return dict(pairs)
 
 
-def _parse_strict(text: str, label: str) -> tuple[bool, object, str | None, str | None]:
-    """(ok, obj, reason, failure_kind). Rejects a duplicate member at ANY
-    depth, naming the member. `ok` is an explicit flag because a valid
-    top-level `null` parses to None and must still reach schema validation as
-    a shape failure, not be mistaken for a parse failure. `failure_kind` is
-    "json" only for a genuine JSON syntax error - the one failure an
-    escaped-transport retry could legitimately repair - and "duplicate" for
-    the last-wins guard. A reply nested past the interpreter's recursion
-    limit is a syntax-class failure too, reported on one line instead of a
-    traceback."""
-    try:
-        obj = json.loads(text, object_pairs_hook=_reject_duplicate)
-    except _DuplicateMember as e:
-        return False, None, (
-            f"duplicate member '{e.args[0]}' in {label} - last-wins parsing "
-            "would hide the earlier value"
-        ), "duplicate"
-    except ValueError as e:
-        return False, None, f"{label} is not valid JSON: {e}", "json"
-    except RecursionError:
-        return False, None, f"{label} nesting too deep", "json"
-    return True, obj, None, None
+# The library's parse-stage refusals (`validate_verdict` → `parse_json`), each
+# exit 2 with its own ONE-line wording, and whether the single entity-unescape
+# retry of a raw reply may attempt it: only the JSON-syntax class
+# (`invalid_json`, `nesting_limit`) can be repaired by unescaping; a non-finite
+# number, invalid UTF-8 or a wrong input type is FINAL. `duplicate_member` is
+# named by the host's own scan (`_admit_obj`).
+_PARSE_REFUSALS = {
+    "invalid_json": ("{label} is not valid JSON", True),
+    "nesting_limit": ("{label} nesting too deep", True),
+    "nonfinite_number": ("{label} carries a non-finite number (NaN, Infinity "
+                         "or an overflow) — refused", False),
+    "invalid_utf8": ("{label} is not valid UTF-8", False),
+    "invalid_input_type": ("{label} is neither text nor bytes — refused", False),
+}
 
 
 # ── hardened read ─────────────────────────────────────────────────────────
@@ -459,7 +433,13 @@ def _binding_reason(obj: dict, expected: dict) -> str | None:
     return None
 
 
-def _admit_obj(obj: object, expected: dict, label: str) -> Admission:
+def _admit_obj(text: str | bytes, expected: dict, label: str) -> Admission:
+    """Admit the ORIGINAL reply text (or bytes) against `expected` through ONE
+    library call, `validate_verdict` (strict parse, the canonical schema, the
+    six bindings), with the host's layers on top: the duplicated member named
+    by `_reject_duplicate` after the library's `duplicate_member`, the
+    schema LOCATION (never a value) after its `schema_violation`, and the
+    per-field `_binding_reason` wording after its `binding_mismatch`."""
     # A host-side schema fault (absent jsonschema, unreadable / corrupt /
     # non-Draft-2020-12 contract) is exit 64 and is NEVER dressed up as an
     # invalid reply: the leg's work has not been judged at all.
@@ -468,7 +448,9 @@ def _admit_obj(obj: object, expected: dict, label: str) -> Admission:
         return _fail(EXIT_USAGE, host_err)
     # The expected pair is the HOST's own (the round record, the frozen entry,
     # the attempt number): one the library refuses is a host fault, never a
-    # refused reply (`_get_validator` above already imported the package).
+    # refused reply (`_get_validator` above already imported the package). It
+    # is asked BEFORE the reply parses, so a malformed pair is 64 for any
+    # reply that reaches this call.
     lib, why = _library_import()
     if why is not None:
         return _fail(EXIT_USAGE, why)
@@ -482,13 +464,57 @@ def _admit_obj(obj: object, expected: dict, label: str) -> Admission:
         return _fail(EXIT_USAGE, f"host fault: the vendored library cannot "
                                  f"validate the expected binding pair "
                                  f"(ContractError: {e}) — reinstall this host")
-    reason = _schema_reason(obj)
-    if reason is not None:
-        return _fail(EXIT_INVALID, f"{label}: {reason}")
-    reason = _binding_reason(obj, expected)  # type: ignore[arg-type]
-    if reason is not None:
-        return _fail(EXIT_INVALID, f"{label}: {reason}")
-    return _succeed(obj)  # type: ignore[arg-type]
+    try:
+        obj = lib.validate_verdict(text, expected=expected)  # type: ignore[union-attr]
+    except lib.ContractError as e:  # type: ignore[union-attr]
+        return _fail(EXIT_USAGE, f"host fault: the vendored library cannot "
+                                 f"judge the reply (ContractError: {e}) — "
+                                 f"reinstall this host")
+    except lib.AdmissionError as e:  # type: ignore[union-attr]
+        refusal = e
+    else:
+        return _succeed(obj)
+    # The library refused: the host's ONE-line reason per code.
+    code = refusal.code
+    if code in _PARSE_REFUSALS:
+        template, retryable = _PARSE_REFUSALS[code]
+        refused = _fail(EXIT_UNPARSEABLE, template.format(label=label))
+        refused.retryable = retryable
+        return refused
+    # The library has passed its strict UTF-8 decode, so this decode cannot
+    # fail; for a duplicate the same text is scanned by the host's hook (the
+    # library carries no member name), for a binding mismatch the library has
+    # also passed the schema, so a plain `json.loads` of the SAME text gives
+    # the object `_binding_reason` words (`validate_verdict` returns none on a
+    # refusal).
+    source = text.decode("utf-8") if isinstance(text, bytes) else text
+    if code == "duplicate_member":
+        try:
+            json.loads(source, object_pairs_hook=_reject_duplicate)
+        except _DuplicateMember as dup:
+            return _fail(EXIT_UNPARSEABLE, (
+                f"duplicate member '{dup.args[0]}' in {label} - last-wins "
+                "parsing would hide the earlier value"))
+        except (ValueError, RecursionError):
+            pass
+        return _fail(EXIT_UNPARSEABLE, f"duplicate member in {label} (the "
+                                       f"library refused; the member could "
+                                       f"not be named)")
+    if code == "schema_violation":
+        where = "/".join(str(p) for p in (refusal.path or ()))
+        missing = refusal.missing
+        tail = f" (missing '{missing}')" if missing else ""
+        return _fail(EXIT_INVALID, f"{label}: schema validation failed at "
+                                   f"{where or '<root>'}{tail}")
+    if code == "binding_mismatch":
+        reason = _binding_reason(json.loads(source), expected)
+        return _fail(EXIT_INVALID, f"{label}: " + (reason or (
+            f"{refusal.field} mismatch - the reply was not "
+            "produced for this dispatch")))
+    # `invalid_expected` (unreachable: `validate_binding` asked first) and any
+    # code this host does not know are host faults: the reply was not judged.
+    return _fail(EXIT_USAGE, f"host fault: the vendored library refused the "
+                             f"admission with {code} — the reply was not judged")
 
 
 # ── public API ────────────────────────────────────────────────────────────
@@ -497,14 +523,9 @@ def admit_file(path: Path, expected: dict) -> Admission:
     data, err = _read_regular_file_no_symlink(path)
     if err is not None:
         return _fail(EXIT_INVALID, err)
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError as e:
-        return _fail(EXIT_UNPARSEABLE, f"{path} is not valid UTF-8: {e}")
-    ok, obj, reason, _kind = _parse_strict(text, str(path))
-    if not ok:
-        return _fail(EXIT_UNPARSEABLE, reason or f"{path} is unparseable")
-    return _admit_obj(obj, expected, str(path))
+    # The file's ORIGINAL bytes: the library decodes them (invalid UTF-8 is
+    # exit 2) and parses them strictly.
+    return _admit_obj(data, expected, str(path))
 
 
 def admit_raw(text: str, expected: dict, end_marker: str) -> Admission:
@@ -624,8 +645,10 @@ def _admit_raw_pass(
     text: str, expected: dict, end_marker: str
 ) -> tuple[Admission, str | None, bool, bool]:
     """(admission, object_text, marker_missing, parse_failed). `parse_failed`
-    is True only for a JSON SYNTAX failure - the sole class an escaped-
-    transport retry may attempt."""
+    is True only for a JSON SYNTAX refusal (the library's `invalid_json` /
+    `nesting_limit`, `Admission.retryable`) - the sole class an escaped-
+    transport retry may attempt; a duplicate member, a non-finite number and
+    every schema or binding refusal are FINAL."""
     obj_text, reason, marker_missing = _extract_object_text(text, end_marker)
     if obj_text is None:
         code = EXIT_MARKER_ABSENT if marker_missing else EXIT_UNPARSEABLE
@@ -635,15 +658,10 @@ def _admit_raw_pass(
             marker_missing,
             False,
         )
-    ok, obj, parse_reason, kind = _parse_strict(obj_text, "the raw reply")
-    if not ok:
-        return (
-            _fail(EXIT_UNPARSEABLE, parse_reason or "unparseable raw reply"),
-            None,
-            False,
-            kind == "json",
-        )
-    return _admit_obj(obj, expected, "the raw reply"), obj_text, False, False
+    admission = _admit_obj(obj_text, expected, "the raw reply")
+    if admission.exit_code == EXIT_UNPARSEABLE:
+        return admission, None, False, admission.retryable
+    return admission, obj_text, False, False
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────
