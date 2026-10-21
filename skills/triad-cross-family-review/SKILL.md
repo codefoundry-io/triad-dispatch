@@ -76,10 +76,11 @@ Five references carry the detail — open one only when its column applies.
      field by field, scalars and arrays replaced. Every entry is validated
      enabled or not; a v1
      file (`triad-review-legs.v1`) is REFUSED by the roster schema. No
-     user-scope roster file is read. Recommended extra
-     entry: the claude `high` arm `cross-family-review-reviewer-high`; Flash
-     is RETIRED as a reviewer (Pro + Flash = ONE family). ONE codex entry;
-     the shipped default names its model explicitly
+     user-scope roster file is read. No entry is recommended beyond the
+     shipped default: a further entry (for example one naming the claude
+     `-high` preset) is an opt-in that counts like any other (rule 1). Flash
+     is retired as the default Google reviewer model (Pro + Flash = ONE
+     family). The shipped default has one codex entry and names its model explicitly
      (`spec/review-legs.default.json`, at `high`, roster data — rule 15). Four-leg profile (that
      codex entry + three named agy-route Google entries, `timeout_s` 3600):
      `references/review-legs.four-leg.example.json`. A comparison entry of
@@ -414,7 +415,7 @@ Five references carry the detail — open one only when its column applies.
     preset's pins. Claude Code keeps each subagent's own transcript. A comparison CAMPAIGN over two arms
     of one family (when the leader declares one) gets a leader-written ledger at
     `docs/reviews/<date>-x-leg-<name>-campaign.md`; per-round fields:
-    `references/triage.md` § Fourth-leg comparison record.
+    `references/triage.md` § Same-family comparison record.
 
 ## Helpers (`lib/`) and vendored spec (`spec/`)
 

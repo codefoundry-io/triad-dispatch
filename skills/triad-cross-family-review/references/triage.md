@@ -17,7 +17,7 @@ the fix queue, and when recording or updating a residual.
 | Loop exit | the round lands no REAL findings |
 | Residual table | recording a residual, or writing the next round's current residual |
 | Consolidating validated LegVerdict objects (Read tool) | an entry's admitted verdict needs mapping into the residual table |
-| Fourth-leg comparison record | two entries of ONE family ran this round and you are recording the comparison |
+| Same-family comparison record | two entries of ONE family ran this round and you are recording the comparison |
 
 ## Consolidation duties
 
@@ -354,7 +354,7 @@ it: leader autonomy covers REAL findings with the smallest adequate fix.
 | occurrence gate | a REACHABLE-UNOBSERVED item has no repro from REAL vendor output (capture / run-log / audit row) | DISCLOSED residual, no code — a fixture-only repro does not promote it |
 | docs never gate | a finding is text-only on NARRATIVE documentation | batched into one post-merge doc-resync commit; never a round trigger. A rule, schema, prompt clause or policy file is review scope even as text (R-PREPARE, SKILL rule 5) |
 | scope freeze | a finding outside the agreed scope (a neighbouring design, a hypothetical input shape) | new slice, not this gate. A verified defect INSIDE the agreed scope stays in scope at any round, whether or not it cites a changed hunk (R-REREVIEW, R-STOP); a reopened closed claim needs a new counterexample, a relevant change or a demonstrated error in its refutation |
-| two-family floor | single-family REACHABLE item, no measured probe — **roster entries of the SAME family (two claude arms, two codex entries, several Google entries) count as ONE family**: their agreement never clears this floor | residual. This floor gates whether a REACHABLE-UNOBSERVED item earns code; it never decides agreement (R-AGREE) |
+| two-family floor | single-family REACHABLE item, no measured probe — **roster entries of the SAME family (two claude entries, two codex entries, several Google entries) count as ONE family**: their agreement never clears this floor | residual. This floor gates whether a REACHABLE-UNOBSERVED item earns code; it never decides agreement (R-AGREE) |
 
 Distinct from the CONVERGING round class: once every REACHABLE-UNOBSERVED item
 has had its repro run, a round whose remaining findings are all SPECULATIVE or
@@ -388,13 +388,13 @@ rounds
 (precedent: an 11-round plan gate whose final rounds' findings were half the
 leader's own fold-edit slips).
 
-## Fourth-leg comparison record
+## Same-family comparison record
 
-A second entry of a family already on the roster is run to be COMPARED with the
-SAME-FAMILY baseline entry — an opt-in comparison entry against the ONE codex
-entry, a claude arm against the shipped claude leg — so each round gets
-one deterministic record per compared pair (co-equal same-family entries with no
-baseline, such as the named Google entries, need none) —
+When the roster the owner selected runs a second entry of a family beside that
+family's baseline entry (a second codex entry beside the `codex` entry, a second
+claude entry beside the `claude` entry) and the leader compares the two, each
+round gets one deterministic record per compared pair. Co-equal same-family entries with no baseline, such as the
+four-leg profile's named Google entries, need none. The record is
 leader-filled, in the gate ledger (a campaign roll-up
 `docs/reviews/<date>-x-leg-<name>-campaign.md` only when the leader declares a
 campaign):
@@ -402,7 +402,7 @@ campaign):
 | Field | What it holds |
 |---|---|
 | `x_findings` | count of findings the comparison entry returned |
-| `baseline_findings` | count from the SAME-family standing leg (gating or advisory) it is compared against — name that leg |
+| `baseline_findings` | count from the SAME-family entry it is compared against — name that entry |
 | `overlap` | findings both raised: same file + line ±3, OR the same defect by leader judgement — MARK which of the two rules each overlap used |
 | `x_unique_real` | comparison-only findings that triaged REAL |
 | `x_unique_refuted` | comparison-only findings a recorded probe refuted |

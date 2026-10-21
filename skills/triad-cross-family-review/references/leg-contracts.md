@@ -89,8 +89,8 @@ form, codex as its one `-c model="<v>"` token.
   the verdict SHAPE is pinned by the prompt text alone and admission is the
   only mechanical check. Never an `--effort` flag (the wrapper has none; the
   resolver refuses a `gemini.effort` value). The gemini route is
-  compatibility with the older gemini CLI (legacy compatibility), not a
-  standing review leg; this shape is a textual pin, not a measured one.
+  compatibility with the older gemini CLI (legacy compatibility), not the
+  default Google route; this shape is a textual pin, not a measured one.
 - **claude** — no wrapper. Spawn `Agent` with EXACTLY the `subagent_type`
   the dispatch line prints (from `dispatch.json`) and no `model` parameter
   (the Agent tool's per-call `model` outranks the preset's `model`
@@ -124,12 +124,12 @@ form, codex as its one `-c model="<v>"` token.
   **A missing `subagent_type` in the RECORD is a refusal, never a default**
   (`review_scratch.v2_print_dispatch`). The print reads the id back out of
   `dispatch.json`, and falling back to the layout default when the record
-  carries none would print the GATING reviewer under some other leg's name —
+  carries none would spawn the base reviewer preset for an entry whose roster named a different preset —
   the exact confusion the null-`claude.agent` refusal exists to prevent. A
   record that cannot name its own agent is a broken record: `v2_print_dispatch` FAILS
   naming the record path (`… names no subagent_type (<attempt>/dispatch.json)
-  — … the layout default is the GATING reviewer and is never substituted for
-  a missing one. Prepare a new round`).
+  — … the layout default reviewer is never substituted for a missing one.
+  Prepare a new round`).
   A non-null `claude.effort` or `claude.model` is REFUSED by the resolver
   (`roster_v2._check_capabilities`, mirroring the `gemini.effort`
   refusal beside them): the native `Agent` dispatch names a `subagent_type`
@@ -287,12 +287,12 @@ leg mixups). The leader's obligations, every round, every entry:
    fallback), and the bounded copy of the raw string lives in the
    run-log's `extraction_error` as "quarantined answer: …" — so inspect
    the stdout stream plus `extraction_error`, never `final_answer`. A 66
-   is NEVER a reply to fall back to: the leg's captured `.out` must not be
+   is NEVER a reply to fall back to: the leg's captured `<attempt>/verdict.json` must not be
    consolidated on any 66. The leader re-dispatches the leg ONCE
    (`retry`); only a leg still failing after that one re-dispatch is
    terminally missing (rule 13), and the round record then names the
-   run-log so the evidence is never dropped on the floor — for the
-   ADVISORY Google leg as much as for a gating leg.
+   run-log so the evidence is never dropped on the floor — for every
+   entry alike.
 5. **A SCHEMA-LOAD failure of ANY class is a HOST FAULT (exit 64), never a
    leg verdict**. `verdict_v2._get_validator` reserves
    exit 64 for "this install cannot admit ANY reply", and that covers
@@ -827,7 +827,7 @@ soft-deny adaptation and the isolation reference it points to.
 ## gemini leg
 
 The gemini route is compatibility with the older gemini CLI (legacy
-compatibility), not a standing review leg. When gemini is the resolved Google
+compatibility), not the default Google route. When gemini is the resolved Google
 route, the model comes from that entry's
 `gemini.model`; without one, the CLI default runs and the round record says the review tier
 is unpinned. The route takes NO effort flag — `gemini_wrapper.py` has none,
@@ -984,16 +984,16 @@ spec `contracts/gemini-readonly.verify.toml` (V1-V5).
   condition spawns `-max-web`). Effort is frontmatter-fixed with no per-invocation
   override, so the sibling definition IS the escalation mechanism. A THIRD
   sibling, `cross-family-review-reviewer-high` (identical body, `effort:
-  high`), is the second claude arm (evidence:
-  `docs/reviews/2026-09-06-claude-effort-high-vs-xhigh-campaign.md`). The
-  `-high` sibling is an ORDINARY roster entry — `x-claude-high`, whose nested
-  `claude.agent` block names this `-high` sibling, carried by the project
-  override `.claude/triad-review-legs.json`; its `acceptance` is DATA
+  high`), is an opt-in preset that no shipped default enables. A roster that
+  wants it names it in an entry's nested `claude.agent` block — the `claude`
+  entry itself, or an added ORDINARY entry such as `x-claude-high` in a
+  project override `.claude/triad-review-legs.json`; an added entry's `acceptance` is DATA
   and any verdict from it other than SAFE TO MERGE keeps the round non-agreed like any entry's (SKILL
-  rule 1) — never the standing claude leg. Both claude arms
-  read the same packet bytes and the same shared clauses; only the entry's
-  binding (`leg_name`) differs, so a verdict difference is an EFFORT
-  difference, never a framing one. Every preset names the model by the `opus`
+  rule 1). When a roster runs two claude entries, both
+  read the same packet bytes and the same shared clauses; they differ in the
+  entry's binding (`leg_name`) and in the preset each names, so a verdict
+  difference is never a framing one: it comes from the presets' tiers where
+  they differ, or from run-to-run variation. Every preset names the model by the `opus`
   alias (Claude Code resolves it to the latest Opus; an older model is not
   selectable). These three and their `-web` twins are the CLOSED list a v2
   entry may name (C12);

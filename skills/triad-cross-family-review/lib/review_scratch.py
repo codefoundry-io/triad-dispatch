@@ -2905,8 +2905,8 @@ def v2_print_dispatch(alloc: dict, packet_dir: Path, worktree: Path,
         # applied the layout qualification, so the printed line and
         # `dispatch.json` name the same identity by construction.
         #
-        # NO DEFAULT SUBSTITUTION: the layout default is the GATING reviewer,
-        # so a record carrying no `subagent_type` is a broken record, not a
+        # NO DEFAULT SUBSTITUTION: the layout default is the base reviewer
+        # preset, so a record carrying no `subagent_type` is a broken record, not a
         # leg to spawn by guess (the confusion `roster_v2` refuses a null
         # `claude.agent` to prevent).
         agent = (dispatch.get("native") or {}).get("subagent_type")
@@ -2915,8 +2915,8 @@ def v2_print_dispatch(alloc: dict, packet_dir: Path, worktree: Path,
                   f"{alloc['attempt']} names no subagent_type "
                   f"({attempt_dir / 'dispatch.json'}) — a native claude leg "
                   f"is spawned by the id its OWN record carries; the layout "
-                  f"default is the GATING reviewer and is never substituted "
-                  f"for a missing one. Prepare a new round")
+                  f"default reviewer is never substituted for a missing "
+                  f"one. Prepare a new round")
         raw = Path(dispatch["stdout_path"])
         # NO `model` PARAMETER (C34, R-ROSTER): the Agent tool's per-call
         # `model` outranks the subagent's `model` frontmatter, so the preset

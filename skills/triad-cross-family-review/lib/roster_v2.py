@@ -139,7 +139,7 @@ PLACEHOLDER_RE = re.compile(r"<[^<>\n]+>")
 # twin. A claude entry names one of the six by its BARE name — the host
 # scopes it in a plugin install (`review_scratch._qualify_claude_agent_id`) —
 # and any other name is refused at resolve: `subagent_type: None` would spawn
-# the layout default (the gating reviewer), and a preset this host does not
+# the layout default (the base reviewer preset), and a preset this host does not
 # ship cannot be bound to the round. Model and effort live only in the preset
 # files (a different model or effort is a different shipped preset); a twin
 # maps to itself under a true review-web condition and to its base under a
@@ -592,8 +592,8 @@ def _check_capabilities(leg: dict) -> None:
         except RosterError as exc:
             raise RosterError(
                 f"claude entry '{name}' requires claude.agent naming a "
-                f"reviewer preset (the layout default would be the gating "
-                f"reviewer): {exc}") from None
+                f"reviewer preset (the layout default is the base reviewer "
+                f"preset): {exc}") from None
     gemini = leg.get("gemini") or {}
     if gemini.get("effort") is not None:
         raise RosterError(

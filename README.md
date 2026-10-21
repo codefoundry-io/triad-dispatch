@@ -152,12 +152,14 @@ only when its "do this ONLY if…" line applies to you.
 
 ### Add a 2nd / 3rd worker CLI
 
-*Do this ONLY if you want cross-family review* (three independent families instead
-of one worker + the claude leg). Install and log in to the other CLIs the same way
+*Do this ONLY if your review roster enables a codex or Google-family entry* (the
+default roster of `triad-cross-family-review` enables both beside the claude leg); an enabled
+entry that cannot run leaves the round INCOMPLETE, so without these CLIs switch
+those entries off in `<repo>/.claude/triad-review-legs.json`. Install and log in to the other CLIs the same way
 as step 1: `codex login`; `agy` OAuth sign-in; or, on the compatibility route,
 the `gemini` sign-in. `triad-cross-family-review` resolves
 its Google-family leg at runtime (the entry's `google.route` pin, else its single route block, else agy, else gemini)
-and runs claude (`Agent`) + codex + that leg.
+and runs every enabled entry: by default claude (`Agent`) + codex + that leg.
 
 ### Choose the claude review leg's model and effort
 
@@ -226,7 +228,8 @@ each layer.*
   `~/.config/triad-dispatch/classifier-patches.json` (in your home, not the plugin
   dir); that file gains an entry and persists across plugin updates.
 - **cross-family review** — run `triad-cross-family-review`; it resolves its
-  Google-family leg at runtime and runs claude (`Agent`) + codex + that leg.
+  Google-family leg at runtime and runs every enabled entry: by default claude
+  (`Agent`) + codex + that leg.
 - **bundled tests** — `python3 <plugin-dir>/tests/test_*.py` (stdlib-only).
 
 ### Manual allowlist — what the script does
@@ -394,8 +397,10 @@ The mechanics, once the value above makes sense:
   deterministically. The next identical failure auto-routes. This state persists
   across plugin updates in your home directory.
 - **Cross-family review (the merge gate).** For a risky change, the leader fans
-  out to all three families at once — each an independent reviewer — and
-  consolidates their verdicts. A *leg* is just one family's slice of that fan-out.
+  out to every enabled reviewer on the roster (by default one per family, dispatched
+  together; several entries of one family run one after another) — each an
+  independent reviewer — and consolidates their verdicts. A *leg* is one
+  roster entry of that fan-out.
 
 ## Recommended usage
 
@@ -410,12 +415,13 @@ How the leader and the owner actually use the toolkit:
 - **agy = the search / research specialist** — its web `read_url` / `search_web`
   is always allowed. Include agy on any web-grounded lookup.
 - Before merging review-worthy or correctness-critical work, the leader runs
-  **`triad-cross-family-review`**: three INDEPENDENT reviewers
-  from different model families — a claude fresh-eye subagent (a shipped reviewer
+  **`triad-cross-family-review`**: the INDEPENDENT reviewers of the roster —
+  by default three, one per model family: a claude fresh-eye subagent (a shipped reviewer
   preset chosen by name; see [Choose the claude review leg's model and effort](#choose-the-claude-review-legs-model-and-effort))
-  + codex + the Google-family CLI (agy by default, gemini on the compatibility route) — each frames the
-  suspect decisions as questions; the leader consolidates
-  verdicts and fixes → re-confirms until the verdict is unanimous SAFE.
+  + codex + the Google-family CLI (agy by default, gemini on the compatibility route) — each judges the
+  suspect decisions the leader frames as questions; the leader consolidates
+  verdicts and fixes → runs a new full round until every enabled reviewer returns
+  SAFE TO MERGE (the number of reviewers and families is not a condition).
 - The classifier **self-improves**: an unrecognized error routes to the
   read-only wrapper-repair analyzer, which proposes one entry from the
   run-log's measured sentence; the leader applies it with `bin/apply_patch.py`

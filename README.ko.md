@@ -148,12 +148,15 @@ Claude 가 `triad-codex-dispatch` skill 을 실행하고, codex wrapper 를 호�
 
 ### 2번째 / 3번째 worker CLI 추가
 
-*크로스-패밀리 리뷰를 원할 때만*(worker 하나 + claude leg 대신 세 독립 패밀리).
+*리뷰 roster 가 codex 나 Google-family 항목을 켤 때만* (`triad-cross-family-review` 의
+기본 roster 는 claude leg 옆에 둘 다 켭니다; 켜진 항목이 실행되지 못하면 그 라운드는
+INCOMPLETE 이므로, 이 CLI 들이 없으면 `<repo>/.claude/triad-review-legs.json` 에서
+그 항목들을 끄세요).
 step 1 과 같은 방식으로 다른 CLI 를 설치 + 로그인합니다: `codex login`; `agy`
 OAuth 로그인; 또는 호환 경로인 `gemini` 로그인.
 `triad-cross-family-review` 가 Google-family leg 를 런타임 해소
-(항목의 `google.route` 고정, 없으면 그 항목에 하나뿐인 route 블록, 없으면 agy, 없으면 gemini)하고 claude(`Agent`) +
-codex + 그 leg 를 실행합니다.
+(항목의 `google.route` 고정, 없으면 그 항목에 하나뿐인 route 블록, 없으면 agy, 없으면 gemini)하고 켜진 항목
+전부(기본은 claude(`Agent`) + codex + 그 leg)를 실행합니다.
 
 ### claude 리뷰 leg 의 모델과 effort 고르기
 
@@ -219,7 +222,7 @@ https://github.com/obra/superpowers .
   디렉터리 아님)에 적용되고, 그 파일에 엔트리가 생겨 플러그인 업데이트를 가로질러
   보존됩니다.
 - **크로스-패밀리 리뷰** — `triad-cross-family-review` 를 실행하면 Google-family
-  leg 를 런타임 해소하고 claude(`Agent`) + codex + 그 leg 를 실행합니다.
+  leg 를 런타임 해소하고 켜진 항목 전부(기본은 claude(`Agent`) + codex + 그 leg)를 실행합니다.
 - **동봉 테스트** — `python3 <plugin-dir>/tests/test_*.py` (stdlib-only).
 
 ### 수동 allowlist — 스크립트가 하는 일
@@ -384,9 +387,10 @@ privilege separation 입니다(아래 [보안](#보안-security) 에 요약).
   규칙 하나를 제안하고 leader 가 결정적으로 적용합니다. 다음 동일 실패는 자동
   라우팅됩니다. 이 상태는 홈 디렉터리에 저장되어 플러그인 업데이트를 가로질러
   지속됩니다.
-- **크로스-패밀리 리뷰(머지 게이트).** 위험한 변경에는 leader 가 세 패밀리에 동시에
-  fan-out 하고 — 각각 독립 리뷰어 — 판정을 종합합니다. *leg* 은 그 fan-out 에서 한
-  패밀리의 몫을 뜻할 뿐입니다.
+- **크로스-패밀리 리뷰(머지 게이트).** 위험한 변경에는 leader 가 roster 의 켜진 리뷰어
+  전원에게 fan-out 하고 (기본은 패밀리마다 하나로 함께 실행; 같은 패밀리의 여러 항목은
+  하나씩 차례로) — 각각 독립 리뷰어 — 판정을
+  종합합니다. *leg* 은 그 fan-out 의 roster 항목 하나를 뜻합니다.
 
 ## 권장 사용법 (Recommended usage)
 
@@ -400,12 +404,13 @@ leader 와 오너가 실제로 사용하는 방식:
 - **agy = 검색 / 리서치 특화** — agy 의 웹 `read_url` / `search_web` 는 항상
   허용됩니다. 웹 기반 조회에는 반드시 agy 를 포함하세요.
 - 리뷰 가치가 있거나 정확성이 중요한 작업을 머지하기 전, leader 는
-  **`triad-cross-family-review`** 를 실행합니다: 서로 다른
-  모델 패밀리의 독립 리뷰어 셋 — claude fresh-eye 서브에이전트 (이름으로 고르는
+  **`triad-cross-family-review`** 를 실행합니다: roster 에 오른
+  독립 리뷰어들 — 기본은 모델 패밀리마다 하나씩 셋: claude fresh-eye 서브에이전트 (이름으로 고르는
   제공 reviewer preset; 위 "claude 리뷰 leg 의 모델과 effort 고르기" 참고) + codex
-  + Google-family CLI (기본은 agy, 호환 경로는 gemini) — 가 각각 의심 결정을
-  질문 형태로 제기하고, leader 가 판정을 종합해
-  수정 → 재확인을 만장일치 SAFE 가 될 때까지 반복합니다.
+  + Google-family CLI (기본은 agy, 호환 경로는 gemini) — 가 각각 leader 가 질문
+  형태로 정리한 의심 결정을 독립적으로 판정하고, leader 가 판정을 종합해
+  수정 → 새 전체 라운드를 켜진 리뷰어 전원이 SAFE TO MERGE 가 될 때까지 반복합니다
+  (리뷰어 수와 패밀리 수는 조건이 아닙니다).
 - 분류기는 **자기개선**합니다: 인식되지 않은 에러는 읽기 전용 wrapper-repair
   분석 에이전트로 라우팅되어 run-log 의 측정된 문장으로 엔트리 하나를 제안하고,
   leader 가 `bin/apply_patch.py` 로 영속 확장 JSON 에 적용하면 이후 동일한
