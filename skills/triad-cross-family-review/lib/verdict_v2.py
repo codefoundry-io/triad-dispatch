@@ -19,7 +19,10 @@ What admission means (in order, each step with its own exit code):
      at any depth - `json.loads` is last-wins, so a reply hiding an earlier
      blocking verdict behind a duplicate `"verdict": "SAFE TO MERGE"` member
      would otherwise admit as SAFE;
-  3. it validates against the whole canonical schema (the schema itself
+  3. on the bound agy route the provider metadata `toolAction` /
+     `toolSummary` is separated from the top level first (C80 /
+     R-AGY-METADATA; the original text is never rewritten); then it
+     validates against the whole canonical schema (the schema itself
      carries the SAFE-vs-open-questions, SAFE-vs-severity, non-SAFE-needs-
      content and family-vs-route rules, so this module states none of them
      a second time);
@@ -433,6 +436,27 @@ def _binding_reason(obj: dict, expected: dict) -> str | None:
     return None
 
 
+def _agy_payload_text(lib, text: str | bytes, declared: tuple) -> str | bytes:
+    """The text to judge for an AGY entry (C80 / R-AGY-METADATA).
+
+    The library's `separate_agy_metadata` strictly parses the ORIGINAL text,
+    then moves only the undeclared top-level `toolAction` / `toolSummary`.
+    When it moved something, the remaining payload is judged; when it moved
+    nothing, or refused the original (that same strict parse in
+    `validate_verdict` then refuses it with its own code), the original text
+    is judged unchanged. Nothing is written back."""
+    try:
+        payload, metadata = lib.separate_agy_metadata(text, declared_fields=declared)
+    except (lib.AdmissionError, lib.OutputError, RecursionError):
+        return text
+    if not metadata:
+        return text
+    try:
+        return json.dumps(payload, allow_nan=False, ensure_ascii=False)
+    except (ValueError, RecursionError):
+        return text
+
+
 def _admit_obj(text: str | bytes, expected: dict, label: str) -> Admission:
     """Admit the ORIGINAL reply text (or bytes) against `expected` through ONE
     library call, `validate_verdict` (strict parse, the canonical schema, the
@@ -443,7 +467,7 @@ def _admit_obj(text: str | bytes, expected: dict, label: str) -> Admission:
     # A host-side schema fault (absent jsonschema, unreadable / corrupt /
     # non-Draft-2020-12 contract) is exit 64 and is NEVER dressed up as an
     # invalid reply: the leg's work has not been judged at all.
-    _, host_err = _get_validator()
+    validator, host_err = _get_validator()
     if host_err is not None:
         return _fail(EXIT_USAGE, host_err)
     # The expected pair is the HOST's own (the round record, the frozen entry,
@@ -464,8 +488,16 @@ def _admit_obj(text: str | bytes, expected: dict, label: str) -> Admission:
         return _fail(EXIT_USAGE, f"host fault: the vendored library cannot "
                                  f"validate the expected binding pair "
                                  f"(ContractError: {e}) — reinstall this host")
+    # C80 / R-AGY-METADATA: an AGY entry's result may carry the provider
+    # metadata `toolAction` / `toolSummary` at its top level. Only for the
+    # bound route `agy` is the payload judged without those two undeclared
+    # names; the original text is never rewritten.
+    judged = text
+    if expected.get("route") == "agy":
+        judged = _agy_payload_text(lib, text, tuple(
+            validator.schema.get("properties") or ()))  # type: ignore[union-attr]
     try:
-        obj = lib.validate_verdict(text, expected=expected)  # type: ignore[union-attr]
+        obj = lib.validate_verdict(judged, expected=expected)  # type: ignore[union-attr]
     except lib.ContractError as e:  # type: ignore[union-attr]
         return _fail(EXIT_USAGE, f"host fault: the vendored library cannot "
                                  f"judge the reply (ContractError: {e}) — "

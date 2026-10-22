@@ -1,7 +1,9 @@
 """Explicit provider carriers with terminal guards and original JSON admission."""
 
 from dataclasses import dataclass
+import json
 
+from .contracts import load_contract
 from .errors import OutputError
 from .json_input import json_member_span, parse_json
 from .verdict import validate_binding, validate_verdict
@@ -57,6 +59,25 @@ def _no_error(envelope):
             raise OutputError("terminal_failure")
     if envelope.get("error") is not None:
         raise OutputError("terminal_failure")
+
+
+def separate_agy_metadata(raw: str | bytes, *, declared_fields: tuple[str, ...] = ()) -> tuple[dict, dict]:
+    """Separate undeclared AGY top-level metadata after strict original parsing.
+
+    Return fresh payload and metadata dictionaries without changing ``raw``.
+    Declared names remain payload fields; other and nested names are preserved.
+    This performs no terminal, schema or binding admission. Non-object JSON
+    raises ``OutputError('invalid_envelope')``; invalid declarations raise
+    ``OutputError('invalid_output')``. Parser refusals remain ``AdmissionError``.
+    """
+    payload = _object(parse_json(raw))
+    if not isinstance(declared_fields, tuple) or any(not isinstance(name, str) for name in declared_fields):
+        raise OutputError("invalid_output")
+    metadata = {}
+    for name in ("toolAction", "toolSummary"):
+        if name in payload and name not in declared_fields:
+            metadata[name] = payload.pop(name)
+    return payload, metadata
 
 
 def extract_final(output: ProviderOutput) -> str | bytes:
@@ -126,4 +147,8 @@ def admit_output(output: ProviderOutput, *, expected: dict) -> dict:
     }.get(output.carrier)
     if required is not None and required != (expected["family"], expected["route"]):
         raise OutputError("carrier_mismatch")
-    return validate_verdict(extract_final(output), expected=expected)
+    raw = extract_final(output)
+    if output.carrier == "agy-stream-json":
+        payload, _ = separate_agy_metadata(raw, declared_fields=tuple(load_contract()["properties"]))
+        raw = json.dumps(payload, allow_nan=False)
+    return validate_verdict(raw, expected=expected)

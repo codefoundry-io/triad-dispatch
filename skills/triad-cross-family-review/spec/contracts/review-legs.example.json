@@ -52,7 +52,7 @@
         "effort": "high",
         "model": null
       },
-      "note": "opt-in example of a second claude arm (enable to run it); acceptance is data only — this entry must explicitly approve like every selected entry (R-AGREE)",
+      "note": "opt-in example of a second claude entry (enable to run it); acceptance is data only — this entry must explicitly approve like every selected entry (R-AGREE)",
       "timeout_s": 900
     },
     {

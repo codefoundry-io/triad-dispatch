@@ -11,7 +11,7 @@
     "typing-extensions": ">=4.4.0; python_version < '3.13'"
   },
   "files": {
-    "__init__.py": "be8ef9340c3c37f116ba7632595c52d605659d826609030a3592293cbbece07b",
+    "__init__.py": "5e3eef3f1bc1792f6be2cadc784f2ddc42a429fa72ddeaea675cce5b71fabc3a",
     "agreement.py": "1087c64ad4fab3d3b14dc12485c11512b8cbdc95b2868fe6c78fc51b264c69bd",
     "bundle_manifest.py": "5e6fc1a31d0901ea82928817a76942f0ee73360e75f6e1fd53e07cd8ba6a0446",
     "contracts.py": "e9c56cd3b422087b767eb129b22e05dbb063b981f293d8868242dea3a5dff73a",
@@ -31,14 +31,14 @@
     "dispatch.py": "584a55b08c1e19d14c6fe3dbfe4de9cb393e95adaf46c5c3f0aa4a2b58dd3954",
     "errors.py": "66dcb87a6e4281f25f7dc371926b431ad5f90bfc40eaab72e018b4c1819cd930",
     "json_input.py": "cb9ae38d7143d8d1e9b47953dc63b6dc2206a27907d17669995e0da419534a3a",
-    "output.py": "7c1fd87a8b9a1fc121c89d706fed78283d6fad3dee4655218020a734348218d2",
+    "output.py": "1207d32f7d146301949fe45cb93d7ba88a981933ed70c4d1feb40c08ed171a57",
     "prompts.py": "dc47e3077e43387b7080bd8391318196fc7d520887e15b2c6c7100d0e1ab5ed9",
     "receipt.py": "c0e3d938ad1cc333e536abd20e63c316f7eafec99ec041b841da566af78b0c0d",
     "roster.py": "60a62e60eeff04cfb862305d285113a177855e354c35c9c0564c944573a53606",
     "verdict.py": "3b5514ceb4e0e0ab56d5046981ebeb5270ceb2a98d096270d106c2ea3f338fac"
   },
-  "files_digest": "61dce1914d69f644551257dd1550ad0272bcb0caee277981e9a09098dca72500",
-  "host_basis_commit": "e8ba31eca1f53738494e49a2cdee3c14e7e218bd",
+  "files_digest": "68b25102a97bffc7b1f89d9a4099aa3511158ab9d78225077d04ed796c512721",
+  "host_basis_commit": "8c0df7263cb53f26e796448c28db91b82c87995d",
   "host_exceptions": [
     "strict duplicate-member scan after a library refusal (\u00a7 5.22)",
     "host roster checks on top of merge_roster/validate_resolved and case-fold duplicate refusal (\u00a7 5.24)",
@@ -71,8 +71,8 @@
     "ubuntu-24.04-x86_64-cp312"
   ],
   "python_floor": "3.12",
-  "release_url": "https://github.com/codefoundry-io/triad-dispatch-lib/releases/tag/v0.1.0.dev4",
-  "source_commit": "087af94a7078de0ae9701fb057840b5492f51f66",
+  "release_url": "https://github.com/codefoundry-io/triad-dispatch-lib/releases/tag/v0.1.0.dev5",
+  "source_commit": "859f27c07c1123e87b50344f587999a0cbc172a6",
   "spec": {
     "contracts/cleanup-roots.schema.json": "d78ef21f03d9f19dde9b106c052907b212645d2de4e4f8a28e359c68f0f3aa4e",
     "contracts/exit-tokens.json": "9099203a759a9792ba26107771bebcf6466afa4e09d892d58c6b6314f9174df2",
@@ -81,9 +81,9 @@
     "contracts/leg-verdict.schema.json": "d755905ac60348542fc1dbbeb37b92bc3fab0a2dc34b7a1b454c935d0be04184",
     "contracts/receipt-fields.json": "4108a1501bc1c5077c30fe5cc9e030ae4fb90c7b09c5b1137dbfdaaeec4214c4",
     "contracts/review-kind.schema.json": "855807a26cda96102858da345f4888ee8658ee2ecff7584aecf9cf31ba61f724",
-    "contracts/review-legs.example.json": "c64615ea34135fdbb2048eab36d104cf84cec4f9e54c04d951b0369ee7bba0d7",
+    "contracts/review-legs.example.json": "661354ab1c335122ed2b89908e5a1dbda64e9a25ba4bb42d068ccadd270c87b3",
     "contracts/review-legs.schema.json": "1611655cda859a6738ec8ff52dd3d3aa08539cc8ba01741c8a72426abda37cb9",
-    "contracts/vendor-failure-lines.json": "d7e1bc0feb6f68d9973fb72ab0aa8aae2bf937fb5646d3984994df3f1e95cb25",
+    "contracts/vendor-failure-lines.json": "5fc5fda167b49a3b26833ea8a8fd8bfbc3afdf9299977cad515ce44cc34dcb58",
     "prompts/README.md": "7e8c28fec7a824dffd940f426da3b2eb151270e6a94f103f4095c2c86ad18ff5",
     "prompts/common-clauses.md": "07249974fa9fa6ce9f24ae7b79074b815031358a4e5155920695ac05eddf173f",
     "prompts/investigation.md": "a92982e6b9a9f82be8c8c2f8ccb8529a8599f3adf97a59250345e10a87f06583",
@@ -92,7 +92,7 @@
     "prompts/leg-google.md": "e17eb874bf6ff023a5ee79bfffb4cca9970c35135d60d3354a8f9593bc0a6415",
     "reference/README.md": "0e78023c0718e7fc3c78a46748d59987f6d890662f77968e25425e53ab1bf304",
     "reference/process.md": "f9ac64873975f3581f1591978204d44cf03002091515895eb06757a58e5156ff",
-    "reference/review-rules.md": "0b4c2f9fb8b343ab314eb378207bc506f64c719d3bd285e2b9e3f6ba999d7d66",
+    "reference/review-rules.md": "48dbde706e94c9dedf97680030e9256c058baf9874f0e4ed135247c4dba81c43",
     "reference/spec-authoring.md": "3909eec267d17b91dade12305fee57d30b46df1f6a8a48d03a39214cf9f21c56"
   },
   "supported_routes": [
@@ -101,13 +101,13 @@
     "google:agy",
     "google:gemini"
   ],
-  "tag": "v0.1.0.dev4",
-  "vendored_at": "2026-10-17",
-  "verification_record": "the host source repository (codefoundry-io/triad) docs/reviews/2026-10-17-lib-adopt-residuals.md \u00a7 Unrun checks; summarized in the library's docs/host-adoption.md claude section (Task C4)",
-  "version": "0.1.0.dev4",
+  "tag": "v0.1.0.dev5",
+  "vendored_at": "2026-10-23",
+  "verification_record": "the host source repository (codefoundry-io/triad) docs/reviews/2026-10-23-lib-dev5-residuals.md (dev5 re-adoption; the dev4 adoption: docs/reviews/2026-10-17-lib-adopt-residuals.md \u00a7 Unrun checks)",
+  "version": "0.1.0.dev5",
   "wheel": {
-    "name": "triad_dispatch_lib-0.1.0.dev4-py3-none-any.whl",
-    "sha256": "c5bfdf10c4ce81f431ec7f77106e4d77b1556ac9c7b6b01bdb6616f988e8b2cc",
-    "size": 47734
+    "name": "triad_dispatch_lib-0.1.0.dev5-py3-none-any.whl",
+    "sha256": "833d55e9bf394885423bf1ed954a972747e1968b52b911b5253a9b7971512c7f",
+    "size": 48505
   }
 }

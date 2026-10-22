@@ -161,6 +161,7 @@ CLI_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
         ),
         "CLI_SUB_CAP_PATTERNS": (
             "your ai credits balance is too low to continue",  # agy "Your AI credits balance is too low to continue." — agy changelog 1.2.15 (vendor source); contracts/vendor-failure-lines.json agy row; stream position not captured
+            "individual quota reached. please upgrade your subscription to increase your limits",  # agy stderr "error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in <t>." (agy 1.4.0, run-log 20261016T211324Z-87139-71634e78; learned by the repair loop, promoted per repair-loop § 5e); contracts/vendor-failure-lines.json agy row (dev5)
         ),
         "CONFIG_CONFLICT_PATTERNS": (
             "is not recognized as a known model or custom model in settings",  # a refused model pin (R-MODEL): stderr "error: invalid model selection (…): model <m> is not recognized as a known model or custom model in settings" (agy 1.3.3, run-log 20261010T121723Z-22698; spec DL-155)

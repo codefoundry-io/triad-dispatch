@@ -214,9 +214,11 @@ attempt carries its own `schema.projected.json`.
 
 **The answer channel the producer schema selects.** On the agy route
 (`--json-schema-file`) only the MEASURED dict `structured_output` is the
-answer (the response text carries agy's own finish-tool metadata, which
-canonical admission then rejects as additional properties, so the channel
-choice is load-bearing). Any other shape — the key ABSENT, or a present but
+answer (the response text is the same JSON plus agy's own tool metadata
+`toolAction` / `toolSummary`; since agy 1.4.5, measured 2026-10-23,
+`structured_output` carries those two names too, and admission separates
+exactly them on the agy route — C80 / R-AGY-METADATA — and refuses any other
+extra member). Any other shape — the key ABSENT, or a present but
 non-object value, an explicit `null` included — is treated as absent: the
 logged response text is printed, which stays legitimate only because
 canonical admission gates whatever arrives. The SAME membership test holds on

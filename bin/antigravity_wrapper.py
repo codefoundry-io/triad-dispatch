@@ -980,9 +980,12 @@ def _run_agy_with_retry(cmd, prompt, timeout, *, cwd=None,
                                  f"quarantined answer: {snippet}"), argv
             if pydantic_cls is None:
                 # --json-schema-file: transport only — a dict
-                # `structured_output` is the answer (`response` carries agy's
-                # finish-tool metadata too, measured 2026-09-21); anything
+                # `structured_output` is the answer, printed unchanged; anything
                 # else is treated as absent and the response text is printed.
+                # agy's tool metadata (`toolAction` / `toolSummary`) rode only
+                # `response` when measured 2026-09-21 and rides
+                # `structured_output` too since 1.4.5 (measured 2026-10-23);
+                # admission separates it (verdict_v2, C80 / R-AGY-METADATA).
                 if schema_file_mode:
                     if structured_member:
                         return _done(rr, "ok", _common.EXIT_OK, audit=audit,

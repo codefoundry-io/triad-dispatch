@@ -1,9 +1,9 @@
 {
   "schema": "triad-spec-manifest.v1",
   "source_repo": "https://github.com/codefoundry-io/triad-dispatch-lib",
-  "candidate_commit": "087af94a7078de0ae9701fb057840b5492f51f66",
-  "candidate_ref": "v0.1.0.dev4",
-  "vendored_at": "2026-10-17",
+  "candidate_commit": "859f27c07c1123e87b50344f587999a0cbc172a6",
+  "candidate_ref": "v0.1.0.dev5",
+  "vendored_at": "2026-10-23",
   "note": "Payload bytes UNCHANGED from the library repository codefoundry-io/triad-dispatch-lib at the candidate tag (spec/ tree; README \u00a7 How a host uses a revision, step 2). review-legs.default.json is HOST A DATA, not a spec payload; it is listed for integrity only.",
   "files": {
     "contracts/cleanup-roots.schema.json": "d78ef21f03d9f19dde9b106c052907b212645d2de4e4f8a28e359c68f0f3aa4e",
@@ -13,9 +13,9 @@
     "contracts/leg-verdict.schema.json": "d755905ac60348542fc1dbbeb37b92bc3fab0a2dc34b7a1b454c935d0be04184",
     "contracts/receipt-fields.json": "4108a1501bc1c5077c30fe5cc9e030ae4fb90c7b09c5b1137dbfdaaeec4214c4",
     "contracts/review-kind.schema.json": "855807a26cda96102858da345f4888ee8658ee2ecff7584aecf9cf31ba61f724",
-    "contracts/review-legs.example.json": "c64615ea34135fdbb2048eab36d104cf84cec4f9e54c04d951b0369ee7bba0d7",
+    "contracts/review-legs.example.json": "661354ab1c335122ed2b89908e5a1dbda64e9a25ba4bb42d068ccadd270c87b3",
     "contracts/review-legs.schema.json": "1611655cda859a6738ec8ff52dd3d3aa08539cc8ba01741c8a72426abda37cb9",
-    "contracts/vendor-failure-lines.json": "d7e1bc0feb6f68d9973fb72ab0aa8aae2bf937fb5646d3984994df3f1e95cb25",
+    "contracts/vendor-failure-lines.json": "5fc5fda167b49a3b26833ea8a8fd8bfbc3afdf9299977cad515ce44cc34dcb58",
     "prompts/README.md": "7e8c28fec7a824dffd940f426da3b2eb151270e6a94f103f4095c2c86ad18ff5",
     "prompts/common-clauses.md": "07249974fa9fa6ce9f24ae7b79074b815031358a4e5155920695ac05eddf173f",
     "prompts/investigation.md": "a92982e6b9a9f82be8c8c2f8ccb8529a8599f3adf97a59250345e10a87f06583",
@@ -24,7 +24,7 @@
     "prompts/leg-google.md": "e17eb874bf6ff023a5ee79bfffb4cca9970c35135d60d3354a8f9593bc0a6415",
     "reference/README.md": "0e78023c0718e7fc3c78a46748d59987f6d890662f77968e25425e53ab1bf304",
     "reference/process.md": "f9ac64873975f3581f1591978204d44cf03002091515895eb06757a58e5156ff",
-    "reference/review-rules.md": "0b4c2f9fb8b343ab314eb378207bc506f64c719d3bd285e2b9e3f6ba999d7d66",
+    "reference/review-rules.md": "48dbde706e94c9dedf97680030e9256c058baf9874f0e4ed135247c4dba81c43",
     "reference/spec-authoring.md": "3909eec267d17b91dade12305fee57d30b46df1f6a8a48d03a39214cf9f21c56",
     "review-legs.default.json": "701d34ad65f2aced87d4f5dae97b579b1688ef4dcb4aa16429106843677a759e"
   },

@@ -38,7 +38,23 @@ step: it is never recorded as one entry's state, a leg outcome or one entry's re
 writes no collection record for it. A file of one entry that cannot be read stays that entry's INVALID, not a host
 fault. On A the host fault is exit 64 (`_HostFault`): it propagates out of the per-entry checks and out of `retry`'s
 refusal check `_retry_blocked`, which writes nothing (`lib/collect_v2.py` `_retry_blocked`, `main` @ triad `e9960053`; no
-orphan attempt is adopted since triad `207dd39f`, DL-130);
+orphan attempt is adopted since triad `207dd39f`, DL-130). On A, since triad `bcc461a6` (LIB-ADOPT 1b), the host's own EXPECTED
+binding pair is validated by the library before any reply is compared (`lib/verdict_v2.py` `_admit_obj` :462-480 →
+`triad_dispatch_lib.validate_binding`): a pair the library refuses (`AdmissionError` `invalid_expected`) or a packaged-contract
+fault there (`ContractError`) is a HOST fault, exit 64, one line — the reply was never judged — never a refused reply (exit 1),
+and `collect` raises its `_HostFault` for such an admission, on the claude entry's saved reply too (`lib/collect_v2.py`
+`_raw_admissible` :882), instead of reporting the attempt not admissible (the adoption assessment § 5.23). On B the
+library's admission result decides (`validate_verdict` raises `AdmissionError('invalid_expected')` like any admission
+refusal; B's exit classification of it is B's own) — both hosts' classifications recorded here as a fact (DL-165). Since
+triad `024b1f9e` (LIB-ADOPT 2) the reply itself is admitted on A by `validate_verdict` on the ORIGINAL text (`lib/verdict_v2.py`
+`_admit_obj` :436: the host question → `validate_binding` → ONE `validate_verdict(text, expected=expected)` call), the host
+keeping three layers after a refusal — the duplicate-member NAME scan after `duplicate_member` (§ 5.22, `_reject_duplicate`),
+the schema-location reason from `.path` / `.missing` after `schema_violation` (never an instance value), the field-named
+binding wording from `_binding_reason` after `binding_mismatch` — with these exit classes: the parse codes are exit 2
+(`invalid_json` / `nesting_limit` retryable ONCE on the entity-unescape pass; `nonfinite_number` / `invalid_utf8` final),
+`schema_violation` / `binding_mismatch` exit 1, `invalid_expected` / a library `ContractError` exit 64. Behaviour changes
+recorded on A: a non-finite number in a reply is exit 2 final (was exit 1); a malformed expected pair beside an UNPARSEABLE
+reply is 64 (was 2 — the pair is checked before the parse); a reply with no end marker is 3 first (DL-169);
 a seal `collect` wrote for an entry before the step stopped stays. On B an `OSError`, `ValueError` or `TypeError` raised
 out of a v2 step ends as the round-integrity refusal, exit 2 (`bin/review_round.py:2451-2452`, `:2585-2587` @
 `7f75863`), so B's exit does not tell a host fault from a refusal (a fact).
@@ -229,6 +245,24 @@ exactly the keys `name`, `description`, `tools`, `model`, `effort`; base `tools:
 `WebSearch, WebFetch` and nothing that runs or writes (R-CONTAIN); one `model:` and one `effort:` line, equal in base
 and twin (`tests/unit/skills/t23-review-web-c32.sh` axis 9 @ triad `3894879`; B reads no preset — DL-49). On Ubuntu
 24.04 the pydantic venv is created with `--system-site-packages` so apt's jsonschema stays visible beside the venv's
+(since triad `bcc461a6`, LIB-ADOPT 1b, the host's own gate asks for the library's floors — `jsonschema>=4.26,<5`,
+`referencing>=0.37,<1` — before the roster is resolved: `lib/verdict_v2.py` `_get_validator` :261, called by
+`review_scratch.py prepare` before `v2_resolve_roster` (:3235) and by `collect` / `retry` through `_check_toolkit`
+(`lib/collect_v2.py` :1495); apt's `python3-jsonschema` 4.10.3, though visible beside the venv, is below the floor and is
+refused with one line carrying both pins, the Mac and Ubuntu install lines and the running interpreter; since triad
+`024b1f9e` (LIB-ADOPT 2) the roster CLI asks the same host question itself — `lib/roster_v2.py` `main` :1005 prints
+`roster_v2: HOST FAULT: this host cannot resolve a roster: <reason>`, exit 64 — and `_require_jsonschema` is retired).
+Since triad `024b1f9e` (LIB-ADOPT 2) the roster is merged on A by the library's `merge_roster` and validated by
+`validate_resolved` with the host's checks on top (§ 5.24; `lib/roster_v2.py` `resolve_roster` :671):
+`validate_resolved(defaults)` attributed "shipped default roster is corrupt" by call site → the host's own read of the
+override (UTF-8 / "is not JSON" / a JSON object) → `merge_roster(defaults, <the override text>)` → the host's case-fold
+duplicate refusal over the override's own names → `_check_required` / `_check_blocks` → `validate_resolved(merged)` →
+`_check_capabilities` → the Google route; a library `RosterError` is re-raised as the host's one line naming the document,
+the schema path and the missing name (`_library_refusal` :280); a library `ContractError` is HOST FAULT 64 on the
+roster CLI and at `prepare` (`lib/review_scratch.py` `v2_resolve_roster` :2588). Recorded deviation: an
+unknown key is refused by its schema path, no key name; behaviour change: a hand-edited override with a duplicated key is
+refused (the duplicate named by the host's strict scan), and two entries with an identical name are refused by the
+library's `duplicate_name` before the host's case-fold walk (DL-170)
 pydantic 2 (a host install fact; NOT RUN on Ubuntu). Claude Code also ranks managed-settings and `--agents`
 definitions above project agents and scans every `.claude/agents/` from its working directory up to the repository
 root; a host that reads fewer places records that it does not observe the others (Claude Code sub-agents
@@ -365,8 +399,10 @@ any other name is an unknown input. On A: `review_scratch.py prepare --v2 --revi
 (`lib/review_scratch.py:3711-3778`). On B: the `review_kind` member of the `review_round.py v2-create --request-file`
 request (`bin/review_round.py:2325-2326`, `bin/review_round_v2.py:130-136`). Every leg prompt carries the shared
 `current-date` clause with `<review-date>` filled by the UTC date (`YYYY-MM-DD`) on which the round was prepared, a
-bound-basis member, so a retry renders the same date (C67; On A: `lib/prompts_v2.py:288`, `lib/review_scratch.py:3805`
-@ `b53409b`; On B: `review_date` is recorded in the digest-covered basis and reused in retries,
+bound-basis member, so a retry renders the same date (C67; On A @ triad `bcc461a6` (LIB-ADOPT 1b): `lib/prompts_v2.py`
+`render_with_manifest` :304 passes the bound `review_date` to the vendored library's `render_review_clauses` (:355), which
+fills the `current-date` clause from its own prompt bundle; `lib/review_scratch.py` :3630 (the render loop of `prepare`),
+`lib/collect_v2.py` :1776 (`retry`'s re-render); On B: `review_date` is recorded in the digest-covered basis and reused in retries,
 `bin/review_round_v2.py:170-177`, `:198-206` @ B `e3a35a3`; DL-46,
 `decisions/2026-10-10-b-shared-review-context.md`). The plan purpose REPLACES the code
 purpose, not a checklist appended to it. The resolved stage is a member of the bound basis (R-PREPARE); no verdict field
@@ -498,9 +534,14 @@ route as follows; a false condition leaves every route in its R-CONTAIN no-web p
   (`lib/review_scratch.py:3650-3658`) and the UTC `review_date` into the digest-covered `Review metadata:` line
   (`:5897-5899`); a caller's `--review-web-authorized false` is ignored with a NOTE and a non-boolean value is refused
   before any file is written (`:3786-3806`). `collect_v2._bound_metadata` checks both against the round record, an
-  absent condition meaning false (`lib/collect_v2.py:519-545`). The renderer fills `<review-web-policy>` from the fenced
-  `review-web-permission` / `review-no-web` clause and records the selected clause in the prompt manifest, and fills
-  `<review-date>` (`lib/prompts_v2.py:40-50`, `:153-155`, `:288`, `:581-582`). `retry` re-renders the round's
+  absent condition meaning false (`lib/collect_v2.py:519-545`). Since triad `bcc461a6` (LIB-ADOPT 1b) the host renders no clause itself:
+  `lib/prompts_v2.py` `render_with_manifest` (:304) passes the bound `review_web_authorized` and `review_date` to the
+  vendored library's `render_review_clauses` (`host="A"`, `with_manifest=True`, :355), which selects the fenced
+  `review-web-permission` / `review-no-web` clause from its own prompt bundle and returns it in the ordered manifest the
+  host records; before the call the host checks the data side (every payload of the four vendored bundle manifests by
+  sha256 — a fault is HOST FAULT 64 naming the `lib/` relpath) and the one-copy rule (the nine `spec/`↔`data/` pairs of
+  `lib/lib-adoption.json` byte for byte — a differing or missing `spec/` copy is exit 2 naming the `spec/` relpath, bundle
+  drift; `prompts_v2._check_identity` :255). `retry` re-renders the round's
   BOUND condition (`lib/collect_v2.py` `retry` @ triad `e9960053`) and does not compare it with the current constant:
   a revocation applies to rounds prepared after it, as above (DL-57). A round prepared before this change binds no
   `review_date` and carries no toolkit map; `retry` and `collect` run `_check_toolkit` first, so it is refused with "this
@@ -1017,12 +1058,30 @@ rung did not read ends `unknown`, exit 1, never retried (On A t74 G5 @ triad `c8
 The transport receipt and audit / run-log records carry the common transport object defined by
 `contracts/receipt-fields.json`: stdin delivery class, execution route, binary, observed CLI version and attempt.
 Existing host envelopes remain. Schema validation alone does not prove host implementation or observed runtime identity.
+On A since triad `024b1f9e` (LIB-ADOPT 2) `collect` and `retry` judge every run-log's `transport` object with the library's
+`validate_transport_receipt` before the executed-command comparison (`lib/collect_v2.py` `_receipt_reason` :1305): a
+run-log without a transport object, or one the contract refuses, makes the entry INVALID with the library's fixed message
+and the log path (a new refusal class — until then only the executed command decided; `ReceiptError` carries no member
+path, a recorded limit); a library `ContractError` there is the one-line HOST FAULT 64, no per-entry state written (DL-171).
 Historical A driver behavior before the R-TERMINAL/C78 replacement: when a later agy driver turn (a capacity retry or a schema-repair re-run) fails to spawn, the audit `cmd` is the argv of
 the last turn that spawned, the receipt describes that same last spawned turn (its binary and its delivery; 6.0 —
 earlier the unspawned turn's pre-spawn shape), and the unspawned turn adds no attempt to the read audit
 (`3rd-Agent/wrappers/antigravity_wrapper.py:683-713`; `build_transport`, `3rd-Agent/wrappers/_common.py:1347` @ triad
 `e9960053`; the soft-deny re-run is removed @ triad `e34edcb4`, DL-140). B has no driver re-run
 turn (a fact).
+
+<a id="R-AGY-METADATA"></a>
+**AGY result metadata (C80).** Preserve original provider output and its
+`toolAction`/`toolSummary` values. Before validating an AGY structured result,
+strictly parse the original JSON and separate only these two top-level names
+when they are not caller-declared payload fields. Their presence alone is not
+a failed leg. Validate the remaining payload with the unchanged schema and all
+invocation bindings; keep negative verdicts negative. Do not remove other extra
+fields, nested names, or caller-declared names. Missing/malformed results,
+duplicate members, non-finite values, terminal failures and existing permission,
+timeout and recovery rules remain unchanged. Separation is transport handling,
+not a verdict rewrite or a reason to change the canonical verdict schema.
+See [the owner decision](../decisions/2026-10-22-agy-result-metadata.md).
 
 <a id="R-BIND"></a>
 Every leg's result binds `review_id`, `family` and `content_digest` today on both hosts; a mismatch is an INVALID leg, never
@@ -1205,7 +1264,16 @@ created (`lib/review_scratch.py` `cmd_prepare`); the leader opens a new packet d
   `results_dir`); the brief and residual are inside the hashed packet. `collect_v2._bound_metadata`
   (`lib/collect_v2.py:442-512`) re-hashes the delivery record and compares the record with the bound line in
   `collect` and `retry`. A later edit of the project roster file does not affect a prepared round. On A (triad `80b302e7`, `c50b1c8b`) `prepare` records a map of the installed toolkit files —
-  every file directly under `lib/`, the vendored `spec/` and the six shipped reviewer presets — with each file's sha256 in `.roster-r<N>.json`,
+  every file directly under `lib/`, the vendored `spec/` and the six shipped reviewer presets — and, since triad `45a2b1c1`
+  (LIB-ADOPT 1a, S3), every regular file of the vendored library package `lib/triad_dispatch_lib/` (recursive; `__pycache__`,
+  `*.pyc` / `*.pyo` and `.DS_Store` excluded) and the adoption record `lib/lib-adoption.json` (`lib/roster_v2.py`
+  `_toolkit_map` :490): a package file whose sha256 differs from the record, a missing or extra file, a symlink or
+  non-regular entry, or a malformed record is the one-line HOST FAULT 64 at `prepare`, `collect` and `retry`, while the
+  host's own toolkit files keep the BASIS CHANGED exit 2; one copy (S9, since triad `bcc461a6`, LIB-ADOPT 1b): the host's
+  `spec/contracts/*` and `spec/prompts/*` are the bound copy and the vendored `data/` payloads must be byte-equal — the nine
+  pairs recorded in `lib-adoption.json` `pairs` (the four bundle manifests' `contract_id`s identify the bundles) — checked
+  at every review render (`lib/prompts_v2.py` `_check_identity` :255: the data side 64 naming the `lib/` relpath, the spec
+  side 2 naming the `spec/` relpath) — with each file's sha256 in `.roster-r<N>.json`,
   and `collect` and `retry` compare it with the installed files before anything is judged or allocated, naming every
   changed file (the recorded-and-compared option above: the map lives in the mutable round record, outside the content
   digest). A retry checks the whole round's basis: a changed member of any
@@ -1457,8 +1525,9 @@ A different Google model (C18) is the user's pin and is passed to the CLI as wri
 a model list before review inference — no `agy models` call, and no packaged list as a gate (the gemini CLI exposes no
 model listing, `gemini --help`, 0.60.0; a host-packaged gemini list is display data only). A model the CLI refuses ends
 as R-MODEL's one terminal failed-to-run record naming the leg and the model and telling the user to change the roster
-entry; `contracts/vendor-failure-lines.json` holds no measured agy or gemini model-refusal sentence yet, so a new one
-ends `unknown` and reaches the repair analysis (R-CLASSIFY). The Pro-high default above stays, and the resolved model is
+entry; `contracts/vendor-failure-lines.json` holds the measured agy and codex refused-model sentences (rows observed 2026-10-10 on agy 1.3.3 and codex, and
+2026-10-15 on agy 1.3.5 — a retired slug pinned with `--effort`); a sentence not yet in the contract ends `unknown` and reaches
+the repair analysis (R-CLASSIFY). The Pro-high default above stays, and the resolved model is
 recorded (R-ROSTER). Code removed (DL-116): on A the `agy models` gate before a pinned review dispatch
 (`_catalog_auth_observed` / `_model_catalog_refusal`) and the gemini review preflight's packaged-list gate
 (`3rd-Agent/wrappers/gemini-models.json`) are gone @ triad `86cffe93` (`tests/unit/wrappers/t71-agy-model-passthrough-c18.sh`
