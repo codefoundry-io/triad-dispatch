@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.2.1983 — 2026-10-22
+## 0.2.1987 — 2026-10-24
 
-This release adopts the review library triad-dispatch-lib v0.1.0.dev5. agy 1.4.5 adds its tool metadata — `toolAction` and `toolSummary` — to the structured verdict it returns; before this release every review round with an agy leg on 1.4.5 ended INCOMPLETE, because the verdict was refused at `additionalProperties`. The review now separates exactly those two top-level names on the agy route before the unchanged schema and binding checks; `verdict.json` and the run-log keep them, and any other extra member is still refused. agy's `Individual quota reached …` message now classifies as `cli-subscription-cap`. Review legs carry no recommendation: every enabled roster entry counts alike, and the claude `-high` preset is an opt-in.
+This release adopts the review library triad-dispatch-lib v0.1.0.dev7. A refused review roster now says where the error is. After the schema path, the refusal line names the instance location: `, instance legs/2/timeout_s` for the third entry's timeout, or `, instance <root>` for the document itself. When the index counts entries of the merged roster rather than your override file, the location carries `(merged order)`. The same mistake in two entries therefore no longer prints one identical line. The library's shared-runtime compatibility API (dev6) is vendored but not used by this plugin: how the plugin is installed and how it calls its wrappers do not change.
 
 Before or right after you update:
 

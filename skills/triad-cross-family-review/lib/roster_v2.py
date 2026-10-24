@@ -277,22 +277,33 @@ def _library():
     return lib
 
 
-def _library_refusal(exc, where: str, text: str | None = None) -> "RosterError":
+def _library_refusal(exc, where: str, text: str | None = None,
+                     merged: bool = False) -> "RosterError":
     """The host's ONE-line RosterError for a library `RosterError` raised at
     the call site `where` (the document the host names): the library code, its
-    schema path and missing name for `schema_violation`, and the library's own
-    `.document` when it reports one. No instance value enters a schema reason.
-    An `invalid_json` on override text `json.loads` accepted is a strict-JSON
-    refusal: the host's duplicate-member scan names the member when there is
-    one (the library reports no member name)."""
+    schema path and missing name for `schema_violation`, the instance location
+    (`.instance_path`, library v0.1.0.dev7: canonical field names and indices,
+    `<root>` for the evaluated root, no clause when unavailable; `merged` marks
+    the resolved-roster call site, whose indices follow the merged order, not
+    the override's), and the library's own `.document` when it reports one. No
+    instance value enters a schema reason. An `invalid_json` on override text
+    `json.loads` accepted is a strict-JSON refusal: the host's duplicate-member
+    scan names the member when there is one (the library reports no member
+    name)."""
     code = exc.code
     if code == "schema_violation":
         at = "/".join(str(p) for p in (exc.path or ())) or "<root>"
         missing = f" (missing '{exc.missing}')" if exc.missing else ""
+        loc = getattr(exc, "instance_path", None)
+        inst = ""
+        if loc is not None:
+            inst = ", instance " + ("/".join(str(p) for p in loc) or "<root>")
+            if merged:
+                inst += " (merged order)"
         doc = (f", library document '{exc.document}'" if exc.document
                else "")
-        return RosterError(f"{where} is invalid at schema path {at}{missing} "
-                           f"({code}{doc})")
+        return RosterError(f"{where} is invalid at schema path {at}{missing}"
+                           f"{inst} ({code}{doc})")
     if code == "duplicate_name":
         return RosterError(f"{where} has two entries with the same name "
                            f"({code}) — the merge key must be unique")
@@ -733,7 +744,8 @@ def resolve_roster(worktree: Path, which=shutil.which) -> Resolved:
     try:
         lib.validate_resolved(merged)
     except lib.RosterError as exc:
-        raise RosterError(_library_refusal(exc, "resolved roster")) from None
+        raise RosterError(_library_refusal(exc, "resolved roster",
+                                           merged=True)) from None
 
     entries: list[Entry] = []
     warnings: list[str] = []

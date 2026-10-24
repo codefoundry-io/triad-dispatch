@@ -20,6 +20,7 @@ def _validate(value: dict, schema: dict, *, resolved: bool, document: str = "res
         if validation_error is not None:
             error = RosterError("schema_violation")
             error.path = tuple(validation_error.absolute_schema_path)
+            error.instance_path = tuple(validation_error.absolute_path)
             error.document = document
             if (validation_error.validator == "required"
                     and isinstance(validation_error.validator_value, list)

@@ -28,6 +28,30 @@ class ContractError(RuntimeError):
     """The packaged validation contract is unavailable or inconsistent."""
 
 
+class RuntimeCompatibilityError(ValueError):
+    """Runtime decision refusal with stable codes and value-free messages."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__({
+            'invalid_descriptor': 'Invalid runtime descriptor.',
+            'invalid_binding': 'Invalid consumer binding.',
+            'unsupported_schema': 'Unsupported runtime compatibility schema.',
+            'invalid_selector': 'Invalid consumer binding selector.',
+            'missing_context': 'Consumer binding context is required.',
+            'unknown_binding': 'Consumer binding is absent from inventory.',
+            'ambiguous_binding': 'Consumer binding inventory contains duplicate identities.',
+            'unsupported_binding': 'Runtime does not declare support for this binding.',
+            'command_mismatch': 'Runtime lacks required commands.',
+            'capability_mismatch': 'Runtime lacks required capabilities.',
+            'invalid_inventory': 'Invalid runtime inventory.',
+            'incomplete_inventory': 'Runtime inventory omits referenced artifacts.',
+        }[code])
+
+    def __reduce__(self):
+        return type(self), (self.code,), self.__dict__
+
+
 class DispatchError(ValueError):
     """Invalid coordination inputs or preflight; no invocation has started."""
 
@@ -58,6 +82,7 @@ class RosterError(ValueError):
     def __init__(self, code: str):
         self.code = code
         self.path: tuple[str | int, ...] | None = None
+        self.instance_path: tuple[str | int, ...] | None = None
         self.missing: str | None = None
         self.document: str | None = None
         super().__init__({

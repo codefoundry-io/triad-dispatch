@@ -1,9 +1,9 @@
 {
   "schema": "triad-spec-manifest.v1",
   "source_repo": "https://github.com/codefoundry-io/triad-dispatch-lib",
-  "candidate_commit": "859f27c07c1123e87b50344f587999a0cbc172a6",
-  "candidate_ref": "v0.1.0.dev5",
-  "vendored_at": "2026-10-23",
+  "candidate_commit": "62c3a741b729c6359cc5079a0306fad1fdd1fac8",
+  "candidate_ref": "v0.1.0.dev7",
+  "vendored_at": "2026-10-24",
   "note": "Payload bytes UNCHANGED from the library repository codefoundry-io/triad-dispatch-lib at the candidate tag (spec/ tree; README \u00a7 How a host uses a revision, step 2). review-legs.default.json is HOST A DATA, not a spec payload; it is listed for integrity only.",
   "files": {
     "contracts/cleanup-roots.schema.json": "d78ef21f03d9f19dde9b106c052907b212645d2de4e4f8a28e359c68f0f3aa4e",
@@ -22,9 +22,9 @@
     "prompts/leg-claude.md": "4cdc1ee30a048754878ff8e21d44f8aaae430c49c1d5951f84f34ea90ffd214d",
     "prompts/leg-codex.md": "d7e0e5017f54542e2be4b95f9c3a0f4e867096d432e7bee832ea0f03d80548df",
     "prompts/leg-google.md": "e17eb874bf6ff023a5ee79bfffb4cca9970c35135d60d3354a8f9593bc0a6415",
-    "reference/README.md": "0e78023c0718e7fc3c78a46748d59987f6d890662f77968e25425e53ab1bf304",
+    "reference/README.md": "d1652ca99ede728822ae0590e44f850140c7bb75dc2b067b5b8f5f714741de6d",
     "reference/process.md": "f9ac64873975f3581f1591978204d44cf03002091515895eb06757a58e5156ff",
-    "reference/review-rules.md": "48dbde706e94c9dedf97680030e9256c058baf9874f0e4ed135247c4dba81c43",
+    "reference/review-rules.md": "2a801373a518217fa9f29242318e3e910662a40d436a37f22b2a130bc6523112",
     "reference/spec-authoring.md": "3909eec267d17b91dade12305fee57d30b46df1f6a8a48d03a39214cf9f21c56",
     "review-legs.default.json": "701d34ad65f2aced87d4f5dae97b579b1688ef4dcb4aa16429106843677a759e"
   },

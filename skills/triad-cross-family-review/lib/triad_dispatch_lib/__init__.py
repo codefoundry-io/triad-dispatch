@@ -14,8 +14,16 @@ from .dispatch import (ReviewRequest, InvestigationRequest, CallOutcome, ReviewR
                        run_review, run_investigations)
 from .errors import ReceiptError
 from .receipt import validate_transport_receipt
+from .errors import RuntimeCompatibilityError
+from .runtime_compat import (ConsumerBinding, RuntimeDescriptor, RuntimeRetention,
+                             validate_consumer_binding, validate_runtime_descriptor,
+                             check_consumer_compatibility, select_consumer_binding,
+                             plan_runtime_retention)
 
-__all__ = ["ReceiptError", "validate_transport_receipt",
+__all__ = ["RuntimeCompatibilityError", "ConsumerBinding", "RuntimeDescriptor", "RuntimeRetention",
+           "validate_consumer_binding", "validate_runtime_descriptor", "check_consumer_compatibility",
+           "select_consumer_binding", "plan_runtime_retention",
+           "ReceiptError", "validate_transport_receipt",
            "OutputError", "AgreementError", "ProviderOutput", "extract_final", "separate_agy_metadata", "admit_output",
            "DispatchError", "ReviewRequest", "InvestigationRequest", "CallOutcome", "ReviewRun",
            "run_review", "run_investigations",

@@ -1622,6 +1622,64 @@ Parity covers option names, types, defaults, scope, refusal behavior and the dec
 surface (`units.json`: `common` name + `exceptions`); a matching filename alone is not parity. Host-native internals, test
 trees, install layers and agent registration stay host-specific.
 
+## Shared runtime and backward compatibility
+
+<a id="R-SHARED-RUNTIME-COMPAT"></a>
+The Claude, Codex and AGY consuming hosts may use one common runtime and its
+compatible launcher entry points. Host implementations adopting this rule must
+support reuse when both compatibility and trusted provenance are established;
+the installing host's name or marker alone is not a reason to require separate
+copies. Reuse does not authorize overwriting an unverified or owner-authored
+file. The installation mechanism remains host-owned under R-PARITY.
+
+Compatibility is declared against immutable supported consumer baselines and
+the common surface plus its declared host exceptions. Before advertising reuse,
+record the runtime/artifact identity, library/API baseline, supported host
+adapter/capability combinations, and their consumer verification. A shared
+filename, equal library version, successful import or `--help` response alone
+does not establish compatibility. Existing provenance pins remain effective;
+sharing a runtime does not silently update an adopted revision.
+
+For every supported older consumer, a compatible runtime update preserves its
+existing call without requiring a client rewrite: command/subcommand names,
+options and argument meanings, defaults, stdin/prompt-file/path semantics,
+stdout payload and stderr roles, exit/refusal behavior, result/receipt schemas,
+binding and custody checks, and any consumed public helper API. New optional
+features remain optional. Keep the library's existing
+[Python API compatibility gate](../../docs/api-compatibility.md); it is one layer,
+not evidence for launcher, CLI, host-adapter or installed lifecycle compatibility.
+An intentional incompatible transition requires an explicit reviewed decision,
+affected-call inventory, migration and verification. A version bump alone does
+not waive compatibility. Do not replace a shared runtime until all consumers
+still bound to it retain their supported contract or have explicitly migrated.
+
+Common execution must retain the consuming host's adopted context: native child
+versus CLI adapter, model/effort and roster resolution, configuration and
+classifier paths, provider authentication and permissions, toolkit identity,
+receipt paths and round bindings. Common defaults remain common at a given
+adopted revision; only declared host exceptions vary. Installer identity and
+installation order never select or override that context. If required context
+or capabilities are missing, ambiguous or incompatible, diagnose and refuse
+before provider execution instead of selecting another host or fallback. This
+rule adds no authentication probe, global-setting change or native-spawn API.
+
+Before replacing a working entry point, verify the candidate against the
+declared supported consumer corpus. An incompatible or unverified candidate
+leaves the existing installation usable and unchanged. Installing, upgrading or
+removing one consumer must not delete or rebind runtime assets needed by another
+consumer or an active bound invocation. Unknown dependency state preserves the
+assets with a diagnostic. Preserve unrelated owner files and host configuration;
+the contract specifies these outcomes, not a new registry format, reference
+counter, installer implementation or synchronized host-release gate.
+
+Verify C81-C83 for each claimed consuming host, supported older/current baseline
+and platform, including different installer order, native/CLI adapters,
+positive calls and refusal controls, upgrade failure, removal and an active
+invocation. Record NOT RUN for missing evidence. Existing installations and
+earlier Python API results are not grandfathered into conformance. The owner
+direction and bounded implementation handoff are in
+[the shared-runtime decision](../decisions/2026-10-23-shared-runtime-compatibility.md).
+
 ## Platforms
 
 <a id="R-PLATFORM"></a>
