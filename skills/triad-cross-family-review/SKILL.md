@@ -221,7 +221,8 @@ Five references carry the detail — open one only when its column applies.
    sandbox claim alone, decides admission. For the AGY leg the containment
    is MECHANICAL: `prepare` writes a PreToolUse hook (`lib/agy_hook.py`) into
    `<worktree>/.agents/hooks.json` that denies every tool outside the
-   five-name review allow set (plus `read_url_content` / `search_web` in a
+   review allow set (`read_file`, `finish` — agy >= 1.5.3;
+   `read_url_content` / `search_web` added in a
    web round) before it runs, whatever agent resolved (`--agent` fails OPEN
    silently); admission is EFFECT-based (a BLOCKED call is logged, an
    EXECUTED off-list call voids), behind rule 1's two checks. An agentic

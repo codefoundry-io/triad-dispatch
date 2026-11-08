@@ -16,9 +16,9 @@ also loads verdict_v2 from this directory:
       `toolCall.args`, `conversationId`, `stepIdx`, ...); stdout: ONE JSON
       object `{"decision": "allow"}` or `{"decision": "deny", "reason": ...}`.
       `decide()` is the whole policy — an ALLOW-LIST (H1, plan
-      2026-09-18-cfr-post-review-hardening): the five review tools the
-      wrapper census admits (`ALLOW_TOOLS`, pinned equal to the wrapper's
-      `AGY_REVIEW_TOOLS` by t9) are allowed; EVERY other name — mutating,
+      2026-09-18-cfr-post-review-hardening): the review tools the wrapper
+      census admits — read_file and finish, agy >= 1.5.3 (`ALLOW_TOOLS`,
+      pinned equal to the wrapper's `AGY_REVIEW_TOOLS` by t9) — are allowed; EVERY other name — mutating,
       command, network, subagent, planner, prompt-shaped, or one agy ships
       tomorrow — is denied before it runs (logged, non-voiding). This
       reverses the S2 "unknown → allow" choice: an unknown tool that mutates
@@ -83,13 +83,14 @@ from pathlib import Path
 
 # ONE allow set, shared with the wrapper's admission census (AGY_REVIEW_TOOLS in
 # the wrapper's antigravity_wrapper.py, shipped as bin/ — t9 pins the two equal at
-# test time, no runtime import across the artifacts). Every other tool name — mutating,
+# test time, no runtime import across the artifacts). agy >= 1.5.3 only: read_file
+# {Path} is the only file read (measured 2026-11-08). Every other tool name — mutating,
 # executing, network, subagent, MCP, prompt-shaped or one agy ships tomorrow —
 # is DENIED before it runs: logged, non-voiding. The vendor's hooks.json matcher
 # is a regular expression with no documented no-match default decision
 # (antigravity.google/docs/hooks, accessed 2026-09-18), so a config-level
 # allow-list could not fail closed; the policy lives here behind `*`.
-ALLOW_TOOLS = frozenset({"view_file", "grep_search", "list_dir", "find_by_name", "finish"})
+ALLOW_TOOLS = frozenset({"read_file", "finish"})
 # A round with review web (`--log <file> --web`: a v2 round binding
 # review_web_authorized true) also allows these two; t9 pins them equal to the
 # wrapper's AGY_WEB_TOOLS_ADMIT.

@@ -234,24 +234,36 @@ _MODEL_FLAG_FLOOR = (1, 1, 10)
 # --sandbox on the read-only path, status-independent admission. Two agents:
 # the REVIEW agent has no web tool (a review must have no egress); the
 # RESEARCH agent (`--web`) keeps read_url_content / search_web.
-AGY_V2_FLOOR = (1, 1, 18)   # `--add-dir` read auto-allow measured on 1.1.18 only (ladder round 2, K2/K5)
+# The read-only floor is agy 1.5.3, the only version whose tool set is measured
+# (2026-11-08, _runs/agy-probe-153): no backward compatibility (owner
+# 2026-11-08) — an older build is refused before any spawn and told to update.
+AGY_V2_FLOOR = (1, 5, 3)
 AGY_REVIEW_AGENT = "triad-readonly-review"
 AGY_RESEARCH_AGENT = "triad-readonly-research"
-AGY_REVIEW_TOOLS = ("view_file", "grep_search", "list_dir", "find_by_name", "finish")
-AGY_RESEARCH_TOOLS = ("view_file", "grep_search", "list_dir", "find_by_name",
-                      "read_url_content", "search_web", "finish")
+# What agy 1.5.3 offers a custom agent (measured 2026-11-08): `read_file` {Path}
+# is the only file read; no list or search tool. Every `tools:` name must be
+# registry-known (an unknown one aborts the run); read_url_content is known
+# (a list with it runs) though agy bug #1353 keeps it from being offered.
+AGY_REVIEW_TOOLS = ("read_file", "finish")
+AGY_RESEARCH_TOOLS = ("read_file", "read_url_content", "search_web", "finish")
 # Admission rule 5: an errored step is tolerated only when it names one of these
 # READ tools (the research agent additionally tolerates its two web tools).
-AGY_READ_TOOLS_ADMIT = frozenset({"view_file", "grep_search", "list_dir", "find_by_name"})
+AGY_READ_TOOLS_ADMIT = frozenset({"read_file"})
+# Retired agy read names, tolerated ONLY because the shared round prompt still
+# names them (spec DL-180); remove when that prompt is updated. On agy 1.5.3 such
+# a call ERRORS before the hook (measured 2026-11-08, lora-rerun r2 google leg):
+# the census files an ERROR step of one (not a denial) as an errored read, never
+# as executed; a DONE one stays forbidden.
+_AGY_RETIRED_READ_TOOLS = frozenset({"view_file", "grep_search", "list_dir", "find_by_name"})
 AGY_WEB_TOOLS_ADMIT = frozenset({"read_url_content", "search_web"})
 
 _AGENT_BODY_RULES = (
-    "Read files with view_file, search with grep_search using a SPECIFIC\n"
-    "subdirectory as SearchPath (never a repository root; add Includes globs when\n"
-    "you can). Open only paths you have confirmed exist — a file the prompt's\n"
+    "Read files with read_file, giving it the exact absolute paths the prompt\n"
+    "names (you have no list or search tool). Open only paths you have confirmed\n"
+    "exist — a file the prompt's\n"
     "design text names as planned or to-be-created does not exist yet (a file\n"
     "shown as a new-file hunk in a diff exists only when that branch is checked\n"
-    "out). Do not pass view_file paging arguments beyond the documented ones, and\n"
+    "out). Do not pass paging arguments beyond the documented ones, and\n"
     "do not page past the end of a file. When asked for JSON, return only the JSON.\n"
 )
 
@@ -299,16 +311,16 @@ def _agent_body(name: str, description: str, tools, persona: str) -> str:
 AGENT_BODIES = {
     AGY_REVIEW_AGENT: _agent_body(
         AGY_REVIEW_AGENT,
-        "Read-only review worker. Reads files and searches the repository; has "
-        "no shell, no file-writing tool, no MCP/browser tool and no web access.",
+        "Read-only review worker. Reads the files the prompt names; has no "
+        "shell, no file-writing tool, no MCP/browser tool and no web access.",
         AGY_REVIEW_TOOLS,
         "You are a read-only worker (a code reviewer, as the prompt says). You\n"
         "have no shell, cannot write files and have no web access.",
     ),
     AGY_RESEARCH_AGENT: _agent_body(
         AGY_RESEARCH_AGENT,
-        "Read-only research worker. Reads files, searches the repository and "
-        "fetches web pages; has no shell, no file-writing tool and no MCP/browser tool.",
+        "Read-only research worker. Reads the files the prompt names and "
+        "searches the web; has no shell, no file-writing tool and no MCP/browser tool.",
         AGY_RESEARCH_TOOLS,
         "You are a read-only worker (a researcher or a reviewer, as the prompt\n"
         "says). You have no shell and cannot write files; fetch web pages with\n"
@@ -389,7 +401,9 @@ def _census(events, allowlist, read_set):
     name with ANY occurrence that was not a denial — executed, or errored for an
     unknown reason (measured 2026-09-17: a `manage_task` rejected at argument
     validation never reaches the hook; its effect is unknown) — is FORBIDDEN and
-    voids the answer (Policy D, unchanged). `forbidden` is capped like the
+    voids the answer (Policy D, unchanged) — except an ERROR step (not a
+    denial) of a retired read name (`_AGY_RETIRED_READ_TOOLS`, spec DL-180),
+    filed as an errored read. `forbidden` is capped like the
     digest with `omitted` counting the DISTINCT names beyond the cap; `blocked`
     is capped and informational."""
     allowed = set(allowlist)
@@ -446,8 +460,12 @@ def _census(events, allowlist, read_set):
         step_denied = (not active) and _common._agy_step_denied(su)
         if errored and _SUBMIT_TOOL in names and _SUBMIT_TOOL in allowed:
             last_err_submit = pos
+        retired_err = (su.get("state") == "ERROR") and not step_denied
         for n in sorted(names):
-            if n not in allowed:
+            if n not in allowed and retired_err and n in _AGY_RETIRED_READ_TOOLS:
+                if n not in errored_reads:      # an errored retired read (DL-180)
+                    errored_reads.append(n)
+            elif n not in allowed:
                 bucket = denied if step_denied else executed
                 if n not in bucket:
                     bucket.append(n)
@@ -505,7 +523,9 @@ def admit(stream_text, events, result, *, allowlist, read_set, prior_forbidden=(
        ran (the worktree PreToolUse hook / vendor permission denial) is
        BLOCKED — carried on `.blocked`, logged by the caller, not voiding;
        an off-list call that EXECUTED (or errored for a non-denial reason)
-       is FORBIDDEN and refuses the answer as before.
+       is FORBIDDEN and refuses the answer as before — except, until spec
+       DL-180, an ERROR (non-denial) step of a retired read name
+       (`_AGY_RETIRED_READ_TOOLS`), which is an errored read.
     5. Status: SUCCESS with vendor rc 0 -> ok; anything else (a non-SUCCESS
        status OR a non-zero vendor rc) is admitted ONLY when at least
        one errored tool step EXPLAINS it and every errored step named an
@@ -1194,7 +1214,7 @@ def _main(ctx: dict) -> int:
     p.add_argument("--cwd", default=None)
     p.add_argument("--sandbox", choices=["read-only"],
                    default=None,
-                   help="read-only (v2, agy >= 1.1.18) — the setup-once "
+                   help="read-only (v2, agy >= 1.5.3) — the setup-once "
                         "tools-allowlisted agent (--agent; review without web tools, "
                         "research with them under --web) + --add-dir <cwd>; no "
                         "danger flag, no settings transaction, no agy --sandbox; "
@@ -1426,11 +1446,11 @@ def _main(ctx: dict) -> int:
                               classification="config-conflict", spawned=False,
                               extraction_error=floor_err)
     elif args.sandbox == "read-only" and ver < AGY_V2_FLOOR:
-        # Fail-CLOSED v2 floor: `--add-dir` read auto-allow and the allowlist
-        # agent were measured on 1.1.18; there is no legacy path (v2).
+        # Fail-CLOSED read-only floor (AGY_V2_FLOOR): the agents' tool set
+        # (read_file) is measured on 1.5.3 only; there is no legacy path.
         found = _ver_text(ver)
-        floor_err = (f"agy {found} < 1.1.18 — the read-only path needs agy >= "
-                     f"1.1.18 (allowlist agent + --add-dir); run `agy update`")
+        floor_err = (f"agy {found} is older than 1.5.3, the minimum for the "
+                     f"read-only agents (read_file tool set): run `agy update`")
         _common.log(floor_err)
         r = _common.RunResult(_common.EXIT_TERMINAL, "", "", 0.0,
                               classification="config-conflict", spawned=False,

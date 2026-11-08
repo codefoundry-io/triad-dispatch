@@ -41,7 +41,7 @@ Provenance: the 2026-08-22 permission ladder on agy 1.1.17 (arms A-D, probes
 E-G); differential probes on agy 1.1.7 (2026-07-25); the 1.1.3-era
 soft-deny window; the 1.1.8 stream-json dispatch floor (2026-07-31).
 
-## Read-only path v2 (`--sandbox read-only`, agy >= 1.1.18)
+## Read-only path v2 (`--sandbox read-only`, agy >= 1.5.3)
 
 Spec: `docs/superpowers/specs/2026-08-22-agy-readonly-v2-spec.md`. Two
 setup-once agent definitions under `~/.gemini/config/agents/` (written by the
@@ -49,11 +49,36 @@ wrapper's `--setup-agents` host step — run the command in SKILL.md Step 1, Hos
 setup; bodies embedded in the wrapper;
 workspace `.agents/` is NOT loaded in print mode — ladder round 2 K1):
 
-- `triad-readonly-review` — `view_file`, `grep_search`, `list_dir`,
-  `find_by_name`, `finish`; no web tool.
+- `triad-readonly-review` — `read_file`, `finish`; no web tool.
 - `triad-readonly-research` (`--web`, or `--review-web` for a review round
   that binds `review_web_authorized` true — R-REVIEW-WEB) — the same plus
   `read_url_content`, `search_web`.
+
+agy >= 1.5.3 is required (owner 2026-11-08: no backward compatibility); an
+older build is refused before any spawn as `config-conflict` with "agy <ver> is
+older than 1.5.3, the minimum for the read-only agents (read_file tool set):
+run `agy update`". The floor compares the numeric version triple, so a 1.5.3
+pre-release (e.g. `1.5.3-rc.1`) meets it. The lists are what 1.5.3 offers (measured 2026-11-08): a
+review agent is offered only `read_file` (params `Path`, `StartLine`,
+`EndLine`, `ByteOffset`), `manage_task` and `finish` (the research agent also
+`search_web`); there is no list or search tool, and `read_url_content` is
+listed (registry-known) but not offered (agy bug #1353). The stream's
+`tool_name` / `tool_info.name` and the PreToolUse hook's tool name for a file
+read are `read_file`. The wrapper census, the review hook and the read-audit
+gate (one rule: a `read_file` entry's `.params.Path`) accept `read_file` only;
+`manage_task` stays off-list. Every `tools:` name must be agy-registry-known:
+on 1.5.3 an unknown name aborts the run (`failed to construct executor: ...
+tool "<x>" not found in registry`). History (why the lists name read_file
+only): on 1.5.3 `view_file` in `tools:` resolves to `read_file`, and listing
+both aborts the run (`failed to construct executor: tool name conflict:
+multiple tools resolved with name "read_file"`).
+Retired read names: the shared round prompt still names `view_file` /
+`grep_search` / `list_dir` / `find_by_name` (spec DL-180), and on 1.5.3 a call
+to one ERRORS before the hook (measured 2026-11-08, lora-rerun r2 google leg:
+`read_attempts` outcome `error`, no hook row). The census files such an ERROR
+step (not a denial) as an errored read, tolerated like an errored `read_file`;
+a DONE one is still forbidden, and the read-blind guard still needs a
+successful read (`read_file`, or a web read on the research agent). The tolerance goes when the prompt is updated.
 
 The dispatch = `agy -p <prompt> --agent <name> --add-dir <cwd>
 --output-format stream-json [--json-schema …]`. `--add-dir` makes repository
@@ -70,7 +95,7 @@ every errored step named an allowed read (logged
 OUTSIDE the allowlist in the stream is **`admission-refused`** (65, its own token
 since 0.16.3). `init.agent` is a
 diagnostic only (it echoes the requested name even on fallback — probe E,
-re-measured on 1.1.18). Below 1.1.18: `config-conflict`, no legacy path.
+re-measured on 1.1.18). Below 1.5.3: `config-conflict` ("run `agy update`"), no legacy path.
 Residuals: reads (and, for research, network) open by design; a fallback that
 calls nothing forbidden is indistinguishable and accepted (side-effect-free
 under the vendor's headless denial); two files outside the repo per host; a
@@ -208,7 +233,7 @@ Re-confirm against your installed agy with
 
 | agy tool | permission action | notes |
 |---|---|---|
-| `view_file` / `list_dir` / `grep_search` | `read_file` | native reads (NOT shell) — auto-allowed in workspace |
+| `read_file` (tool name, agy >= 1.5.3) | `read_file` | native read (NOT shell) — auto-allowed in workspace; the only file read 1.5.3 offers a custom agent (params `Path` / `StartLine` / `EndLine` / `ByteOffset`); admitted by the census and the review hook (older builds' `view_file` / `list_dir` / `grep_search` mapped to the same action) |
 | `write_to_file` / `replace_file_content` / `multi_replace_file_content` | `write_file` | absent from both v2 agents' allowlists; this host sets no deny for it (the codex host's per-call deny transaction does) |
 | `run_command` | `command` OR `unsandboxed` | both denied in read-only (`unsandboxed(*)` = OS-ring escape) |
 | `execute_url` (code-exec-from-URL) | `execute_url` | denied in read-only |

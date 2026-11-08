@@ -2721,7 +2721,7 @@ def _v2_render_prompt(worktree: Path, review_id: str, digest: str, entry,
             content_digest=digest, leg_name=entry.name,
             attempt=attempt, google_route=entry.route,
             # ABSOLUTE, worktree-rooted: the read-audit gate compares a
-            # leg's `AbsolutePath` with these exact strings (LP-0).
+            # leg's read_file `Path` with these exact strings (LP-0).
             brief_file=str(worktree / _WT_BRIEF),
             gated_patch_file=str(worktree / _WT_DIFF_PROD),
             packet_files=tuple(_WT_ARTIFACTS),

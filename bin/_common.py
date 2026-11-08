@@ -253,10 +253,16 @@ def _duplicate_json_member(text: str) -> Optional[str]:
 # to the vendor event schema — consumers (driver, review SKILL) see the
 # stable digest shape, so a vendor schema drift is fixed here + t13 only.
 
-_AGY_READ_TOOLS = {"view_file", "list_dir", "grep_search", "find_by_name",
+# `read_file` {Path}: agy 1.5.3's only file read (measured 2026-11-08); its
+# Path rides in the digest through the schema-agnostic params hint like
+# view_file's AbsolutePath.
+_AGY_READ_TOOLS = {"view_file", "read_file", "list_dir", "grep_search", "find_by_name",
                    "code_search", "codebase_search", "skill_search"}
+# write_file / edit_file: declared by agy 1.5.3's default agent (probe p2,
+# 2026-11-08) — diagnostic class only.
 _AGY_WRITE_TOOLS = {"write_to_file", "replace_file_content",
-                    "multi_replace_file_content", "sed_file", "notebook_edit"}
+                    "multi_replace_file_content", "sed_file", "notebook_edit",
+                    "write_file", "edit_file"}
 _AGY_WEB_TOOLS = {"read_url_content", "search_web", "open_browser_url"}
 _AGY_DIGEST_LIST_CAP = 40
 _AGY_DIGEST_VALUE_CAP = 200

@@ -75,15 +75,17 @@ or placeholder URLs and bare years are forbidden; the audit row and run-log
 record the prompt as sent — so a caller's brief states WHAT to find, not how
 to cite it.
 
-## Read-only path v2 (`--sandbox read-only`, agy >= 1.1.18; spec `docs/superpowers/specs/2026-08-22-agy-readonly-v2-spec.md`)
+## Read-only path v2 (`--sandbox read-only`, agy >= 1.5.3; spec `docs/superpowers/specs/2026-08-22-agy-readonly-v2-spec.md`)
 
 A read-only dispatch runs agy as a **setup-once** tools-allowlisted custom
-agent: `triad-readonly-review` (`view_file`, `grep_search`, `list_dir`,
-`find_by_name`, `finish`; `commandExecutionPolicy: off`; NO web tool) or,
+agent: `triad-readonly-review` (`read_file`, `finish`;
+`commandExecutionPolicy: off`; NO web tool) or,
 under `--web` or `--review-web`, `triad-readonly-research` (the same plus
 `read_url_content`, `search_web`). Forbidden tools are ABSENT rather than
 denied, so an admitted run never produces the errored step that flips agy's
-terminal status (#826 / #839). The call passes `--add-dir <cwd>` (repository
+terminal status (#826 / #839). The lists are what agy 1.5.3 offers (measured
+2026-11-08: `read_file` is the only file read, no list or search tool);
+`manage_task` is offered but stays off-list (`references/isolation.md`). The call passes `--add-dir <cwd>` (repository
 reads are auto-allowed in print mode — measured 1.1.18, ladder round 2 K2;
 writes stay denied without the danger flag, K5), and NOTHING else: no
 `--dangerously-skip-permissions`, no settings deny transaction, no agy
@@ -117,12 +119,15 @@ one `result`, every tool name in any attempt ∈ the agent's allowlist (a
 fallback to agy's full-tool default agent, or a model slip, is rejected as
 **`admission-refused`** with the name on stderr — since 0.16.3; the other
 refusals stay `vendor-error`), and a `status != SUCCESS` run is
-admitted ONLY when every errored step named an allowed read tool or is an
+admitted ONLY when every errored step named an allowed read tool (until spec
+DL-180 an ERROR step of a retired read name — `view_file` / `grep_search` /
+`list_dir` / `find_by_name` — counts as one; a DONE one is refused) or is an
 answer submission (`finish`) that a LATER successful `finish` follows (the
 model corrected its first submission — C40, 0.16.7) — logged as
 `[wrapper] antigravity admitted-with-errored-steps n=<k> tools=[...] … — <reason>`. The
 `init.agent` echo is a diagnostic only (agy echoes the REQUESTED name even on
-fallback). Below 1.1.18 the dispatch is `config-conflict` ("run `agy update`");
+fallback). Below 1.5.3 the dispatch is `config-conflict` ("run `agy update`"; the
+floor compares the numeric triple, so a pre-release such as `1.5.3-rc.1` meets it);
 there is no legacy path (`TRIAD_AGY_READONLY_MODE` is gone). Evidence:
 `docs/spikes/2026-08-22-agy-permission-ladder/` (rounds 1-3); ledger
 `docs/agy-vendor-workarounds.md` W-28 (W-05 now permissive-baseline only, W-06
@@ -332,7 +337,7 @@ call, and never spawn the repair agent for it.
 | `ok` (0) | Return wrapper stdout (agy's final answer text). |
 | `oauth-env` (65) | STOP. The login is missing or expired, or agy reported an authentication failure (its auth banner, or `result.error`) — this outranks agy's own print timeout on the same run. Do not retry, do not try another route or credential, and never read or change the credential store; tell the owner to re-log in through the CLI's own browser flow (the sign-in URL agy's auth banner names). A same-basis re-dispatch runs only after the owner reports the re-login. **NOT** repair-agent territory. |
 | terminal (65) — cli-subscription-cap / token-limit / config-conflict / vendor-error | Surface to the user with the cause, and name the run-log path when there is one; a `config-conflict` naming a pinned model agy refused is the user's roster entry to change before any re-dispatch. Per-class causes and what the leader may say about each — including why `vendor-error` keeps the answer OUT of stdout and why none of these route to repair — [references/terminal-causes.md](references/terminal-causes.md). |
-| `admission-refused` (65) | The v2 admission census found a tool OUTSIDE the agent's allowlist in the stream (`manage_task` / `run_command` / `send_message` …) — the allowlist class only; framing / unexplained-degraded / read-blind refusals stay `vendor-error` (an errored `finish` that a later successful `finish` — a `step_type: finish` DONE update without `tool_info.error` — follows EXPLAINS a degraded status and is admitted; one with no later success still refuses as `vendor-error`). The COMPLETE answer is quarantined (run-log copy only, `quarantined answer (N chars)`). Surface, never repair. Review-leg callers: one retry, then terminally missing. If it recurs after 0.16.3, check the host re-ran `--setup-agents` (agent body carries the allowlist rule) — the model is TOLD the five permitted tools; agy still advertises 57. |
+| `admission-refused` (65) | The v2 admission census found a tool OUTSIDE the agent's allowlist in the stream (`manage_task` / `run_command` / `send_message` …) — the allowlist class only; framing / unexplained-degraded / read-blind refusals stay `vendor-error` (an errored `finish` that a later successful `finish` — a `step_type: finish` DONE update without `tool_info.error` — follows EXPLAINS a degraded status and is admitted; one with no later success still refuses as `vendor-error`). The COMPLETE answer is quarantined (run-log copy only, `quarantined answer (N chars)`). Surface, never repair. Review-leg callers: one retry, then terminally missing. If it recurs after 0.16.3, check the host re-ran `--setup-agents` (agent body carries the allowlist rule) — the model is TOLD its permitted tools (review: `read_file`, `finish`; research: also `read_url_content`, `search_web`); agy still offers `manage_task`. An ERROR step of a retired read name the shared round prompt still names (`view_file` / `grep_search` / `list_dir` / `find_by_name`, spec DL-180) is an errored read, not this class; a DONE one is. |
 | `vendor-timeout` (65) | agy's OWN turn timeout fired before the wrapper deadline (`result.status` ERROR, `result.error` "timeout waiting for response", empty response, vendor rc 1; live 2026-09-04 at 857 s of a 900 s budget with 33 allowlisted reads). Surface, never repair (the analyzer escalated: no existing class fits). Review-leg callers: re-dispatch ONCE with a narrower read scope (smaller packet / fewer cited sites), then terminally missing. |
 | `truncated-answer` (65) | Two origins; the wrapper's own stderr tells them apart. **Transport** — a wrapper stderr line before the summary says the output readers did not complete (`… but the output readers did not complete (…); failing closed`, after a vendor exit 0) or that the output capture is incomplete (`the output capture is incomplete (a reader thread failed or did not join) …`, at any vendor rc): what was captured is a prefix, so no answer is printed and the wrapper never retries it. **Leader: re-dispatch once, unchanged; if it recurs, surface it with the run-log path.** **Vendor fold** — no such line: agy folded the MIDDLE of a long answer CLI-side (own-line `<truncated N bytes\|lines>` marker; observed cap ~4KB) and keeps NO full copy anywhere, so the loss is unrecoverable at the wrapper layer. The lossy answer is quarantined from stdout (bounded copy in the run-log). **Leader: re-dispatch once asking for a shorter answer; the ~4 KB fold is unmeasured since agy 1.1.9.** Retrying the same prompt unchanged folds again — do not plain-retry a fold. Neither origin is repair-agent territory (a wrapper transport defect, or deterministic vendor behavior on the answer-present path; a classifier patch cannot express either). |
 | `server-capacity` exhausted (64) | Wait + retry, or surface. Wrapper already ran the capacity ladder: up to 2 stream-json call re-runs after a 15 s / 45 s backoff, EVERY attempt with the caller's full `--timeout` (the timeout is per attempt, so the leg can take up to 3 × `--timeout` + 60 s wall-clock) — EXCEPT on a read-only run that also called a tool outside the allowlist: that run returns after ONE dispatch (stderr + `extraction_error` name the forbidden tool), the caller's fresh dispatch being the contract's one retry (2026-09-05). |

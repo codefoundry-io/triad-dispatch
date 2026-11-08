@@ -1,11 +1,12 @@
 # Changelog
 
-## 0.2.1987 — 2026-10-24
+## 0.2.1995 — 2026-11-08
 
-This release adopts the review library triad-dispatch-lib v0.1.0.dev7. A refused review roster now says where the error is. After the schema path, the refusal line names the instance location: `, instance legs/2/timeout_s` for the third entry's timeout, or `, instance <root>` for the document itself. When the index counts entries of the merged roster rather than your override file, the location carries `(merged order)`. The same mistake in two entries therefore no longer prints one identical line. The library's shared-runtime compatibility API (dev6) is vendored but not used by this plugin: how the plugin is installed and how it calls its wrappers do not change.
+This release adapts the agy (Antigravity CLI) review and research leg to agy 1.5.3, which offers a custom agent only `read_file` (plus `search_web` on the research agent; `manage_task` and `finish` are always present) and no longer `view_file`, `grep_search`, `list_dir`, `find_by_name` or a working `read_url_content` in print mode. The read-only agy route now requires agy 1.5.3 or later: an older agy is refused before any call with one line telling you to run `agy update` (exit 65, `config-conflict`). The two read-only agents list only the 1.5.3 tools, and the admission check, the review hook and the read-audit gate accept `read_file` only. While the shared review prompt still names the old read tools, a call to one of them that ends in an error is treated as an errored read, not as a forbidden tool; one that runs still voids the answer.
 
 Before or right after you update:
 
+- agy: update to 1.5.3 or later (`agy update`), then re-install the two read-only agent files once: `python3 <plugin>/bin/antigravity_wrapper.py --setup-agents`. Until you do, every read-only agy call stops with a `config-conflict` line naming `--setup-agents` (the installed files no longer match).
 - A review packet an earlier version prepared: close it with `review_scratch.py close` and prepare a new round.
 - From a version before 0.2.1959: install the review library's dependencies at its floors, `jsonschema>=4.26,<5` and `referencing>=0.37,<1` (the README's install section has the Mac and Ubuntu lines); without them the review stops with one host-fault line (exit 64) that carries the install hint.
 - From a version before 0.2.1702, also (that version removed the agy and gemini daily checks, the agy settings handling, the v1 and the small review paths, the old verdict schema, the starter CLAUDE.md under `migration/` and the `TRIAD_DEBUG_MAX_AGE_DAYS` environment knob):

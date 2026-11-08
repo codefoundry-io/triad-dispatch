@@ -6,12 +6,12 @@ file, one simple command with literal arguments) stays in Step 1 itself.
 
 ## Flags
 
-- `--sandbox read-only` selects the read-only path v2 (agy >= 1.1.18): the
+- `--sandbox read-only` selects the read-only path v2 (agy >= 1.5.3): the
   setup-once tools-allowlisted agent (`--agent triad-readonly-review`, or
   `triad-readonly-research` under `--web` / `--review-web`) + `--add-dir
   <cwd>`; no danger
   flag, no settings transaction, no agy `--sandbox`; admission by the stream
-  (§ Read-only path v2 in isolation.md). Below 1.1.18 → `config-conflict`.
+  (§ Read-only path v2 in isolation.md). Below 1.5.3 → `config-conflict` ("run `agy update`").
   `--setup-agents` writes the two agent files once per host (no prompt
   needed). `AGY_AGENTS_DIR` is a TEST hook for the file location (default
   `~/.gemini/config/agents`; logged when set). Omit `--sandbox` for the

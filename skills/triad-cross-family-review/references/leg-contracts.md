@@ -391,8 +391,9 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
 
 - **Read-only path v2 (wrapper-side).** The agy
   leg runs as the setup-once tools-allowlisted agent `triad-readonly-review`
-  (`--agent`; view_file / grep_search / list_dir / find_by_name / finish —
-  NO web tool) with `--add-dir <cwd>` for repository reads; no danger flag,
+  (`--agent`; read_file / finish — NO web tool; agy >= 1.5.3, whose only file
+  read is `read_file` {Path}, measured 2026-11-08; an older build is refused
+  with "run `agy update`") with `--add-dir <cwd>` for repository reads; no danger flag,
   no settings deny transaction, no agy `--sandbox`. **Caller obligation:
   pass `--cwd <absolute root the leg's reads must resolve in>` — the wrapper
   forwards it as `--add-dir`, the leg's ONLY read grant, and ENFORCES it
@@ -435,7 +436,19 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
   `python3 <plugin bin>/antigravity_wrapper.py --setup-agents` (the
   `triad-antigravity-dispatch` Host setup line) after
   an upgrade that changes the agent body, or every dispatch fails
-  `config-conflict` naming the file). The allowlist refusal itself is the
+  `config-conflict` naming the file). Disclosed residual (agy >= 1.5.3): the vendored round-prompt clause
+  (`spec/prompts/leg-google.md`) still names view_file / grep_search /
+  list_dir / find_by_name, while the agent body and the census use
+  `read_file`; the prompt text changes only with the next library release
+  (spec DL-180). The body (system text) names `read_file`. Measured
+  consequence (2026-11-08, lora-rerun r2 google leg): a call to a retired
+  name ERRORS before the hook (`read_attempts` outcome `error`, no hook row),
+  which the census would file as an executed off-list tool and void a leg
+  that read the packet. So an ERROR step (not a denial) of a retired read
+  name (`_AGY_RETIRED_READ_TOOLS`) counts as an errored read, tolerated like
+  an errored `read_file`; a DONE one stays forbidden; a leg whose reads all
+  errored still fails closed (read-blind, then the read-audit gate VOIDs).
+  The tolerance goes when the prompt is updated. The allowlist refusal itself is the
   DISTINCT classification
   **`admission-refused`** (exit 65, surface-not-repair — the allowlist class
   only; framing / unexplained-degraded / read-blind refusals stay
@@ -511,11 +524,13 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
     (`call_mcp_tool`, `list_resources`, `read_resource`, `generate_image`) —
     the measured 57-tool registry (kept in `tests/unit/skills/t9-agy-hook.sh` as a
     DENY-side pin) — and EVERY OTHER NAME: the handler is an
-    ALLOW-LIST whose set is the census's five review tools (`ALLOW_TOOLS`,
-    t9-pinned equal to the wrapper's `AGY_REVIEW_TOOLS`); an unknown tool, a
+    ALLOW-LIST whose set is the census's review tools, `read_file` and
+    `finish` (`ALLOW_TOOLS`, t9-pinned equal to the wrapper's
+    `AGY_REVIEW_TOOLS`); `manage_task` stays off-list. An unknown tool, a
     prompt-shaped tool (`ask_*`, `list_permissions`) and the waits are DENIED
     before they run — blocked, non-voiding — never left to the census. Read
-    tools outside the five (`code_search`, `codebase_search`, `skill_search`)
+    tools outside that set (older builds' `view_file` / `grep_search` /
+    `list_dir` / `find_by_name`, `code_search`, `codebase_search`, `skill_search`)
     are denied too (disclosed). A broken hook denies every call,
     reads included, and the leg produces no answer at all (arm C, measured); an
     unreadable or nameless payload is DENIED (fail-closed); tool ARGS are never
@@ -571,8 +586,9 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
     refuses, deleting nothing, when `.agents` is not a real directory (its
     tree check reads it as content this helper did not create — while the
     reviewed repo does not ignore `.agents`; an ignored path is not judged);
-    the hook is an ALLOW-LIST: `ALLOW_TOOLS` = the census's five
-    review tools (t9 pins them equal to the wrapper's `AGY_REVIEW_TOOLS`), and
+    the hook is an ALLOW-LIST: `ALLOW_TOOLS` = the census's review
+    tools, `read_file` and `finish` (t9 pins them equal to the wrapper's
+    `AGY_REVIEW_TOOLS`), and
     EVERY other name — the permission-prompt tools, the waits, a tool agy
     ships tomorrow — is DENIED before it runs (blocked, non-voiding: an
     unknown tool that mutates must be blocked before it executes, not voided
@@ -593,7 +609,11 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
     by the research agent, whose own web tools are never called blocked.
     Hosts re-run `python3 <plugin bin>/antigravity_wrapper.py
     --setup-agents` (the `triad-antigravity-dispatch` Host setup line) after
-    an upgrade that changes the agent body.
+    an upgrade that changes the agent body. On agy >= 1.5.3 the two carriers
+    differ in tool names — the disclosed residual above (the vendored prompt
+    names the old read/search tools; the body and the census, `read_file`):
+    a call to a retired name errors before the hook, and the census files
+    that ERROR step as an errored read (tolerated), never as executed.
 - **Model.** The entry's `agy.model` is passed as `--model=<value>` to
   `antigravity_wrapper.py`, and a non-null `agy.effort` as
   `--effort=<value>` (the shipped rosters set `high`); a null `agy.effort`
@@ -649,7 +669,7 @@ A round's agy `prompt.txt` is rendered from the vendored clauses
   (`bin/antigravity_wrapper.py`, `AGENT_BODIES`; written by
   `--setup-agents` under `~/.gemini/config/agents/`, checked byte-for-byte
   and selected with `--agent` on every `--sandbox read-only` dispatch, agy >=
-  1.1.18) — its `tools:` ALLOWLIST omits every shell / write / MCP / browser
+  1.5.3) — its `tools:` ALLOWLIST omits every shell / write / MCP / browser
   / web tool, so a denied-shell step cannot occur at all, and its body
   carries the scope / existence / no-paging rules as always-applied system
   text; the wrapper admits the run by `admit()` (allowlist census over every
@@ -745,15 +765,19 @@ bash <skill>/lib/read_audit_gate.sh --audit-file <abs results-r<N>/<name>/attemp
   a HOST FAULT (`references/triage.md` § Collect outcomes).
 
 **The match.** A required file counts as read when its absolute path equals
-the `AbsolutePath` param of a `view_file` entry in `digest.files_read` (a
-`grep_search` that merely names the path does not count). `files_read` holds
+the `Path` param of a `read_file` entry (agy >= 1.5.3's only file read,
+measured 2026-11-08) in `digest.files_read` — tool and key together; this is
+the gate's one match rule (a `view_file` / `AbsolutePath` entry from an older
+build and a `grep_search` that merely names the path do not count). `files_read` holds
 only calls that succeeded; a failed or denied attempt sits in
 `digest.read_attempts` and proves nothing. Every params value is truncated at
 200 characters (the gate's `_CAP`, coupled to `bin/_common.py`'s
 `_AGY_DIGEST_VALUE_CAP`; t5 drift-guards the pair), so a required path of 200
 characters or more cannot be confirmed. The verdict is decided by jq's rc and
-`files_read_omitted` only. Recorded limits: the `AbsolutePath` key is a vendor
-coupling (a rename fails toward VOID / INCONCLUSIVE, never PASS), and a
+`files_read_omitted` only. Recorded limits: the `Path` key is a vendor
+coupling (a rename fails toward VOID / INCONCLUSIVE, never PASS); a
+`read_file` entry whose `Path` is relative never equals the absolute packet
+path, so that read VOIDs (fail-closed; every measured `Path` is absolute); and a
 range-limited view would satisfy the match on a partial read (no range params
 have been observed in real digests).
 
@@ -797,7 +821,7 @@ Two live claims govern whether a deployment can run this leg at all:
   run is admitted when its verdict validates and its errored steps are all
   allowed reads — the read-audit still shows every errored step. The round
   worktree's PreToolUse
-  hook denies every tool outside the five-name allow set (mutating / command / network / subagent / planner tools included)
+  hook denies every tool outside the review allow set (mutating / command / network / subagent / planner tools included)
   whatever agent resolved — the backstop for `--agent` failing OPEN — and
   admission is EFFECT-based: a BLOCKED call is logged, an EXECUTED off-list
   call voids; the hook LOAD CHECK proves the layer loaded (§ agy hook load check).

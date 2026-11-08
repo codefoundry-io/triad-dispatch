@@ -132,9 +132,11 @@ for PACKET_ABS_PATH in "$@"; do
     continue
   fi
   p_trunc="${PACKET_ABS_PATH:0:_CAP}"
+  # Read evidence is TOOL+KEY: a read_file entry's Path (agy >= 1.5.3, the
+  # read-only floor; measured 2026-11-08).
   set +e
   jq -e --arg p "$p_trunc" \
-    '[.digest.files_read[]? | select(.tool == "view_file") | .params.AbsolutePath? // empty | select(type == "string")] | any(. == $p)' \
+    '[.digest.files_read[]? | select(.tool == "read_file") | .params.Path? // empty | select(type == "string")] | any(. == $p)' \
     "$AGY_READ_AUDIT_FILE" >/dev/null 2>/dev/null
   jq_rc=$?
   set -e
